@@ -215,6 +215,8 @@ export function buildServerProvider(input: {
   models: ReadonlyArray<ServerProviderModel>;
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  accountUsage?: unknown;
+  accountUsageReportedAt?: string;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
@@ -240,6 +242,10 @@ export function buildServerProvider(input: {
     auth: input.probe.auth,
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
+    ...(input.accountUsage !== undefined ? { accountUsage: input.accountUsage } : {}),
+    ...(input.accountUsageReportedAt !== undefined
+      ? { accountUsageReportedAt: input.accountUsageReportedAt }
+      : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],

@@ -64,6 +64,7 @@ import {
   serializeTableElementToCsv,
   serializeTableElementToMarkdown,
 } from "../markdown-clipboard";
+import { findLowContextWarningMatches } from "../lib/lowContextWarning";
 import { remarkNormalizeListItemIndentation } from "../markdown-list-indentation";
 import {
   normalizeMarkdownLinkDestination,
@@ -74,6 +75,7 @@ import {
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
+import { resolveAssetUrl } from "../assets/assetUrls";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useActiveEnvironmentId } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -90,6 +92,8 @@ import {
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
+import { useExpandedImagePreviewController } from "./chat/ExpandedImagePreview";
+import { shouldOpenImageReferenceInFullScreen } from "./chat/mobileImageViewer";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -122,6 +126,12 @@ interface ChatMarkdownProps {
   className?: string;
   /** Treat single newlines as hard breaks — chat-style user input. */
   lineBreaks?: boolean;
+  lowContextWarningAction?:
+    | {
+        readonly onCompactAndContinue: () => void;
+        readonly busy: boolean;
+      }
+    | undefined;
 }
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
@@ -165,6 +175,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
     ...defaultSchema.attributes,
     "*": (defaultSchema.attributes?.["*"] ?? []).filter((attribute) => attribute !== "title"),
     code: [...(defaultSchema.attributes?.code ?? []), "dataCodeMeta", "dataInlineCode"],
+    span: [...(defaultSchema.attributes?.span ?? []), "dataLowContextWarning"],
   },
   protocols: {
     ...defaultSchema.protocols,
@@ -231,8 +242,10 @@ function extractPreCodeMeta(node: unknown): string | undefined {
 
 type MarkdownAstNode = {
   type?: string;
+  value?: string;
   meta?: unknown;
   data?: {
+    hName?: string;
     hProperties?: Record<string, unknown>;
   };
   children?: MarkdownAstNode[];
@@ -282,6 +295,85 @@ function remarkTagInlineCode() {
 
     visit(tree, false);
   };
+}
+
+function remarkLowContextWarnings() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode, excluded: boolean) => {
+      const childExcluded =
+        excluded ||
+        node.type === "code" ||
+        node.type === "inlineCode" ||
+        node.type === "blockquote" ||
+        node.type === "html";
+
+      if (!childExcluded && node.children) {
+        node.children = node.children.flatMap((child) => {
+          if (child.type !== "text" || typeof child.value !== "string") {
+            visit(child, childExcluded);
+            return [child];
+          }
+
+          const matches = findLowContextWarningMatches(child.value);
+          if (matches.length === 0) return [child];
+
+          const segments: MarkdownAstNode[] = [];
+          let cursor = 0;
+          for (const match of matches) {
+            if (match.start > cursor) {
+              segments.push({ type: "text", value: child.value.slice(cursor, match.start) });
+            }
+            segments.push({
+              type: "emphasis",
+              data: {
+                hName: "span",
+                hProperties: { dataLowContextWarning: "" },
+              },
+              children: [{ type: "text", value: match.phrase }],
+            });
+            cursor = match.end;
+          }
+          if (cursor < child.value.length) {
+            segments.push({ type: "text", value: child.value.slice(cursor) });
+          }
+          return segments;
+        });
+      }
+    };
+
+    visit(tree, false);
+  };
+}
+
+function LowContextWarningAction({
+  children,
+  busy,
+  onCompactAndContinue,
+}: {
+  children: ReactNode;
+  busy: boolean;
+  onCompactAndContinue: () => void;
+}) {
+  const label = busy ? "Compacting context before continuing" : "Compact and continue conversation";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            aria-busy={busy || undefined}
+            aria-disabled={busy || undefined}
+            onClick={onCompactAndContinue}
+            className="inline rounded-sm bg-amber-200/70 px-0.5 font-medium text-amber-950 underline decoration-amber-700/50 decoration-dotted underline-offset-2 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/80 aria-disabled:cursor-wait dark:bg-amber-500/20 dark:text-amber-100 dark:hover:bg-amber-500/30"
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
+  );
 }
 
 function nodeToPlainText(node: ReactNode): string {
@@ -785,6 +877,7 @@ interface MarkdownFileLinkProps {
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
+  onOpenImage?: (() => void) | undefined;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   className?: string | undefined;
 }
@@ -1068,6 +1161,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   theme,
   threadRef,
   onOpen,
+  onOpenImage,
   onOpenInBrowser,
   className,
 }: MarkdownFileLinkProps) {
@@ -1248,6 +1342,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
+              if (onOpenImage) {
+                onOpenImage();
+                return;
+              }
               if (onOpenInBrowser) {
                 handleOpenInBrowser();
                 return;
@@ -1288,6 +1386,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.theme === next.theme &&
     previous.threadRef === next.threadRef &&
     previous.onOpen === next.onOpen &&
+    previous.onOpenImage === next.onOpenImage &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
     previous.className === next.className
   );
@@ -1302,8 +1401,10 @@ function ChatMarkdown({
   skills = EMPTY_MARKDOWN_SKILLS,
   className,
   lineBreaks = false,
+  lowContextWarningAction,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
+  const expandedImagePreviewController = useExpandedImagePreviewController();
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
   });
@@ -1354,6 +1455,12 @@ function ChatMarkdown({
   const markdownUrlTransform = useCallback((href: string) => {
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
+  const remarkPlugins = useMemo<NonNullable<ReactMarkdownOptions["remarkPlugins"]>>(() => {
+    const base = lineBreaks
+      ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS
+      : CHAT_MARKDOWN_REMARK_PLUGINS;
+    return lowContextWarningAction ? [...base, remarkLowContextWarnings] : base;
+  }, [lineBreaks, lowContextWarningAction]);
   // Re-emit highlighted content as markdown so copying out of the rendered
   // view keeps links, emphasis, lists, and code fences intact.
   const handleCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1405,6 +1512,60 @@ function ChatMarkdown({
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
+  const openMarkdownImageInFullScreen = useCallback(
+    (fileLinkMeta: MarkdownFileLinkMeta) => {
+      const workspaceRelativePath = fileLinkMeta.workspaceRelativePath;
+      if (!expandedImagePreviewController || !threadRef || !workspaceRelativePath) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          if (preparedConnection._tag === "None") {
+            throw new Error("Environment is not connected.");
+          }
+          const assetResult = await createAssetUrl({
+            environmentId: threadRef.environmentId,
+            input: {
+              resource: {
+                _tag: "workspace-file",
+                threadId: threadRef.threadId,
+                path: workspaceRelativePath,
+              },
+            },
+          });
+          if (assetResult._tag === "Failure") {
+            if (isAtomCommandInterrupted(assetResult)) return;
+            throw squashAtomCommandFailure(assetResult);
+          }
+          const src = resolveAssetUrl(
+            preparedConnection.value.httpBaseUrl,
+            assetResult.value.relativeUrl,
+          );
+          if (src === null) {
+            throw new Error("The environment returned an invalid asset URL.");
+          }
+          expandedImagePreviewController.open({
+            images: [{ src, name: fileLinkMeta.displayPath }],
+            index: 0,
+          });
+        } catch (cause) {
+          reportMarkdownActionFailure(
+            { operation: "open-image-in-full-screen", target: workspaceRelativePath },
+            cause,
+          );
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Unable to preview image",
+              description: cause instanceof Error ? cause.message : "An error occurred.",
+            }),
+          );
+        }
+      })();
+    },
+    [createAssetUrl, expandedImagePreviewController, preparedConnection, threadRef],
+  );
   const markdownComponents = useMemo<Components>(() => {
     const fileLinkChip = (
       fileLinkMeta: MarkdownFileLinkMeta,
@@ -1421,6 +1582,15 @@ function ChatMarkdown({
           `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
         );
       }
+      const onOpenImage = shouldOpenImageReferenceInFullScreen({
+        isThinPortraitMobile: expandedImagePreviewController?.fullScreenMobile ?? false,
+        filePath: fileLinkMeta.filePath,
+        workspaceRelativePath: fileLinkMeta.workspaceRelativePath,
+        hasThreadContext: threadRef !== undefined,
+        hasImageViewer: expandedImagePreviewController !== null,
+      })
+        ? () => openMarkdownImageInFullScreen(fileLinkMeta)
+        : undefined;
 
       return (
         <MarkdownFileLink
@@ -1435,6 +1605,7 @@ function ChatMarkdown({
           theme={resolvedTheme}
           threadRef={threadRef}
           onOpen={openInPreferredEditor}
+          onOpenImage={onOpenImage}
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
@@ -1448,6 +1619,19 @@ function ChatMarkdown({
     };
 
     return {
+      span({ node, children, ...props }) {
+        if (node?.properties?.dataLowContextWarning != null && lowContextWarningAction) {
+          return (
+            <LowContextWarningAction
+              busy={lowContextWarningAction.busy}
+              onCompactAndContinue={lowContextWarningAction.onCompactAndContinue}
+            >
+              {children}
+            </LowContextWarningAction>
+          );
+        }
+        return <span {...props}>{children}</span>;
+      },
       p({ node: _node, children, ...props }) {
         return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
       },
@@ -1622,13 +1806,16 @@ function ChatMarkdown({
   }, [
     cwd,
     diffThemeName,
+    expandedImagePreviewController,
     fileLinkParentSuffixByPath,
     inlineCodeFileLinkMetaByText,
     isStreaming,
+    lowContextWarningAction,
     markdownFileLinkMetaByHref,
     onTaskListChange,
     openInPreferredEditor,
     openExternalLinkInPreview,
+    openMarkdownImageInFullScreen,
     openMarkdownFileInPreview,
     resolvedTheme,
     skills,
@@ -1645,9 +1832,7 @@ function ChatMarkdown({
       onCopy={handleCopy}
     >
       <ReactMarkdown
-        remarkPlugins={
-          lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS
-        }
+        remarkPlugins={remarkPlugins}
         rehypePlugins={CHAT_MARKDOWN_REHYPE_PLUGINS}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}

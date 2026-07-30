@@ -865,6 +865,7 @@ function collectTerminalContextIds(node: LexicalNode): string[] {
 }
 
 export interface ComposerPromptEditorHandle {
+  blur: () => void;
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
@@ -892,6 +893,7 @@ interface ComposerPromptEditorProps {
     cursorAdjacentToMention: boolean,
     terminalContextIds: string[],
   ) => void;
+  onTextPresenceChange?: (hasText: boolean) => void;
   onCommandKeyDown?: (
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
     event: KeyboardEvent,
@@ -1535,6 +1537,7 @@ function ComposerPromptEditorInner({
   className,
   onRemoveTerminalContext,
   onChange,
+  onTextPresenceChange,
   onCommandKeyDown,
   onPaste,
   editorRef,
@@ -1679,6 +1682,9 @@ function ComposerPromptEditorInner({
   useImperativeHandle(
     editorRef,
     () => ({
+      blur: () => {
+        editor.getRootElement()?.blur();
+      },
       focus: () => {
         focusAt(snapshotRef.current.cursor);
       },
@@ -1693,7 +1699,7 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [editor, focusAt, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {
@@ -1744,6 +1750,12 @@ function ComposerPromptEditorInner({
       );
     });
   }, []);
+  const handleVisibleEditorInput = useCallback(
+    (element: HTMLElement) => {
+      onTextPresenceChange?.((element.textContent ?? "").trim().length > 0);
+    },
+    [onTextPresenceChange],
+  );
 
   return (
     <ComposerTerminalContextActionsContext value={terminalContextActions}>
@@ -1752,12 +1764,16 @@ function ComposerPromptEditorInner({
           contentEditable={
             <ContentEditable
               className={cn(
-                "block max-h-50 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
+                "block max-h-50 min-h-17.5 w-full touch-pan-y overflow-y-auto overscroll-y-contain whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
                 className,
               )}
+              data-chat-composer-scroll-container="true"
               data-testid="composer-editor"
               aria-placeholder={placeholder}
               placeholder={<span />}
+              onCompositionEnd={(event) => handleVisibleEditorInput(event.currentTarget)}
+              onCompositionUpdate={(event) => handleVisibleEditorInput(event.currentTarget)}
+              onInput={(event) => handleVisibleEditorInput(event.currentTarget)}
               onPaste={onPaste}
             />
           }
@@ -1795,6 +1811,7 @@ export function ComposerPromptEditor({
   className,
   onRemoveTerminalContext,
   onChange,
+  onTextPresenceChange,
   onCommandKeyDown,
   onPaste,
   editorRef,
@@ -1834,6 +1851,7 @@ export function ComposerPromptEditor({
         onChange={onChange}
         onPaste={onPaste}
         editorRef={editorRef}
+        {...(onTextPresenceChange ? { onTextPresenceChange } : {})}
         {...(onCommandKeyDown ? { onCommandKeyDown } : {})}
         {...(className ? { className } : {})}
       />

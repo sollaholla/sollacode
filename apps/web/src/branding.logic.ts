@@ -4,11 +4,7 @@ export function formatAppDisplayName(input: {
   readonly baseName: string;
   readonly stageLabel: string;
 }): string {
-  if (input.stageLabel.trim().toLowerCase() === "latest") {
-    return input.baseName;
-  }
-
-  return `${input.baseName} (${input.stageLabel})`;
+  return input.stageLabel.trim().toLowerCase() === "dev" ? `${input.baseName} Dev` : input.baseName;
 }
 
 /**
@@ -32,8 +28,6 @@ export function resolveSidebarV2Default(stageLabel: string): boolean {
  * companion flag. `true` was never the schema default, so it can only have come
  * from the Settings → Beta toggle — settings written before that flag existed
  * would otherwise lose the opt-in and drop such users back to v1 on production.
- * Mirrors how `normalizeDesktopSettingsDocument` treats a legacy stored
- * `updateChannel: "nightly"` as user-configured.
  *
  * `settingsHydrated` guards the startup window: client settings load
  * asynchronously and the pre-hydration snapshot is just the schema defaults, so
@@ -77,7 +71,7 @@ export function resolveServerBackedAppDisplayName(input: {
     fallbackStageLabel: input.fallbackStageLabel,
   });
 
-  return stageLabel === input.fallbackStageLabel
-    ? input.fallbackDisplayName
-    : formatAppDisplayName({ baseName: input.baseName, stageLabel });
+  return stageLabel === "Dev"
+    ? formatAppDisplayName({ baseName: input.baseName, stageLabel })
+    : input.baseName;
 }

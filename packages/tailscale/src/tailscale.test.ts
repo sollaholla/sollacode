@@ -13,15 +13,18 @@ import {
   buildTailscaleHttpsBaseUrl,
   disableTailscaleServe,
   ensureTailscaleServe,
+  isTailscaleNotInstalledError,
   isTailscaleIpv4Address,
   parseTailscaleMagicDnsName,
   parseTailscaleStatus,
   readTailscaleStatus,
+  stderrDiagnosticOf,
   TAILSCALE_STATUS_TIMEOUT,
   TailscaleCommandExitError,
   TailscaleCommandSpawnError,
   TailscaleCommandTimeoutError,
   TailscaleStatusParseError,
+  tailscaleConsentUrlOf,
 } from "./tailscale.ts";
 
 const encoder = new TextEncoder();
@@ -63,8 +66,8 @@ function assertCarriesNoSecret(error: object, secret: string): void {
 
   walk(error, "error");
 }
-const tailscaleStatusJson = `{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.100.100.100","fd7a:115c:a1e0::1","192.168.1.20"]}}`;
-const tailscaleStatusWithSingleIpJson = `{"Self":{"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.90.1.2"]}}`;
+const tailscaleStatusJson = `{"BackendState":"Running","Self":{"Online":true,"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.100.100.100","fd7a:115c:a1e0::1","192.168.1.20"]}}`;
+const tailscaleStatusWithSingleIpJson = `{"BackendState":"Running","Self":{"Online":true,"DNSName":"desktop.tail.ts.net.","TailscaleIPs":["100.90.1.2"]}}`;
 
 function mockHandle(result: { stdout?: string; stderr?: string; code?: number }) {
   return ChildProcessSpawner.makeHandle({
@@ -138,6 +141,8 @@ describe("tailscale", () => {
     Effect.gen(function* () {
       const status = yield* parseTailscaleStatus(tailscaleStatusJson);
       assert.deepEqual(status, {
+        backendState: "Running",
+        isOnline: true,
         magicDnsName: "desktop.tail.ts.net",
         tailnetIpv4Addresses: ["100.100.100.100"],
       });
@@ -180,6 +185,8 @@ describe("tailscale", () => {
     return Effect.gen(function* () {
       const status = yield* readTailscaleStatus.pipe(Effect.provide(layer));
       assert.deepEqual(status, {
+        backendState: "Running",
+        isOnline: true,
         magicDnsName: "desktop.tail.ts.net",
         tailnetIpv4Addresses: ["100.90.1.2"],
       });
@@ -207,6 +214,7 @@ describe("tailscale", () => {
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.strictEqual(error.cause, cause);
+      assert.isTrue(isTailscaleNotInstalledError(error));
       assert.equal(error.message, "Failed to spawn tailscale status.");
       assert.notInclude(error.message, systemCause.message);
     });
@@ -316,6 +324,40 @@ describe("tailscale", () => {
       assert.equal(error.stderrDiagnostic, "permission-denied");
       assertCarriesNoSecret(error, "tskey-auth-secret-token-value");
     });
+  });
+
+  it.effect("surfaces only a validated Tailscale HTTPS consent URL", () => {
+    const consentUrl = "https://login.tailscale.com/admin/feature/abc123";
+    const layer = mockSpawnerLayer(() => ({
+      stdout: `To enable HTTPS certificates, visit:\n${consentUrl}\n`,
+      stderr: "HTTPS certificates are not enabled",
+      code: 1,
+    }));
+
+    return Effect.gen(function* () {
+      const error = yield* ensureTailscaleServe({ localPort: 13773 }).pipe(
+        Effect.flip,
+        Effect.provide(layer),
+      );
+      assert.instanceOf(error, TailscaleCommandExitError);
+      assert.equal(error.stderrDiagnostic, "https-consent-required");
+      assert.equal(error.consentUrl, consentUrl);
+      assert.equal(
+        tailscaleConsentUrlOf(
+          "visit https://evil.example/admin/feature/abc and https://login.tailscale.com/not-admin",
+        ),
+        undefined,
+      );
+    });
+  });
+
+  it("classifies actionable daemon, authentication, and port failures", () => {
+    assert.equal(
+      stderrDiagnosticOf("failed to connect to local tailscaled; it is not running"),
+      "daemon-not-running",
+    );
+    assert.equal(stderrDiagnosticOf("Tailscale is logged out"), "not-logged-in");
+    assert.equal(stderrDiagnosticOf("address already in use for port 443"), "port-conflict");
   });
 
   it.effect("disables tailscale serve through the process spawner service", () => {

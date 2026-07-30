@@ -267,6 +267,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
             messageId: asMessageId("message-user-1"),
             role: "user",
             text: "hello",
+            inputOrigin: "transcription",
             attachments: [],
           },
           modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
@@ -284,6 +285,9 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       const events = Array.isArray(result) ? result : [result];
       expect(events).toHaveLength(2);
       expect(events[0]?.type).toBe("thread.message-sent");
+      if (events[0]?.type === "thread.message-sent") {
+        expect(events[0].payload.inputOrigin).toBe("transcription");
+      }
       const turnStartEvent = events[1];
       expect(turnStartEvent?.type).toBe("thread.turn-start-requested");
       expect(turnStartEvent?.causationEventId).toBe(events[0]?.eventId ?? null);

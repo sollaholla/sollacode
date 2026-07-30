@@ -75,9 +75,9 @@ type ProjectorName =
  * "running" status, or null while the session is (re)starting or running and
  * turns must stay unsettled.
  */
-function settledTurnStateForSessionStatus(
+export function settledTurnStateForSessionStatus(
   status: OrchestrationSessionStatus,
-): "completed" | "interrupted" | "error" | null {
+): "completed" | "interrupted" | "incomplete" | "error" | null {
   switch (status) {
     case "idle":
     case "ready":
@@ -85,8 +85,9 @@ function settledTurnStateForSessionStatus(
     case "error":
       return "error";
     case "interrupted":
-    case "stopped":
       return "interrupted";
+    case "stopped":
+      return "incomplete";
     case "starting":
     case "running":
       return null;
@@ -589,9 +590,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
-    const applyThreadsProjection: ProjectorDefinition["apply"] = Effect.fn(
-      "applyThreadsProjection",
-    )(function* (event, attachmentSideEffects) {
+    const applyThreadsProjection = Effect.fn("applyThreadsProjection")(function* (
+      event: OrchestrationEvent,
+      attachmentSideEffects: AttachmentSideEffects,
+      deferThreadShellSummary: boolean,
+    ) {
+      const refreshThreadShellSummaryForEvent = (threadId: ThreadId) =>
+        deferThreadShellSummary ? Effect.void : refreshThreadShellSummary(threadId);
+
       switch (event.type) {
         case "thread.created":
           yield* projectionThreadRepository.upsert({
@@ -796,7 +802,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryForEvent(event.payload.threadId);
           return;
         }
 
@@ -809,10 +815,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryForEvent(event.payload.threadId);
           return;
         }
 
@@ -828,7 +834,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryForEvent(event.payload.threadId);
           return;
         }
 
@@ -866,7 +872,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummaryForEvent(event.payload.threadId);
           return;
         }
 
@@ -908,6 +914,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,
+            ...(event.payload.inputOrigin !== undefined
+              ? { inputOrigin: event.payload.inputOrigin }
+              : previousMessage?.inputOrigin !== undefined
+                ? { inputOrigin: previousMessage.inputOrigin }
+                : {}),
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
@@ -1542,6 +1553,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyProjectsProjection,
       },
       {
+        name: ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+        apply: applyThreadSessionsProjection,
+      },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
+        apply: applyThreadTurnsProjection,
+      },
+      {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
         apply: applyThreadMessagesProjection,
       },
@@ -1554,14 +1573,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyThreadActivitiesProjection,
       },
       {
-        name: ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
-        apply: applyThreadSessionsProjection,
-      },
-      {
-        name: ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
-        apply: applyThreadTurnsProjection,
-      },
-      {
         name: ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
         apply: applyCheckpointsProjection,
       },
@@ -1571,7 +1582,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,
-        apply: applyThreadsProjection,
+        apply: (event, attachmentSideEffects) =>
+          applyThreadsProjection(event, attachmentSideEffects, false),
       },
     ];
 
@@ -1608,8 +1620,30 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
-    const bootstrapProjector = (projector: ProjectorDefinition) =>
-      projectionStateRepository
+    const refreshAllThreadShellSummaries = Effect.gen(function* () {
+      const threadRows = yield* sql<{ readonly threadId: string }>`
+        SELECT thread_id AS "threadId"
+        FROM projection_threads
+        ORDER BY thread_id
+      `;
+      yield* Effect.forEach(
+        threadRows,
+        ({ threadId }) => refreshThreadShellSummary(ThreadId.make(threadId)),
+        { concurrency: 1 },
+      );
+    });
+
+    const bootstrapProjector = (projector: ProjectorDefinition) => {
+      const bootstrapDefinition =
+        projector.name === ORCHESTRATION_PROJECTOR_NAMES.threads
+          ? {
+              ...projector,
+              apply: (event: OrchestrationEvent, attachmentSideEffects: AttachmentSideEffects) =>
+                applyThreadsProjection(event, attachmentSideEffects, true),
+            }
+          : projector;
+
+      return projectionStateRepository
         .getByProjector({
           projector: projector.name,
         })
@@ -1618,11 +1652,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             Stream.runForEach(
               eventStore.readFromSequence(
                 Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+                Number.MAX_SAFE_INTEGER,
               ),
-              (event) => runProjectorForEvent(projector, event),
+              (event) => runProjectorForEvent(bootstrapDefinition, event),
             ),
           ),
+          Effect.andThen(
+            projector.name === ORCHESTRATION_PROJECTOR_NAMES.threads
+              ? refreshAllThreadShellSummaries
+              : Effect.void,
+          ),
         );
+    };
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
       Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {

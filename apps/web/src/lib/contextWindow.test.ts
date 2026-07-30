@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
 
-import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "./contextWindow";
+import {
+  deriveAutoCompactionTokenThreshold,
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowTokens,
+} from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
   return {
@@ -80,5 +84,11 @@ describe("contextWindow", () => {
 
     expect(snapshot?.usedTokens).toBe(81_659);
     expect(snapshot?.totalProcessedTokens).toBe(748_126);
+  });
+
+  it("derives an auto-compaction token threshold without changing the hard limit", () => {
+    expect(deriveAutoCompactionTokenThreshold(1_000_000, 50)).toBe(500_000);
+    expect(deriveAutoCompactionTokenThreshold(258_000, 80)).toBe(206_400);
+    expect(deriveAutoCompactionTokenThreshold(1_000_000, 49)).toBeNull();
   });
 });

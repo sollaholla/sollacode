@@ -5,10 +5,14 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ThreadId,
 } from "@t3tools/contracts";
 
-import { canonicalizeClientCommandTimestamps } from "./Normalizer.ts";
+import {
+  canonicalizeClientCommandTimestamps,
+  isSendImagePayloadByteLengthValid,
+} from "./Normalizer.ts";
 
 const clientCreatedAt = "2031-01-01T00:00:00.000Z";
 const serverReceivedAt = "2026-07-18T00:00:00.000Z";
@@ -69,5 +73,17 @@ describe("canonicalizeClientCommandTimestamps", () => {
     }
     expect(result.createdAt).toBe(serverReceivedAt);
     expect(result.bootstrap?.createThread?.createdAt).toBe(serverReceivedAt);
+  });
+});
+
+describe("isSendImagePayloadByteLengthValid", () => {
+  it("accepts one byte below 2 MiB and rejects the exact boundary", () => {
+    expect(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES).toBe(2 * 1024 * 1024 - 1);
+    expect(isSendImagePayloadByteLengthValid(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)).toBe(true);
+    expect(isSendImagePayloadByteLengthValid(2 * 1024 * 1024)).toBe(false);
+  });
+
+  it("rejects empty payloads", () => {
+    expect(isSendImagePayloadByteLengthValid(0)).toBe(false);
   });
 });

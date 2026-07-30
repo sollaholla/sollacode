@@ -22,8 +22,10 @@ import {
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
+  isProviderOverloadRetrying,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  resolveVisibleServerThreadError,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
@@ -31,10 +33,85 @@ import {
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
+describe("resolveVisibleServerThreadError", () => {
+  it("hides only the exact persisted error the user dismissed", () => {
+    expect(
+      resolveVisibleServerThreadError(
+        { message: null },
+        "Persisted provider failure",
+        "Persisted provider failure",
+      ),
+    ).toBeNull();
+    expect(
+      resolveVisibleServerThreadError(
+        { message: null },
+        "New genuine failure",
+        "Persisted provider failure",
+      ),
+    ).toBe("New genuine failure");
+  });
+
+  it("shows the server error until it has a local override", () => {
+    expect(resolveVisibleServerThreadError(undefined, "Genuine provider failure", null)).toBe(
+      "Genuine provider failure",
+    );
+    expect(
+      resolveVisibleServerThreadError({ message: "New local error" }, "Old server error"),
+    ).toBe("New local error");
+  });
+});
+
 const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+describe("isProviderOverloadRetrying", () => {
+  const latestTurn = {
+    turnId: TurnId.make("turn-overloaded"),
+    state: "running" as const,
+    requestedAt: "2026-07-29T15:00:00.000Z",
+    startedAt: "2026-07-29T15:00:01.000Z",
+    completedAt: null,
+    assistantMessageId: null,
+  };
+  const activity = {
+    id: "event-overload" as never,
+    createdAt: "2026-07-29T15:00:02.000Z",
+    tone: "info" as const,
+    kind: "provider.overload.retrying",
+    summary: "Provider overloaded — retrying shortly",
+    payload: { reason: "provider_overloaded:retrying;attempt=1" },
+    turnId: latestTurn.turnId,
+  };
+
+  it("shows only a retry activity for the current working turn", () => {
+    expect(
+      isProviderOverloadRetrying({
+        activities: [activity],
+        latestTurn,
+        isWorking: true,
+      }),
+    ).toBe(true);
+    expect(
+      isProviderOverloadRetrying({
+        activities: [activity],
+        latestTurn,
+        isWorking: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores stale retry activity from a previous turn", () => {
+    expect(
+      isProviderOverloadRetrying({
+        activities: [{ ...activity, createdAt: "2026-07-29T14:59:59.000Z", turnId: null }],
+        latestTurn,
+        isWorking: true,
+      }),
+    ).toBe(false);
+  });
+});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -314,7 +391,7 @@ describe("getStartedThreadModelChangeBlockReason", () => {
     ).toBeNull();
   });
 
-  it("blocks started-session model changes when either provider requires a new thread", () => {
+  it("allows cross-provider continuation even when one provider restricts in-session model changes", () => {
     expect(
       getStartedThreadModelChangeBlockReason({
         providers,
@@ -326,6 +403,23 @@ describe("getStartedThreadModelChangeBlockReason", () => {
         nextModelSelection: {
           instanceId: ProviderInstanceId.make("grok"),
           model: "grok-build",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("blocks same-provider model changes when that provider requires a new thread", () => {
+    expect(
+      getStartedThreadModelChangeBlockReason({
+        providers,
+        hasStartedSession: true,
+        currentModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
+        nextModelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-other",
         },
       }),
     ).toEqual({

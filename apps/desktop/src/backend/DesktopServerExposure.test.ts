@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -38,26 +39,41 @@ const tailnetNetworkInterfaces: DesktopNetworkInterfaces.NetworkInterfaces = {
   ],
 };
 
-function mockSpawnerLayer(statusJson = "{}") {
+function mockSpawnerLayer(
+  response:
+    | string
+    | ((
+        command: string,
+        args: ReadonlyArray<string>,
+      ) => { readonly stdout?: string; readonly stderr?: string; readonly code?: number }) = "{}",
+) {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make(() =>
-      Effect.succeed(
+    ChildProcessSpawner.make((command) => {
+      const childProcess = command as unknown as {
+        readonly command: string;
+        readonly args: ReadonlyArray<string>;
+      };
+      const result =
+        typeof response === "string"
+          ? { stdout: response }
+          : response(childProcess.command, childProcess.args);
+      return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
-          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.code ?? 0)),
           isRunning: Effect.succeed(false),
           kill: () => Effect.void,
           unref: Effect.succeed(Effect.void),
           stdin: Sink.drain,
-          stdout: Stream.make(encoder.encode(statusJson)),
-          stderr: Stream.empty,
+          stdout: Stream.make(encoder.encode(result.stdout ?? "")),
+          stderr: Stream.make(encoder.encode(result.stderr ?? "")),
           all: Stream.empty,
           getInputFd: () => Sink.drain,
           getOutputFd: () => Stream.empty,
         }),
-      ),
-    ),
+      );
+    }),
   );
 }
 
@@ -91,6 +107,7 @@ function makeLayer(input: {
   readonly networkInterfaces?: DesktopNetworkInterfaces.NetworkInterfaces;
   readonly env?: Record<string, string | undefined>;
   readonly spawnerLayer?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly desktopSettingsLayer?: Layer.Layer<DesktopAppSettings.DesktopAppSettings>;
 }) {
   const env = { T3CODE_HOME: input.baseDir, ...input.env };
@@ -102,7 +119,7 @@ function makeLayer(input: {
   return DesktopServerExposure.layer.pipe(
     Layer.provideMerge(input.desktopSettingsLayer ?? DesktopAppSettings.layer),
     Layer.provideMerge(NodeFileSystem.layer),
-    Layer.provideMerge(NodeHttpClient.layerUndici),
+    Layer.provideMerge(input.httpClientLayer ?? NodeHttpClient.layerUndici),
     Layer.provideMerge(input.spawnerLayer ?? mockSpawnerLayer()),
     Layer.provideMerge(networkLayer),
     Layer.provideMerge(DesktopConfig.layerTest(env)),
@@ -124,6 +141,7 @@ const withHarness = <A, E, R>(
   env: Record<string, string | undefined> = {},
   spawnerLayer?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
   desktopSettingsLayer?: Layer.Layer<DesktopAppSettings.DesktopAppSettings>,
+  httpClientLayer?: Layer.Layer<HttpClient.HttpClient>,
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -138,6 +156,7 @@ const withHarness = <A, E, R>(
           env,
           ...(spawnerLayer ? { spawnerLayer } : {}),
           ...(desktopSettingsLayer ? { desktopSettingsLayer } : {}),
+          ...(httpClientLayer ? { httpClientLayer } : {}),
         }),
       ),
     );
@@ -195,7 +214,10 @@ describe("DesktopServerExposure", () => {
           mode: "network-accessible",
           endpointUrl: "http://192.168.1.20:4173",
           advertisedHost: "192.168.1.20",
-          tailscaleServeEnabled: false,
+          tailscaleServeRequested: false,
+          tailscaleServeEffective: false,
+          tailscaleServeStatus: "disabled",
+          tailscaleServeConsentUrl: null,
           tailscaleServePort: 443,
         });
 
@@ -224,7 +246,7 @@ describe("DesktopServerExposure", () => {
           port: 8443,
         });
         assert.equal(changed.requiresRelaunch, true);
-        assert.equal(changed.state.tailscaleServeEnabled, true);
+        assert.equal(changed.state.tailscaleServeRequested, true);
         assert.equal(changed.state.tailscaleServePort, 8443);
 
         const unchanged = yield* serverExposure.setTailscaleServeEnabled({
@@ -240,6 +262,64 @@ describe("DesktopServerExposure", () => {
     ),
   );
 
+  it.effect("reconciles first-time HTTPS consent without losing the requested state", () => {
+    const consentUrl = "https://login.tailscale.com/admin/feature/consent-123";
+    const statusJson = JSON.stringify({
+      BackendState: "Running",
+      Self: {
+        Online: true,
+        DNSName: "desktop.tail.ts.net.",
+        TailscaleIPs: ["100.90.1.2"],
+      },
+    });
+    let serveAttempts = 0;
+    const spawnerLayer = mockSpawnerLayer((_command, args) => {
+      if (args[0] === "status") {
+        return { stdout: statusJson };
+      }
+      serveAttempts += 1;
+      return serveAttempts === 1
+        ? {
+            stdout: `To enable HTTPS certificates, visit ${consentUrl}`,
+            stderr: "HTTPS certificates must be enabled",
+            code: 1,
+          }
+        : {};
+    });
+    const httpClientLayer = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 200 }))),
+      ),
+    );
+
+    return withHarness(
+      emptyNetworkInterfaces,
+      Effect.gen(function* () {
+        const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+        yield* serverExposure.configureFromSettings({ port: 4173 });
+        yield* serverExposure.setTailscaleServeEnabled({ enabled: true, port: 443 });
+
+        const consentRequired = yield* serverExposure.reconcileTailscaleServe;
+        assert.equal(consentRequired.tailscaleServeRequested, true);
+        assert.equal(consentRequired.tailscaleServeEffective, false);
+        assert.equal(consentRequired.tailscaleServeStatus, "https-consent-required");
+        assert.equal(consentRequired.tailscaleServeConsentUrl, consentUrl);
+
+        const recovered = yield* serverExposure.reconcileTailscaleServe;
+        assert.equal(recovered.tailscaleServeRequested, true);
+        assert.equal(recovered.tailscaleServeEffective, true);
+        assert.equal(recovered.tailscaleServeStatus, "available");
+        assert.equal(recovered.tailscaleServeConsentUrl, null);
+        assert.equal(serveAttempts, 2);
+      }),
+      {},
+      spawnerLayer,
+      undefined,
+      httpClientLayer,
+    );
+  });
+
   it.effect("preserves persistence request context and the settings failure chain", () => {
     const diskFailure = new Error("disk exploded");
     const settingsFailure = new DesktopAppSettings.DesktopSettingsWriteError({
@@ -253,7 +333,6 @@ describe("DesktopServerExposure", () => {
       setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),
       setServerExposureMode: () => Effect.fail(settingsFailure),
       setTailscaleServe: () => Effect.fail(settingsFailure),
-      setUpdateChannel: () => Effect.die("unexpected update channel change"),
       setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
       setWslDistro: () => Effect.die("unexpected WSL distro change"),
       setWslOnly: () => Effect.die("unexpected WSL-only toggle"),

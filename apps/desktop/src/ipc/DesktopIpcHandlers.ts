@@ -10,6 +10,7 @@ import {
 import {
   getAdvertisedEndpoints,
   getServerExposureState,
+  reconcileTailscaleServe,
   setServerExposureMode,
   setTailscaleServeEnabled,
 } from "./methods/serverExposure.ts";
@@ -24,13 +25,6 @@ import {
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
 import {
-  checkForUpdate,
-  downloadUpdate,
-  getUpdateState,
-  installUpdate,
-  setUpdateChannel,
-} from "./methods/updates.ts";
-import {
   confirm,
   getAppBranding,
   getLocalEnvironmentBootstraps,
@@ -38,7 +32,10 @@ import {
   getWindowFullscreenState,
   openExternal,
   pickFolder,
+  revealFile,
+  saveThreadExportJson,
   setTheme,
+  startFileDrag,
   showContextMenu,
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
@@ -71,6 +68,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getServerExposureState);
   yield* ipc.handle(setServerExposureMode);
   yield* ipc.handle(setTailscaleServeEnabled);
+  yield* ipc.handle(reconcileTailscaleServe);
   yield* ipc.handle(getAdvertisedEndpoints);
 
   yield* ipc.handle(getWslState);
@@ -83,11 +81,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
-  yield* ipc.handle(getUpdateState);
-  yield* ipc.handle(setUpdateChannel);
-  yield* ipc.handle(downloadUpdate);
-  yield* ipc.handle(installUpdate);
-  yield* ipc.handle(checkForUpdate);
+  yield* ipc.handle(saveThreadExportJson);
+  yield* ipc.handle(revealFile);
+  yield* ipc.handle(startFileDrag);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }

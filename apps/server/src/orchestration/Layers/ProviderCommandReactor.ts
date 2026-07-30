@@ -44,6 +44,10 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import {
+  buildProviderHandoffSummary,
+  buildProviderHandoffTurnInput,
+} from "../ProviderUsageLimitFailover.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -333,6 +337,7 @@ const make = Effect.gen(function* () {
     const requestedModelSelection = input.requestedModelSelection;
     if (
       requestedModelSelection === undefined ||
+      input.currentModelSelection.instanceId !== requestedModelSelection.instanceId ||
       (input.currentModelSelection.instanceId === requestedModelSelection.instanceId &&
         input.currentModelSelection.model === requestedModelSelection.model)
     ) {
@@ -453,7 +458,7 @@ const make = Effect.gen(function* () {
         createdAt,
       });
     }
-    if (thread.session !== null) {
+    if (activeThreadSession !== null) {
       yield* rejectStartedThreadModelChangeIfRequired({
         threadId,
         currentModelSelection:
@@ -468,33 +473,23 @@ const make = Effect.gen(function* () {
       });
     }
     if (
-      thread.session !== null &&
+      activeThreadSession !== null &&
       requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
+      requestedModelSelection.instanceId !== currentInstanceId &&
+      activeThreadSession.activeTurnId !== null
     ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
+      return yield* new ProviderAdapterRequestError({
+        provider: preferredProvider,
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' has an active turn. Wait for it to finish or interrupt it before switching providers.`,
+      });
     }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
       thread,
       projects: project ? [project] : [],
     });
+    const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
@@ -507,6 +502,7 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        autoCompactionThresholdPercentage,
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -569,9 +565,10 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const resumeCursor =
+        shouldRestartForModelChange || instanceChanged
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -625,6 +622,57 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const activeSessionBeforeStart = yield* providerService
+      .listSessions()
+      .pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
+      );
+    const currentInstanceId =
+      activeSessionBeforeStart?.providerInstanceId ??
+      thread.session?.providerInstanceId ??
+      thread.modelSelection.instanceId;
+    const requestedInstanceId = input.modelSelection?.instanceId;
+    let providerInput = input.messageText;
+    if (requestedInstanceId !== undefined && requestedInstanceId !== currentInstanceId) {
+      const requestedModelSelection = input.modelSelection;
+      if (requestedModelSelection === undefined) {
+        return yield* Effect.die(
+          new Error("Provider switch was requested without a model selection."),
+        );
+      }
+      const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId);
+      const desiredInfo = yield* providerService.getInstanceInfo(requestedInstanceId);
+      const lastMessage = thread.messages.at(-1);
+      const historyMessages =
+        lastMessage?.role === "user" &&
+        lastMessage.text === input.messageText &&
+        lastMessage.createdAt === input.createdAt
+          ? thread.messages.slice(0, -1)
+          : thread.messages;
+      const summary = buildProviderHandoffSummary({
+        threadId: thread.id,
+        threadTitle: thread.title,
+        messages: historyMessages,
+        from: {
+          instanceId: currentInstanceId,
+          driver: currentInfo.driverKind,
+        },
+        to: {
+          instanceId: requestedInstanceId,
+          driver: desiredInfo.driverKind,
+          modelSelection: requestedModelSelection,
+        },
+        exhaustion: {
+          reason: "manual_provider_switch",
+          resetsAt: null,
+        },
+        generatedAt: input.createdAt,
+      });
+      providerInput = buildProviderHandoffTurnInput({
+        summary,
+        currentRequest: input.messageText,
+      });
+    }
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
@@ -632,7 +680,7 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const normalizedInput = toNonEmptyProviderInput(providerInput);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -661,6 +709,7 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
+    const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
 
     return {
       threadId: input.threadId,
@@ -668,6 +717,7 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      autoCompactionThresholdPercentage,
     };
   });
 
@@ -888,9 +938,54 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    const requestedModelSelection = event.payload.modelSelection;
+    const sourceInstanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+    const providerSwitched =
+      requestedModelSelection !== undefined &&
+      requestedModelSelection.instanceId !== sourceInstanceId;
+    yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.flatMap((turn) => {
+        if (requestedModelSelection === undefined) {
+          return Effect.succeed(turn);
+        }
+        return Effect.gen(function* () {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: yield* serverCommandId("provider-selection-accepted"),
+            threadId: thread.id,
+            modelSelection: requestedModelSelection,
+          });
+          if (providerSwitched) {
+            const { commandId, eventId } = yield* Effect.all({
+              commandId: serverCommandId("provider-manual-handoff-activity"),
+              eventId: serverEventId(),
+            });
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId: thread.id,
+              activity: {
+                id: eventId,
+                tone: "info",
+                kind: "provider.handoff.completed",
+                summary: "Continued thread with a different provider",
+                payload: {
+                  sourceInstanceId,
+                  targetInstanceId: requestedModelSelection.instanceId,
+                  targetModel: requestedModelSelection.model,
+                },
+                turnId: turn.turnId,
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          }
+          return turn;
+        });
+      }),
+      Effect.catchCause(recoverTurnStartFailure),
+      Effect.forkScoped,
+    );
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (

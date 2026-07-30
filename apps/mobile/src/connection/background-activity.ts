@@ -45,7 +45,7 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const registry = yield* EnvironmentRegistry;
     const storage = yield* MobileStorage.MobileStorage;
-    const clientId = yield* storage.loadOrCreateAgentAwarenessDeviceId.pipe(
+    const clientId = yield* storage.loadOrCreateClientId.pipe(
       Effect.map((deviceId) => `mobile-${deviceId}`),
       Effect.orElseSucceed(() => "ephemeral-mobile-client"),
     );

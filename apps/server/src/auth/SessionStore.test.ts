@@ -42,6 +42,7 @@ const repositoryFailure = new PersistenceSqlError({
 
 const failingSessionLookupRepositoryLayer = Layer.succeed(AuthSessions.AuthSessionRepository, {
   create: () => Effect.void,
+  upsert: () => Effect.void,
   getById: () => Effect.fail(repositoryFailure),
   listActive: () => Effect.succeed([]),
   revoke: () => Effect.fail(repositoryFailure),
@@ -272,6 +273,80 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         expect(revokedClientWebSocket.revokedAt.epochMilliseconds).toBeGreaterThanOrEqual(0);
       }
     }).pipe(Effect.provide(makeSessionStoreLayer())),
+  );
+
+  it.effect(
+    "reuses the internal desktop session identity and only removes disconnected exact duplicates",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const desktopClient = {
+          label: "Solla Code Desktop",
+          deviceType: "desktop" as const,
+          ipAddress: "127.0.0.1",
+        };
+        const connectedLegacy = yield* sessions.issue({
+          subject: "desktop-bootstrap",
+          method: "bearer-access-token",
+          scopes: ["orchestration:read", "access:write"],
+          client: desktopClient,
+        });
+        const disconnectedLegacy = yield* sessions.issue({
+          subject: "desktop-bootstrap",
+          method: "bearer-access-token",
+          scopes: ["orchestration:read", "access:write"],
+          client: desktopClient,
+        });
+        const unrelatedRemote = yield* sessions.issue({
+          subject: "one-time-token",
+          method: "bearer-access-token",
+          scopes: ["orchestration:read"],
+          client: {
+            label: "Solla Code Desktop",
+            deviceType: "mobile",
+            ipAddress: "192.168.1.88",
+          },
+        });
+
+        yield* sessions.markConnected(connectedLegacy.sessionId);
+        const first = yield* sessions.issueDesktopBootstrapAccessToken({
+          scopes: ["orchestration:read", "access:write"],
+          client: desktopClient,
+        });
+        const afterFirstExchange = yield* sessions.listActive();
+
+        expect(
+          afterFirstExchange.some((session) => session.sessionId === connectedLegacy.sessionId),
+        ).toBe(true);
+        expect(
+          afterFirstExchange.some((session) => session.sessionId === disconnectedLegacy.sessionId),
+        ).toBe(false);
+        expect(
+          afterFirstExchange.some((session) => session.sessionId === unrelatedRemote.sessionId),
+        ).toBe(true);
+
+        yield* sessions.markDisconnected(connectedLegacy.sessionId);
+        const second = yield* sessions.issueDesktopBootstrapAccessToken({
+          scopes: ["orchestration:read", "access:write"],
+          client: {
+            ...desktopClient,
+            ipAddress: "127.0.0.2",
+          },
+        });
+        const afterRestart = yield* sessions.listActive();
+
+        expect(second.sessionId).toBe(first.sessionId);
+        expect(afterRestart).toHaveLength(2);
+        expect(
+          afterRestart.filter((session) => session.subject === "desktop-bootstrap"),
+        ).toHaveLength(1);
+        expect(
+          afterRestart.find((session) => session.sessionId === first.sessionId)?.client.ipAddress,
+        ).toBe("127.0.0.2");
+        expect(
+          afterRestart.some((session) => session.sessionId === unrelatedRemote.sessionId),
+        ).toBe(true);
+      }).pipe(Effect.provide(makeSessionStoreLayer())),
   );
 
   it.effect("persists lastConnectedAt on first connect and updates it after reconnect", () =>

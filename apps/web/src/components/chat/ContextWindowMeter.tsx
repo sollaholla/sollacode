@@ -1,6 +1,82 @@
 import { cn } from "~/lib/utils";
-import { type ContextWindowSnapshot, formatContextWindowTokens } from "~/lib/contextWindow";
+import {
+  type ContextWindowSnapshot,
+  deriveAutoCompactionTokenThreshold,
+  formatContextWindowTokens,
+} from "~/lib/contextWindow";
+import {
+  MAX_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
+  MIN_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
+  type AutoCompactionThresholdPercentage,
+} from "@t3tools/contracts";
+import { useId } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+
+const AUTO_COMPACTION_TICKS = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95] as const;
+
+export function AutoCompactionThresholdControl(props: {
+  maxTokens: number;
+  providerDisplayName?: string | null;
+  thresholdPercentage: AutoCompactionThresholdPercentage;
+  onThresholdChange: (value: AutoCompactionThresholdPercentage) => void;
+  disabled?: boolean;
+  disabledReason?: string | null;
+}) {
+  const inputId = useId();
+  const tokenThreshold = deriveAutoCompactionTokenThreshold(
+    props.maxTokens,
+    props.thresholdPercentage,
+  );
+  if (tokenThreshold === null) {
+    return null;
+  }
+
+  return (
+    <div className="mt-1 flex flex-col gap-2 border-border/50 border-t pt-2">
+      <div className="flex items-start justify-between gap-3">
+        <label htmlFor={inputId} className="text-[11px] font-medium text-muted-foreground/80">
+          Auto-compact at
+        </label>
+        <span className="text-right text-[11px] tabular-nums text-muted-foreground/70">
+          {props.thresholdPercentage}% · {formatContextWindowTokens(tokenThreshold)} tokens
+        </span>
+      </div>
+      <input
+        id={inputId}
+        type="range"
+        min={MIN_AUTO_COMPACTION_THRESHOLD_PERCENTAGE}
+        max={MAX_AUTO_COMPACTION_THRESHOLD_PERCENTAGE}
+        step={5}
+        value={props.thresholdPercentage}
+        disabled={props.disabled}
+        onChange={(event) =>
+          props.onThresholdChange(
+            Number(event.currentTarget.value) as AutoCompactionThresholdPercentage,
+          )
+        }
+        aria-label="Automatic compaction threshold"
+        aria-valuetext={`${props.thresholdPercentage}% (${formatContextWindowTokens(tokenThreshold)} tokens)`}
+        className="h-4 w-full cursor-pointer accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+      />
+      <div
+        className="flex items-start justify-between px-0.5 text-[9px] tabular-nums text-muted-foreground/50"
+        aria-hidden="true"
+      >
+        {AUTO_COMPACTION_TICKS.map((tick) => (
+          <span key={tick} className="flex flex-col items-center gap-0.5">
+            <span className="h-1 w-px bg-muted-foreground/40" />
+            <span>{tick}%</span>
+          </span>
+        ))}
+      </div>
+      <div className="text-pretty text-[10px] leading-4 text-muted-foreground/60">
+        {props.disabled && props.disabledReason
+          ? props.disabledReason
+          : `${props.providerDisplayName ?? "This agent"} compacts before the hard context limit.`}
+      </div>
+    </div>
+  );
+}
 
 function formatPercentage(value: number | null): string | null {
   if (value === null || !Number.isFinite(value)) {
@@ -15,8 +91,19 @@ function formatPercentage(value: number | null): string | null {
 export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   providerDisplayName?: string | null;
+  configurableAutoCompaction: boolean;
+  autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage;
+  onAutoCompactionThresholdChange: (value: AutoCompactionThresholdPercentage) => void;
+  autoCompactionDisabledReason?: string | null;
 }) {
-  const { usage, providerDisplayName } = props;
+  const {
+    usage,
+    providerDisplayName,
+    configurableAutoCompaction,
+    autoCompactionThresholdPercentage,
+    onAutoCompactionThresholdChange,
+    autoCompactionDisabledReason,
+  } = props;
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -84,7 +171,7 @@ export function ContextWindowMeter(props: {
         tooltipStyle
         side="top"
         align="end"
-        className="dropdown-glass w-64 max-w-none border-0! bg-secondary! p-0 shadow-none! before:hidden"
+        className="dropdown-glass w-72 max-w-none border-0! bg-secondary! p-0 shadow-none! before:hidden"
       >
         <div className="flex flex-col gap-2 p-3">
           <div className="flex items-center justify-between gap-3">
@@ -127,7 +214,20 @@ export function ContextWindowMeter(props: {
               </span>
             </div>
           ) : null}
-          {usage.compactsAutomatically ? (
+          {configurableAutoCompaction &&
+          usage.maxTokens !== null &&
+          usage.maxTokens !== undefined ? (
+            <AutoCompactionThresholdControl
+              maxTokens={usage.maxTokens}
+              {...(providerDisplayName !== undefined ? { providerDisplayName } : {})}
+              thresholdPercentage={autoCompactionThresholdPercentage}
+              onThresholdChange={onAutoCompactionThresholdChange}
+              disabled={Boolean(autoCompactionDisabledReason)}
+              {...(autoCompactionDisabledReason !== undefined
+                ? { disabledReason: autoCompactionDisabledReason }
+                : {})}
+            />
+          ) : usage.compactsAutomatically ? (
             <div className="mt-1 text-pretty text-[11px] font-medium text-muted-foreground/70">
               {providerDisplayName ?? "It"} automatically compacts its context when needed.
             </div>

@@ -6,11 +6,16 @@ The three Icon Composer projects are the source of truth for full application ic
 - `nightly/app-icon.icon`
 - `prod/app-icon.icon`
 
-Each project uses `text.svg` for the T3 mark and `background.svg` when the background is a vector layer. Additional layers use semantic names that describe their role and placement.
+Each project uses the textless `solla-code-workflow.png` workflow-orbit artwork. The generated
+1024px image in each Icon Composer project comes from
+`source/solla-code-workflow-master.png`.
 
 Run `vp run icons:export` from the repository root to regenerate the tracked iOS, Linux, Windows, and web assets. The development web exports are also copied to `apps/web/public` for the browser favicon and splash screen. Run `vp run icons:check` to verify that the generated assets and public copies match their sources without changing files.
 
-Exporting requires Icon Composer 2 or newer on macOS. The script selects the newest compatible exporter from Xcode or a standalone Icon Composer installation and pins design generation 26. Set `ICON_COMPOSER_TOOL` to the full path of `Icon Composer.app/Contents/Executables/ictool` to override automatic discovery.
+Exporting requires Icon Composer on macOS. The script selects the newest exporter from Xcode or a
+standalone Icon Composer installation. Icon Composer 2 or newer is pinned to design generation 26;
+older exporters use their native design generation. Set `ICON_COMPOSER_TOOL` to the full path of
+`Icon Composer.app/Contents/Executables/ictool` to override automatic discovery.
 
 ## macOS exports
 

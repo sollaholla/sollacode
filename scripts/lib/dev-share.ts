@@ -31,9 +31,12 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
  * this string is logged.
  */
 const DIAGNOSTIC_EXPLANATIONS: Record<TailscaleStderrDiagnostic, string | undefined> = {
+  "daemon-not-running": "the Tailscale service is not running",
+  "https-consent-required": "tailnet HTTPS consent is required in the Tailscale admin console",
   "no-existing-handler": "no mapping existed for that port",
   "not-logged-in": "this machine is not logged into a tailnet — run `tailscale up`",
   "permission-denied": "permission denied — `tailscale serve` may need elevated privileges",
+  "port-conflict": "that HTTPS port is already in use",
   unknown: undefined,
 };
 

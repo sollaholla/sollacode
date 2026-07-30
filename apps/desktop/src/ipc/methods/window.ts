@@ -8,9 +8,13 @@ import {
   type DesktopEnvironmentBootstrap,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Electron from "electron";
 
+import * as DesktopAssets from "../../app/DesktopAssets.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
@@ -38,6 +42,15 @@ const ContextMenuPosition = Schema.Struct({
 const ContextMenuInput = Schema.Struct({
   items: Schema.Array(ContextMenuItemSchema),
   position: Schema.optionalKey(ContextMenuPosition),
+});
+
+const ThreadExportWriteInput = Schema.Struct({
+  filename: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(180),
+    Schema.isPattern(/^[^/\\:]+\.json$/i),
+  ),
+  contents: Schema.String,
 });
 
 function toWebSocketBaseUrl(httpBaseUrl: URL): string {
@@ -266,5 +279,61 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.window.openExternal")(function* (url) {
     const shell = yield* ElectronShell.ElectronShell;
     return yield* shell.openExternal(url);
+  }),
+});
+
+export const saveThreadExportJson = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SAVE_THREAD_EXPORT_JSON_CHANNEL,
+  payload: ThreadExportWriteInput,
+  result: Schema.String,
+  handler: Effect.fn("desktop.ipc.window.saveThreadExportJson")(function* (input) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const downloadsDirectory = yield* Effect.sync(() => Electron.app.getPath("downloads"));
+    const exportDirectory = path.join(downloadsDirectory, "Solla Code Exports");
+    yield* fileSystem.makeDirectory(exportDirectory, { recursive: true });
+
+    const stem = input.filename.slice(0, -".json".length);
+    let outputPath = path.join(exportDirectory, input.filename);
+    let suffix = 2;
+    while (yield* fileSystem.exists(outputPath)) {
+      outputPath = path.join(exportDirectory, `${stem}-${suffix}.json`);
+      suffix += 1;
+    }
+
+    const temporaryPath = `${outputPath}.${process.pid}.tmp`;
+    yield* fileSystem.writeFileString(temporaryPath, `${input.contents}\n`);
+    yield* fileSystem.rename(temporaryPath, outputPath);
+    return outputPath;
+  }),
+});
+
+export const revealFile = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.REVEAL_FILE_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.revealFile")(function* (path) {
+    yield* Effect.sync(() => Electron.shell.showItemInFolder(path));
+  }),
+});
+
+export const startFileDrag = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.START_FILE_DRAG_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.startFileDrag")(function* (path) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    if (!(yield* fileSystem.exists(path))) return false;
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.focusedMainOrFirst;
+    if (Option.isNone(window)) return false;
+    const assets = yield* DesktopAssets.DesktopAssets;
+    const iconPaths = yield* assets.iconPaths;
+    const icon = Option.match(iconPaths.png, {
+      onNone: () => Electron.nativeImage.createEmpty(),
+      onSome: (iconPath) => Electron.nativeImage.createFromPath(iconPath).resize({ width: 32 }),
+    });
+    window.value.webContents.startDrag({ file: path, icon });
+    return true;
   }),
 });

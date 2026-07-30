@@ -8,8 +8,16 @@ import {
   type AdvertisedEndpointProvider,
   type DesktopServerExposureMode,
   type DesktopServerExposureState,
+  type DesktopTailscaleServeStatus,
 } from "@t3tools/contracts";
-import { readTailscaleStatus } from "@t3tools/tailscale";
+import {
+  buildTailscaleHttpsBaseUrl,
+  ensureTailscaleServe,
+  isTailscaleNotInstalledError,
+  probeTailscaleHttpsEndpoint,
+  readTailscaleStatus,
+  type TailscaleCommandError,
+} from "@t3tools/tailscale";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -282,6 +290,7 @@ export class DesktopServerExposure extends Context.Service<
       readonly enabled: boolean;
       readonly port?: number;
     }) => Effect.Effect<DesktopServerExposureChange, DesktopTailscaleServePersistenceError>;
+    readonly reconcileTailscaleServe: Effect.Effect<DesktopServerExposureState>;
     readonly getAdvertisedEndpoints: Effect.Effect<readonly AdvertisedEndpoint[]>;
   }
 >()("@t3tools/desktop/backend/DesktopServerExposure") {}
@@ -296,7 +305,10 @@ interface RuntimeState {
   readonly httpBaseUrl: URL;
   readonly endpointUrl: Option.Option<string>;
   readonly advertisedHost: Option.Option<string>;
-  readonly tailscaleServeEnabled: boolean;
+  readonly tailscaleServeRequested: boolean;
+  readonly tailscaleServeEffective: boolean;
+  readonly tailscaleServeStatus: DesktopTailscaleServeStatus;
+  readonly tailscaleServeConsentUrl: Option.Option<string>;
   readonly tailscaleServePort: number;
 }
 
@@ -321,7 +333,10 @@ const toContractState = (state: RuntimeState): DesktopServerExposureState => ({
   mode: state.mode,
   endpointUrl: Option.getOrNull(state.endpointUrl),
   advertisedHost: Option.getOrNull(state.advertisedHost),
-  tailscaleServeEnabled: state.tailscaleServeEnabled,
+  tailscaleServeRequested: state.tailscaleServeRequested,
+  tailscaleServeEffective: state.tailscaleServeEffective,
+  tailscaleServeStatus: state.tailscaleServeStatus,
+  tailscaleServeConsentUrl: Option.getOrNull(state.tailscaleServeConsentUrl),
   tailscaleServePort: state.tailscaleServePort,
 });
 
@@ -329,7 +344,7 @@ const toBackendConfig = (state: RuntimeState): DesktopServerExposureBackendConfi
   port: state.port,
   bindHost: state.bindHost,
   httpBaseUrl: state.httpBaseUrl,
-  tailscaleServeEnabled: state.tailscaleServeEnabled,
+  tailscaleServeEnabled: state.tailscaleServeRequested,
   tailscaleServePort: state.tailscaleServePort,
 });
 
@@ -358,9 +373,35 @@ function runtimeStateFromResolvedExposure(input: {
     httpBaseUrl: new URL(input.exposure.localHttpUrl),
     endpointUrl: Option.fromNullishOr(input.exposure.endpointUrl),
     advertisedHost: Option.fromNullishOr(input.exposure.advertisedHost),
-    tailscaleServeEnabled: input.settings.tailscaleServeEnabled,
+    tailscaleServeRequested: input.settings.tailscaleServeEnabled,
+    tailscaleServeEffective: false,
+    tailscaleServeStatus: input.settings.tailscaleServeEnabled ? "checking" : "disabled",
+    tailscaleServeConsentUrl: Option.none(),
     tailscaleServePort: input.settings.tailscaleServePort,
   };
+}
+
+function statusFromTailscaleCommandError(
+  error: TailscaleCommandError,
+): DesktopTailscaleServeStatus {
+  if (isTailscaleNotInstalledError(error)) {
+    return "tailscale-not-installed";
+  }
+  if (error._tag !== "TailscaleCommandExitError") {
+    return "serve-failed";
+  }
+  switch (error.stderrDiagnostic) {
+    case "daemon-not-running":
+      return "tailscale-not-running";
+    case "not-logged-in":
+      return "tailscale-not-authenticated";
+    case "https-consent-required":
+      return "https-consent-required";
+    case "port-conflict":
+      return "port-conflict";
+    default:
+      return "serve-failed";
+  }
 }
 
 function resolveRuntimeState(input: {
@@ -510,7 +551,12 @@ export const make = Effect.gen(function* () {
 
       const nextState = yield* Ref.updateAndGet(stateRef, (current) => ({
         ...current,
-        tailscaleServeEnabled: result.settings.tailscaleServeEnabled,
+        tailscaleServeRequested: result.settings.tailscaleServeEnabled,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: (result.settings.tailscaleServeEnabled
+          ? "checking"
+          : "disabled") as DesktopTailscaleServeStatus,
+        tailscaleServeConsentUrl: Option.none<string>(),
         tailscaleServePort: result.settings.tailscaleServePort,
       }));
 
@@ -520,6 +566,115 @@ export const make = Effect.gen(function* () {
       };
     },
   );
+
+  const reconcileTailscaleServe = Effect.gen(function* () {
+    const state = yield* Ref.get(stateRef);
+    if (!state.tailscaleServeRequested) {
+      const disabledState = {
+        ...state,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: "disabled" as const,
+        tailscaleServeConsentUrl: Option.none<string>(),
+      };
+      yield* Ref.set(stateRef, disabledState);
+      return toContractState(disabledState);
+    }
+
+    yield* Ref.update(stateRef, (current) => ({
+      ...current,
+      tailscaleServeEffective: false,
+      tailscaleServeStatus: "checking" as const,
+      tailscaleServeConsentUrl: Option.none<string>(),
+    }));
+
+    const statusResult = yield* Effect.result(
+      readTailscaleStatus.pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+      ),
+    );
+    if (statusResult._tag === "Failure") {
+      const error = statusResult.failure;
+      const failedState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus:
+          error._tag === "TailscaleStatusParseError"
+            ? ("serve-failed" as const)
+            : statusFromTailscaleCommandError(error),
+        tailscaleServeConsentUrl: Option.none(),
+      }));
+      return toContractState(failedState);
+    }
+
+    const tailscaleStatus = statusResult.success;
+    if (tailscaleStatus.backendState === "NeedsLogin") {
+      const unauthenticatedState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: "tailscale-not-authenticated" as const,
+        tailscaleServeConsentUrl: Option.none(),
+      }));
+      return toContractState(unauthenticatedState);
+    }
+    if (tailscaleStatus.backendState !== null && tailscaleStatus.backendState !== "Running") {
+      const stoppedState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: "tailscale-not-running" as const,
+        tailscaleServeConsentUrl: Option.none(),
+      }));
+      return toContractState(stoppedState);
+    }
+    if (!tailscaleStatus.magicDnsName) {
+      const unavailableState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: tailscaleStatus.isOnline
+          ? ("serve-failed" as const)
+          : ("tailscale-not-authenticated" as const),
+        tailscaleServeConsentUrl: Option.none(),
+      }));
+      return toContractState(unavailableState);
+    }
+
+    const ensureResult = yield* Effect.result(
+      ensureTailscaleServe({
+        localPort: state.port,
+        servePort: state.tailscaleServePort,
+        localHost: DESKTOP_LOOPBACK_HOST,
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
+    );
+    if (ensureResult._tag === "Failure") {
+      const error = ensureResult.failure;
+      const failedState = yield* Ref.updateAndGet(stateRef, (current) => ({
+        ...current,
+        tailscaleServeEffective: false,
+        tailscaleServeStatus: statusFromTailscaleCommandError(error),
+        tailscaleServeConsentUrl:
+          error._tag === "TailscaleCommandExitError"
+            ? Option.fromNullishOr(error.consentUrl)
+            : Option.none(),
+      }));
+      return toContractState(failedState);
+    }
+
+    const baseUrl = buildTailscaleHttpsBaseUrl({
+      magicDnsName: tailscaleStatus.magicDnsName,
+      servePort: state.tailscaleServePort,
+    });
+    const isReachable = yield* probeTailscaleHttpsEndpoint({ baseUrl }).pipe(
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    const reconciledState = yield* Ref.updateAndGet(stateRef, (current) => ({
+      ...current,
+      tailscaleServeEffective: isReachable,
+      tailscaleServeStatus: isReachable
+        ? ("available" as const)
+        : ("endpoint-unreachable" as const),
+      tailscaleServeConsentUrl: Option.none(),
+    }));
+    return toContractState(reconciledState);
+  }).pipe(Effect.withSpan("desktop.serverExposure.reconcileTailscaleServe"));
 
   const getAdvertisedEndpoints = Effect.gen(function* () {
     const state = yield* Ref.get(stateRef);
@@ -533,13 +688,13 @@ export const make = Effect.gen(function* () {
     // Don't spawn the Tailscale CLI when the user hasn't opted into any
     // network exposure. The spawn itself triggers a macOS "Other apps"
     // TCC prompt on Mac App Store Tailscale builds.
-    if (state.mode !== "network-accessible" && !state.tailscaleServeEnabled) {
+    if (state.mode !== "network-accessible" && !state.tailscaleServeRequested) {
       return coreEndpoints;
     }
 
     const tailscaleEndpoints = yield* resolveTailscaleAdvertisedEndpoints({
       port: state.port,
-      serveEnabled: state.tailscaleServeEnabled,
+      serveEnabled: state.tailscaleServeEffective,
       servePort: state.tailscaleServePort,
       networkInterfaces: currentNetworkInterfaces,
       readMagicDnsName: cachedReadMagicDnsName,
@@ -556,6 +711,7 @@ export const make = Effect.gen(function* () {
     configureFromSettings,
     setMode,
     setTailscaleServeEnabled,
+    reconcileTailscaleServe,
     getAdvertisedEndpoints,
   });
 });

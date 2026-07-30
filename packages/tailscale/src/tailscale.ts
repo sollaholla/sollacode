@@ -2,6 +2,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -29,9 +30,12 @@ const TailscaleCommandContext = {
  * auth keys (`tskey-…`) and node names, and these labels are logged.
  */
 export const TailscaleStderrDiagnostic = Schema.Literals([
+  "daemon-not-running",
+  "https-consent-required",
   "no-existing-handler",
   "not-logged-in",
   "permission-denied",
+  "port-conflict",
   "unknown",
 ]);
 export type TailscaleStderrDiagnostic = typeof TailscaleStderrDiagnostic.Type;
@@ -41,6 +45,18 @@ export type TailscaleStderrDiagnostic = typeof TailscaleStderrDiagnostic.Type;
 const STDERR_DIAGNOSTIC_PATTERNS: ReadonlyArray<
   readonly [RegExp, Exclude<TailscaleStderrDiagnostic, "unknown">]
 > = [
+  [
+    /https (?:certificates?|serve).*(?:enable|consent)|enable https|visit .*tailscale\.com\/admin\/feature/i,
+    "https-consent-required",
+  ],
+  [
+    /address already in use|port \d+.*(?:already in use|already configured)|listener.*already exists/i,
+    "port-conflict",
+  ],
+  [
+    /failed to connect to local tailscaled|tailscaled.*(?:not running|stopped)|tailscale is stopped/i,
+    "daemon-not-running",
+  ],
   [/handler does not exist/i, "no-existing-handler"],
   [/not logged in|logged out|needs? login/i, "not-logged-in"],
   [/permission denied|access denied|must be root|operation not permitted/i, "permission-denied"],
@@ -52,6 +68,30 @@ export const stderrDiagnosticOf = (stderr: string): TailscaleStderrDiagnostic | 
     return undefined;
   }
   return STDERR_DIAGNOSTIC_PATTERNS.find(([pattern]) => pattern.test(stderr))?.[1] ?? "unknown";
+};
+
+const TAILSCALE_CONSENT_URL_PATTERN = /https:\/\/[^\s<>"']+/giu;
+
+/**
+ * Extracts only Tailscale's HTTPS-feature consent URL. CLI output is otherwise
+ * discarded because it may contain node names or auth material.
+ */
+export const tailscaleConsentUrlOf = (output: string): string | undefined => {
+  for (const match of output.matchAll(TAILSCALE_CONSENT_URL_PATTERN)) {
+    try {
+      const url = new URL(match[0].replace(/[),.;]+$/u, ""));
+      if (
+        url.protocol === "https:" &&
+        url.hostname === "login.tailscale.com" &&
+        url.pathname.startsWith("/admin/feature/")
+      ) {
+        return url.toString();
+      }
+    } catch {
+      // Ignore malformed URLs and continue looking for the known-safe consent URL.
+    }
+  }
+  return undefined;
 };
 
 export class TailscaleCommandSpawnError extends Schema.TaggedErrorClass<TailscaleCommandSpawnError>()(
@@ -85,6 +125,7 @@ export class TailscaleCommandExitError extends Schema.TaggedErrorClass<Tailscale
     exitCode: Schema.Number,
     stdoutLength: Schema.optional(Schema.Number),
     stderrLength: Schema.Number,
+    consentUrl: Schema.optional(Schema.String),
     // A classified diagnostic, never raw CLI output. `tailscale` prints auth
     // keys and node identifiers into stderr, and this field is surfaced in
     // dev-runner logs — so it carries only a known-safe label from the closed
@@ -130,10 +171,12 @@ export class TailscaleStatusParseError extends Schema.TaggedErrorClass<Tailscale
 
 const TailscaleStatusSelf = Schema.Struct({
   DNSName: Schema.optional(Schema.Unknown),
+  Online: Schema.optional(Schema.Unknown),
   TailscaleIPs: Schema.optional(Schema.Unknown),
 });
 
 const TailscaleStatusJson = Schema.Struct({
+  BackendState: Schema.optional(Schema.Unknown),
   Self: Schema.optional(TailscaleStatusSelf),
 });
 
@@ -141,6 +184,8 @@ export type TailscaleStatusSelf = typeof TailscaleStatusSelf.Type;
 export type TailscaleStatusJson = typeof TailscaleStatusJson.Type;
 
 export interface TailscaleStatus {
+  readonly backendState: string | null;
+  readonly isOnline: boolean;
   readonly magicDnsName: string | null;
   readonly tailnetIpv4Addresses: readonly string[];
 }
@@ -166,6 +211,13 @@ function normalizeMagicDnsName(status: TailscaleStatusJson): string | null {
 
   const normalized = dnsName.trim().replace(/\.$/u, "");
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeBackendState(status: TailscaleStatusJson): string | null {
+  const backendState = status.BackendState;
+  return typeof backendState === "string" && backendState.trim().length > 0
+    ? backendState.trim()
+    : null;
 }
 
 export const parseTailscaleMagicDnsName = (
@@ -211,6 +263,8 @@ export const parseTailscaleStatus = (
       }
 
       return {
+        backendState: normalizeBackendState(parsed),
+        isOnline: parsed.Self?.Online === true,
         magicDnsName: normalizeMagicDnsName(parsed),
         tailnetIpv4Addresses,
       };
@@ -304,19 +358,27 @@ const runTailscaleCommand = (
         .pipe(
           Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
         );
-      const [stderr, exitCode] = yield* Effect.all(
-        [collectStderr(child.stderr), child.exitCode.pipe(Effect.map(Number))],
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectStdout(child.stdout),
+          collectStderr(child.stderr),
+          child.exitCode.pipe(Effect.map(Number)),
+        ],
         { concurrency: "unbounded" },
       ).pipe(
         Effect.mapError((cause) => new TailscaleCommandOutputError({ ...commandContext, cause })),
       );
       if (exitCode !== 0) {
+        const diagnosticOutput = `${stdout}\n${stderr}`;
+        const consentUrl = tailscaleConsentUrlOf(diagnosticOutput);
         return yield* new TailscaleCommandExitError({
           ...commandContext,
           exitCode,
+          stdoutLength: stdout.length,
           stderrLength: stderr.length,
-          ...(stderrDiagnosticOf(stderr) !== undefined
-            ? { stderrDiagnostic: stderrDiagnosticOf(stderr) }
+          ...(consentUrl === undefined ? {} : { consentUrl }),
+          ...(stderrDiagnosticOf(diagnosticOutput) !== undefined
+            ? { stderrDiagnostic: stderrDiagnosticOf(diagnosticOutput) }
             : {}),
         });
       }
@@ -335,6 +397,11 @@ const runTailscaleCommand = (
       }),
     );
   });
+
+export const isTailscaleNotInstalledError = (error: TailscaleCommandError): boolean =>
+  error._tag === "TailscaleCommandSpawnError" &&
+  error.cause instanceof PlatformError.PlatformError &&
+  error.cause.reason._tag === "NotFound";
 
 export const ensureTailscaleServe = (input: {
   readonly localPort: number;

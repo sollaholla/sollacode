@@ -56,6 +56,38 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("hides provider usage refresh success activities while keeping other activity rows", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-provider-usage"),
+      projectId: ProjectId.make("project-1"),
+      title: "Provider usage activity",
+      activities: [
+        makeActivity({
+          id: EventId.make("provider-usage"),
+          kind: "provider.usage.updated",
+          summary: "Provider usage updated",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: {
+            provider: "codex",
+            rateLimits: { primary: { usedPercent: 45 } },
+          },
+        }),
+        makeActivity({
+          id: EventId.make("runtime-warning"),
+          kind: "runtime.warning",
+          summary: "Provider request is retrying",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          tone: "info",
+        }),
+      ],
+    });
+
+    const activitySummaries = buildThreadFeed(thread).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities.map((activity) => activity.summary) : [],
+    );
+    expect(activitySummaries).toEqual(["Provider request is retrying"]);
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),

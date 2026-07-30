@@ -143,10 +143,6 @@
       "types": "./src/cliArgs.ts",
       "import": "./src/cliArgs.ts"
     },
-    "./connectAuth": {
-      "types": "./src/connectAuth.ts",
-      "import": "./src/connectAuth.ts"
-    },
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
@@ -166,14 +162,6 @@
     "./terminalLabels": {
       "types": "./src/terminalLabels.ts",
       "import": "./src/terminalLabels.ts"
-    },
-    "./relayClient": {
-      "types": "./src/relayClient.ts",
-      "import": "./src/relayClient.ts"
-    },
-    "./relayTracing": {
-      "types": "./src/relayTracing.ts",
-      "import": "./src/relayTracing.ts"
     },
     "./preview": {
       "types": "./src/preview.ts",

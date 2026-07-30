@@ -1,3 +1,5 @@
+import { createContext, type ReactNode, useContext, useMemo } from "react";
+
 export interface ExpandedImageItem {
   src: string;
   name: string;
@@ -6,6 +8,37 @@ export interface ExpandedImageItem {
 export interface ExpandedImagePreview {
   images: ExpandedImageItem[];
   index: number;
+}
+
+type ExpandedImagePreviewOpener = (preview: ExpandedImagePreview) => void;
+
+interface ExpandedImagePreviewController {
+  readonly fullScreenMobile: boolean;
+  readonly open: ExpandedImagePreviewOpener;
+}
+
+const ExpandedImagePreviewContext = createContext<ExpandedImagePreviewController | null>(null);
+
+export function ExpandedImagePreviewProvider({
+  children,
+  fullScreenMobile,
+  onOpen,
+}: {
+  readonly children: ReactNode;
+  readonly fullScreenMobile: boolean;
+  readonly onOpen: ExpandedImagePreviewOpener;
+}) {
+  const value = useMemo(() => ({ fullScreenMobile, open: onOpen }), [fullScreenMobile, onOpen]);
+
+  return (
+    <ExpandedImagePreviewContext.Provider value={value}>
+      {children}
+    </ExpandedImagePreviewContext.Provider>
+  );
+}
+
+export function useExpandedImagePreviewController(): ExpandedImagePreviewController | null {
+  return useContext(ExpandedImagePreviewContext);
 }
 
 export function buildExpandedImagePreview(

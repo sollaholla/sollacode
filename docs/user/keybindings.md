@@ -1,6 +1,6 @@
 # Keybindings
 
-T3 Code reads keybindings from:
+Solla Code reads keybindings from:
 
 - `~/.t3/keybindings.json`
 
@@ -38,6 +38,28 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 ```
 
 For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/keybindings.ts`](../../apps/server/src/keybindings.ts)
+
+## Push to talk
+
+Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux while a send-capable chat
+composer is open. Solla Code records until the key is released, transcribes the recording locally,
+and sends the resulting text as the next user message. Sent voice messages show a
+**Transcribed** badge at the bottom-left of the user bubble.
+
+The first transcription downloads about 45 MB of quantized Whisper model and tokenizer files.
+The files come from the pinned `onnx-community/whisper-tiny.en` revision
+`2575352d61be1bf7225cf8f8b268a4678025fc58` and are retained in the browser or Electron cache;
+later transcriptions reuse the cached model. Model inference stays on the client device and does
+not use the selected coding provider. The first use therefore requires internet access, while
+subsequent use can work from the cache.
+
+Microphone permission is requested on first use. Losing window focus stops the recording, as does
+releasing the key. Recordings are capped at two minutes. If microphone recording, audio decoding,
+the one-time model download, or local inference is unavailable, the composer remains unchanged
+and Solla Code shows an error instead of sending an unverified transcript.
+
+Push to talk reserves the platform shortcut while its chat composer is active, ahead of
+single-press configurable commands that also use `mod+d`.
 
 ## Configuration
 

@@ -1,10 +1,10 @@
 /**
  * Re-encoding for stashed image attachments.
  *
- * The composer accepts images up to `PROVIDER_SEND_TURN_MAX_IMAGE_BYTES`
- * (10MB), but the stash persists them as base64 in localStorage, where the
- * whole origin shares a ~5MB quota. Rather than refuse large screenshots,
- * downscale + re-encode them to JPEG so a stashed prompt keeps its images.
+ * The stash persists images as base64 in localStorage, where the whole origin
+ * shares a ~5MB quota. Rather than refuse large screenshots, downscale +
+ * re-encode them so a stashed prompt keeps its images. Final send preparation
+ * has its own stricter, byte-exact limit in `sendImageCompression.ts`.
  *
  * Only the *stashed copy* is compressed; the live composer attachment is
  * untouched, so sending without stashing still uploads the original file.

@@ -25,6 +25,8 @@ export interface PersistedUiState {
   expandedProjectCwds?: string[];
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
+  showProviderUsageBar?: boolean;
+  settledShelfExpanded?: boolean;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
 }
@@ -43,7 +45,21 @@ export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiState extends UiProjectState, UiThreadState, UiEndpointState {}
+export interface UiProviderUsageState {
+  showProviderUsageBar: boolean;
+}
+
+export interface UiSidebarShelfState {
+  settledShelfExpanded: boolean;
+}
+
+export interface UiState
+  extends
+    UiProjectState,
+    UiThreadState,
+    UiEndpointState,
+    UiProviderUsageState,
+    UiSidebarShelfState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -51,6 +67,8 @@ const initialState: UiState = {
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
+  showProviderUsageBar: false,
+  settledShelfExpanded: false,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -135,6 +153,8 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       parsed.defaultAdvertisedEndpointKey.length > 0
         ? parsed.defaultAdvertisedEndpointKey
         : null,
+    showProviderUsageBar: parsed.showProviderUsageBar === true,
+    settledShelfExpanded: parsed.settledShelfExpanded === true,
   };
 }
 
@@ -207,6 +227,8 @@ export function persistState(state: UiState): void {
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
+        showProviderUsageBar: state.showProviderUsageBar,
+        settledShelfExpanded: state.settledShelfExpanded,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -386,6 +408,8 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
+  setShowProviderUsageBar: (visible: boolean) => void;
+  setSettledShelfExpanded: (expanded: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -404,6 +428,16 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
+  setShowProviderUsageBar: (visible) =>
+    set((state) =>
+      state.showProviderUsageBar === visible ? state : { ...state, showProviderUsageBar: visible },
+    ),
+  setSettledShelfExpanded: (expanded) =>
+    set((state) =>
+      state.settledShelfExpanded === expanded
+        ? state
+        : { ...state, settledShelfExpanded: expanded },
+    ),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>

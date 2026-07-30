@@ -7,15 +7,13 @@ import {
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { type ReactNode, memo, useCallback, useMemo, useState } from "react";
+import { type ReactNode, memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthAdministrativeScopes,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  AuthRelayReadScope,
-  AuthRelayWriteScope,
   AuthReviewWriteScope,
   AuthStandardClientScopes,
   AuthTerminalOperateScope,
@@ -40,7 +38,7 @@ import * as Option from "effect/Option";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
-import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
+import { resolveDesktopPairingUrl } from "./pairingUrls";
 import { applyWslEnableSelection } from "./ConnectionsSettings.logic";
 import {
   SettingsPageContainer,
@@ -110,8 +108,6 @@ import {
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
 } from "~/versionSkew";
-import { hasCloudPublicConfig } from "~/cloud/publicConfig";
-import { useCloudLinkController } from "~/cloud/useCloudLinkController";
 import { authEnvironment } from "~/state/auth";
 import { environmentCatalog } from "~/connection/catalog";
 import {
@@ -133,8 +129,8 @@ import {
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { ServerUpdateAction } from "../ServerUpdateAction";
-import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
+import { presentTailscaleServe } from "./tailscaleServePresentation";
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
 const EMPTY_ADVERTISED_ENDPOINTS: ReadonlyArray<AdvertisedEndpoint> = [];
@@ -193,16 +189,6 @@ const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
     scope: AuthAccessWriteScope,
     title: "Manage access",
     description: "Issue and revoke credentials for other clients.",
-  },
-  {
-    scope: AuthRelayReadScope,
-    title: "View relay",
-    description: "Inspect managed relay connectivity.",
-  },
-  {
-    scope: AuthRelayWriteScope,
-    title: "Manage relay",
-    description: "Change managed tunnel connectivity.",
   },
 ];
 
@@ -452,6 +438,33 @@ function isTailscaleHttpsEndpoint(endpoint: AdvertisedEndpoint): boolean {
   return endpoint.id.startsWith("tailscale-magicdns:");
 }
 
+export function resolveVerifiedTailscaleWebEndpoint(endpoint: AdvertisedEndpoint): string | null {
+  if (
+    !isTailscaleHttpsEndpoint(endpoint) ||
+    endpoint.status !== "available" ||
+    endpoint.reachability !== "private-network" ||
+    endpoint.compatibility.hostedHttpsApp !== "compatible"
+  ) {
+    return null;
+  }
+  try {
+    const url = new URL(endpoint.httpBaseUrl);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+export function preferVerifiedTailscalePairingEndpoint(
+  tailscaleEndpoint: AdvertisedEndpoint | null,
+  fallbackEndpoint: AdvertisedEndpoint | null,
+): AdvertisedEndpoint | null {
+  return tailscaleEndpoint && resolveVerifiedTailscaleWebEndpoint(tailscaleEndpoint) !== null
+    ? tailscaleEndpoint
+    : fallbackEndpoint;
+}
+
 function endpointDefaultPreferenceKey(endpoint: AdvertisedEndpoint): string {
   if (endpoint.id.startsWith("desktop-loopback:")) {
     return "desktop-core:loopback:http";
@@ -476,16 +489,14 @@ function endpointDefaultPreferenceKey(endpoint: AdvertisedEndpoint): string {
   return `${endpoint.provider.id}:${endpoint.reachability}:${scheme}:${endpoint.label}`;
 }
 
-function resolveAdvertisedEndpointPairingUrl(
+export function resolveAdvertisedEndpointPairingUrl(
   endpoint: AdvertisedEndpoint,
   credential: string,
 ): string {
-  if (endpoint.compatibility.hostedHttpsApp === "compatible") {
-    return (
-      resolveHostedPairingUrl(endpoint.httpBaseUrl, credential) ??
-      resolveDesktopPairingUrl(endpoint.httpBaseUrl, credential)
-    );
-  }
+  // Pair directly against the advertised backend. In particular, a verified
+  // private Tailscale HTTPS endpoint must never be rewritten through the
+  // legacy hosted app: the phone already has the correct private origin, and
+  // /pair can exchange the one-time token with that same origin.
   return resolveDesktopPairingUrl(endpoint.httpBaseUrl, credential);
 }
 
@@ -533,13 +544,6 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
     () => resolveCurrentOriginPairingUrl(pairingLink.credential),
     [pairingLink.credential],
   );
-  const hostedPairingUrl = useMemo(
-    () =>
-      endpointUrl != null && endpointUrl !== ""
-        ? resolveHostedPairingUrl(endpointUrl, pairingLink.credential)
-        : null,
-    [endpointUrl, pairingLink.credential],
-  );
   const endpointPairingUrl = useMemo(() => {
     const endpoint = selectPairingEndpoint(endpoints, defaultEndpointKey);
     return endpoint ? resolveAdvertisedEndpointPairingUrl(endpoint, pairingLink.credential) : null;
@@ -568,7 +572,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
   const shareablePairingUrl =
     endpointPairingUrl ??
     (endpointUrl != null && endpointUrl !== ""
-      ? (hostedPairingUrl ?? resolveDesktopPairingUrl(endpointUrl, pairingLink.credential))
+      ? resolveDesktopPairingUrl(endpointUrl, pairingLink.credential)
       : isLoopbackHostname(window.location.hostname)
         ? null
         : currentOriginPairingUrl);
@@ -1213,6 +1217,98 @@ type AdvertisedEndpointListRowProps = {
   isUpdatingTailscaleServe: boolean;
 };
 
+export function TailscaleHttpsQrPanel({
+  endpointUrl,
+  onCopy,
+  copied = false,
+}: {
+  endpointUrl: string;
+  onCopy: () => void;
+  copied?: boolean;
+}) {
+  return (
+    <div className="w-64 space-y-3 p-3" aria-label="Tailscale HTTPS phone access">
+      <div className="flex justify-center rounded-xl border border-border/60 bg-white p-3">
+        <QRCodeSvg
+          value={endpointUrl}
+          size={148}
+          level="M"
+          marginSize={2}
+          title="Solla Code private Tailscale HTTPS endpoint"
+        />
+      </div>
+      <div>
+        <h4 className="font-medium text-foreground text-xs">Open Solla Code on your phone</h4>
+        <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+          Your phone must be on the same tailnet. Existing pairing authorization is still required.
+        </p>
+      </div>
+      <p className="break-all rounded-md bg-muted/55 px-2 py-1.5 font-mono text-[10px] text-foreground/80">
+        {endpointUrl}
+      </p>
+      <div className="flex gap-2">
+        <Button size="xs" variant="outline" onClick={onCopy} aria-label="Copy Tailscale HTTPS URL">
+          {copied ? "Copied" : "Copy URL"}
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <a
+              href={endpointUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open Tailscale HTTPS URL"
+            />
+          }
+        >
+          Open
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function TailscaleHttpsQrControl({ endpoint }: { endpoint: AdvertisedEndpoint }) {
+  const endpointUrl = resolveVerifiedTailscaleWebEndpoint(endpoint);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: "Tailscale HTTPS URL",
+    onCopy: () => {
+      toastManager.add({
+        type: "success",
+        title: "Tailscale HTTPS URL copied",
+      });
+    },
+    onError: (error) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not copy Tailscale HTTPS URL",
+        description: error.message,
+      });
+    },
+  });
+  if (endpointUrl === null) return null;
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Button size="icon-xs" variant="outline" aria-label="Show Tailscale HTTPS QR code" />
+        }
+      >
+        <QrCodeIcon aria-hidden className="size-3.5" />
+      </PopoverTrigger>
+      <PopoverPopup side="top" align="end" className="w-max p-0">
+        <TailscaleHttpsQrPanel
+          endpointUrl={endpointUrl}
+          onCopy={() => copyToClipboard(endpointUrl, undefined)}
+          copied={isCopied}
+        />
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
 const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
   endpoint,
   isDefault,
@@ -1269,14 +1365,17 @@ const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
             </Button>
           ) : null}
           {canDisableTailscaleServe ? (
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              onClick={() => onDisableTailscaleServe(endpoint)}
-              disabled={isUpdatingTailscaleServe}
-            >
-              {isUpdatingTailscaleServe ? "Restarting…" : "Disable"}
-            </Button>
+            <>
+              <TailscaleHttpsQrControl endpoint={endpoint} />
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                onClick={() => onDisableTailscaleServe(endpoint)}
+                disabled={isUpdatingTailscaleServe}
+              >
+                {isUpdatingTailscaleServe ? "Restarting…" : "Disable"}
+              </Button>
+            </>
           ) : null}
           {!needsTailscaleSetup && !isDefault ? (
             <Button size="xs" variant="outline" onClick={() => onSetDefault(endpoint)}>
@@ -1395,10 +1494,9 @@ function SavedBackendListRow({
     environment.entry.profile.value._tag === "SshConnectionProfile"
       ? environment.entry.profile.value.target
       : null;
-  const metadataBits = [
-    sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : null,
-    environment.relayManaged ? "T3 Connect" : null,
-  ].filter((value): value is string => value !== null);
+  const metadataBits = [sshTarget ? `SSH ${formatDesktopSshTarget(sshTarget)}` : null].filter(
+    (value): value is string => value !== null,
+  );
 
   // The WSL backend is a desktop-managed local backend (it surfaces as a bearer
   // environment whose connection id is prefixed "local:"), not a remote
@@ -1545,135 +1643,7 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
   );
 });
 
-function CloudLinkSwitch({
-  checked,
-  disabled,
-  disabledReason,
-  onCheckedChange,
-  ariaLabel = "Enable T3 Connect",
-}: {
-  readonly checked: boolean;
-  readonly disabled: boolean;
-  readonly disabledReason: string | null;
-  readonly onCheckedChange?: (enabled: boolean) => void;
-  readonly ariaLabel?: string;
-}) {
-  const control = (
-    <Switch
-      aria-label={ariaLabel}
-      checked={checked}
-      disabled={disabled}
-      {...(onCheckedChange ? { onCheckedChange } : {})}
-    />
-  );
-  return disabledReason ? (
-    <Tooltip>
-      <TooltipTrigger render={<span className="inline-flex">{control}</span>} />
-      <TooltipPopup side="top">{disabledReason}</TooltipPopup>
-    </Tooltip>
-  ) : (
-    control
-  );
-}
-
-function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: boolean }) {
-  const {
-    isSignedIn,
-    linkState: primaryCloudLinkState,
-    managedTunnelActive,
-    publishAgentActivity,
-    operationError,
-    reconcileCloudState,
-  } = useCloudLinkController();
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
-
-  const disabledReason = !isSignedIn
-    ? "Sign in to T3 Connect to manage this environment."
-    : !canManageRelay
-      ? "Your session does not have permission to manage T3 Connect access."
-      : null;
-  const isBusy = isUpdating || isUpdatingPreference;
-
-  const updateManagedTunnel = async (enabled: boolean) => {
-    setIsUpdating(true);
-    const ok = await reconcileCloudState({ managedTunnel: enabled, publish: publishAgentActivity });
-    if (ok) {
-      // Turning the tunnel off while publishing stays on downgrades the link
-      // rather than removing it — say so instead of claiming an unlink.
-      toastManager.add({
-        type: "success",
-        title: enabled
-          ? "T3 Connect linked"
-          : publishAgentActivity
-            ? "T3 Connect tunnel disabled"
-            : "T3 Connect unlinked",
-        description: enabled
-          ? "This environment is available through T3 Connect."
-          : publishAgentActivity
-            ? "The managed tunnel was removed. Agent activity publishing stays on."
-            : "This environment is no longer available through T3 Connect.",
-      });
-    }
-    setIsUpdating(false);
-  };
-
-  const updatePublishAgentActivity = async (enabled: boolean) => {
-    setIsUpdatingPreference(true);
-    const ok = await reconcileCloudState({ managedTunnel: managedTunnelActive, publish: enabled });
-    if (ok) {
-      toastManager.add({
-        type: "success",
-        title: enabled ? "Agent activity enabled" : "Agent activity disabled",
-        description: enabled
-          ? "This environment publishes agent activity to your mobile clients."
-          : "This environment will stop publishing agent activity.",
-      });
-    }
-    setIsUpdatingPreference(false);
-  };
-
-  return (
-    <>
-      <SettingsRow
-        title="T3 Connect"
-        description={
-          managedTunnelActive
-            ? "This environment is available to your other devices through T3 Connect."
-            : "Make this environment available to your other devices through T3 Connect."
-        }
-        status={operationError ?? primaryCloudLinkState.error}
-        control={
-          <CloudLinkSwitch
-            checked={managedTunnelActive}
-            disabled={!canManageRelay || !isSignedIn || primaryCloudLinkState.isPending || isBusy}
-            disabledReason={disabledReason}
-            onCheckedChange={(enabled) => void updateManagedTunnel(enabled)}
-          />
-        }
-      />
-      <SettingsRow
-        title="Publish agent activity"
-        description="Send activity from this environment to your mobile clients for push notifications and Live Activities. Works without a T3 Connect tunnel."
-        control={
-          <CloudLinkSwitch
-            ariaLabel="Publish agent activity to mobile clients"
-            checked={publishAgentActivity}
-            disabled={!canManageRelay || !isSignedIn || primaryCloudLinkState.isPending || isBusy}
-            disabledReason={disabledReason}
-            onCheckedChange={(enabled) => void updatePublishAgentActivity(enabled)}
-          />
-        }
-      />
-    </>
-  );
-}
-
-function CloudLinkRow({ canManageRelay }: { readonly canManageRelay: boolean }) {
-  return hasCloudPublicConfig() ? <ConfiguredCloudLinkRow canManageRelay={canManageRelay} /> : null;
-}
-
-function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnabled?: boolean }) {
+function EmptyRemoteEnvironments() {
   return (
     <Empty className="min-h-52">
       <EmptyMedia variant="icon">
@@ -1681,32 +1651,10 @@ function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnable
       </EmptyMedia>
       <EmptyHeader>
         <EmptyTitle>No saved remote environments</EmptyTitle>
-        <EmptyDescription>
-          {cloudEnabled
-            ? "Click “Add environment” to pair another environment, or connect one from T3 Connect."
-            : "Click “Add environment” to pair another environment."}
-        </EmptyDescription>
+        <EmptyDescription>Click “Add environment” to pair another environment.</EmptyDescription>
       </EmptyHeader>
     </Empty>
   );
-}
-
-function CloudRemoteEnvironmentRows({
-  primaryEnvironmentId,
-  savedEnvironments,
-}: {
-  readonly primaryEnvironmentId: EnvironmentId | null;
-  readonly savedEnvironments: ReadonlyArray<EnvironmentPresentation>;
-}) {
-  return hasCloudPublicConfig() ? (
-    <CloudEnvironmentConnectRows
-      primaryEnvironmentId={primaryEnvironmentId}
-      savedEnvironments={savedEnvironments}
-      empty={<EmptyRemoteEnvironments />}
-    />
-  ) : savedEnvironments.length === 0 ? (
-    <EmptyRemoteEnvironments cloudEnabled={false} />
-  ) : null;
 }
 
 export function ConnectionsSettings() {
@@ -1825,6 +1773,7 @@ export function ConnectionsSettings() {
   const isWslConfirmDialogOpen = pendingWslChange !== null;
   const [pendingTailscaleServeEndpoint, setPendingTailscaleServeEndpoint] =
     useState<AdvertisedEndpoint | null>(null);
+  const [isTailscaleServeSetupDialogOpen, setIsTailscaleServeSetupDialogOpen] = useState(false);
   const [disableTailscaleServeDialogOpen, setDisableTailscaleServeDialogOpen] = useState(false);
   const [tailscaleServePortInput, setTailscaleServePortInput] = useState(
     String(DEFAULT_TAILSCALE_SERVE_PORT),
@@ -1842,7 +1791,6 @@ export function ConnectionsSettings() {
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
   const canManageLocalBackend = currentSessionScopes?.includes(AuthAccessWriteScope) ?? false;
-  const canManageRelay = currentSessionScopes?.includes(AuthRelayWriteScope) ?? false;
   const authAccessChanges = useEnvironmentQuery(
     canManageLocalBackend && primaryEnvironmentId !== null
       ? authEnvironment.accessChanges({
@@ -1980,6 +1928,7 @@ export function ConnectionsSettings() {
       });
       refreshDesktopNetworkAccessState();
       setPendingTailscaleServeEndpoint(null);
+      setIsTailscaleServeSetupDialogOpen(false);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to configure Tailscale HTTPS.";
@@ -1997,11 +1946,12 @@ export function ConnectionsSettings() {
   }, [desktopBridge, isTailscaleServePortValid, parsedTailscaleServePort]);
 
   const handleStartTailscaleServeSetup = useCallback(
-    (endpoint: AdvertisedEndpoint) => {
+    (endpoint: AdvertisedEndpoint | null) => {
       setTailscaleServePortInput(
         String(desktopServerExposureState?.tailscaleServePort ?? DEFAULT_TAILSCALE_SERVE_PORT),
       );
       setPendingTailscaleServeEndpoint(endpoint);
+      setIsTailscaleServeSetupDialogOpen(true);
     },
     [desktopServerExposureState?.tailscaleServePort],
   );
@@ -2032,9 +1982,44 @@ export function ConnectionsSettings() {
     }
   }, [desktopBridge, desktopServerExposureState?.tailscaleServePort]);
 
-  const handleStartTailscaleServeDisable = useCallback((_endpoint: AdvertisedEndpoint) => {
+  const handleStartTailscaleServeDisable = useCallback((_endpoint: AdvertisedEndpoint | null) => {
     setDisableTailscaleServeDialogOpen(true);
   }, []);
+
+  const handleRecheckTailscaleServe = useCallback(async () => {
+    if (!desktopBridge) return;
+    setIsUpdatingTailscaleServe(true);
+    setDesktopServerExposureMutationError(null);
+    try {
+      await desktopBridge.reconcileTailscaleServe();
+      refreshDesktopNetworkAccessState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to check Tailscale HTTPS.";
+      setDesktopServerExposureMutationError(message);
+    } finally {
+      setIsUpdatingTailscaleServe(false);
+    }
+  }, [desktopBridge]);
+
+  const handleOpenTailscaleConsent = useCallback(async () => {
+    const consentUrl = desktopServerExposureState?.tailscaleServeConsentUrl;
+    if (!desktopBridge || !consentUrl) return;
+    const opened = await desktopBridge.openExternal(consentUrl);
+    if (!opened) {
+      setDesktopServerExposureMutationError(
+        "Could not open Tailscale approval. Use Check again after approving HTTPS in Tailscale.",
+      );
+    }
+  }, [desktopBridge, desktopServerExposureState?.tailscaleServeConsentUrl]);
+
+  useEffect(() => {
+    if (desktopServerExposureState?.tailscaleServeStatus !== "https-consent-required") return;
+    const recheckOnFocus = () => {
+      void handleRecheckTailscaleServe();
+    };
+    window.addEventListener("focus", recheckOnFocus);
+    return () => window.removeEventListener("focus", recheckOnFocus);
+  }, [desktopServerExposureState?.tailscaleServeStatus, handleRecheckTailscaleServe]);
 
   const handleRevokeDesktopPairingLink = useCallback(async (id: string) => {
     setRevokingDesktopPairingLinkId(id);
@@ -2309,8 +2294,12 @@ export function ConnectionsSettings() {
         : visibleDesktopNetworkAdvertisedEndpoints,
     [tailscaleHttpsEndpoint, visibleDesktopNetworkAdvertisedEndpoints],
   );
+  const tailscaleServePresentation = presentTailscaleServe(
+    desktopServerExposureState,
+    tailscaleHttpsEndpoint?.status === "available" ? tailscaleHttpsEndpoint.httpBaseUrl : null,
+  );
   const isLocalBackendRemotelyReachable =
-    isLocalBackendNetworkAccessible || tailscaleHttpsEndpoint?.status === "available";
+    isLocalBackendNetworkAccessible || desktopServerExposureState?.tailscaleServeEffective === true;
   const defaultDesktopNetworkAdvertisedEndpoint = useMemo(
     () =>
       selectPairingEndpoint(visibleDesktopNetworkAdvertisedEndpoints, defaultAdvertisedEndpointKey),
@@ -2318,10 +2307,13 @@ export function ConnectionsSettings() {
   );
   const defaultDesktopAdvertisedEndpoint = useMemo(
     () =>
-      defaultDesktopNetworkAdvertisedEndpoint ??
-      selectPairingEndpoint(
-        tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : [],
-        defaultAdvertisedEndpointKey,
+      preferVerifiedTailscalePairingEndpoint(
+        tailscaleHttpsEndpoint,
+        defaultDesktopNetworkAdvertisedEndpoint ??
+          selectPairingEndpoint(
+            tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : [],
+            defaultAdvertisedEndpointKey,
+          ),
       ),
     [defaultAdvertisedEndpointKey, defaultDesktopNetworkAdvertisedEndpoint, tailscaleHttpsEndpoint],
   );
@@ -2847,7 +2839,7 @@ export function ConnectionsSettings() {
         {desktopWslState.enabled ? (
           <SettingsRow
             title="WSL only"
-            description="Stop the Windows backend and run only the WSL backend. Useful if you develop entirely inside WSL and don't want a second backend process. T3 Code restarts when you change this."
+            description="Stop the Windows backend and run only the WSL backend. Useful if you develop entirely inside WSL and don't want a second backend process. Solla Code restarts when you change this."
             className="bg-muted/20 pl-7 sm:pl-8"
             control={
               <Switch
@@ -2866,17 +2858,46 @@ export function ConnectionsSettings() {
   const renderTailscaleRow = () => (
     <SettingsRow
       title="Tailscale HTTPS"
-      description={
-        tailscaleHttpsEndpoint
-          ? tailscaleHttpsEndpoint.status === "available"
-            ? tailscaleHttpsEndpoint.httpBaseUrl
-            : "Use Tailscale Serve to expose this backend through a MagicDNS HTTPS URL."
-          : "Start Tailscale to set up HTTPS access through MagicDNS."
+      description={tailscaleServePresentation.description}
+      status={
+        desktopServerExposureState?.tailscaleServeRequested ? (
+          <span className="flex flex-wrap items-center gap-2">
+            <span
+              className={cn(
+                "text-xs",
+                tailscaleServePresentation.isError ? "text-destructive" : "text-muted-foreground",
+              )}
+            >
+              {tailscaleServePresentation.label}
+            </span>
+            {desktopServerExposureState.tailscaleServeConsentUrl ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void handleOpenTailscaleConsent()}
+                disabled={isUpdatingTailscaleServe}
+              >
+                Open Tailscale approval
+              </Button>
+            ) : null}
+            {tailscaleServePresentation.canRetry ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => void handleRecheckTailscaleServe()}
+                disabled={isUpdatingTailscaleServe}
+              >
+                <RefreshCwIcon aria-hidden className="size-3" />
+                {isUpdatingTailscaleServe ? "Checking…" : "Check again"}
+              </Button>
+            ) : null}
+          </span>
+        ) : null
       }
       control={
-        tailscaleHttpsEndpoint ? (
+        desktopServerExposureState ? (
           <Switch
-            checked={tailscaleHttpsEndpoint.status === "available"}
+            checked={desktopServerExposureState.tailscaleServeRequested}
             disabled={isUpdatingTailscaleServe}
             onCheckedChange={(checked) => {
               if (checked) {
@@ -3009,13 +3030,9 @@ export function ConnectionsSettings() {
                 {renderEndpointRows("endpoint-rail")}
                 {renderTailscaleRow()}
                 {renderWslRow()}
-                <CloudLinkRow canManageRelay={canManageRelay} />
               </>
             ) : (
-              <>
-                {renderDisabledNetworkAccessRow()}
-                <CloudLinkRow canManageRelay={canManageRelay} />
-              </>
+              <>{renderDisabledNetworkAccessRow()}</>
             )}
           </SettingsSection>
 
@@ -3058,8 +3075,8 @@ export function ConnectionsSettings() {
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "T3 Code will restart to expose this environment over the network."
-                    : "T3 Code will restart and limit this environment back to this machine."}
+                    ? "Solla Code will restart to expose this environment over the network."
+                    : "Solla Code will restart and limit this environment back to this machine."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -3117,15 +3134,15 @@ export function ConnectionsSettings() {
                 <AlertDialogDescription>
                   {pendingWslChange?.kind === "disable"
                     ? pendingWslChange.wasWslOnly
-                      ? "T3 Code will restart on the Windows backend. Threads and projects opened against WSL stay safe inside the distro and become available again when you re-enable WSL."
-                      : "The WSL backend will stop. Threads and projects opened against WSL stay safe inside the distro, but they'll be unavailable in T3 Code until you re-enable WSL."
+                      ? "Solla Code will restart on the Windows backend. Threads and projects opened against WSL stay safe inside the distro and become available again when you re-enable WSL."
+                      : "The WSL backend will stop. Threads and projects opened against WSL stay safe inside the distro, but they'll be unavailable in Solla Code until you re-enable WSL."
                     : pendingWslChange?.kind === "distro"
-                      ? "T3 Code will restart the WSL backend on the new distro. Sessions still running on the current distro will be interrupted."
+                      ? "Solla Code will restart the WSL backend on the new distro. Sessions still running on the current distro will be interrupted."
                       : pendingWslChange?.kind === "enable"
                         ? "Run the WSL backend alongside the Windows one, or stop the Windows backend and use only WSL? You can change this later from Settings."
                         : pendingWslChange?.nextValue
-                          ? "T3 Code will restart and start only the WSL backend. Your Windows-side projects won't be accessible until you turn this off again."
-                          : "T3 Code will restart and bring the Windows backend back up alongside WSL."}
+                          ? "Solla Code will restart and start only the WSL backend. Your Windows-side projects won't be accessible until you turn this off again."
+                          : "Solla Code will restart and bring the Windows backend back up alongside WSL."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -3211,7 +3228,7 @@ export function ConnectionsSettings() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Disable Tailscale HTTPS?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  T3 Code will restart the local backend without Tailscale Serve.
+                  Solla Code will restart the local backend without Tailscale Serve.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -3239,9 +3256,10 @@ export function ConnectionsSettings() {
             </AlertDialogPopup>
           </AlertDialog>
           <Dialog
-            open={pendingTailscaleServeEndpoint !== null}
+            open={isTailscaleServeSetupDialogOpen}
             onOpenChange={(open) => {
               if (isUpdatingTailscaleServe) return;
+              setIsTailscaleServeSetupDialogOpen(open);
               if (!open) setPendingTailscaleServeEndpoint(null);
             }}
           >
@@ -3249,8 +3267,9 @@ export function ConnectionsSettings() {
               <DialogHeader>
                 <DialogTitle>Set up Tailscale HTTPS?</DialogTitle>
                 <DialogDescription>
-                  T3 Code will restart the local backend with Tailscale Serve enabled and ask
-                  Tailscale to proxy HTTPS traffic to this backend.
+                  Solla Code will request private Tailscale Serve access and restart the local
+                  backend. If your tailnet has not approved HTTPS certificates yet, you will get a
+                  link to approve them. Funnel stays disabled.
                 </DialogDescription>
               </DialogHeader>
               <DialogPanel className="space-y-4">
@@ -3311,7 +3330,6 @@ export function ConnectionsSettings() {
             title="Administrative access"
             description="Pairing links and client-session management require the access:write scope for this backend."
           />
-          <CloudLinkRow canManageRelay={canManageRelay} />
         </SettingsSection>
       )}
 
@@ -3388,10 +3406,7 @@ export function ConnectionsSettings() {
             onRemove={handleRemoveSavedBackend}
           />
         ))}
-        <CloudRemoteEnvironmentRows
-          primaryEnvironmentId={primaryEnvironmentId}
-          savedEnvironments={savedEnvironments}
-        />
+        {savedEnvironments.length === 0 ? <EmptyRemoteEnvironments /> : null}
       </SettingsSection>
     </SettingsPageContainer>
   );

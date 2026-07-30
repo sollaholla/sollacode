@@ -135,6 +135,19 @@ type TestClaudeCapabilities = {
   readonly tokenSource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly accountUsage?: {
+    readonly rate_limits_available: boolean;
+    readonly rate_limits: {
+      readonly five_hour?: {
+        readonly utilization: number | null;
+        readonly resets_at: string | null;
+      } | null;
+      readonly seven_day?: {
+        readonly utilization: number | null;
+        readonly resets_at: string | null;
+      } | null;
+    } | null;
+  };
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -347,6 +360,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({
+                rateLimits: {
+                  rateLimits: {
+                    primary: {
+                      usedPercent: 42,
+                      windowDurationMins: 300,
+                      resetsAt: 1_800_000_000,
+                    },
+                  },
+                },
                 skills: [
                   {
                     name: "github:gh-fix-ci",
@@ -366,6 +388,16 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.auth.type, "chatgpt");
           assert.strictEqual(status.auth.label, "ChatGPT Pro 20x Subscription");
           assert.strictEqual(status.auth.email, "test@example.com");
+          assert.deepStrictEqual(status.accountUsage, {
+            rateLimits: {
+              primary: {
+                usedPercent: 42,
+                windowDurationMins: 300,
+                resetsAt: 1_800_000_000,
+              },
+            },
+          });
+          assert.strictEqual(status.accountUsageReportedAt, status.checkedAt);
           assert.deepStrictEqual(status.models, [
             {
               slug: "gpt-live-codex",
@@ -1813,7 +1845,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               assert.strictEqual(cursorProvider?.status, "disabled");
               assert.strictEqual(
                 cursorProvider?.message,
-                "Cursor is disabled in T3 Code settings.",
+                "Cursor is disabled in Solla Code settings.",
               );
               assert.strictEqual(cursorSpawned, false);
             }).pipe(Effect.provide(runtimeServices));
@@ -1828,7 +1860,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.enabled, false);
           assert.strictEqual(status.status, "disabled");
           assert.strictEqual(status.installed, false);
-          assert.strictEqual(status.message, "Codex is disabled in T3 Code settings.");
+          assert.strictEqual(status.message, "Codex is disabled in Solla Code settings.");
         }),
       );
     });
@@ -1856,6 +1888,52 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   stderr: "",
                   code: 0,
                 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
+        ),
+      );
+
+      it.effect("attaches structured Claude slash-usage windows to the health snapshot", () =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            defaultClaudeSettings,
+            claudeCapabilities({
+              accountUsage: {
+                rate_limits_available: true,
+                rate_limits: {
+                  five_hour: {
+                    utilization: 24,
+                    resets_at: "2026-07-29T22:00:00.000Z",
+                  },
+                  seven_day: {
+                    utilization: 46,
+                    resets_at: "2026-08-03T00:00:00.000Z",
+                  },
+                },
+              },
+            }),
+          );
+
+          assert.deepStrictEqual(status.accountUsage, {
+            rate_limits_available: true,
+            rate_limits: {
+              five_hour: {
+                utilization: 24,
+                resets_at: "2026-07-29T22:00:00.000Z",
+              },
+              seven_day: {
+                utilization: 46,
+                resets_at: "2026-08-03T00:00:00.000Z",
+              },
+            },
+          });
+          assert.strictEqual(status.accountUsageReportedAt, status.checkedAt);
+        }).pipe(
+          Effect.provide(
+            mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
               throw new Error(`Unexpected args: ${joined}`);
             }),
           ),

@@ -13,14 +13,6 @@ vi.mock("@legendapp/list/react", async () => {
     renderItem: (args: { item: { id: string } }) => ReactNode;
     ListHeaderComponent?: ReactNode;
     ListFooterComponent?: ReactNode;
-    anchoredEndSpace?: {
-      anchorIndex: number;
-      anchorMaxSize?: number;
-      anchorOffset?: number;
-      onReady?: (info: { anchorIndex: number }) => void;
-      onSizeChanged?: (size: number) => void;
-    };
-    contentInsetEndAdjustment?: number;
     className?: string;
     maintainScrollAtEnd?:
       | boolean
@@ -39,20 +31,17 @@ vi.mock("@legendapp/list/react", async () => {
           size?: boolean;
           shouldRestorePosition?: (item: { id: string }) => boolean;
         };
+    onWheel?: (event: { deltaY: number }) => void;
+    onTouchStart?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
+    onTouchMove?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
+    onTouchEnd?: () => void;
+    onTouchCancel?: () => void;
+    onPointerDown?: (event: { pointerType: string }) => void;
     ref?: Ref<LegendListRef>;
   }) => {
-    if (props.anchoredEndSpace) {
-      props.anchoredEndSpace.onSizeChanged?.(240);
-      props.anchoredEndSpace.onReady?.({ anchorIndex: props.anchoredEndSpace.anchorIndex });
-    }
     return (
       <div
         data-testid={legendListTestId}
-        data-anchor-index={props.anchoredEndSpace?.anchorIndex}
-        data-anchor-max-size={props.anchoredEndSpace?.anchorMaxSize}
-        data-anchor-offset={props.anchoredEndSpace?.anchorOffset}
-        data-anchor-on-ready={Boolean(props.anchoredEndSpace?.onReady)}
-        data-content-inset-end={props.contentInsetEndAdjustment}
         data-class-name={props.className}
         data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "enabled" : undefined}
         data-maintain-scroll-at-end-animated={
@@ -90,6 +79,11 @@ vi.mock("@legendapp/list/react", async () => {
             ? props.maintainVisibleContentPosition.size
             : undefined
         }
+        data-manual-wheel-handler={Boolean(props.onWheel)}
+        data-manual-touch-handler={Boolean(
+          props.onTouchStart && props.onTouchMove && props.onTouchEnd && props.onTouchCancel,
+        )}
+        data-manual-pointer-handler={Boolean(props.onPointerDown)}
       >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
@@ -121,6 +115,13 @@ function MockFileDiff(props: {
 vi.mock("@pierre/diffs/react", () => {
   return { FileDiff: MockFileDiff };
 });
+
+vi.mock("../../assets/assetUrls", () => ({
+  useAssetUrlState: () => ({
+    _tag: "Success" as const,
+    url: "https://environment.example/api/assets/signed/reference.png",
+  }),
+}));
 
 function matchMedia() {
   return {
@@ -190,12 +191,13 @@ function buildProps() {
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
     workspaceRoot: undefined,
-    anchorMessageId: null,
-    onAnchorReady: () => {},
-    onAnchorSizeChanged: () => {},
-    contentInsetEndAdjustment: 0,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
+    onCompactAndContinue: () => {},
+    isCompactAndContinueBusy: false,
+    resumableAssistantMessageId: null,
+    onResumeIncompleteTurn: () => {},
+    isResumeIncompleteTurnBusy: false,
   };
 }
 
@@ -223,6 +225,165 @@ function buildUserTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("labels compaction and continuation work explicitly without fake percentages", () => {
+    const compactingMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        workingStatusLabel="Compacting context"
+        timelineEntries={[]}
+      />,
+    );
+    expect(compactingMarkup).toContain("Compacting context");
+    expect(compactingMarkup).not.toContain("%");
+
+    const continuingMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        workingStatusLabel="Continuing conversation"
+        timelineEntries={[]}
+      />,
+    );
+    expect(continuingMarkup).toContain("Continuing conversation");
+  });
+
+  it("highlights only direct assistant low-context warnings as an accessible action", () => {
+    const compact = vi.fn();
+    const warningMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onCompactAndContinue={compact}
+        timelineEntries={[
+          {
+            id: "entry-low-context",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-low-context"),
+              role: "assistant",
+              text: "Context is low. I should compact before continuing.",
+              turnId: null,
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(warningMarkup).toContain('aria-label="Compact and continue conversation"');
+    expect(warningMarkup).toContain(">Context is low</button>");
+
+    const excludedMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-low-context-code",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-low-context-code"),
+              role: "assistant",
+              text: [
+                "> Context is low.",
+                "",
+                "```text",
+                "I'm running out of context",
+                "```",
+                "",
+                'The docs say "context is low" is a warning.',
+              ].join("\n"),
+              turnId: null,
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(excludedMarkup).not.toContain('aria-label="Compact and continue conversation"');
+
+    const userMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("I'm running out of context")]}
+      />,
+    );
+    expect(userMarkup).not.toContain('aria-label="Compact and continue conversation"');
+  });
+
+  it("renders an accessible Resume action directly under the eligible assistant message", () => {
+    const assistantMessageId = MessageId.make("message-incomplete");
+    const timelineEntries = [
+      {
+        id: "entry-incomplete",
+        kind: "message" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        message: {
+          id: assistantMessageId,
+          role: "assistant" as const,
+          text: "I completed the first part, but",
+          turnId: TurnId.make("turn-incomplete"),
+          createdAt: MESSAGE_CREATED_AT,
+          updatedAt: MESSAGE_CREATED_AT,
+          streaming: false,
+        },
+      },
+    ];
+
+    const readyMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={timelineEntries}
+        resumableAssistantMessageId={assistantMessageId}
+      />,
+    );
+    expect(readyMarkup).toContain('aria-label="Resume incomplete response"');
+    expect(readyMarkup).toContain(">Resume</button>");
+    expect(readyMarkup.indexOf("first part")).toBeLessThan(readyMarkup.indexOf(">Resume</button>"));
+
+    const pendingMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={timelineEntries}
+        resumableAssistantMessageId={assistantMessageId}
+        isResumeIncompleteTurnBusy
+      />,
+    );
+    expect(pendingMarkup).toContain('aria-label="Resuming incomplete response"');
+    expect(pendingMarkup).toContain('aria-busy="true"');
+    expect(pendingMarkup).toContain("disabled");
+    expect(pendingMarkup).toContain("Resuming…");
+  });
+
+  it("does not render Resume on a non-eligible assistant message", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-complete",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-complete"),
+              role: "assistant",
+              text: "Done.",
+              turnId: TurnId.make("turn-complete"),
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).not.toContain("Resume incomplete response");
+  });
+
   it("uses the larger leading inset only when the top fade is enabled", () => {
     const timelineEntries = [buildUserTimelineEntry("Hello")];
 
@@ -357,9 +518,28 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineMinimapInteractiveWidth(40, true)).toBe("22rem");
   });
 
-  it("anchors a sent attachment message using its measured height", () => {
-    const onAnchorReady = vi.fn();
-    const onAnchorSizeChanged = vi.fn();
+  it("disables LegendList live-follow after the user opts out during streaming", () => {
+    const timelineEntries = [buildUserTimelineEntry("Keep my reading position")];
+    const followingMarkup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} followEnd isWorking timelineEntries={timelineEntries} />,
+    );
+    const optedOutMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        followEnd={false}
+        isWorking
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    expect(followingMarkup).toContain('data-maintain-scroll-at-end="enabled"');
+    expect(optedOutMarkup).not.toContain('data-maintain-scroll-at-end="enabled"');
+    expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
+    expect(followingMarkup).toContain('data-manual-touch-handler="true"');
+    expect(followingMarkup).toContain('data-manual-pointer-handler="true"');
+  });
+
+  it("does not add synthetic end space for a sent attachment message", () => {
     const firstEntry = buildUserTimelineEntry("First prompt.");
     const secondEntry = {
       ...buildUserTimelineEntry("Newest prompt."),
@@ -380,29 +560,18 @@ describe("MessagesTimeline", () => {
       },
     };
     const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        anchorMessageId={secondEntry.message.id}
-        onAnchorReady={onAnchorReady}
-        onAnchorSizeChanged={onAnchorSizeChanged}
-        contentInsetEndAdjustment={144}
-        timelineEntries={[firstEntry, secondEntry]}
-      />,
+      <MessagesTimeline {...buildProps()} timelineEntries={[firstEntry, secondEntry]} />,
     );
 
-    expect(markup).toContain('data-anchor-index="1"');
-    expect(markup).toContain('data-anchor-offset="16"');
-    expect(markup).toContain('data-anchor-on-ready="true"');
-    expect(markup).not.toContain("data-anchor-max-size=");
-    expect(markup).toContain('data-content-inset-end="144"');
+    expect(markup).not.toContain("data-anchor-index=");
+    expect(markup).not.toContain("data-anchor-offset=");
+    expect(markup).not.toContain("data-content-inset-end=");
+    expect(markup).toContain('data-chat-timeline-bottom-inset="0"');
     expect(markup).toContain("[overflow-anchor:none]");
-    expect(markup).not.toContain('data-maintain-scroll-at-end="enabled"');
+    expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-maintain-visible-content-position="object"');
     expect(markup).toContain('data-maintain-visible-content-position-data="true"');
-    expect(markup).toContain('data-maintain-visible-content-position-size="false"');
-    expect(onAnchorReady).toHaveBeenCalledOnce();
-    expect(onAnchorReady).toHaveBeenCalledWith(secondEntry.message.id, 1);
-    expect(onAnchorSizeChanged).toHaveBeenCalledWith(secondEntry.message.id, 240);
+    expect(markup).toContain('data-maintain-visible-content-position-size="true"');
   });
 
   it("renders collapse controls for long user messages", () => {
@@ -551,6 +720,34 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+  });
+
+  it("renders a signed inline image preview beneath an image-read tool call", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-image-read",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-image-read",
+              createdAt: MESSAGE_CREATED_AT,
+              label: "Read File",
+              tone: "tool",
+              itemType: "dynamic_tool_call",
+              readImagePath: "/workspace/art/reference.png",
+            },
+          },
+        ]}
+        workspaceRoot="/workspace"
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Image read preview: workspace/art/reference.png"');
+    expect(markup).toContain('src="https://environment.example/api/assets/signed/reference.png"');
+    expect(markup).toContain("workspace/art/reference.png");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {

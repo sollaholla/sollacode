@@ -13,7 +13,13 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  WORKSPACE_RASTER_IMAGE_MAX_BYTES,
+  detectWorkspaceRasterMimeType,
+  issueAssetUrl,
+  resolveAsset,
+} from "./AssetAccess.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-asset-access-test-",
@@ -29,6 +35,16 @@ const testLayer = Layer.mergeAll(
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 describe("AssetAccess", () => {
+  it("detects supported raster signatures without trusting extensions", () => {
+    expect(
+      detectWorkspaceRasterMimeType(
+        new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      ),
+    ).toBe("image/png");
+    expect(detectWorkspaceRasterMimeType(new Uint8Array([0xff, 0xd8, 0xff]))).toBe("image/jpeg");
+    expect(detectWorkspaceRasterMimeType(new TextEncoder().encode("not an image"))).toBeNull();
+  });
+
   it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -157,8 +173,9 @@ describe("AssetAccess", () => {
       const imagePath = path.join(assetsDirectory, "icon.png");
       const siblingPath = path.join(assetsDirectory, "other.png");
       yield* fileSystem.makeDirectory(assetsDirectory, { recursive: true });
-      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
-      yield* fileSystem.writeFile(siblingPath, new Uint8Array([137, 80, 78, 71]));
+      const pngSignature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      yield* fileSystem.writeFile(imagePath, pngSignature);
+      yield* fileSystem.writeFile(siblingPath, pngSignature);
       const canonicalImagePath = yield* fileSystem.realPath(imagePath);
 
       const result = yield* issueAssetUrl({
@@ -179,6 +196,46 @@ describe("AssetAccess", () => {
       });
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
       expect(yield* resolveAsset(token, "../icon.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects mismatched and oversized raster workspace assets", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-invalid-image-workspace-",
+      });
+      const mismatchedPath = path.join(root, "mismatched.png");
+      yield* fileSystem.writeFileString(mismatchedPath, "not a png");
+
+      const mismatched = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: mismatchedPath,
+        },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+      expect(mismatched._tag).toBe("AssetPreviewMimeTypeValidationError");
+
+      const oversizedPath = path.join(root, "oversized.png");
+      const oversizedBytes = new Uint8Array(WORKSPACE_RASTER_IMAGE_MAX_BYTES + 1);
+      oversizedBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+      yield* fileSystem.writeFile(oversizedPath, oversizedBytes);
+      const oversized = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: oversizedPath,
+        },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+      expect(oversized).toMatchObject({
+        _tag: "AssetPreviewFileTooLargeError",
+        byteLength: WORKSPACE_RASTER_IMAGE_MAX_BYTES + 1,
+        maxByteLength: WORKSPACE_RASTER_IMAGE_MAX_BYTES,
+      });
     }).pipe(Effect.provide(testLayer)),
   );
 

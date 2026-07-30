@@ -45,6 +45,7 @@ const serverExposureLayer = Layer.succeed(DesktopServerExposure.DesktopServerExp
   configureFromSettings: () => Effect.die("unexpected configureFromSettings"),
   setMode: () => Effect.die("unexpected setMode"),
   setTailscaleServeEnabled: () => Effect.die("unexpected setTailscaleServeEnabled"),
+  reconcileTailscaleServe: Effect.die("unexpected reconcileTailscaleServe"),
   getAdvertisedEndpoints: Effect.succeed([]),
 } satisfies DesktopServerExposure.DesktopServerExposure["Service"]);
 

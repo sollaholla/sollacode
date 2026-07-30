@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
@@ -17,6 +18,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
   OrchestrationThreadShell,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   ProjectCreateCommand,
   ThreadMetaUpdatedPayload,
   ThreadTurnStartCommand,
@@ -33,6 +35,7 @@ const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateComma
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -223,6 +226,69 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
     assert.strictEqual(parsed.modelSelection, undefined);
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("accepts a client image upload one byte below 2 MiB", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-turn-image-valid",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-image-valid",
+        role: "user",
+        text: "inspect this",
+        attachments: [
+          {
+            type: "image",
+            name: "image.png",
+            mimeType: "image/png",
+            sizeBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+            dataUrl: "data:image/png;base64,AA==",
+          },
+        ],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    assert.strictEqual(
+      parsed.type === "thread.turn.start" ? parsed.message.attachments[0]?.sizeBytes : undefined,
+      2 * 1024 * 1024 - 1,
+    );
+  }),
+);
+
+it.effect("rejects a client image upload at the exact 2 MiB boundary", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.turn.start",
+        commandId: "cmd-turn-image-invalid",
+        threadId: "thread-1",
+        message: {
+          messageId: "msg-image-invalid",
+          role: "user",
+          text: "inspect this",
+          attachments: [
+            {
+              type: "image",
+              name: "image.png",
+              mimeType: "image/png",
+              sizeBytes: 2 * 1024 * 1024,
+              dataUrl: "data:image/png;base64,AA==",
+            },
+          ],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 
@@ -717,6 +783,20 @@ it.effect("decodes latest turn source proposed plan metadata when present", () =
       threadId: "thread-1",
       planId: "plan-1",
     });
+  }),
+);
+
+it.effect("decodes an unexpectedly stopped turn as incomplete", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationLatestTurn({
+      turnId: "turn-incomplete",
+      state: "incomplete",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:01.000Z",
+      completedAt: "2026-01-01T00:00:02.000Z",
+      assistantMessageId: "message-partial",
+    });
+    assert.strictEqual(parsed.state, "incomplete");
   }),
 );
 

@@ -115,6 +115,21 @@ describe("ProviderSessionStartInput", () => {
 });
 
 describe("ProviderSendTurnInput", () => {
+  it("validates the auto-compaction threshold at the provider boundary", () => {
+    expect(
+      decodeProviderSendTurnInput({
+        threadId: "thread-1",
+        autoCompactionThresholdPercentage: 50,
+      }).autoCompactionThresholdPercentage,
+    ).toBe(50);
+    expect(() =>
+      decodeProviderSendTurnInput({
+        threadId: "thread-1",
+        autoCompactionThresholdPercentage: 49,
+      }),
+    ).toThrow();
+  });
+
   it("accepts codex modelSelection", () => {
     const parsed = decodeProviderSendTurnInput({
       threadId: "thread-1",

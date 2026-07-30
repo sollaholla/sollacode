@@ -13,10 +13,11 @@ import * as Path from "effect/Path";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
-import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
+import { isNightlyDesktopVersion } from "./DesktopReleaseChannel.ts";
 
 export interface MakeDesktopEnvironmentInput {
   readonly dirname: string;
+  readonly developmentRoot?: string;
   readonly homeDirectory: string;
   readonly platform: NodeJS.Platform;
   readonly processArch: string;
@@ -54,7 +55,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly backendEntryPath: string;
     readonly backendCwd: string;
     readonly preloadPath: string;
-    readonly appUpdateYmlPath: string;
     readonly devServerUrl: Option.Option<URL>;
     readonly devRemoteT3ServerEntryPath: Option.Option<string>;
     readonly configuredBackendPort: Option.Option<number>;
@@ -76,7 +76,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = "Solla Code";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -97,7 +97,7 @@ function resolveDesktopAppBranding(input: {
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
+    displayName: APP_BASE_NAME,
   };
 }
 
@@ -148,8 +148,12 @@ const make = Effect.fn("desktop.environment.make")(function* (
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
   const configuredBaseDir = config.t3Home;
-  const baseDir = Option.getOrElse(configuredBaseDir, () => path.join(homeDirectory, ".t3"));
-  const rootDir = path.resolve(input.dirname, "../../..");
+  const baseDir = Option.getOrElse(configuredBaseDir, () =>
+    path.join(homeDirectory, input.isPackaged ? ".solla-code" : ".t3"),
+  );
+  const rootDir = input.developmentRoot
+    ? path.resolve(input.developmentRoot, "../..")
+    : path.resolve(input.dirname, "../../..");
   const appRoot = input.isPackaged ? input.appPath : rootDir;
   const branding = resolveDesktopAppBranding({
     isDevelopment,
@@ -160,8 +164,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
     baseDir,
     isDevelopment && Option.isNone(configuredBaseDir) ? "dev" : "userdata",
   );
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const userDataDirName = isDevelopment ? "t3code-dev" : "solla-code";
+  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "solla-code";
   const resourcesPath = input.resourcesPath;
 
   return DesktopEnvironment.of({
@@ -189,9 +193,6 @@ const make = Effect.fn("desktop.environment.make")(function* (
     backendEntryPath: path.join(appRoot, "apps/server/dist/bin.mjs"),
     backendCwd: input.isPackaged ? homeDirectory : appRoot,
     preloadPath: path.join(input.dirname, "preload.cjs"),
-    appUpdateYmlPath: input.isPackaged
-      ? path.join(resourcesPath, "app-update.yml")
-      : path.join(input.appPath, "dev-app-update.yml"),
     devServerUrl,
     devRemoteT3ServerEntryPath: config.devRemoteT3ServerEntryPath,
     configuredBackendPort: config.configuredBackendPort,
@@ -201,13 +202,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      isDevelopment ? "com.t3tools.t3code.dev" : "com.sollacode.app",
     ),
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "solla-code.desktop",
+    linuxWmClass: isDevelopment ? "t3code-dev" : "solla-code",
     userDataDirName,
     legacyUserDataDirName,
-    defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),
+    defaultDesktopSettings: DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
     runtimeInfo: resolveDesktopRuntimeInfo({
       platform: input.platform,
       processArch: input.processArch,
@@ -241,6 +242,12 @@ const make = Effect.fn("desktop.environment.make")(function* (
     resolveResourcePathCandidates: (fileName) => [
       path.join(input.dirname, "../resources", fileName),
       path.join(input.dirname, "../prod-resources", fileName),
+      ...(input.developmentRoot
+        ? [
+            path.join(input.developmentRoot, "resources", fileName),
+            path.join(input.developmentRoot, "prod-resources", fileName),
+          ]
+        : []),
       path.join(resourcesPath, "resources", fileName),
       path.join(resourcesPath, fileName),
     ],

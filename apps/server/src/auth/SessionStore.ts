@@ -367,6 +367,10 @@ export class SessionStore extends Context.Service<
       readonly client?: AuthClientMetadata;
       readonly proofKeyThumbprint?: string;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
+    readonly issueDesktopBootstrapAccessToken: (input: {
+      readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+      readonly client: AuthClientMetadata;
+    }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
@@ -402,6 +406,9 @@ export class SessionStore extends Context.Service<
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
+const DESKTOP_BOOTSTRAP_SESSION_ID = AuthSessionId.make("desktop-bootstrap-access-token");
+const DESKTOP_BOOTSTRAP_SUBJECT = "desktop-bootstrap";
+const DESKTOP_BOOTSTRAP_CLIENT_LABEL = "Solla Code Desktop";
 
 const SessionClaims = Schema.Struct({
   v: Schema.Literal(1),
@@ -571,63 +578,140 @@ export const make = Effect.gen(function* () {
     );
 
   const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
-  const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
-    function* (input) {
-      const sessionId = AuthSessionId.make(
-        yield* crypto.randomUUIDv4.pipe(
-          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
-        ),
-      );
-      const issuedAt = yield* DateTime.now;
-      const expiresAt = DateTime.add(issuedAt, {
-        milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
-      });
-      const claims: SessionClaims = {
-        v: 1,
-        kind: "session",
-        sid: sessionId,
-        sub: input?.subject ?? "browser",
-        scopes: input?.scopes ?? AuthStandardClientScopes,
-        method: input?.method ?? "browser-session-cookie",
-        ...(input?.proofKeyThumbprint ? { jkt: input.proofKeyThumbprint } : {}),
-        iat: issuedAt.epochMilliseconds,
-        exp: expiresAt.epochMilliseconds,
-      };
+  const issueSession = Effect.fn("SessionStore.issueSession")(function* (
+    input:
+      | {
+          readonly kind: "random";
+          readonly ttl?: Duration.Duration;
+          readonly subject?: string;
+          readonly method?: ServerAuthSessionMethod;
+          readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
+          readonly client?: AuthClientMetadata;
+          readonly proofKeyThumbprint?: string;
+        }
+      | {
+          readonly kind: "desktop-bootstrap";
+          readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+          readonly client: AuthClientMetadata;
+        },
+  ) {
+    const sessionId =
+      input.kind === "desktop-bootstrap"
+        ? DESKTOP_BOOTSTRAP_SESSION_ID
+        : AuthSessionId.make(
+            yield* crypto.randomUUIDv4.pipe(
+              Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+            ),
+          );
+    const issuedAt = yield* DateTime.now;
+    const expiresAt = DateTime.add(issuedAt, {
+      milliseconds: Duration.toMillis(
+        input.kind === "random" ? (input.ttl ?? DEFAULT_SESSION_TTL) : DEFAULT_SESSION_TTL,
+      ),
+    });
+    const claims: SessionClaims = {
+      v: 1,
+      kind: "session",
+      sid: sessionId,
+      sub:
+        input.kind === "desktop-bootstrap"
+          ? DESKTOP_BOOTSTRAP_SUBJECT
+          : (input.subject ?? "browser"),
+      scopes: input.scopes ?? AuthStandardClientScopes,
+      method:
+        input.kind === "desktop-bootstrap"
+          ? "bearer-access-token"
+          : (input.method ?? "browser-session-cookie"),
+      ...(input.kind === "random" && input.proofKeyThumbprint
+        ? { jkt: input.proofKeyThumbprint }
+        : {}),
+      iat: issuedAt.epochMilliseconds,
+      exp: expiresAt.epochMilliseconds,
+    };
 
-      const encodedPayload = yield* encodeClaims(claims).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError(
-          (cause) =>
-            new SessionCredentialIssueError({
+    const encodedPayload = yield* encodeClaims(claims).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError(
+        (cause) =>
+          new SessionCredentialIssueError({
+            sessionId,
+            cause: new SessionClaimsEncodingError({
               sessionId,
-              cause: new SessionClaimsEncodingError({
-                sessionId,
-                operation: "encode_session_claims",
-                cause,
-              }),
+              operation: "encode_session_claims",
+              cause,
             }),
-        ),
-      );
-      const signature = signPayload(encodedPayload, signingSecret);
-      const client = input?.client ?? createDefaultClientMetadata();
-      yield* authSessions
-        .create({
-          sessionId,
-          subject: claims.sub,
-          scopes: claims.scopes,
-          method: claims.method,
-          client: {
-            label: client.label ?? null,
-            ipAddress: client.ipAddress ?? null,
-            userAgent: client.userAgent ?? null,
-            deviceType: client.deviceType,
-            os: client.os ?? null,
-            browser: client.browser ?? null,
-          },
-          issuedAt,
-          expiresAt,
-        })
+          }),
+      ),
+    );
+    const signature = signPayload(encodedPayload, signingSecret);
+    const client = input.client ?? createDefaultClientMetadata();
+    const persistedSession = {
+      sessionId,
+      subject: claims.sub,
+      scopes: claims.scopes,
+      method: claims.method,
+      client: {
+        label: client.label ?? null,
+        ipAddress: client.ipAddress ?? null,
+        userAgent: client.userAgent ?? null,
+        deviceType: client.deviceType,
+        os: client.os ?? null,
+        browser: client.browser ?? null,
+      },
+      issuedAt,
+      expiresAt,
+    };
+    yield* (
+      input.kind === "desktop-bootstrap"
+        ? authSessions.upsert(persistedSession)
+        : authSessions.create(persistedSession)
+    ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+
+    if (input.kind === "desktop-bootstrap") {
+      const connectedSessions = yield* Ref.get(connectedSessionsRef);
+      const activeSessions = yield* authSessions
+        .listActive({ now: issuedAt })
         .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+      const disconnectedLegacySessionIds = activeSessions
+        .filter(
+          (session) =>
+            session.sessionId !== sessionId &&
+            session.subject === DESKTOP_BOOTSTRAP_SUBJECT &&
+            session.method === "bearer-access-token" &&
+            session.client.label === DESKTOP_BOOTSTRAP_CLIENT_LABEL &&
+            session.client.deviceType === "desktop" &&
+            !connectedSessions.has(session.sessionId),
+        )
+        .map((session) => session.sessionId);
+      if (disconnectedLegacySessionIds.length > 0) {
+        const revokedAt = issuedAt;
+        const revokedSessionIds = yield* Effect.filter(
+          disconnectedLegacySessionIds,
+          (legacySessionId) =>
+            authSessions
+              .revoke({
+                sessionId: legacySessionId,
+                revokedAt,
+              })
+              .pipe(
+                Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })),
+              ),
+        );
+        yield* Effect.forEach(revokedSessionIds, emitRemoved, {
+          concurrency: "unbounded",
+          discard: true,
+        });
+      }
+    }
+
+    if (input.kind === "desktop-bootstrap") {
+      const stableSession = yield* loadActiveSession(sessionId).pipe(
+        Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })),
+      );
+      if (Option.isSome(stableSession)) {
+        yield* emitUpsert(stableSession.value);
+      }
+    } else {
       yield* emitUpsert(
         toAuthClientSession({
           sessionId,
@@ -641,18 +725,31 @@ export const make = Effect.gen(function* () {
           connected: false,
         }),
       );
+    }
 
-      return {
-        sessionId,
-        token: `${encodedPayload}.${signature}`,
-        method: claims.method,
-        client,
-        expiresAt: expiresAt,
-        scopes: claims.scopes,
-        ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
-      } satisfies IssuedSession;
-    },
-  );
+    return {
+      sessionId,
+      token: `${encodedPayload}.${signature}`,
+      method: claims.method,
+      client,
+      expiresAt: expiresAt,
+      scopes: claims.scopes,
+      ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
+    } satisfies IssuedSession;
+  });
+
+  const issue: SessionStore["Service"]["issue"] = (input) =>
+    issueSession({
+      kind: "random",
+      ...input,
+    });
+
+  const issueDesktopBootstrapAccessToken: SessionStore["Service"]["issueDesktopBootstrapAccessToken"] =
+    (input) =>
+      issueSession({
+        kind: "desktop-bootstrap",
+        ...input,
+      });
 
   const verify: SessionStore["Service"]["verify"] = Effect.fn("SessionStore.verify")(
     function* (token) {
@@ -901,6 +998,7 @@ export const make = Effect.gen(function* () {
   return SessionStore.of({
     cookieName,
     issue,
+    issueDesktopBootstrapAccessToken,
     verify,
     issueWebSocketToken,
     verifyWebSocketToken,

@@ -60,13 +60,7 @@ function toSavedConnection(
     httpBaseUrl,
     wsBaseUrl,
     bearerToken: authorization?._tag === "Bearer" ? authorization.token : null,
-    ...(environment.relayManaged
-      ? {
-          authenticationMethod: "dpop" as const,
-          relayManaged: true as const,
-          ...(authorization?._tag === "Dpop" ? { dpopAccessToken: authorization.accessToken } : {}),
-        }
-      : { authenticationMethod: "bearer" as const }),
+    authenticationMethod: "bearer",
   };
 }
 

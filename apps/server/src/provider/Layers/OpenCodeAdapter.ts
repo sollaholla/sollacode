@@ -29,6 +29,11 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import {
+  hasProviderOverloadStatus,
+  providerOverloadExhaustedMessage,
+  providerOverloadRetryReason,
+} from "../providerOverloadRetry.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -509,6 +514,17 @@ function sessionErrorMessage(error: unknown): string {
   return typeof message === "string" && message.trim().length > 0
     ? message
     : "OpenCode session failed.";
+}
+
+export function openCodeOverloadRetryReason(input: {
+  readonly attempt: number;
+  readonly error: {
+    readonly statusCode?: number | undefined;
+  };
+}): string | undefined {
+  return input.error.statusCode === 529
+    ? providerOverloadRetryReason({ attempt: input.attempt })
+    : undefined;
 }
 
 function updateProviderSession(
@@ -1032,6 +1048,27 @@ export function makeOpenCodeAdapter(
           break;
         }
 
+        case "session.next.retried": {
+          const reason = openCodeOverloadRetryReason(event.properties);
+          if (!reason) {
+            break;
+          }
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId,
+              raw: event,
+            })),
+            type: "session.state.changed",
+            payload: {
+              state: "running",
+              reason,
+              detail: event.properties,
+            },
+          });
+          break;
+        }
+
         case "session.status": {
           if (event.properties.status.type === "busy") {
             yield* updateProviderSession(context, {
@@ -1075,7 +1112,10 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.error": {
-          const message = sessionErrorMessage(event.properties.error);
+          const providerMessage = sessionErrorMessage(event.properties.error);
+          const message = hasProviderOverloadStatus(event.properties.error)
+            ? providerOverloadExhaustedMessage(providerMessage)
+            : providerMessage;
           const activeTurnId = context.activeTurnId;
           context.activeTurnId = undefined;
           yield* updateProviderSession(

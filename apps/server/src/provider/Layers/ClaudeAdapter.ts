@@ -13,6 +13,7 @@ import {
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
+  type Query,
   type SDKMessage,
   type SDKControlGetContextUsageResponse,
   type SDKResultMessage,
@@ -72,6 +73,10 @@ import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import {
+  providerOverloadExhaustedMessage,
+  providerOverloadRetryReason,
+} from "../providerOverloadRetry.ts";
 import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -201,6 +206,12 @@ interface ClaudeSessionContext {
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
+  lastOverloadRetry:
+    | {
+        readonly attempt: number;
+        readonly maxRetries: number;
+      }
+    | undefined;
   stopped: boolean;
 }
 
@@ -209,6 +220,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly applyFlagSettings: Query["applyFlagSettings"];
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   readonly close: () => void;
 }
@@ -303,9 +315,25 @@ function resultErrorsText(result: SDKResultMessage): string {
     : "";
 }
 
-function isInterruptedResult(result: SDKResultMessage): boolean {
+function isClaudeUserAbortDiagnostic(result: SDKResultMessage): boolean {
+  const raw = result as unknown as Record<string, unknown>;
+  const terminalReason = typeof raw.terminal_reason === "string" ? raw.terminal_reason : "";
+  const errors = resultErrorsText(result);
+  return (
+    result.subtype === "error_during_execution" &&
+    terminalReason === "aborted_streaming" &&
+    errors.includes("[ede_diagnostic]") &&
+    errors.includes("result_type=user")
+  );
+}
+
+export function isClaudeInterruptedResult(result: SDKResultMessage): boolean {
   const errors = resultErrorsText(result);
   if (errors.includes("interrupt")) {
+    return true;
+  }
+
+  if (isClaudeUserAbortDiagnostic(result)) {
     return true;
   }
 
@@ -354,6 +382,24 @@ function selectedClaudeContextWindow(
     default:
       return undefined;
   }
+}
+
+export function resolveAutoCompactionTokenThreshold(input: {
+  readonly maxTokens: number | undefined;
+  readonly thresholdPercentage: number | undefined;
+}): number | undefined {
+  if (
+    input.maxTokens === undefined ||
+    input.thresholdPercentage === undefined ||
+    !Number.isFinite(input.maxTokens) ||
+    !Number.isInteger(input.thresholdPercentage) ||
+    input.maxTokens <= 0 ||
+    input.thresholdPercentage < 50 ||
+    input.thresholdPercentage > 95
+  ) {
+    return undefined;
+  }
+  return Math.floor((input.maxTokens * input.thresholdPercentage) / 100);
 }
 
 function finiteNonNegativeInteger(value: unknown): number | undefined {
@@ -1000,7 +1046,7 @@ function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStat
   }
 
   const errors = resultErrorsText(result);
-  if (isInterruptedResult(result)) {
+  if (isClaudeInterruptedResult(result)) {
     return "interrupted";
   }
   if (errors.includes("cancel")) {
@@ -2554,7 +2600,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const providerErrorMessage =
+      message.subtype === "success" || isClaudeUserAbortDiagnostic(message)
+        ? undefined
+        : message.errors[0];
+    const overloadRetriesExhausted =
+      status === "failed" &&
+      context.lastOverloadRetry !== undefined &&
+      context.lastOverloadRetry.attempt >= context.lastOverloadRetry.maxRetries;
+    const errorMessage = overloadRetriesExhausted
+      ? providerOverloadExhaustedMessage(providerErrorMessage)
+      : providerErrorMessage;
 
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
@@ -2764,12 +2820,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // warning row spammed the work log (10 rows during a 502 storm);
         // the terminal result/error path reports the actual failure. Keep
         // the session visibly alive instead.
+        if (message.error_status === 529) {
+          context.lastOverloadRetry = {
+            attempt: message.attempt,
+            maxRetries: message.max_retries,
+          };
+        }
         yield* offerRuntimeEvent({
           ...base,
           type: "session.state.changed",
           payload: {
             state: "running",
-            reason: `api_retry:${message.attempt}/${message.max_retries}`,
+            reason:
+              message.error_status === 529
+                ? providerOverloadRetryReason({
+                    attempt: message.attempt,
+                    maxAttempts: message.max_retries,
+                    delayMs: message.retry_delay_ms,
+                  })
+                : `api_retry:${message.attempt}/${message.max_retries}`,
+            detail: message,
           },
         });
         return;
@@ -3493,6 +3563,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const descriptors = getProviderOptionDescriptors({ caps });
       const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
       const initialContextWindow = selectedClaudeContextWindow(modelSelection);
+      const autoCompactWindow = resolveAutoCompactionTokenThreshold({
+        maxTokens: initialContextWindow,
+        thresholdPercentage: input.autoCompactionThresholdPercentage,
+      });
       const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
       const effort = resolveClaudeEffort(caps, rawEffort) ?? null;
       const fastModeSupported = descriptors.some(
@@ -3519,6 +3593,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
         ...(ultracode ? { ultracode: true } : {}),
+        ...(autoCompactWindow !== undefined ? { autoCompactEnabled: true, autoCompactWindow } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       const queryOptions: ClaudeQueryOptions = {
@@ -3640,6 +3715,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
+        lastOverloadRetry: undefined,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3752,6 +3828,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     }
 
+    const autoCompactWindow = resolveAutoCompactionTokenThreshold({
+      maxTokens: selectedClaudeContextWindow(modelSelection) ?? context.lastKnownContextWindow,
+      thresholdPercentage: input.autoCompactionThresholdPercentage,
+    });
+    if (autoCompactWindow !== undefined) {
+      yield* Effect.tryPromise({
+        try: () =>
+          context.query.applyFlagSettings({
+            autoCompactEnabled: true,
+            autoCompactWindow,
+          }),
+        catch: (cause) => toRequestError(input.threadId, "turn/applyAutoCompactionSettings", cause),
+      });
+    }
+
     // Apply interaction mode by switching the SDK's permission mode.
     // "plan" maps directly to the SDK's "plan" permission mode;
     // "default" restores the session's original permission mode.
@@ -3781,6 +3872,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
 
       const updatedAt = yield* nowIso;
+      context.lastOverloadRetry = undefined;
       context.turnState = turnState;
       context.session = {
         ...context.session,

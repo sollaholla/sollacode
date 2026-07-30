@@ -5,6 +5,7 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
+  OrchestrationMessageInputOrigin,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -72,6 +73,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    inputOrigin: Schema.NullOr(OrchestrationMessageInputOrigin),
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
@@ -189,11 +191,13 @@ function mapLatestTurn(
     state:
       row.state === "error"
         ? "error"
-        : row.state === "interrupted"
-          ? "interrupted"
-          : row.state === "completed"
-            ? "completed"
-            : "running",
+        : row.state === "incomplete"
+          ? "incomplete"
+          : row.state === "interrupted"
+            ? "interrupted"
+            : row.state === "completed"
+              ? "completed"
+              : "running",
     requestedAt: row.requestedAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
@@ -427,6 +431,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          input_origin AS "inputOrigin",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -588,8 +593,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
-        WHERE threads.latest_turn_id IS NOT NULL
+          AND turns.turn_id = COALESCE(
+            threads.latest_turn_id,
+            (
+              SELECT candidate.turn_id
+              FROM projection_turns candidate
+              WHERE candidate.thread_id = threads.thread_id
+                AND candidate.turn_id IS NOT NULL
+              ORDER BY COALESCE(candidate.started_at, candidate.requested_at) DESC, candidate.row_id DESC
+              LIMIT 1
+            )
+          )
         ORDER BY turns.thread_id ASC
       `,
   });
@@ -612,10 +626,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
+          AND turns.turn_id = COALESCE(
+            threads.latest_turn_id,
+            (
+              SELECT candidate.turn_id
+              FROM projection_turns candidate
+              WHERE candidate.thread_id = threads.thread_id
+                AND candidate.turn_id IS NOT NULL
+              ORDER BY COALESCE(candidate.started_at, candidate.requested_at) DESC, candidate.row_id DESC
+              LIMIT 1
+            )
+          )
         WHERE threads.deleted_at IS NULL
           AND threads.archived_at IS NULL
-          AND threads.latest_turn_id IS NOT NULL
         ORDER BY turns.thread_id ASC
       `,
   });
@@ -638,10 +661,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
+          AND turns.turn_id = COALESCE(
+            threads.latest_turn_id,
+            (
+              SELECT candidate.turn_id
+              FROM projection_turns candidate
+              WHERE candidate.thread_id = threads.thread_id
+                AND candidate.turn_id IS NOT NULL
+              ORDER BY COALESCE(candidate.started_at, candidate.requested_at) DESC, candidate.row_id DESC
+              LIMIT 1
+            )
+          )
         WHERE threads.deleted_at IS NULL
           AND threads.archived_at IS NOT NULL
-          AND threads.latest_turn_id IS NOT NULL
         ORDER BY turns.thread_id ASC
       `,
   });
@@ -794,6 +826,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          input_origin AS "inputOrigin",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -886,7 +919,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
+          AND turns.turn_id = COALESCE(
+            threads.latest_turn_id,
+            (
+              SELECT candidate.turn_id
+              FROM projection_turns candidate
+              WHERE candidate.thread_id = threads.thread_id
+                AND candidate.turn_id IS NOT NULL
+              ORDER BY COALESCE(candidate.started_at, candidate.requested_at) DESC, candidate.row_id DESC
+              LIMIT 1
+            )
+          )
         WHERE threads.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
           AND threads.archived_at IS NULL
@@ -1065,6 +1108,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   id: row.messageId,
                   role: row.role,
                   text: row.text,
+                  ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
                   streaming: row.isStreaming === 1,
@@ -1136,11 +1180,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   state:
                     row.state === "error"
                       ? "error"
-                      : row.state === "interrupted"
-                        ? "interrupted"
-                        : row.state === "completed"
-                          ? "completed"
-                          : "running",
+                      : row.state === "incomplete"
+                        ? "incomplete"
+                        : row.state === "interrupted"
+                          ? "interrupted"
+                          : row.state === "completed"
+                            ? "completed"
+                            : "running",
                   requestedAt: row.requestedAt,
                   startedAt: row.startedAt,
                   completedAt: row.completedAt,
@@ -2027,6 +2073,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             id: row.messageId,
             role: row.role,
             text: row.text,
+            ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
             turnId: row.turnId,
             streaming: row.isStreaming === 1,
             createdAt: row.createdAt,

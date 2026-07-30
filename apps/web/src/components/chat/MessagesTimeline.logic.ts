@@ -7,7 +7,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import {
+  type MessageId,
+  type OrchestrationLatestTurn,
+  type OrchestrationSession,
+  type TurnId,
+} from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -23,6 +28,13 @@ export interface TimelineEndState {
 
 export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boolean | undefined {
   return state?.isNearEnd ?? state?.isAtEnd;
+}
+
+export function shouldMaintainTimelineScrollAtEnd(input: {
+  readonly hasAnchoredEndSpace: boolean;
+  readonly followEnd: boolean;
+}): boolean {
+  return !input.hasAnchoredEndSpace && input.followEnd;
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
@@ -221,6 +233,59 @@ export function resolveAssistantMessageCopyState({
   };
 }
 
+/**
+ * Identify the one assistant message that can safely offer a same-thread
+ * resume. A stopped provider session means the runtime exited without a
+ * normal ready/completed transition. A settled turn that still has a
+ * streaming assistant message is also internally inconsistent and therefore
+ * incomplete. Explicit user interruption and terminal errors are excluded.
+ */
+export function deriveResumableAssistantMessageId(input: {
+  messages: ReadonlyArray<ChatMessage>;
+  latestTurn: OrchestrationLatestTurn | null;
+  session: Pick<OrchestrationSession, "status" | "activeTurnId"> | null;
+}): MessageId | null {
+  const { latestTurn, session } = input;
+  if (!latestTurn || !session || latestTurn.state === "running" || latestTurn.state === "error") {
+    return null;
+  }
+  if (session.status === "running" || session.status === "starting" || session.activeTurnId) {
+    return null;
+  }
+  if (latestTurn.state === "interrupted") {
+    return null;
+  }
+
+  const candidate =
+    (latestTurn.assistantMessageId
+      ? input.messages.find(
+          (message) =>
+            message.id === latestTurn.assistantMessageId &&
+            message.role === "assistant" &&
+            message.turnId === latestTurn.turnId,
+        )
+      : undefined) ??
+    input.messages.findLast(
+      (message) => message.role === "assistant" && message.turnId === latestTurn.turnId,
+    );
+  if (!candidate) {
+    return null;
+  }
+
+  const candidateIndex = input.messages.lastIndexOf(candidate);
+  if (
+    candidateIndex < 0 ||
+    input.messages.slice(candidateIndex + 1).some((message) => message.role === "user")
+  ) {
+    return null;
+  }
+
+  const providerExitedUnexpectedly = latestTurn.state === "incomplete";
+  const settledStreamingMessage =
+    latestTurn.state === "completed" && candidate.streaming && session.status !== "error";
+  return providerExitedUnexpectedly || settledStreamingMessage ? candidate.id : null;
+}
+
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;
@@ -368,6 +433,8 @@ function deriveTurnFolds(input: {
 
     const isLatestInterruptedTurn =
       input.latestTurn?.turnId === turnId && input.latestTurn.state === "interrupted";
+    const isLatestIncompleteTurn =
+      input.latestTurn?.turnId === turnId && input.latestTurn.state === "incomplete";
     // A turn cut short by a steer leaves trailing work entries behind its
     // terminal message — take whichever ended last.
     const lastEntryEnd =
@@ -387,9 +454,13 @@ function deriveTurnFolds(input: {
       ? duration
         ? `You stopped after ${duration}`
         : "You stopped this response"
-      : duration
-        ? `Worked for ${duration}`
-        : "Worked";
+      : isLatestIncompleteTurn
+        ? duration
+          ? `Response ended unexpectedly after ${duration}`
+          : "Response ended unexpectedly"
+        : duration
+          ? `Worked for ${duration}`
+          : "Worked";
 
     foldsByAnchorEntryId.set(firstEntry.id, {
       turnId,

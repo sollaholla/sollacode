@@ -691,6 +691,29 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("hides provider usage refresh success activities while keeping other activity rows", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "provider-usage",
+        kind: "provider.usage.updated",
+        summary: "Provider usage updated",
+        payload: {
+          provider: "codex",
+          rateLimits: { primary: { usedPercent: 45 } },
+        },
+      }),
+      makeActivity({
+        id: "runtime-warning",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.warning",
+        summary: "Provider request is retrying",
+        tone: "info",
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.label)).toEqual(["Provider request is retrying"]);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1261,6 +1284,61 @@ describe("deriveWorkLogEntries", () => {
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
     });
+  });
+
+  it("preserves a structured raster path for inline read-tool previews", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "image-read-complete",
+        kind: "tool.completed",
+        summary: "Read File",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read File",
+          data: {
+            toolCallId: "tool-read-image",
+            kind: "read",
+            rawInput: { file_path: "/workspace/art/reference.JPG" },
+            rawOutput: { content: "binary image" },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe("/workspace/art/reference.JPG");
+  });
+
+  it("does not preview non-raster or non-read tool paths", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "svg-read-complete",
+        kind: "tool.completed",
+        summary: "Read File",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read File",
+          data: {
+            kind: "read",
+            rawInput: { path: "/workspace/art/vector.svg" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "png-write-complete",
+        kind: "tool.completed",
+        summary: "Write File",
+        payload: {
+          itemType: "file_change",
+          title: "Write File",
+          data: {
+            kind: "write",
+            rawInput: { path: "/workspace/art/output.png" },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.readImagePath)).toEqual([undefined, undefined]);
   });
 
   it("does not use command stdout as the detail when Cursor omits the command input", () => {

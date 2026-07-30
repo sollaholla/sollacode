@@ -13,9 +13,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Solla Code.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/Solla Code.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -51,6 +51,10 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, true);
+      assert.equal(environment.branding.baseName, "Solla Code");
+      assert.equal(environment.branding.stageLabel, "Dev");
+      assert.equal(environment.branding.displayName, "Solla Code");
+      assert.equal(environment.displayName, "Solla Code");
       assert.equal(environment.appDataDirectory, "/Users/alice/Library/Application Support");
       assert.equal(environment.baseDir, "/tmp/t3");
       assert.equal(environment.stateDir, "/tmp/t3/userdata");
@@ -95,6 +99,21 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
       assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
       assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assert.equal(environment.branding.stageLabel, "Alpha");
+      assert.equal(environment.displayName, "Solla Code");
+    }),
+  );
+
+  it.effect("keeps nightly builds under the stable Solla Code display name", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        appVersion: "0.0.28-nightly.20260616.12",
+        isPackaged: true,
+      });
+
+      assert.equal(environment.branding.stageLabel, "Nightly");
+      assert.equal(environment.branding.displayName, "Solla Code");
+      assert.equal(environment.displayName, "Solla Code");
     }),
   );
 

@@ -22,6 +22,7 @@ import {
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { AutoCompactionThresholdPercentage } from "./settings.ts";
 
 const ProviderSessionStatus = Schema.Literals([
   "connecting",
@@ -60,6 +61,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
+  autoCompactionThresholdPercentage: Schema.optional(AutoCompactionThresholdPercentage),
   runtimeMode: RuntimeMode,
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
@@ -74,6 +76,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  autoCompactionThresholdPercentage: Schema.optional(AutoCompactionThresholdPercentage),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

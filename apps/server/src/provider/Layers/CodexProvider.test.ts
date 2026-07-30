@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { getProviderOptionDescriptors } from "@t3tools/shared/model";
 
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
@@ -101,6 +102,64 @@ it("uses standard routing when the catalog has no default service tier", () => {
       currentValue: "default",
     },
   ]);
+});
+
+it("defaults GPT-5.6-Sol to medium reasoning and standard routing unless options override it", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "high",
+    defaultServiceTier: "priority",
+    description: "Test model",
+    displayName: "GPT-5.6-Sol",
+    hidden: false,
+    id: "gpt-5.6-sol",
+    isDefault: true,
+    model: "gpt-5.6-sol",
+    serviceTiers: [
+      {
+        id: "priority",
+        name: "Priority",
+        description: "Lower latency responses.",
+      },
+    ],
+    supportedReasoningEfforts: [
+      { description: "Balanced reasoning", reasoningEffort: "medium" },
+      { description: "More reasoning", reasoningEffort: "high" },
+    ],
+  });
+
+  assert.deepStrictEqual(
+    capabilities.optionDescriptors?.map((descriptor) => ({
+      id: descriptor.id,
+      currentValue: descriptor.currentValue,
+      defaultOption:
+        descriptor.type === "select"
+          ? descriptor.options.find((option) => option.isDefault)?.id
+          : undefined,
+    })),
+    [
+      { id: "reasoningEffort", currentValue: "medium", defaultOption: "medium" },
+      { id: "serviceTier", currentValue: "default", defaultOption: "default" },
+    ],
+  );
+
+  const overridden = getProviderOptionDescriptors({
+    caps: capabilities,
+    selections: [
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "priority" },
+    ],
+  });
+  assert.deepStrictEqual(
+    overridden.map((descriptor) => ({
+      id: descriptor.id,
+      currentValue: descriptor.currentValue,
+    })),
+    [
+      { id: "reasoningEffort", currentValue: "high" },
+      { id: "serviceTier", currentValue: "priority" },
+    ],
+  );
 });
 
 it("marks the most preferred available model as default", () => {

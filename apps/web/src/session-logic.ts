@@ -12,6 +12,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 
 import type {
   ChatMessage,
@@ -74,6 +75,8 @@ export interface WorkLogEntry {
   toolData?: unknown;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  /** Structured workspace path targeted by a recognized image-read tool call. */
+  readImagePath?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
@@ -633,6 +636,7 @@ export function deriveWorkLogEntries(
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
+    if (activity.kind === "provider.usage.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
@@ -719,6 +723,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const readImagePath = extractReadImagePath(payload, {
+    itemType,
+    requestKind,
+    title: title ?? activity.summary,
+  });
   if (detail) {
     entry.detail = detail;
   }
@@ -745,6 +754,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (requestKind) {
     entry.requestKind = requestKind;
+  }
+  if (readImagePath) {
+    entry.readImagePath = readImagePath;
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;
@@ -814,6 +826,7 @@ function mergeDerivedWorkLogEntries(
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
+  const readImagePath = next.readImagePath ?? previous.readImagePath;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
@@ -828,6 +841,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolTitle ? { toolTitle } : {}),
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
+    ...(readImagePath ? { readImagePath } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
@@ -1084,6 +1098,64 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   return asTrimmedString(data?.toolCallId);
+}
+
+const INLINE_READ_IMAGE_EXTENSIONS = [".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".webp"];
+const READ_PATH_KEYS = ["path", "filePath", "file_path", "absolutePath", "absolute_path"] as const;
+
+function isInlineRasterImagePath(path: string): boolean {
+  const normalized = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
+  return (
+    isWorkspaceImagePreviewPath(normalized) &&
+    INLINE_READ_IMAGE_EXTENSIONS.some((extension) => normalized.endsWith(extension))
+  );
+}
+
+function structuredReadPath(record: Record<string, unknown> | null): string | null {
+  if (!record) return null;
+  for (const key of READ_PATH_KEYS) {
+    const value = asTrimmedString(record[key]);
+    if (value && isInlineRasterImagePath(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function extractReadImagePath(
+  payload: Record<string, unknown> | null,
+  metadata: {
+    readonly itemType: ToolLifecycleItemType | undefined;
+    readonly requestKind: PendingApproval["requestKind"] | undefined;
+    readonly title: string;
+  },
+): string | null {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const rawInput = asRecord(data?.rawInput);
+  const itemInput = asRecord(item?.input);
+  const itemArguments = asRecord(item?.arguments);
+  const payloadInput = asRecord(payload?.input);
+  const kind = asTrimmedString(data?.kind)?.toLowerCase();
+  const normalizedTitle = metadata.title.toLowerCase();
+  const isReadCall =
+    metadata.requestKind === "file-read" ||
+    metadata.itemType === "image_view" ||
+    kind === "read" ||
+    kind === "view" ||
+    normalizedTitle === "read" ||
+    normalizedTitle.includes("read file") ||
+    normalizedTitle.includes("view image");
+  if (!isReadCall) return null;
+
+  return (
+    structuredReadPath(rawInput) ??
+    structuredReadPath(itemInput) ??
+    structuredReadPath(itemArguments) ??
+    structuredReadPath(item) ??
+    structuredReadPath(payloadInput) ??
+    structuredReadPath(data)
+  );
 }
 
 function normalizeInlinePreview(value: string): string {

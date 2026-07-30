@@ -9,7 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Electron from "electron";
 
 export const DESKTOP_HOST = "app";
-export const DESKTOP_PRODUCTION_SCHEME = "t3code";
+export const DESKTOP_PRODUCTION_SCHEME = "sollacode";
 export const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
 
 export function getDesktopScheme(isDevelopment: boolean): string {
@@ -52,7 +52,6 @@ export interface DesktopProtocolRegistrationInput {
   readonly scheme: string;
   readonly targetOrigin: URL;
   readonly backendOrigin: URL;
-  readonly clerkFrontendApiHostname: string | undefined;
 }
 
 export class ElectronProtocol extends Context.Service<
@@ -65,31 +64,34 @@ export class ElectronProtocol extends Context.Service<
 >()("@t3tools/desktop/electron/ElectronProtocol") {}
 
 export function makeDesktopContentSecurityPolicy(input: DesktopProtocolRegistrationInput): string {
-  const clerkOrigin = input.clerkFrontendApiHostname
-    ? `https://${input.clerkFrontendApiHostname}`
-    : undefined;
+  // Chromium does not consistently treat Electron custom schemes as matching
+  // `'self'` unless they are registered as privileged before app startup. Keep
+  // executable resources constrained to our app-controlled scheme; the
+  // protocol handler below additionally rejects every host except `app`.
+  const appSchemeSource = `${input.scheme}:`;
   const scriptSources = [
     "'self'",
+    appSchemeSource,
     "'unsafe-inline'",
-    ...(clerkOrigin ? [clerkOrigin] : []),
-    "https://challenges.cloudflare.com",
+    // Required for locally bundled ONNX Runtime WebAssembly compilation.
+    // This does not permit JavaScript string evaluation like `'unsafe-eval'`.
+    "'wasm-unsafe-eval'",
   ];
 
   // The renderer connects directly to user-configured environments in addition to
-  // the build-configured Clerk, relay, and OTLP endpoints. Those environment
-  // origins are not known when this response policy is created, so restrict
-  // connections by the network schemes the client supports instead of by host.
+  // the local backend. Those environment origins are not known when this response
+  // policy is created, so restrict connections by supported network schemes.
   const connectSources = ["'self'", "http:", "https:", "ws:", "wss:"];
 
   return [
-    "default-src 'self'",
+    `default-src 'self' ${appSchemeSource}`,
     `script-src ${scriptSources.join(" ")}`,
     `connect-src ${connectSources.join(" ")}`,
-    `img-src 'self' ${input.scheme}: blob: data: http: https:`,
-    "style-src 'self' 'unsafe-inline'",
-    `font-src 'self' ${input.scheme}: data:`,
-    "worker-src 'self' blob:",
-    "frame-src 'self' https://challenges.cloudflare.com",
+    `img-src 'self' ${appSchemeSource} blob: data: http: https:`,
+    `style-src 'self' ${appSchemeSource} 'unsafe-inline'`,
+    `font-src 'self' ${appSchemeSource} data:`,
+    `worker-src 'self' ${appSchemeSource} blob:`,
+    `frame-src 'self' ${appSchemeSource}`,
     "form-action 'self'",
   ].join("; ");
 }

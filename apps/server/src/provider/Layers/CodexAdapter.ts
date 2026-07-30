@@ -49,6 +49,11 @@ import {
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import {
+  hasProviderOverloadStatus,
+  providerOverloadExhaustedMessage,
+  providerOverloadRetryReason,
+} from "../providerOverloadRetry.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -1249,8 +1254,26 @@ function mapToRuntimeEvents(
 
   if (event.method === "error") {
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
-    const message = payload?.error.message ?? event.message ?? "Provider runtime error";
+    const providerMessage = payload?.error.message ?? event.message ?? "Provider runtime error";
     const willRetry = payload?.willRetry === true;
+    const isProviderOverload = hasProviderOverloadStatus(payload?.error);
+    if (willRetry && isProviderOverload) {
+      return [
+        {
+          type: "session.state.changed",
+          ...runtimeEventBase(event, canonicalThreadId),
+          payload: {
+            state: "running",
+            reason: providerOverloadRetryReason(),
+            ...(event.payload !== undefined ? { detail: event.payload } : {}),
+          },
+        },
+      ];
+    }
+    const message =
+      !willRetry && isProviderOverload
+        ? providerOverloadExhaustedMessage(providerMessage)
+        : providerMessage;
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",

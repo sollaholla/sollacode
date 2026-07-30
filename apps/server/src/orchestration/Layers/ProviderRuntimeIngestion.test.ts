@@ -9,6 +9,9 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type ProviderSendTurnInput,
+  type ProviderSessionStartInput,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -40,11 +43,15 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  runtimeEventToActivities,
+} from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -62,6 +69,105 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+
+describe("provider usage activity projection", () => {
+  it("preserves typed provider rate-limit payloads for the usage UI", () => {
+    const activities = runtimeEventToActivities({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("provider-usage"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-personal"),
+      createdAt: "2026-07-29T15:00:00.000Z",
+      threadId: asThreadId("thread-usage"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            primary: { usedPercent: 45, windowDurationMins: 300 },
+          },
+        },
+      },
+    });
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "provider.usage.updated",
+        summary: "Provider usage updated",
+        payload: {
+          provider: "codex",
+          providerInstanceId: "codex-personal",
+          rateLimits: {
+            rateLimits: {
+              primary: { usedPercent: 45, windowDurationMins: 300 },
+            },
+          },
+        },
+      }),
+    ]);
+  });
+});
+
+describe("provider overload retry activity projection", () => {
+  it("projects only the structured running retry reason for the chat status UI", () => {
+    const base = {
+      eventId: asEventId("provider-overload-retry"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-07-29T15:00:00.000Z",
+      threadId: asThreadId("thread-overload"),
+      turnId: asTurnId("turn-overload"),
+      type: "session.state.changed" as const,
+    };
+    expect(
+      runtimeEventToActivities({
+        ...base,
+        payload: {
+          state: "running",
+          reason: "provider_overloaded:retrying;attempt=2;max=5;delay_ms=1000",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "provider.overload.retrying",
+        summary: "Provider overloaded — retrying shortly",
+        turnId: "turn-overload",
+      }),
+    ]);
+    expect(
+      runtimeEventToActivities({
+        ...base,
+        eventId: asEventId("ordinary-running"),
+        payload: { state: "running", reason: "working" },
+      }),
+    ).toEqual([]);
+  });
+});
+
+function makeProviderSnapshot(input: {
+  readonly instanceId: string;
+  readonly driver: string;
+  readonly model: string;
+}): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(input.instanceId),
+    driver: ProviderDriverKind.make(input.driver),
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    models: [
+      {
+        slug: input.model,
+        name: input.model,
+        isCustom: false,
+        isDefault: true,
+        capabilities: null,
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  };
+}
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -96,11 +202,51 @@ function isLegacyTurnCompletedEvent(
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  const startSessionCalls: Array<{
+    readonly threadId: ThreadId;
+    readonly input: ProviderSessionStartInput;
+  }> = [];
+  const sendTurnCalls: ProviderSendTurnInput[] = [];
+  let shouldFailNextSendTurn = false;
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
-    startSession: () => unsupported(),
-    sendTurn: () => unsupported(),
+    startSession: (threadId, input) =>
+      Effect.sync(() => {
+        startSessionCalls.push({ threadId, input });
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider: input.provider ?? ProviderDriverKind.make(String(input.providerInstanceId)),
+          providerInstanceId: input.providerInstanceId,
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId,
+          createdAt: now,
+          updatedAt: now,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+          ...(input.modelSelection?.model ? { model: input.modelSelection.model } : {}),
+          ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        };
+        const existingIndex = runtimeSessions.findIndex((entry) => entry.threadId === threadId);
+        if (existingIndex >= 0) {
+          runtimeSessions[existingIndex] = session;
+        } else {
+          runtimeSessions.push(session);
+        }
+        return session;
+      }),
+    sendTurn: (input) =>
+      Effect.sync(() => {
+        sendTurnCalls.push(input);
+        if (shouldFailNextSendTurn) {
+          shouldFailNextSendTurn = false;
+          throw new Error("Simulated handoff send failure");
+        }
+        return {
+          threadId: input.threadId,
+          turnId: TurnId.make(`handoff-turn-${sendTurnCalls.length}`),
+        };
+      }),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
@@ -158,6 +304,11 @@ function createProviderServiceHarness() {
     service,
     emit,
     setSession,
+    startSessionCalls,
+    sendTurnCalls,
+    failNextSendTurn: () => {
+      shouldFailNextSendTurn = true;
+    },
   };
 }
 
@@ -218,7 +369,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    providers?: ReadonlyArray<ServerProvider>;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -239,6 +393,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provideMerge(makeProviderRegistryLayer(options?.providers)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -315,6 +470,9 @@ describe("ProviderRuntimeIngestion", () => {
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       emit: provider.emit,
       setProviderSession: provider.setSession,
+      startSessionCalls: provider.startSessionCalls,
+      sendTurnCalls: provider.sendTurnCalls,
+      failNextSendTurn: provider.failNextSendTurn,
       drain,
     };
   }
@@ -359,6 +517,238 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("fails over exactly once from an exhausted active provider and hands off bounded JSON", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-failover"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("turn-exhausted"),
+      cwd: process.cwd(),
+      resumeCursor: { threadId: "codex-native-thread" },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const exhaustedEvent = {
+      type: "account.rate-limits.updated" as const,
+      eventId: asEventId("evt-codex-limit-exhausted"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    };
+    harness.emit(exhaustedEvent);
+    harness.emit({ ...exhaustedEvent, eventId: asEventId("evt-codex-limit-exhausted-replay") });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.modelSelection.instanceId === "claudeAgent" &&
+        entry.session?.providerInstanceId === "claudeAgent" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      10_000,
+    );
+
+    expect(thread.modelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-sonnet",
+    });
+    expect(harness.startSessionCalls).toHaveLength(1);
+    expect(harness.startSessionCalls[0]?.input.providerInstanceId).toBe("claudeAgent");
+    expect(harness.sendTurnCalls).toHaveLength(1);
+    const handoff = JSON.parse(harness.sendTurnCalls[0]?.input ?? "{}") as {
+      kind?: string;
+      handoff?: { from?: { instanceId?: string }; to?: { instanceId?: string } };
+    };
+    expect(handoff.kind).toBe("t3.provider-handoff");
+    expect(handoff.handoff?.from?.instanceId).toBe("codex");
+    expect(handoff.handoff?.to?.instanceId).toBe("claudeAgent");
+  });
+
+  it("does not fail over for a stale instance or an unsupported provider limit shape", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-stale-codex-limit"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex_work"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:10.000Z",
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-unsupported-cursor-limit"),
+      provider: ProviderDriverKind.make("cursor"),
+      providerInstanceId: ProviderInstanceId.make("cursor"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:11.000Z",
+      payload: {
+        rateLimits: {
+          rate_limit_info: { status: "rejected" },
+        },
+      },
+    });
+
+    await Effect.runPromise(Effect.yieldNow);
+    await harness.drain();
+    await Effect.runPromise(Effect.yieldNow);
+    await harness.drain();
+    expect(harness.startSessionCalls).toHaveLength(0);
+    expect(harness.sendTurnCalls).toHaveLength(0);
+  });
+
+  it("restores the previous session and leaves model selection unchanged when handoff send fails", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-sonnet",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-rollback"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted-rollback"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("turn-exhausted-rollback"),
+      cwd: process.cwd(),
+      resumeCursor: { threadId: "codex-native-thread" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.failNextSendTurn();
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit-handoff-fails"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted-rollback"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.activities.some(
+          (activity) =>
+            activity.kind === "provider.failover.handoff.failed" &&
+            (activity.payload as { rolledBack?: boolean }).rolledBack === true,
+        ),
+      10_000,
+    );
+    expect(thread.modelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    });
+    expect(harness.startSessionCalls.map((call) => call.input.providerInstanceId)).toEqual([
+      "claudeAgent",
+      "codex",
+    ]);
+    expect(harness.startSessionCalls[1]?.input.resumeCursor).toEqual({
+      threadId: "codex-native-thread",
+    });
+    expect(harness.sendTurnCalls).toHaveLength(1);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

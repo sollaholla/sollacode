@@ -1,5 +1,30 @@
 export type TimelineScrollMode = "following-end" | "anchoring-new-turn" | "free-scrolling";
 
+export interface TimelineSendScrollPlan<TMessageId> {
+  readonly mode: Extract<TimelineScrollMode, "following-end">;
+  readonly anchorMessageId: TMessageId | null;
+}
+
+export function resolveTimelineSendScrollPlan<TMessageId>({
+  messageId: _messageId,
+}: {
+  readonly messageId: TMessageId;
+}): TimelineSendScrollPlan<TMessageId> {
+  return { mode: "following-end", anchorMessageId: null };
+}
+
+export function shouldResumeTimelineLiveFollow({
+  isAtEnd,
+  manualNavigationActive,
+  manualNavigationTowardEnd,
+}: {
+  readonly isAtEnd: boolean;
+  readonly manualNavigationActive: boolean;
+  readonly manualNavigationTowardEnd: boolean;
+}): boolean {
+  return isAtEnd && (!manualNavigationActive || manualNavigationTowardEnd);
+}
+
 export interface TimelineListMeasurementState {
   readonly data: readonly unknown[];
   readonly scroll: number;

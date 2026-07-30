@@ -157,6 +157,7 @@ import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrom
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { startThreadExportBackgroundTask } from "../backgroundTasks";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -1489,8 +1490,12 @@ export default function SidebarV2() {
     () => setSettledVisibleCount((count) => count + SETTLED_TAIL_PAGE_COUNT),
     [],
   );
-  const [settledShelfExpanded, setSettledShelfExpanded] = useState(true);
-  const toggleSettledShelf = useCallback(() => setSettledShelfExpanded((value) => !value), []);
+  const settledShelfExpanded = useUiStateStore((state) => state.settledShelfExpanded);
+  const setSettledShelfExpanded = useUiStateStore((state) => state.setSettledShelfExpanded);
+  const toggleSettledShelf = useCallback(
+    () => setSettledShelfExpanded(!settledShelfExpanded),
+    [setSettledShelfExpanded, settledShelfExpanded],
+  );
   const renderedSettledThreads = useMemo(() => {
     if (settledShelfExpanded) return visibleSettledThreads;
     if (routeThreadKey === null) return [];
@@ -2033,6 +2038,7 @@ export default function SidebarV2() {
                 : []),
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
+              { id: "export-json", label: "Export conversation as JSON" },
               { id: "delete", label: "Delete", destructive: true, icon: "trash" },
             ],
             position,
@@ -2084,6 +2090,9 @@ export default function SidebarV2() {
             return;
           case "mark-unread":
             markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+            return;
+          case "export-json":
+            startThreadExportBackgroundTask(threadRef, thread.title);
             return;
           case "delete": {
             if (confirmThreadDelete) {

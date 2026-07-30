@@ -1,15 +1,16 @@
 import {
   BearerConnectionCredential,
   BearerConnectionProfile,
-  BearerConnectionTarget,
-  RelayConnectionTarget,
   SshConnectionProfile,
+} from "@t3tools/client-runtime/connection/catalog";
+import {
+  BearerConnectionTarget,
   SshConnectionTarget,
-} from "@t3tools/client-runtime/connection";
+} from "@t3tools/client-runtime/connection/model";
 import {
   ConnectionCatalogDocument as RuntimeConnectionCatalogDocument,
   type ConnectionCatalogDocument as RuntimeConnectionCatalogDocumentType,
-} from "@t3tools/client-runtime/platform";
+} from "@t3tools/client-runtime/platform/storage-document";
 import type { PersistedSavedEnvironmentRecord } from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Context from "effect/Context";
@@ -301,12 +302,6 @@ const migrateSavedEnvironmentRecords = Effect.fn(
 
   for (const record of records) {
     if (record.relayManaged !== undefined) {
-      targets.push(
-        new RelayConnectionTarget({
-          environmentId: record.environmentId,
-          label: record.label,
-        }),
-      );
       continue;
     }
 

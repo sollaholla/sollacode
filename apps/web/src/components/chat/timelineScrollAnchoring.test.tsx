@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { getAnchoredTurnMetrics, getRowBottom } from "./timelineScrollAnchoring";
+import {
+  getAnchoredTurnMetrics,
+  getRowBottom,
+  resolveTimelineSendScrollPlan,
+  shouldResumeTimelineLiveFollow,
+} from "./timelineScrollAnchoring";
 
 function buildState({
   positions,
@@ -22,6 +27,49 @@ function buildState({
 }
 
 describe("timeline scroll anchoring", () => {
+  it("uses end-following without a viewport-sized anchor on every viewport", () => {
+    expect(
+      resolveTimelineSendScrollPlan({
+        messageId: "mobile-message",
+      }),
+    ).toEqual({
+      mode: "following-end",
+      anchorMessageId: null,
+    });
+    expect(
+      resolveTimelineSendScrollPlan({
+        messageId: "desktop-message",
+      }),
+    ).toEqual({
+      mode: "following-end",
+      anchorMessageId: null,
+    });
+  });
+
+  it("resumes live-follow only after manual navigation explicitly returns to the end", () => {
+    expect(
+      shouldResumeTimelineLiveFollow({
+        isAtEnd: true,
+        manualNavigationActive: true,
+        manualNavigationTowardEnd: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldResumeTimelineLiveFollow({
+        isAtEnd: true,
+        manualNavigationActive: true,
+        manualNavigationTowardEnd: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldResumeTimelineLiveFollow({
+        isAtEnd: false,
+        manualNavigationActive: true,
+        manualNavigationTowardEnd: true,
+      }),
+    ).toBe(false);
+  });
+
   it("measures row bottoms from LegendList row position and size", () => {
     const state = buildState({
       positions: [0, 120],
