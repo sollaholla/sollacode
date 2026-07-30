@@ -13,7 +13,9 @@ import {
   deriveProviderUsageSummaries,
   ProviderUsageBar,
   ProviderUsageDetails,
+  ProviderUsagePlacementRow,
   providerUsageDetailsSide,
+  resolveProviderUsagePlacement,
   usageThreshold,
 } from "./ProviderUsageBar";
 import { mergeProviderUsageEntry, providerUsageAccountKey } from "../../providerUsageStore";
@@ -536,6 +538,28 @@ describe("provider usage summaries", () => {
     );
     expect(loadingMarkup).toContain('aria-busy="true"');
     expect(loadingMarkup).toContain("Refreshing…");
+  });
+
+  it("places draft usage at the padded pane top and keeps active usage in the footer", () => {
+    expect(resolveProviderUsagePlacement(true)).toBe("draft-pane-top");
+    expect(resolveProviderUsagePlacement(false)).toBe("active-footer");
+
+    const draftMarkup = renderToStaticMarkup(
+      <ProviderUsagePlacementRow placement="draft-pane-top">
+        <span>Usage</span>
+      </ProviderUsagePlacementRow>,
+    );
+    expect(draftMarkup).toContain('data-chat-draft-provider-usage="true"');
+    expect(draftMarkup).toContain("pt-3 sm:pt-4");
+    expect(draftMarkup).not.toContain("data-chat-footer-provider-usage");
+
+    const activeMarkup = renderToStaticMarkup(
+      <ProviderUsagePlacementRow placement="active-footer">
+        <span>Usage</span>
+      </ProviderUsagePlacementRow>,
+    );
+    expect(activeMarkup).toContain('data-chat-footer-provider-usage="true"');
+    expect(activeMarkup).not.toContain("data-chat-draft-provider-usage");
   });
 
   it("explains when Claude does not report Current session without inventing usage", () => {
