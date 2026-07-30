@@ -349,6 +349,8 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  /** Account-scoped usage details shown directly below the enable controls. */
+  readonly usage?: ReactNode | undefined;
 }
 
 /**
@@ -393,6 +395,7 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  usage,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -725,6 +728,9 @@ export function ProviderInstanceCard({
             />
           </div>
         </div>
+        {enabled && usage ? (
+          <div className="mt-3 border-t border-border/50 pt-3">{usage}</div>
+        ) : null}
       </div>
 
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>

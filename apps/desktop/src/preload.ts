@@ -4,12 +4,9 @@ import type {
   DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
 } from "@t3tools/contracts";
-import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
-
-exposeClerkBridge({ passkeys: true });
 
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
@@ -90,6 +87,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.SET_SERVER_EXPOSURE_MODE_CHANNEL, mode),
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
+  reconcileTailscaleServe: () => ipcRenderer.invoke(IpcChannels.RECONCILE_TAILSCALE_SERVE_CHANNEL),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
   getWslState: () => ipcRenderer.invoke(IpcChannels.GET_WSL_STATE_CHANNEL),
   setWslBackendEnabled: (enabled) =>
@@ -105,6 +103,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ...(position === undefined ? {} : { position }),
     }),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  saveThreadExportJson: (input) =>
+    ipcRenderer.invoke(IpcChannels.SAVE_THREAD_EXPORT_JSON_CHANNEL, input),
+  revealFile: (path) => ipcRenderer.invoke(IpcChannels.REVEAL_FILE_CHANNEL, path),
+  startFileDrag: (path) => ipcRenderer.invoke(IpcChannels.START_FILE_DRAG_CHANNEL, path),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;
@@ -129,21 +131,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.WINDOW_FULLSCREEN_STATE_CHANNEL, wrappedListener);
     };
   },
-  getUpdateState: () => ipcRenderer.invoke(IpcChannels.UPDATE_GET_STATE_CHANNEL),
-  setUpdateChannel: (channel) =>
-    ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, channel),
-  checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
-  downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
-  installUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL),
-  onUpdateState: (listener) => {
-    const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
-      if (typeof state !== "object" || state === null) return;
-      listener(state as Parameters<typeof listener>[0]);
-    };
-
-    ipcRenderer.on(IpcChannels.UPDATE_STATE_CHANNEL, wrappedListener);
+  onIntentionalShutdown: (listener) => {
+    const wrappedListener = () => listener();
+    ipcRenderer.on(IpcChannels.INTENTIONAL_SHUTDOWN_CHANNEL, wrappedListener);
     return () => {
-      ipcRenderer.removeListener(IpcChannels.UPDATE_STATE_CHANNEL, wrappedListener);
+      ipcRenderer.removeListener(IpcChannels.INTENTIONAL_SHUTDOWN_CHANNEL, wrappedListener);
     };
   },
   preview: {

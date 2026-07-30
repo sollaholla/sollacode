@@ -5,7 +5,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import type * as Electron from "electron";
+import * as Electron from "electron";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
@@ -14,6 +14,8 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import { shouldInterceptWindowCloseForQuit } from "./DesktopLifecycle.logic.ts";
+import { INTENTIONAL_SHUTDOWN_CHANNEL } from "../ipc/channels.ts";
 
 export class DesktopLifecycleRelaunchError extends Schema.TaggedErrorClass<DesktopLifecycleRelaunchError>()(
   "DesktopLifecycleRelaunchError",
@@ -50,6 +52,7 @@ export class DesktopLifecycle extends Context.Service<
 
 const { logInfo: logLifecycleInfo, logError: logLifecycleError } =
   makeComponentLogger("desktop-lifecycle");
+export const INTENTIONAL_SHUTDOWN_PAINT_DELAY_MS = 120;
 
 function addScopedListener<Args extends ReadonlyArray<unknown>>(
   target: unknown,
@@ -86,6 +89,19 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
   },
 );
 
+const notifyIntentionalShutdown = Effect.gen(function* () {
+  yield* Effect.sync(() => {
+    for (const window of Electron.BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send(INTENTIONAL_SHUTDOWN_CHANNEL);
+      }
+    }
+  });
+  // Give Chromium one frame to paint the overlay before backend and socket
+  // teardown begins. This delay happens only during an intentional quit.
+  yield* Effect.sleep(INTENTIONAL_SHUTDOWN_PAINT_DELAY_MS);
+});
+
 function handleBeforeQuit(
   event: Electron.Event,
   runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
@@ -109,6 +125,7 @@ function handleBeforeQuit(
       const state = yield* DesktopState.DesktopState;
       yield* Ref.set(state.quitting, true);
       yield* logLifecycleInfo("before-quit received");
+      yield* notifyIntentionalShutdown;
       yield* requestDesktopShutdownAndWait();
     }).pipe(Effect.withSpan("desktop.lifecycle.beforeQuit")),
   ).finally(() => {
@@ -134,6 +151,7 @@ function quitFromSignal(
       const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
       if (wasQuitting) return;
       yield* logLifecycleInfo("process signal received", { signal });
+      yield* notifyIntentionalShutdown;
       yield* requestDesktopShutdownAndWait();
       yield* electronApp.quit;
     }).pipe(Effect.withSpan("desktop.lifecycle.processSignal")),
@@ -149,6 +167,7 @@ export const make = DesktopLifecycle.of({
     yield* Effect.gen(function* () {
       yield* Effect.yieldNow;
       yield* Ref.set(state.quitting, true);
+      yield* notifyIntentionalShutdown;
       yield* requestDesktopShutdownAndWait();
       if (environment.isDevelopment) {
         yield* electronApp.exit(75);
@@ -176,33 +195,41 @@ export const make = DesktopLifecycle.of({
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
     let quitAllowed = false;
-    let updaterQuitAllowed = false;
+    let windowCloseQuitRequested = false;
     yield* electronTheme.onUpdated(() => {
       void runEffect(
         desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
-      );
-    });
-    yield* electronApp.onBeforeQuitForUpdate(() => {
-      // Electron's updater owns the remaining quit/install/relaunch sequence.
-      // Cancelling the following app "before-quit" event breaks that sequence,
-      // most visibly on macOS where the native updater performs the relaunch.
-      updaterQuitAllowed = true;
-      void runEffect(
-        logLifecycleInfo("allowing updater-controlled quit").pipe(
-          Effect.withSpan("desktop.lifecycle.beforeQuitForUpdate"),
-        ),
       );
     });
     yield* electronApp.on("before-quit", (event: Electron.Event) => {
       handleBeforeQuit(
         event,
         runEffect,
-        () => quitAllowed || updaterQuitAllowed,
+        () => quitAllowed,
         () => {
           quitAllowed = true;
         },
       );
     });
+    yield* electronApp.on(
+      "browser-window-created",
+      (_event: Electron.Event, window: Electron.BrowserWindow) => {
+        window.on("close", (closeEvent) => {
+          if (
+            !shouldInterceptWindowCloseForQuit({
+              platform: environment.platform,
+              quitAllowed,
+              quitAlreadyRequested: windowCloseQuitRequested,
+            })
+          ) {
+            return;
+          }
+          closeEvent.preventDefault();
+          windowCloseQuitRequested = true;
+          void runEffect(electronApp.quit);
+        });
+      },
+    );
     yield* electronApp.on("activate", () => {
       void runEffect(desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")));
     });

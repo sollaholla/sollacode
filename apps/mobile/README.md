@@ -1,7 +1,7 @@
-# T3 Code Mobile
+# Solla Code Mobile
 
 > [!WARNING]
-> T3 Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+> Solla Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
 
 ## Quickstart
 
@@ -10,15 +10,11 @@
 
 This app has three variants:
 
-- `development`: Expo dev client, installable side-by-side as `T3 Code Dev`
-- `preview`: persistent internal preview build, installable side-by-side as `T3 Code Preview`
-- `production`: store/release build as `T3 Code`
+- `development`: Expo dev client, installable side-by-side as `Solla Code Dev`
+- `preview`: persistent internal preview build, installable side-by-side as `Solla Code Preview`
+- `production`: store/release build as `Solla Code`
 
 Run commands from `apps/mobile`.
-
-T3 Connect is optional and disabled in a fresh clone. Public configuration belongs in the
-repository-root `.env` or `.env.local`, not an `apps/mobile/.env` file. See
-[`../../.env.example`](../../.env.example).
 
 ## Development
 
@@ -58,6 +54,22 @@ T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code \
 vp run ios:release
 ```
 
+### Private Tailscale use on an iPhone
+
+Solla Code Mobile connects directly to the same Mac-hosted HTTP/WebSocket backend used by the web
+and desktop clients. It does not require a public relay.
+
+1. Join the Mac and iPhone to the same tailnet.
+2. In Solla Code on the Mac, open **Settings** → **Connections**, enable **Network access**, and use
+   **Create Link** with either the Mac's Tailscale IP endpoint or its Tailscale HTTPS endpoint.
+3. In Solla Code Mobile, open **Environments** → **Add environment**, then scan or paste that
+   one-time pairing link.
+
+For a personal iPhone installation, use the Personal Team release command above. The repository
+generates a reduced-capability Xcode project with a user-owned bundle identifier and no pinned
+signing team. Complete the one remaining Xcode signing-and-device Run flow. No public relay or T3
+Connect account is part of this path.
+
 Build and run the local iOS preview app:
 
 ```bash
@@ -90,10 +102,6 @@ The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin.
 ## EAS Builds
 
 CI uses Expo fingerprinting with the `preview:dev` profile to reuse an existing compatible build when possible, or start a new internal EAS build when native runtime inputs change. Production and default local builds continue to use the `appVersion` runtime policy.
-
-For preview or production EAS environments, set `T3CODE_CLERK_PUBLISHABLE_KEY`,
-`T3CODE_CLERK_JWT_TEMPLATE`, and `T3CODE_RELAY_URL`
-as EAS environment variables. Expo config maps the canonical values into the mobile build.
 
 Create a PR preview dev-client build manually:
 

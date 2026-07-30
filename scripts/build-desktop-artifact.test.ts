@@ -18,7 +18,6 @@ import {
   DESKTOP_EXTRA_RESOURCES,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
-  InvalidMockUpdateServerPortError,
   UnsupportedDesktopBuildArchitectureError,
   isMacPasskeySigningConfigurationError,
   LinuxIconResizeError,
@@ -32,13 +31,10 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
-  resolveDesktopUpdateChannel,
+  resolveDesktopReleaseChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
   resourceMonitorExecutableName,
-  resolveGitHubPublishConfig,
-  resolveMockUpdateServerPort,
-  resolveMockUpdateServerUrl,
   resolvePackageManagerUserAgent,
   stageLinuxIconSize,
   STAGE_INSTALL_ARGS,
@@ -85,14 +81,14 @@ function iconResizeSpawnerLayer(
 }
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
-  it("resolves the dedicated nightly updater channel from nightly versions", () => {
-    assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
-    assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
+  it("resolves the desktop release channel from nightly versions", () => {
+    assert.equal(resolveDesktopReleaseChannel("0.0.17-nightly.20260413.42"), "nightly");
+    assert.equal(resolveDesktopReleaseChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+  it("keeps the desktop product name stable across release channels", () => {
+    assert.equal(resolveDesktopProductName("0.0.17"), "Solla Code");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "Solla Code");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -113,47 +109,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopWebAssetBrand("0.0.17"), "production");
     assert.equal(resolveDesktopWebAssetBrand("0.0.17-nightly.20260413.42"), "nightly");
   });
-
-  it.effect("resolves GitHub desktop publish config from Effect config", () =>
-    Effect.gen(function* () {
-      const latestConfig = yield* resolveGitHubPublishConfig("latest").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
-          ),
-        ),
-      );
-      const nightlyConfig = yield* resolveGitHubPublishConfig("nightly").pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({
-              env: {
-                GITHUB_REPOSITORY: "pingdotgg/t3code",
-              },
-            }),
-          ),
-        ),
-      );
-
-      assert.deepStrictEqual(latestConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "release",
-      });
-      assert.deepStrictEqual(nightlyConfig, {
-        provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
-        releaseType: "prerelease",
-        channel: "nightly",
-      });
-    }),
-  );
 
   it("omits bundled workspace packages from staged desktop dependencies", () => {
     assert.deepStrictEqual(
@@ -318,33 +273,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("applies platform-specific packaging to the build config", () =>
     Effect.gen(function* () {
-      const mac = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const linux = yield* createBuildConfig(
-        "linux",
-        "AppImage",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const win = yield* createBuildConfig(
-        "win",
-        "nsis",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
+      const mac = yield* createBuildConfig("mac", "dmg", "1.2.3", false, undefined);
+      const linux = yield* createBuildConfig("linux", "AppImage", "1.2.3", false, undefined);
+      const win = yield* createBuildConfig("win", "nsis", "1.2.3", false, undefined);
 
       assert.notProperty(mac, "asarUnpack");
       assert.notProperty(linux, "asarUnpack");
@@ -428,6 +359,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.include(entitlements, "<key>com.apple.security.device.audio-input</key>");
   });
 
   it("rejects incomplete macOS passkey signing configuration", () => {
@@ -513,7 +445,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
     Effect.gen(function* () {
-      const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, false, undefined, {
+      const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, {
         entitlementsPath: "/tmp/entitlements.mac.plist",
         provisioningProfilePath: "/tmp/t3code.provisionprofile",
       });
@@ -522,25 +454,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(config.appId, "com.t3tools.t3code");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
+      assert.deepStrictEqual(mac.extendInfo, {
+        NSMicrophoneUsageDescription:
+          "Solla Code uses the microphone only while you hold the push-to-talk shortcut.",
+      });
       assert.deepStrictEqual(mac.protocols, [
-        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Solla Code", schemes: ["t3code", "t3code-dev"] },
       ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it.effect("keeps executable resource editing enabled for unsigned Windows builds", () =>
     Effect.gen(function* () {
-      const config = yield* createBuildConfig(
-        "win",
-        "nsis",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
+      const config = yield* createBuildConfig("win", "nsis", "1.2.3", false, undefined);
 
       const win = config.win as Record<string, unknown>;
+      assert.deepStrictEqual(config.nsis, { differentialPackage: false });
       assert.equal(win.icon, "icon.ico");
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
@@ -608,55 +537,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.deepStrictEqual(resolveClerkPasskeyNativeArtifacts("linux", "x64"), []);
   });
 
-  it("falls back to the default mock update port when the configured port is blank", () => {
-    assert.equal(resolveMockUpdateServerUrl(undefined), "http://localhost:3000");
-    assert.equal(resolveMockUpdateServerUrl(4123), "http://localhost:4123");
-  });
-
   it("derives the electron-builder package manager user agent from packageManager", () => {
     assert.equal(resolvePackageManagerUserAgent("pnpm@11.10.0"), "pnpm/11.10.0");
     assert.equal(resolvePackageManagerUserAgent(" yarn@4.9.2 "), "yarn/4.9.2");
     assert.equal(resolvePackageManagerUserAgent("pnpm"), "pnpm");
-  });
-
-  it.effect("normalizes mock update server ports from env-style strings", () =>
-    Effect.gen(function* () {
-      assert.equal(yield* resolveMockUpdateServerPort(undefined), undefined);
-      assert.equal(yield* resolveMockUpdateServerPort(""), undefined);
-      assert.equal(yield* resolveMockUpdateServerPort("   "), undefined);
-      assert.equal(yield* resolveMockUpdateServerPort("4123"), 4123);
-    }),
-  );
-
-  it.effect("rejects non-numeric or out-of-range mock update ports", () =>
-    Effect.gen(function* () {
-      const invalidPorts = ["abc", "12.5", "0", "65536"];
-      for (const port of invalidPorts) {
-        const exit = yield* Effect.exit(resolveMockUpdateServerPort(port));
-        assert.equal(exit._tag, "Failure");
-      }
-    }),
-  );
-
-  it("classifies invalid configured ports with the decoder's number grammar", () => {
-    const cause = new Error("invalid configured port");
-
-    assert.equal(
-      InvalidMockUpdateServerPortError.fromConfigValue("0x10", cause).reason,
-      "not-numeric",
-    );
-    assert.equal(
-      InvalidMockUpdateServerPortError.fromConfigValue("12.5", cause).reason,
-      "not-integer",
-    );
-    assert.equal(
-      InvalidMockUpdateServerPortError.fromConfigValue("65536", cause).reason,
-      "out-of-range",
-    );
-    assert.strictEqual(
-      InvalidMockUpdateServerPortError.fromConfigValue("0x10", cause).cause,
-      cause,
-    );
   });
 
   it.effect("resolves default platform and architecture from host references", () =>
@@ -671,8 +555,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         keepStage: Option.none(),
         signed: Option.none(),
         verbose: Option.none(),
-        mockUpdates: Option.none(),
-        mockUpdateServerPort: Option.none(),
         wslPrebuild: Option.none(),
       }).pipe(
         Effect.provide(
@@ -711,8 +593,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             keepStage: Option.none(),
             signed: Option.none(),
             verbose: Option.none(),
-            mockUpdates: Option.none(),
-            mockUpdateServerPort: Option.none(),
             wslPrebuild: Option.none(),
           }),
         );
@@ -735,8 +615,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         keepStage: Option.some(false),
         signed: Option.some(false),
         verbose: Option.some(false),
-        mockUpdates: Option.some(false),
-        mockUpdateServerPort: Option.none(),
         wslPrebuild: Option.none(),
       }).pipe(
         Effect.provide(
@@ -747,7 +625,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 T3CODE_DESKTOP_KEEP_STAGE: "true",
                 T3CODE_DESKTOP_SIGNED: "true",
                 T3CODE_DESKTOP_VERBOSE: "true",
-                T3CODE_DESKTOP_MOCK_UPDATES: "true",
               },
             }),
           ),
@@ -758,7 +635,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.keepStage, false);
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
-      assert.equal(resolved.mockUpdates, false);
     }),
   );
 });

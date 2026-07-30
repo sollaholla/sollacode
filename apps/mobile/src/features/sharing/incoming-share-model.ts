@@ -168,7 +168,7 @@ export async function buildIncomingShareDraft(input: {
       resolved.contentSize > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES
     ) {
       warnings.push(
-        `'${resolved.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 10 MB attachment limit.`,
+        `'${resolved.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 2 MiB attachment limit.`,
       );
       await releaseOwnedFiles(input.fileReader, [uri, payload.value]);
       continue;
@@ -179,7 +179,7 @@ export async function buildIncomingShareDraft(input: {
       const sizeBytes = resolved?.contentSize ?? estimateBase64ByteSize(base64);
       if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
         warnings.push(
-          `'${resolved?.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 10 MB attachment limit.`,
+          `'${resolved?.originalName ?? fallbackName(uri, index, mimeType)}' exceeds the 2 MiB attachment limit.`,
         );
         continue;
       }

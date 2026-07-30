@@ -28,6 +28,7 @@ export const ProjectionTurnState = Schema.Literals([
   "pending",
   "running",
   "interrupted",
+  "incomplete",
   "completed",
   "error",
 ]);

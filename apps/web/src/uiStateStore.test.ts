@@ -24,6 +24,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
+    showProviderUsageBar: false,
+    settledShelfExpanded: false,
     ...overrides,
   };
 }
@@ -147,6 +149,10 @@ describe("uiStateStore pure functions", () => {
 });
 
 describe("parsePersistedState", () => {
+  it("defaults the Sidebar v2 settled shelf collapsed and preserves an explicit choice", () => {
+    expect(parsePersistedState({}).settledShelfExpanded).toBe(false);
+    expect(parsePersistedState({ settledShelfExpanded: true }).settledShelfExpanded).toBe(true);
+  });
   it("hydrates raw UI-owned state without server entities", () => {
     const parsed = parsePersistedState({
       projectExpandedById: {
@@ -159,6 +165,8 @@ describe("parsePersistedState", () => {
         invalid: "not-a-date",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      showProviderUsageBar: true,
+      settledShelfExpanded: false,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -177,6 +185,8 @@ describe("parsePersistedState", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      showProviderUsageBar: true,
+      settledShelfExpanded: false,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -196,6 +206,15 @@ describe("parsePersistedState", () => {
     });
 
     expect(parsed.threadChangedFilesExpandedById).toEqual({});
+  });
+
+  it("defaults the provider usage bar off and hydrates only an explicit true", () => {
+    expect(parsePersistedState({}).showProviderUsageBar).toBe(false);
+    expect(parsePersistedState({ showProviderUsageBar: true }).showProviderUsageBar).toBe(true);
+    expect(
+      parsePersistedState({ showProviderUsageBar: "yes" as unknown as boolean })
+        .showProviderUsageBar,
+    ).toBe(false);
   });
 
   it("migrates legacy CWD project preferences into local alias keys", () => {
@@ -296,6 +315,8 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      showProviderUsageBar: false,
+      settledShelfExpanded: false,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {

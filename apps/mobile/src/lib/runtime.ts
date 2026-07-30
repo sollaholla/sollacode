@@ -4,33 +4,20 @@ import * as Socket from "effect/unstable/socket/Socket";
 
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 
-import { cryptoLayer } from "../features/cloud/dpop";
-import { managedRelayClientLayer } from "../features/cloud/managedRelayLayer";
-import { resolveCloudPublicConfig } from "../features/cloud/publicConfig";
-import { tracingLayer } from "../features/observability/tracing";
+import { cryptoLayer } from "./crypto";
 import * as Persistence from "../persistence/layer";
-
-function configuredRelayUrl(): string {
-  return resolveCloudPublicConfig().relay.url ?? "http://relay.invalid";
-}
 
 const httpClientLayer = remoteHttpClientLayer(fetch);
 
 type RuntimeLayerSource =
-  | ReturnType<typeof managedRelayClientLayer>
   | typeof Socket.layerWebSocketConstructorGlobal
   | typeof cryptoLayer
   | typeof httpClientLayer
-  | typeof Persistence.layer
-  | typeof tracingLayer;
+  | typeof Persistence.layer;
 
-const runtimeLayer = Layer.merge(
-  managedRelayClientLayer(configuredRelayUrl()),
-  Socket.layerWebSocketConstructorGlobal,
-).pipe(
+const runtimeLayer = Socket.layerWebSocketConstructorGlobal.pipe(
   Layer.provideMerge(cryptoLayer),
   Layer.provideMerge(httpClientLayer),
-  Layer.provideMerge(tracingLayer.pipe(Layer.provide(httpClientLayer))),
   Layer.provideMerge(Persistence.layer),
 );
 

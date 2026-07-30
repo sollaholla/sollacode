@@ -143,6 +143,75 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
     }).pipe(Effect.provide(makeEnvironmentAuthLayer())),
   );
 
+  it.effect("reuses the same session for repeated internal desktop bearer exchanges", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
+      const desktopMetadata = {
+        ...requestMetadata,
+        label: "Solla Code Desktop",
+      };
+
+      const firstToken = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        "desktop-bootstrap-token",
+        undefined,
+        desktopMetadata,
+      );
+      const secondToken = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        "desktop-bootstrap-token",
+        undefined,
+        desktopMetadata,
+      );
+      const firstSession = yield* sessions.verify(firstToken.access_token);
+      const secondSession = yield* sessions.verify(secondToken.access_token);
+      const activeSessions = yield* sessions.listActive();
+
+      expect(secondSession.sessionId).toBe(firstSession.sessionId);
+      expect(
+        activeSessions.filter(
+          (session) =>
+            session.subject === "desktop-bootstrap" &&
+            session.method === "bearer-access-token" &&
+            session.client.label === "Solla Code Desktop",
+        ),
+      ).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthLayer({
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
+
+  it.effect("does not reuse the desktop session identity for other bootstrap clients", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
+
+      const firstToken = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        "desktop-bootstrap-token",
+        undefined,
+        requestMetadata,
+      );
+      const secondToken = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        "desktop-bootstrap-token",
+        undefined,
+        requestMetadata,
+      );
+      const firstSession = yield* sessions.verify(firstToken.access_token);
+      const secondSession = yield* sessions.verify(secondToken.access_token);
+
+      expect(secondSession.sessionId).not.toBe(firstSession.sessionId);
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthLayer({
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
+  );
+
   it.effect("keeps user-issued administrative pairing links manageable", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

@@ -15,6 +15,10 @@ import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
+export function isSendImagePayloadByteLengthValid(byteLength: number): boolean {
+  return byteLength > 0 && byteLength <= PROVIDER_SEND_TURN_MAX_IMAGE_BYTES;
+}
+
 export const canonicalizeClientCommandTimestamps = (
   command: ClientOrchestrationCommand,
   receivedAt: IsoDateTime,
@@ -116,7 +120,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           }
 
           const bytes = Buffer.from(parsed.base64, "base64");
-          if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+          if (!isSendImagePayloadByteLengthValid(bytes.byteLength)) {
             return yield* new OrchestrationDispatchCommandError({
               message: `Image attachment '${attachment.name}' is empty or too large.`,
             });

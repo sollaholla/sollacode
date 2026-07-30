@@ -11,7 +11,6 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
-import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
@@ -23,7 +22,6 @@ import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopState from "./DesktopState.ts";
-import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
@@ -125,7 +123,7 @@ const handleFatalStartupError = Effect.fn("desktop.startup.handleFatalStartupErr
   const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
   if (!wasQuitting) {
     yield* electronDialog.showErrorBox(
-      "T3 Code failed to start",
+      "Solla Code failed to start",
       `Stage: ${stage}\n${message}${detail}`,
     );
   }
@@ -179,7 +177,6 @@ const bootstrap = Effect.gen(function* () {
     scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
     targetOrigin: rendererTarget,
     backendOrigin: backendConfig.httpBaseUrl,
-    clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
   });
   yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
     baseUrl: backendConfig.httpBaseUrl.href,
@@ -220,10 +217,8 @@ const startup = Effect.gen(function* () {
   const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
   const electronApp = yield* ElectronApp.ElectronApp;
   const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
-  const clerk = yield* DesktopClerk.DesktopClerk;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
-  const updates = yield* DesktopUpdates.DesktopUpdates;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
 
   yield* shellEnvironment.installIntoProcess;
@@ -238,8 +233,6 @@ const startup = Effect.gen(function* () {
 
   yield* appIdentity.configure;
   yield* lifecycle.register;
-  yield* clerk.configure;
-
   yield* electronApp.whenReady.pipe(
     Effect.withSpan("desktop.electron.whenReady"),
     Effect.catchCause((cause) => fatalStartupCause("whenReady", cause)),
@@ -247,7 +240,6 @@ const startup = Effect.gen(function* () {
   yield* logStartupInfo("app ready");
   yield* appIdentity.configure;
   yield* applicationMenu.configure;
-  yield* updates.configure;
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
 }).pipe(Effect.withSpan("desktop.startup"));
 

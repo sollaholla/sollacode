@@ -4,7 +4,6 @@ import * as NodeModule from "node:module";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
@@ -35,7 +34,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DESKTOP_APP_ID = "com.sollacode.app";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -142,8 +141,6 @@ interface BuildCliInput {
   readonly keepStage: Option.Option<boolean>;
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
-  readonly mockUpdates: Option.Option<boolean>;
-  readonly mockUpdateServerPort: Option.Option<number>;
   readonly wslPrebuild: Option.Option<string>;
 }
 
@@ -219,33 +216,6 @@ export class UnsupportedDesktopBuildArchitectureError extends Schema.TaggedError
 ) {
   override get message(): string {
     return `Unsupported architecture '${this.arch}' for ${this.platform}.`;
-  }
-}
-
-const InvalidMockUpdateServerPortReason = Schema.Literals([
-  "not-numeric",
-  "not-integer",
-  "out-of-range",
-]);
-
-export class InvalidMockUpdateServerPortError extends Schema.TaggedErrorClass<InvalidMockUpdateServerPortError>()(
-  "InvalidMockUpdateServerPortError",
-  {
-    reason: InvalidMockUpdateServerPortReason,
-    inputLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return "Invalid mock update server port.";
-  }
-
-  static fromConfigValue(configuredPort: string, cause: unknown) {
-    return new InvalidMockUpdateServerPortError({
-      reason: invalidMockUpdateServerPortReason(configuredPort),
-      inputLength: configuredPort.length,
-      cause,
-    });
   }
 }
 
@@ -603,8 +573,6 @@ interface ResolvedBuildOptions {
   readonly keepStage: boolean;
   readonly signed: boolean;
   readonly verbose: boolean;
-  readonly mockUpdates: boolean;
-  readonly mockUpdateServerPort: number | undefined;
   readonly wslPrebuild: string | undefined;
 }
 
@@ -805,7 +773,7 @@ export function resolveMacPasskeySigningConfiguration(
     }
     let hostname: string;
     try {
-      hostname = clerkFrontendApiHostnameFromPublishableKey(publishableKey);
+      hostname = publishableKey;
     } catch (cause) {
       throw new InvalidMacPasskeyPublishableKeyError({ cause });
     }
@@ -858,6 +826,8 @@ ${associatedDomains}
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
     <true/>
   </dict>
 </plist>
@@ -1033,8 +1003,6 @@ const BuildEnvConfig = Config.all({
   keepStage: Config.boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
   verbose: Config.boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
-  mockUpdates: Config.boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
-  mockUpdateServerPort: Config.string("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
   // Path to a prebuilt Linux node-pty binary (pty.node) for the target arch,
   // produced by the Linux CI job and handed to the Windows packaging job. Placed
   // into the staged node-pty so the WSL backend ships a ready binary and never
@@ -1042,39 +1010,10 @@ const BuildEnvConfig = Config.all({
   wslPrebuild: Config.string("T3CODE_DESKTOP_WSL_PREBUILD").pipe(Config.option),
 });
 
-const MockUpdateServerPortSchema = Schema.NumberFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 65535 }),
-);
-const decodeMockUpdateServerPort = Schema.decodeUnknownEffect(MockUpdateServerPortSchema);
-
-function invalidMockUpdateServerPortReason(
-  configuredPort: string,
-): typeof InvalidMockUpdateServerPortReason.Type {
-  const parsed = Number(configuredPort);
-  if (!Number.isFinite(parsed)) return "not-numeric";
-  if (!Number.isInteger(parsed)) return "not-integer";
-  if (parsed < 1 || parsed > 65535) return "out-of-range";
-  // This mapper is only called after schema decoding failed. An otherwise
-  // valid integer therefore used a representation the decoder did not accept.
-  return "not-numeric";
-}
-
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
   Option.getOrElse(flag, () => envValue);
 const mergeOptions = <A>(a: Option.Option<A>, b: Option.Option<A>, defaultValue: A) =>
   Option.getOrElse(a, () => Option.getOrElse(b, () => defaultValue));
-
-export const resolveMockUpdateServerPort = Effect.fn("resolveMockUpdateServerPort")(function* (
-  mockUpdateServerPort: string | undefined,
-) {
-  const port = mockUpdateServerPort?.trim();
-  if (!port) {
-    return undefined;
-  }
-
-  return yield* decodeMockUpdateServerPort(port);
-});
 
 export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   input: BuildCliInput,
@@ -1106,30 +1045,12 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     });
   }
   const version = mergeOptions(input.buildVersion, env.version, undefined);
-  const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
-    ? "release-mock"
-    : "release";
-  const outputDir = path.resolve(
-    repoRoot,
-    mergeOptions(input.outputDir, env.outputDir, releaseDir),
-  );
+  const outputDir = path.resolve(repoRoot, mergeOptions(input.outputDir, env.outputDir, "release"));
 
   const skipBuild = resolveBooleanFlag(input.skipBuild, env.skipBuild);
   const keepStage = resolveBooleanFlag(input.keepStage, env.keepStage);
   const signed = resolveBooleanFlag(input.signed, env.signed);
   const verbose = resolveBooleanFlag(input.verbose, env.verbose);
-
-  const mockUpdates = resolveBooleanFlag(input.mockUpdates, env.mockUpdates);
-  const configuredMockUpdateServerPort = Option.getOrUndefined(env.mockUpdateServerPort);
-  const mockUpdateServerPort =
-    Option.getOrUndefined(input.mockUpdateServerPort) ??
-    (configuredMockUpdateServerPort === undefined
-      ? undefined
-      : yield* resolveMockUpdateServerPort(configuredMockUpdateServerPort).pipe(
-          Effect.mapError((cause) =>
-            InvalidMockUpdateServerPortError.fromConfigValue(configuredMockUpdateServerPort, cause),
-          ),
-        ));
 
   const wslPrebuild =
     Option.getOrUndefined(input.wslPrebuild) ?? Option.getOrUndefined(env.wslPrebuild);
@@ -1144,8 +1065,6 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     keepStage,
     signed,
     verbose,
-    mockUpdates,
-    mockUpdateServerPort,
     wslPrebuild,
   } satisfies ResolvedBuildOptions;
 });
@@ -1448,42 +1367,16 @@ export function resolveDesktopRuntimeDependencies(
   return resolveCatalogDependencies(runtimeDependencies, catalog, "apps/desktop");
 }
 
-export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
-  updateChannel: "latest" | "nightly",
-) {
-  const env = yield* Config.all({
-    updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
-    githubRepository: Config.string("GITHUB_REPOSITORY").pipe(Config.option),
-  });
-  const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() ||
-    Option.getOrUndefined(env.githubRepository)?.trim() ||
-    ""
-  ).trim();
-  if (!rawRepo) return undefined;
-
-  const [owner, repo, ...rest] = rawRepo.split("/");
-  if (!owner || !repo || rest.length > 0) return undefined;
-
-  return {
-    provider: "github",
-    owner,
-    repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
-    ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
-  };
-});
-
-export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
+export function resolveDesktopReleaseChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
-  return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
+  return resolveWebAssetBrandForChannel(resolveDesktopReleaseChannel(version));
 }
 
 export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
-  if (resolveDesktopUpdateChannel(version) === "nightly") {
+  if (resolveDesktopReleaseChannel(version) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
@@ -1496,10 +1389,6 @@ export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIcon
     linuxIconPng: BRAND_ASSET_PATHS.productionLinuxIconPng,
     windowsIconIco: BRAND_ASSET_PATHS.productionWindowsIconIco,
   };
-}
-
-export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefined): string {
-  return `http://localhost:${mockUpdateServerPort ?? 3000}`;
 }
 
 // Electron Builder detects pnpm from npm_config_user_agent, whose value uses
@@ -1515,10 +1404,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
-  return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+export function resolveDesktopProductName(_version: string): string {
+  return desktopPackageJson.productName ?? "Solla Code";
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -1526,8 +1413,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   target: string,
   version: string,
   signed: boolean,
-  mockUpdates: boolean,
-  mockUpdateServerPort: number | undefined,
   macPasskeySigning:
     | {
         readonly entitlementsPath: string;
@@ -1538,7 +1423,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    artifactName: "Solla-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [...DESKTOP_FILE_EXCLUSIONS],
     directories: {
@@ -1550,28 +1435,19 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ...(platform === "win" ? { asarUnpack: [...WINDOWS_ASAR_UNPACK] } : {}),
     extraResources: DESKTOP_EXTRA_RESOURCES,
   };
-  const updateChannel = resolveDesktopUpdateChannel(version);
-  const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
-  if (publishConfig) {
-    buildConfig.publish = [publishConfig];
-  } else if (mockUpdates) {
-    buildConfig.publish = [
-      {
-        provider: "generic",
-        url: resolveMockUpdateServerUrl(mockUpdateServerPort),
-      },
-    ];
-  }
-
   if (platform === "mac") {
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      extendInfo: {
+        NSMicrophoneUsageDescription:
+          "Solla Code uses the microphone only while you hold the push-to-talk shortcut.",
+      },
       protocols: [
         {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
+          name: "Solla Code",
+          schemes: ["sollacode"],
         },
       ],
       ...(macPasskeySigning
@@ -1586,12 +1462,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: "solla-code",
       icon: "icons",
       category: "Development",
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: "solla-code",
         },
       },
     };
@@ -1599,6 +1475,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 
   if (platform === "win") {
     buildConfig.npmRebuild = false;
+    buildConfig.nsis = {
+      differentialPackage: false,
+    };
     const winConfig: Record<string, unknown> = {
       target: [target],
       icon: "icon.ico",
@@ -1903,22 +1782,20 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     stageDependencies,
   );
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: "solla-code",
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description: "T3 Code desktop build",
-    author: "T3 Tools",
+    description: "Solla Code desktop build",
+    author: "Solla Code",
     main: "apps/desktop/dist-electron/main.cjs",
     build: yield* createBuildConfig(
       options.platform,
       options.target,
       appVersion,
       options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
       macPasskeySigning && macEntitlementsPath
         ? {
             entitlementsPath: macEntitlementsPath,
@@ -1960,7 +1837,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     }),
     { label: "vp install --prod", verbose: options.verbose },
   );
-  yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
 
   // WSL is Windows-only, so only the Windows artifact carries the Linux backend
   // binary; other platforms ignore the prebuild input.
@@ -2117,15 +1993,6 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.withDescription("Stream subprocess stdout (env: T3CODE_DESKTOP_VERBOSE)."),
     Flag.optional,
   ),
-  mockUpdates: Flag.boolean("mock-updates").pipe(
-    Flag.withDescription("Enable mock updates (env: T3CODE_DESKTOP_MOCK_UPDATES)."),
-    Flag.optional,
-  ),
-  mockUpdateServerPort: Flag.integer("mock-update-server-port").pipe(
-    Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
-    Flag.withDescription("Mock update server port (env: T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT)."),
-    Flag.optional,
-  ),
   wslPrebuild: Flag.string("wsl-prebuild").pipe(
     Flag.withDescription(
       "Path to a prebuilt Linux node-pty (pty.node) for the target arch, staged for the WSL backend (env: T3CODE_DESKTOP_WSL_PREBUILD).",
@@ -2133,7 +2000,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a desktop artifact for Solla Code."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

@@ -87,6 +87,30 @@ export class AssetPreviewTypeValidationError extends Schema.TaggedErrorClass<Ass
   }
 }
 
+export class AssetPreviewMimeTypeValidationError extends Schema.TaggedErrorClass<AssetPreviewMimeTypeValidationError>()(
+  "AssetPreviewMimeTypeValidationError",
+  {
+    resource: AssetResource,
+  },
+) {
+  override get message(): string {
+    return "Workspace image contents do not match a supported raster image type.";
+  }
+}
+
+export class AssetPreviewFileTooLargeError extends Schema.TaggedErrorClass<AssetPreviewFileTooLargeError>()(
+  "AssetPreviewFileTooLargeError",
+  {
+    resource: AssetResource,
+    byteLength: Schema.Number,
+    maxByteLength: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Workspace image is too large to preview (${this.byteLength} bytes; maximum ${this.maxByteLength}).`;
+  }
+}
+
 export class AssetWorkspaceAssetInspectionError extends Schema.TaggedErrorClass<AssetWorkspaceAssetInspectionError>()(
   "AssetWorkspaceAssetInspectionError",
   {
@@ -186,6 +210,8 @@ export const AssetAccessError = Schema.Union([
   AssetWorkspaceRootNormalizationError,
   AssetWorkspacePathValidationError,
   AssetPreviewTypeValidationError,
+  AssetPreviewMimeTypeValidationError,
+  AssetPreviewFileTooLargeError,
   AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
   AssetWorkspaceResolutionError,

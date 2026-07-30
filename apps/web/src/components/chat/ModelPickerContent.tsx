@@ -89,6 +89,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   terminalOpen: boolean;
+  fullScreen?: boolean;
   onRequestClose?: () => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
@@ -138,6 +139,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   );
 
   useLayoutEffect(() => {
+    if (props.fullScreen) {
+      return;
+    }
     focusSearchInput();
     const frame = window.requestAnimationFrame(() => {
       focusSearchInput();
@@ -149,7 +153,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       window.cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
-  }, [focusSearchInput]);
+  }, [focusSearchInput, props.fullScreen]);
 
   // Create a Set for efficient lookup. Favorites are keyed by
   // `${instanceId}:${slug}`; the storage schema widened from ProviderDriverKind
@@ -525,8 +529,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   return (
     <TooltipProvider delay={0}>
       <div
-        className="dropdown-glass model-picker-surface relative flex h-screen max-h-86.5 w-screen max-w-90 flex-row overflow-hidden rounded-lg text-popover-foreground [clip-path:inset(0_round_var(--radius-lg))]"
+        className={cn(
+          "dropdown-glass model-picker-surface relative flex h-screen w-screen flex-row overflow-hidden text-popover-foreground",
+          props.fullScreen
+            ? "max-h-none max-w-none rounded-none overscroll-contain [clip-path:none]"
+            : "max-h-86.5 max-w-90 rounded-lg [clip-path:inset(0_round_var(--radius-lg))]",
+        )}
         data-model-picker-content="true"
+        data-model-picker-full-screen={props.fullScreen ? "true" : "false"}
       >
         {/* Sidebar */}
         {showSidebar && (
@@ -539,7 +549,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               ? {
                   disabledInstanceIds: lockedDisabledInstanceIds,
                   getDisabledInstanceTooltip: (entry: ProviderInstanceEntry) =>
-                    `${entry.displayName} is unavailable in this thread. Start a new thread to switch providers.`,
+                    `${entry.displayName} is unavailable while this provider turn is active.`,
                 }
               : {})}
           />

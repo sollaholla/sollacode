@@ -143,6 +143,7 @@ const desktopServerExposureLayer = Layer.succeed(DesktopServerExposure.DesktopSe
   configureFromSettings: () => Effect.die("unexpected configureFromSettings"),
   setMode: () => Effect.die("unexpected setMode"),
   setTailscaleServeEnabled: () => Effect.die("unexpected setTailscaleServeEnabled"),
+  reconcileTailscaleServe: Effect.die("unexpected reconcileTailscaleServe"),
   getAdvertisedEndpoints: Effect.die("unexpected getAdvertisedEndpoints"),
 } satisfies DesktopServerExposure.DesktopServerExposure["Service"]);
 
@@ -213,7 +214,6 @@ function makeTestLayer(input: {
       }),
     setServerExposureMode: () => Effect.die("unexpected server exposure update"),
     setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),
-    setUpdateChannel: () => Effect.die("unexpected update channel change"),
     setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
     setWslDistro: () => Effect.die("unexpected WSL distro change"),
     setWslOnly: () => Effect.die("unexpected WSL-only toggle"),
@@ -427,6 +427,7 @@ describe("DesktopWindow", () => {
         assert.equal(yield* Ref.get(createCount), 1);
         assert.equal(createdWindowOptions[0]?.width, 1100);
         assert.equal(createdWindowOptions[0]?.height, 780);
+        assert.equal(createdWindowOptions[0]?.title, "Solla Code");
         assert.isUndefined(createdWindowOptions[0]?.x);
         assert.isUndefined(createdWindowOptions[0]?.y);
         assert.isTrue(createdWindowOptions[0]?.disableAutoHideCursor);

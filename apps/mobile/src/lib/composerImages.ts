@@ -106,7 +106,7 @@ export async function pickComposerImages(input: { readonly existingCount: number
 
     const sizeBytes = asset.fileSize ?? estimateBase64ByteSize(base64);
     if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-      error = `'${asset.fileName ?? "image"}' exceeds the 10 MB attachment limit.`;
+      error = `'${asset.fileName ?? "image"}' exceeds the 2 MiB attachment limit.`;
       continue;
     }
 
@@ -168,7 +168,7 @@ export async function pasteComposerClipboard(input: { readonly existingCount: nu
       return {
         images: [],
         text: null,
-        error: "Clipboard image exceeds the 10 MB attachment limit.",
+        error: "Clipboard image exceeds the 2 MiB attachment limit.",
       };
     }
 

@@ -455,6 +455,7 @@ export function projectEvent(
             id: payload.messageId,
             role: payload.role,
             text: payload.text,
+            ...(payload.inputOrigin !== undefined ? { inputOrigin: payload.inputOrigin } : {}),
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,

@@ -140,7 +140,10 @@ export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
-export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Maximum accepted upload bytes. One byte below 2 MiB keeps the ceiling exclusive. */
+export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 2 * 1024 * 1024 - 1;
+/** Historical persisted attachments may predate the stricter send-time ceiling. */
+const PERSISTED_CHAT_ATTACHMENT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
@@ -158,7 +161,9 @@ export const ChatImageAttachment = Schema.Struct({
   id: ChatAttachmentId,
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
-  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isLessThanOrEqualTo(PERSISTED_CHAT_ATTACHMENT_MAX_IMAGE_BYTES),
+  ),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
@@ -223,11 +228,14 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
+export const OrchestrationMessageInputOrigin = Schema.Literal("transcription");
+export type OrchestrationMessageInputOrigin = typeof OrchestrationMessageInputOrigin.Type;
 
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
@@ -325,6 +333,7 @@ export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Typ
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
+  "incomplete",
   "completed",
   "error",
 ]);
@@ -672,6 +681,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
     attachments: Schema.Array(ChatAttachment),
   }),
   modelSelection: Schema.optional(ModelSelection),
@@ -693,6 +703,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
     attachments: Schema.Array(UploadChatAttachment),
   }),
   modelSelection: Schema.optional(ModelSelection),
@@ -1024,6 +1035,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   messageId: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
+  inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,

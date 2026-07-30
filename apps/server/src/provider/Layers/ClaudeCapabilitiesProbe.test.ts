@@ -72,7 +72,25 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "const lines = createInterface({ input: process.stdin });",
           'lines.on("line", (line) => {',
           "  const message = JSON.parse(line);",
-          '  if (message.type !== "control_request" || message.request?.subtype !== "initialize") return;',
+          '  if (message.type !== "control_request") return;',
+          '  if (message.request?.subtype === "get_usage") {',
+          "    process.stdout.write(JSON.stringify({",
+          '      type: "control_response",',
+          "      response: {",
+          '        subtype: "success",',
+          "        request_id: message.request_id,",
+          "        response: {",
+          "          session: { total_cost_usd: 0, total_api_duration_ms: 0, total_duration_ms: 0, total_lines_added: 0, total_lines_removed: 0, model_usage: {} },",
+          '          subscription_type: "pro",',
+          "          rate_limits_available: true,",
+          '          rate_limits: { five_hour: { utilization: 21, resets_at: "2026-07-29T22:00:00.000Z" }, seven_day: { utilization: 43, resets_at: "2026-08-03T00:00:00.000Z" } },',
+          "          behaviors: { day: { request_count: 0, session_count: 0, characteristics: [], contributors: [] }, week: { request_count: 0, session_count: 0, characteristics: [], contributors: [] } },",
+          "        },",
+          "      },",
+          '    }) + "\\n");',
+          "    return;",
+          "  }",
+          '  if (message.request?.subtype !== "initialize") return;',
           "  process.stdout.write(JSON.stringify({",
           '    type: "control_response",',
           "    response: {",
@@ -117,6 +135,19 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
             input: { hint: "[path]" },
           },
         ],
+        accountUsage: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: {
+              utilization: 21,
+              resets_at: "2026-07-29T22:00:00.000Z",
+            },
+            seven_day: {
+              utilization: 43,
+              resets_at: "2026-08-03T00:00:00.000Z",
+            },
+          },
+        },
       });
 
       // @effect-diagnostics-next-line preferSchemaOverJson:off

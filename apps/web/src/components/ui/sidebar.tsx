@@ -76,6 +76,17 @@ type SidebarInstanceContextProps = {
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
 const SidebarInstanceContext = React.createContext<SidebarInstanceContextProps | null>(null);
+const SidebarInsetOverlayContext = React.createContext<React.ReactNode>(null);
+
+function SidebarInsetOverlayProvider({
+  children,
+  overlay,
+}: {
+  children: React.ReactNode;
+  overlay: React.ReactNode;
+}) {
+  return <SidebarInsetOverlayContext value={overlay}>{children}</SidebarInsetOverlayContext>;
+}
 
 function useSidebar() {
   const context = React.use(SidebarContext);
@@ -626,7 +637,9 @@ function SidebarRail({
   );
 }
 
-function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
+function SidebarInset({ className, children, ...props }: React.ComponentProps<"main">) {
+  const overlay = React.use(SidebarInsetOverlayContext);
+
   return (
     <main
       className={cn(
@@ -636,7 +649,10 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
       )}
       data-slot="sidebar-inset"
       {...props}
-    />
+    >
+      {children}
+      {overlay}
+    </main>
   );
 }
 
@@ -1019,6 +1035,7 @@ export {
   SidebarHeader,
   SidebarInput,
   SidebarInset,
+  SidebarInsetOverlayProvider,
   SidebarMenu,
   SidebarMenuAction,
   SidebarMenuBadge,

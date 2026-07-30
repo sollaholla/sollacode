@@ -38,7 +38,6 @@ describe("ElectronProtocol", () => {
             scheme: "t3code-dev",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             backendOrigin: new URL("http://127.0.0.1:3774/"),
-            clerkFrontendApiHostname: "clerk.t3.codes",
           });
           assert.isDefined(handler);
 
@@ -57,7 +56,7 @@ describe("ElectronProtocol", () => {
           assert.equal(yield* Effect.promise(() => response.text()), "ok");
           assert.include(
             response.headers.get("content-security-policy") ?? "",
-            "script-src 'self' 'unsafe-inline' https://clerk.t3.codes https://challenges.cloudflare.com",
+            "script-src 'self' t3code-dev: 'unsafe-inline' 'wasm-unsafe-eval'",
           );
           assert.include(
             response.headers.get("content-security-policy") ?? "",
@@ -102,7 +101,6 @@ describe("ElectronProtocol", () => {
             scheme: "t3code",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             backendOrigin: new URL("http://127.0.0.1:3773/"),
-            clerkFrontendApiHostname: undefined,
           });
           return yield* Effect.promise(() => handler!(new Request("t3code://other/")));
         }),
@@ -130,7 +128,6 @@ describe("ElectronProtocol", () => {
             scheme: "t3code-dev",
             targetOrigin: new URL("http://127.0.0.1:5733/"),
             backendOrigin: new URL("http://127.0.0.1:3773/"),
-            clerkFrontendApiHostname: undefined,
           });
           return yield* Effect.promise(() => handler!(new Request("t3code-dev://app/")));
         }),
@@ -154,7 +151,6 @@ describe("ElectronProtocol", () => {
           scheme: "t3code-dev",
           targetOrigin: new URL("http://127.0.0.1:3773/"),
           backendOrigin: new URL("http://127.0.0.1:3774/"),
-          clerkFrontendApiHostname: undefined,
         }),
       ).pipe(Effect.flip);
 
@@ -179,7 +175,6 @@ describe("ElectronProtocol", () => {
             scheme: "t3code",
             targetOrigin: new URL("http://127.0.0.1:3773/"),
             backendOrigin: new URL("http://127.0.0.1:3773/"),
-            clerkFrontendApiHostname: undefined,
           }),
         ),
       );
@@ -195,12 +190,11 @@ describe("ElectronProtocol", () => {
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 
-  it("keeps executable sources host-restricted while allowing runtime network resources", () => {
+  it("allows app-controlled custom-scheme assets while allowing runtime network resources", () => {
     const policy = ElectronProtocol.makeDesktopContentSecurityPolicy({
-      scheme: "t3code",
+      scheme: "sollacode",
       targetOrigin: new URL("http://127.0.0.1:3773/"),
       backendOrigin: new URL("http://127.0.0.1:3773/"),
-      clerkFrontendApiHostname: "clerk.t3.codes",
     });
     const directives = Object.fromEntries(
       policy.split("; ").map((directive) => {
@@ -211,19 +205,20 @@ describe("ElectronProtocol", () => {
 
     assert.deepEqual(directives["script-src"], [
       "'self'",
+      "sollacode:",
       "'unsafe-inline'",
-      "https://clerk.t3.codes",
-      "https://challenges.cloudflare.com",
+      "'wasm-unsafe-eval'",
     ]);
     assert.deepEqual(directives["connect-src"], ["'self'", "http:", "https:", "ws:", "wss:"]);
     assert.deepEqual(directives["img-src"], [
       "'self'",
-      "t3code:",
+      "sollacode:",
       "blob:",
       "data:",
       "http:",
       "https:",
     ]);
-    assert.deepEqual(directives["font-src"], ["'self'", "t3code:", "data:"]);
+    assert.deepEqual(directives["style-src"], ["'self'", "sollacode:", "'unsafe-inline'"]);
+    assert.deepEqual(directives["font-src"], ["'self'", "sollacode:", "data:"]);
   });
 });

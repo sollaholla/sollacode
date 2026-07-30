@@ -13,7 +13,7 @@ const DESKTOP_NETWORK_ACCESS_STALE_TIME_MS = 30_000;
 
 type DesktopNetworkAccessBridge = Pick<
   DesktopBridge,
-  "getAdvertisedEndpoints" | "getServerExposureState"
+  "getAdvertisedEndpoints" | "getServerExposureState" | "reconcileTailscaleServe"
 >;
 
 export interface DesktopNetworkAccessSnapshot {
@@ -60,19 +60,20 @@ export function createDesktopNetworkAccessStateAtom(
     if (!bridge) {
       return yield* new DesktopNetworkAccessUnavailableError();
     }
-    const [serverExposureState, advertisedEndpoints] = yield* Effect.all(
-      [
-        Effect.tryPromise({
-          try: () => bridge.getServerExposureState(),
+    const initialState = yield* Effect.tryPromise({
+      try: () => bridge.getServerExposureState(),
+      catch: (cause) => new DesktopServerExposureStateLoadError({ cause }),
+    });
+    const serverExposureState = initialState.tailscaleServeRequested
+      ? yield* Effect.tryPromise({
+          try: () => bridge.reconcileTailscaleServe(),
           catch: (cause) => new DesktopServerExposureStateLoadError({ cause }),
-        }),
-        Effect.tryPromise({
-          try: () => bridge.getAdvertisedEndpoints(),
-          catch: (cause) => new DesktopAdvertisedEndpointsLoadError({ cause }),
-        }),
-      ],
-      { concurrency: "unbounded" },
-    );
+        })
+      : initialState;
+    const advertisedEndpoints = yield* Effect.tryPromise({
+      try: () => bridge.getAdvertisedEndpoints(),
+      catch: (cause) => new DesktopAdvertisedEndpointsLoadError({ cause }),
+    });
     return {
       advertisedEndpoints,
       serverExposureState,

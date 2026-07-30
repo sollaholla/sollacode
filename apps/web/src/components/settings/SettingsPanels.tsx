@@ -9,13 +9,12 @@ import {
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { CSSProperties } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   defaultInstanceIdForDriver,
   type BackgroundActivityProfile,
   type BackgroundActivitySettings,
-  type DesktopUpdateChannel,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -48,14 +47,8 @@ import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Result from "effect/Result";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
-import {
-  canCheckForUpdate,
-  getDesktopUpdateButtonTooltip,
-  getDesktopUpdateInstallConfirmationMessage,
-  isDesktopUpdateButtonDisabled,
-  resolveDesktopUpdateButtonAction,
-} from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { deriveProviderUsageReports, deriveProviderUsageSummaries } from "../chat/ProviderUsageBar";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -66,7 +59,6 @@ import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hos
 import { useTheme } from "../../hooks/useTheme";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
-import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -117,6 +109,15 @@ import {
   type ProviderUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import {
+  IDLE_PROVIDER_USAGE_REFRESH_STATE,
+  ProviderSettingsUsage,
+  type ProviderUsageRefreshState,
+} from "./ProviderSettingsUsage";
+import {
+  createProviderUsageRefreshCoordinator,
+  ProviderUsageRefreshBackoffError,
+} from "./providerUsageRefresh";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   backgroundActivitySharedPolicySettings,
@@ -138,6 +139,8 @@ import {
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useUiStateStore } from "../../uiStateStore";
+import { useProviderUsageStore } from "../../providerUsageStore";
 
 const THEME_OPTIONS = [
   {
@@ -346,183 +349,16 @@ function AboutVersionTitle() {
 }
 
 function AboutVersionSection() {
-  const updateState = useDesktopUpdateState();
-  const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
-
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
-  const selectedUpdateChannel = updateState?.channel ?? "latest";
   const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
-
-  const handleUpdateChannelChange = useCallback(
-    (channel: DesktopUpdateChannel) => {
-      const bridge = window.desktopBridge;
-      if (
-        !bridge ||
-        typeof bridge.setUpdateChannel !== "function" ||
-        channel === selectedUpdateChannel
-      ) {
-        return;
-      }
-
-      setIsChangingUpdateChannel(true);
-      void bridge
-        .setUpdateChannel(channel)
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not change update track",
-              description: error instanceof Error ? error.message : "Update track change failed.",
-            }),
-          );
-        })
-        .finally(() => {
-          setIsChangingUpdateChannel(false);
-        });
-    },
-    [selectedUpdateChannel],
-  );
-
-  const handleButtonClick = useCallback(() => {
-    const bridge = window.desktopBridge;
-    if (!bridge) return;
-
-    const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
-
-    if (action === "download") {
-      void bridge.downloadUpdate().catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not download update",
-            description: error instanceof Error ? error.message : "Download failed.",
-          }),
-        );
-      });
-      return;
-    }
-
-    if (action === "install") {
-      const confirmed = window.confirm(
-        getDesktopUpdateInstallConfirmationMessage(
-          updateState ?? { availableVersion: null, downloadedVersion: null },
-          navigator.platform,
-        ),
-      );
-      if (!confirmed) return;
-      void bridge.installUpdate().catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not install update",
-            description: error instanceof Error ? error.message : "Install failed.",
-          }),
-        );
-      });
-      return;
-    }
-
-    if (typeof bridge.checkForUpdate !== "function") return;
-    void bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (!result.checked) {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not check for updates",
-              description:
-                result.state.message ?? "Automatic updates are not available in this build.",
-            }),
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
-          }),
-        );
-      });
-  }, [updateState]);
-
-  const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
-  const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
-  const buttonDisabled =
-    action === "none"
-      ? !canCheckForUpdate(updateState)
-      : isDesktopUpdateButtonDisabled(updateState);
-
-  const actionLabel: Record<string, string> = { download: "Download", install: "Install" };
-  const statusLabel: Record<string, string> = {
-    checking: "Checking…",
-    downloading: "Downloading…",
-    "up-to-date": "Up to Date",
-  };
-  const buttonLabel =
-    actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
-  const description =
-    action === "download" || action === "install"
-      ? "Update available."
-      : "Current version of the application.";
 
   return (
     <>
       <SettingsRow
         title={<AboutVersionTitle />}
-        description={description}
-        control={
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="xs"
-                  variant={action === "install" ? "default" : "outline"}
-                  disabled={buttonDisabled}
-                  onClick={handleButtonClick}
-                >
-                  {buttonLabel}
-                </Button>
-              }
-            />
-            {buttonTooltip ? <TooltipPopup>{buttonTooltip}</TooltipPopup> : null}
-          </Tooltip>
-        }
+        description="Current version of the application."
       />
-      {hasDesktopBridge ? (
-        <SettingsRow
-          title="Update track"
-          description="Stable follows full releases. Nightly follows the nightly desktop channel and can switch back to stable immediately."
-          control={
-            <Select
-              value={selectedUpdateChannel}
-              onValueChange={(value) => {
-                handleUpdateChannelChange(value as DesktopUpdateChannel);
-              }}
-            >
-              <SelectTrigger
-                className="w-full sm:w-40"
-                aria-label="Update track"
-                disabled={isChangingUpdateChannel}
-              >
-                <SelectValue>
-                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="latest">
-                  Stable
-                </SelectItem>
-                <SelectItem hideIndicator value="nightly">
-                  Nightly
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      ) : selectedHostedAppChannel ? (
+      {selectedHostedAppChannel ? (
         <SettingsRow
           title="Update track"
           description="Switches the hosted app release channel."
@@ -966,7 +802,7 @@ export function AppearanceSettingsPanel() {
       <SettingsSection title="Appearance">
         <SettingsRow
           title="Theme"
-          description="Choose how T3 Code looks across the app."
+          description="Choose how Solla Code looks across the app."
           resetAction={
             theme !== "system" ? (
               <SettingResetButton label="theme" onClick={() => setTheme("system")} />
@@ -1117,6 +953,8 @@ export function GeneralSettingsPanel() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
+  const showProviderUsageBar = useUiStateStore((state) => state.showProviderUsageBar);
+  const setShowProviderUsageBar = useUiStateStore((state) => state.setShowProviderUsageBar);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -1296,6 +1134,18 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
               aria-label="Stream assistant messages"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Provider usage bar"
+          description="Show provider-reported usage windows and quotas at the bottom of chat. Unsupported or not-yet-reported usage stays labeled as unavailable."
+          control={
+            <Switch
+              checked={showProviderUsageBar}
+              onCheckedChange={(checked) => setShowProviderUsageBar(Boolean(checked))}
+              aria-label="Show provider usage bar"
             />
           }
         />
@@ -1706,7 +1556,115 @@ export function ProviderSettingsPanel() {
     ReadonlySet<ProviderDriverKind>
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const [providerUsageRefreshStates, setProviderUsageRefreshStates] = useState<
+    Readonly<Record<string, ProviderUsageRefreshState>>
+  >({});
   const refreshingRef = useRef(false);
+  const persistedProviderUsage = useProviderUsageStore((state) => state.byAccountKey);
+  const recordProviderUsage = useProviderUsageStore((state) => state.record);
+  const providerUsageRefreshRpcRef = useRef<(instanceId: ProviderInstanceId) => Promise<void>>(
+    async () => undefined,
+  );
+  const providerUsageRefreshCoordinatorRef = useRef(
+    createProviderUsageRefreshCoordinator({
+      refresh: (instanceId) => providerUsageRefreshRpcRef.current(instanceId),
+    }),
+  );
+  const previouslyRefreshableProviderIdsRef = useRef<ReadonlySet<ProviderInstanceId> | null>(null);
+
+  providerUsageRefreshRpcRef.current = async (instanceId) => {
+    if (!primaryEnvironment) {
+      throw new Error("The provider environment is not connected.");
+    }
+    const result = await refreshServerProviders({
+      environmentId: primaryEnvironment.environmentId,
+      input: { instanceId },
+    });
+    if (result._tag === "Failure") {
+      if (isAtomCommandInterrupted(result)) {
+        throw new Error("Provider usage refresh was interrupted.");
+      }
+      throw squashAtomCommandFailure(result);
+    }
+  };
+
+  const requestProviderUsageRefresh = useCallback(
+    (
+      provider: (typeof serverProviders)[number],
+      options?: { readonly ignoreFailureBackoff?: boolean },
+    ) => {
+      const request = providerUsageRefreshCoordinatorRef.current.request(provider, options);
+      if (request === null) return;
+      const instanceKey = String(provider.instanceId);
+      setProviderUsageRefreshStates((previous) => ({
+        ...previous,
+        [instanceKey]: { status: "loading", error: null },
+      }));
+      void request.then(
+        () =>
+          setProviderUsageRefreshStates((previous) => ({
+            ...previous,
+            [instanceKey]: IDLE_PROVIDER_USAGE_REFRESH_STATE,
+          })),
+        (error: unknown) =>
+          setProviderUsageRefreshStates((previous) => ({
+            ...previous,
+            [instanceKey]: {
+              status: "error",
+              error:
+                error instanceof ProviderUsageRefreshBackoffError
+                  ? "Refresh paused briefly after the previous provider request failed."
+                  : error instanceof Error
+                    ? error.message
+                    : "Provider usage could not be refreshed.",
+            },
+          })),
+      );
+    },
+    [],
+  );
+
+  const providerUsageReports = useMemo(
+    () => deriveProviderUsageReports(serverProviders, []),
+    [serverProviders],
+  );
+  useEffect(() => {
+    for (const report of Object.values(providerUsageReports)) {
+      recordProviderUsage(report);
+    }
+  }, [providerUsageReports, recordProviderUsage]);
+  const providerUsageSummaries = deriveProviderUsageSummaries(
+    serverProviders,
+    [],
+    persistedProviderUsage,
+  );
+  const providerUsageSummaryByInstanceId = new Map(
+    providerUsageSummaries.map((summary) => [summary.provider.instanceId, summary]),
+  );
+
+  useEffect(() => {
+    const refreshableProviders = serverProviders.filter(
+      (provider) =>
+        provider.enabled &&
+        provider.status !== "disabled" &&
+        provider.availability !== "unavailable" &&
+        provider.auth.status !== "unauthenticated" &&
+        (provider.driver === "codex" || provider.driver === "claudeAgent"),
+    );
+    const nextIds = new Set(refreshableProviders.map((provider) => provider.instanceId));
+    const previousIds = previouslyRefreshableProviderIdsRef.current;
+
+    for (const provider of refreshableProviders) {
+      if (previousIds === null || !previousIds.has(provider.instanceId)) {
+        requestProviderUsageRefresh(provider, {
+          // Enabling a provider is an explicit user transition and should not
+          // inherit a failure delay from its previously disabled state.
+          ignoreFailureBackoff: previousIds !== null,
+        });
+      }
+    }
+    previouslyRefreshableProviderIdsRef.current = nextIds;
+  }, [requestProviderUsageRefresh, serverProviders]);
 
   const providerUpdateCandidates = useMemo(
     () => collectProviderUpdateCandidates(serverProviders),
@@ -2135,6 +2093,14 @@ export function ProviderSettingsPanel() {
                 onClick={() => resetDefaultInstance(row.driver)}
               />
             ) : null;
+          const providerUsageSummary = providerUsageSummaryByInstanceId.get(row.instanceId);
+          const providerUsageRefreshState =
+            providerUsageRefreshStates[String(row.instanceId)] ?? IDLE_PROVIDER_USAGE_REFRESH_STATE;
+          const providerDisplayName =
+            row.instance.displayName?.trim() ||
+            driverOption?.label ||
+            liveProvider?.displayName?.trim() ||
+            String(row.driver);
           return (
             <ProviderInstanceCard
               key={row.instanceId}
@@ -2193,6 +2159,19 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              usage={
+                row.instance.enabled !== false ? (
+                  <ProviderSettingsUsage
+                    displayName={providerDisplayName}
+                    provider={liveProvider}
+                    summary={providerUsageSummary}
+                    refreshState={providerUsageRefreshState}
+                    onRefresh={
+                      liveProvider ? () => requestProviderUsageRefresh(liveProvider) : undefined
+                    }
+                  />
+                ) : undefined
+              }
             />
           );
         })}

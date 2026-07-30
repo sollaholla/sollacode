@@ -34,7 +34,6 @@ import Animated, {
   LinearTransition,
 } from "react-native-reanimated";
 import { useThemeColor } from "../../lib/useThemeColor";
-import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { AppText as Text } from "../../components/AppText";
@@ -518,24 +517,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
-    // Sending a prompt starts agent work: arm the lock-screen card now, while
-    // the app is foregrounded and the activity token can be registered.
-    armAgentAwarenessLiveActivityForLocalWork({
-      threadTitle: props.selectedThread.title,
-      projectTitle: props.environmentLabel ?? "T3 Code",
-    });
     try {
       await onSendMessage();
     } finally {
       inFlightThreadIdsRef.current.delete(threadKey);
     }
-  }, [
-    onSendMessage,
-    props.environmentId,
-    props.environmentLabel,
-    props.selectedThread.id,
-    props.selectedThread.title,
-  ]);
+  }, [onSendMessage, props.environmentId, props.selectedThread.id]);
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;

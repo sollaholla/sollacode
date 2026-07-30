@@ -37,13 +37,45 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  isClaudeInterruptedResult,
+  makeClaudeAdapter,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
 class ClaudeAdapter extends Context.Service<ClaudeAdapter, ClaudeAdapterShape>()(
   "t3/provider/Layers/ClaudeAdapter.test/ClaudeAdapter",
 ) {}
+
+describe("Claude result interruption classification", () => {
+  it("recognizes the SDK diagnostic emitted by a user Stop as interruption", () => {
+    assert.equal(
+      isClaudeInterruptedResult({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"],
+        terminal_reason: "aborted_streaming",
+      } as unknown as SDKMessage & Parameters<typeof isClaudeInterruptedResult>[0]),
+      true,
+    );
+  });
+
+  it("does not suppress an unrelated provider execution failure", () => {
+    assert.equal(
+      isClaudeInterruptedResult({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Model process crashed"],
+        terminal_reason: "provider_error",
+      } as unknown as SDKMessage & Parameters<typeof isClaudeInterruptedResult>[0]),
+      false,
+    );
+  });
+});
 
 class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   private readonly queue: Array<SDKMessage> = [];
@@ -58,6 +90,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
   public closeCalls = 0;
 
   emit(message: SDKMessage): void {
@@ -108,6 +141,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
+    this.applyFlagSettingsCalls.push(settings);
   };
 
   readonly close = (): void => {
@@ -617,6 +654,33 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         alwaysThinkingEnabled: false,
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("configures the SDK auto-compaction window from the selected hard limit", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        autoCompactionThresholdPercentage: 50,
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.deepEqual(createInput?.options.settings, {
+        autoCompactEnabled: true,
+        autoCompactWindow: 500_000,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1873,6 +1937,66 @@ describe("ClaudeAdapterLive", () => {
           event.payload.reason.startsWith("api_retry:"),
       );
       assert.equal(heartbeat?.type, "session.state.changed");
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("surfaces Claude's native HTTP 529 retry as provider-overload running state", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 2,
+        max_retries: 7,
+        retry_delay_ms: 1_750,
+        error_status: 529,
+        error: { type: "api_error" },
+        session_id: "session",
+        uuid: "retry-overload",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const overloadState = runtimeEvents.find(
+        (event) =>
+          event.type === "session.state.changed" &&
+          event.payload.reason?.startsWith("provider_overloaded:retrying"),
+      );
+      assert.equal(overloadState?.type, "session.state.changed");
+      if (overloadState?.type === "session.state.changed") {
+        assert.equal(overloadState.payload.state, "running");
+        assert.equal(
+          overloadState.payload.reason,
+          "provider_overloaded:retrying;attempt=2;max=7;delay_ms=1750",
+        );
+        assert.deepEqual(overloadState.payload.detail, {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 7,
+          retry_delay_ms: 1_750,
+          error_status: 529,
+          error: { type: "api_error" },
+          session_id: "session",
+          uuid: "retry-overload",
+        });
+      }
       runtimeEventsFiber.interruptUnsafe();
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3215,6 +3339,45 @@ describe("ClaudeAdapterLive", () => {
       });
 
       assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6[1m]"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies an updated auto-compaction threshold before the next turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        autoCompactionThresholdPercentage: 75,
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        {
+          autoCompactEnabled: true,
+          autoCompactWindow: 750_000,
+        },
+      ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

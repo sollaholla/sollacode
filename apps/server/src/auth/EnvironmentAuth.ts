@@ -698,27 +698,39 @@ export const make = Effect.gen(function* () {
             if (!grantedScopes.every((scope) => grant.scopes.includes(scope))) {
               return yield* new ServerAuthScopeNotGrantedError({});
             }
-            return yield* sessions
-              .issue({
-                method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
-                subject: grant.subject,
-                scopes: grantedScopes,
-                ...(input?.proofKeyThumbprint
-                  ? {
-                      proofKeyThumbprint: input.proofKeyThumbprint,
-                      ttl: Duration.hours(1),
-                    }
-                  : {}),
-                client: {
-                  ...requestMetadata,
-                  ...(grant.label ? { label: grant.label } : {}),
-                },
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
-                ),
-              );
+            const client = {
+              ...requestMetadata,
+              ...(grant.label ? { label: grant.label } : {}),
+            };
+            const isInternalDesktopBootstrap =
+              grant.method === "desktop-bootstrap" &&
+              grant.subject === "desktop-bootstrap" &&
+              input?.proofKeyThumbprint === undefined &&
+              client.label === "Solla Code Desktop" &&
+              client.deviceType === "desktop";
+            return yield* (
+              isInternalDesktopBootstrap
+                ? sessions.issueDesktopBootstrapAccessToken({
+                    scopes: grantedScopes,
+                    client,
+                  })
+                : sessions.issue({
+                    method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
+                    subject: grant.subject,
+                    scopes: grantedScopes,
+                    ...(input?.proofKeyThumbprint
+                      ? {
+                          proofKeyThumbprint: input.proofKeyThumbprint,
+                          ttl: Duration.hours(1),
+                        }
+                      : {}),
+                    client,
+                  })
+            ).pipe(
+              Effect.mapError(
+                (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
+              ),
+            );
           }),
         ),
         Effect.flatMap((session) =>

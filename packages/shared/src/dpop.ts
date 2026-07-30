@@ -7,11 +7,24 @@ import * as Schema from "effect/Schema";
 
 import { DpopPublicJwk as DpopPublicJwkSchema, normalizeDpopHtu } from "./dpopCommon.ts";
 import type { DpopPublicJwk as DpopPublicJwkType } from "./dpopCommon.ts";
-import { stableStringify } from "./relaySigning.ts";
 
 const DPOP_TYP = "dpop+jwt";
 const DPOP_ALG = "ES256";
 const DEFAULT_MAX_AGE_SECONDS = 300;
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 export const DpopPublicJwk = DpopPublicJwkSchema;
 export type DpopPublicJwk = DpopPublicJwkType;

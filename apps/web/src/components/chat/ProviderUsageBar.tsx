@@ -1,0 +1,639 @@
+import type {
+  OrchestrationThreadActivity,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ServerProvider,
+} from "@t3tools/contracts";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  mergeProviderUsageEntry,
+  providerUsageAccountKey,
+  PROVIDER_USAGE_STALE_AFTER_MS,
+  type PersistedProviderUsageEntry,
+  type PersistedProviderUsageWindow,
+  useProviderUsageStore,
+} from "../../providerUsageStore";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+
+export type ProviderUsageWindow = PersistedProviderUsageWindow;
+
+export function providerUsageDetailsSide(isDraftHeroState: boolean): "top" | "bottom" {
+  // In the centered New Thread hero, the usage badge sits above the composer.
+  // Opening downward keeps the shared details popup inside the viewport.
+  return isDraftHeroState ? "bottom" : "top";
+}
+
+export interface ProviderUsageSummary {
+  provider: ServerProvider;
+  state: "available" | "stale" | "unavailable" | "unsupported";
+  windows: ProviderUsageWindow[];
+  reportedAt: string | null;
+}
+
+const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent"]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function clampPercentage(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function epochMilliseconds(value: unknown): number | null {
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const numeric = finiteNumber(value);
+  if (numeric === null || numeric <= 0) return null;
+  return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
+}
+
+function durationLabel(durationMinutes: number | null, fallback: string): string {
+  if (durationMinutes === null) return fallback;
+  if (durationMinutes >= 9_000 && durationMinutes <= 11_000) return "Weekly";
+  if (durationMinutes >= 270 && durationMinutes <= 330) return "5 hour";
+  if (durationMinutes % 1_440 === 0) return `${durationMinutes / 1_440} day`;
+  if (durationMinutes % 60 === 0) return `${durationMinutes / 60} hour`;
+  return `${durationMinutes} min`;
+}
+
+function isRetiredCodexFiveHourWindow(window: ProviderUsageWindow): boolean {
+  return window.label.trim().toLowerCase() === "5 hour";
+}
+
+function codexWindows(raw: unknown): ProviderUsageWindow[] {
+  const envelope = asRecord(raw);
+  const snapshot = asRecord(envelope?.rateLimits) ?? envelope;
+  if (!snapshot) return [];
+
+  const windows: ProviderUsageWindow[] = [];
+  for (const [key, fallback] of [
+    ["primary", "Primary"],
+    ["secondary", "Secondary"],
+  ] as const) {
+    const value = asRecord(snapshot[key]);
+    const usedPercent = finiteNumber(value?.usedPercent);
+    if (!value || usedPercent === null) continue;
+    const durationMinutes = finiteNumber(value.windowDurationMins);
+    // Codex retired its five-hour limit. Older cached/provider payloads can still
+    // contain the former primary window, but presenting it would be misleading.
+    if (durationMinutes !== null && durationMinutes >= 270 && durationMinutes <= 330) continue;
+    windows.push({
+      key,
+      label: durationLabel(durationMinutes, fallback),
+      usedPercent: clampPercentage(usedPercent),
+      resetAt: epochMilliseconds(value.resetsAt),
+    });
+  }
+
+  const individualLimit = asRecord(snapshot.individualLimit);
+  const remainingPercent = finiteNumber(individualLimit?.remainingPercent);
+  if (individualLimit && remainingPercent !== null) {
+    const limit = typeof individualLimit.limit === "string" ? individualLimit.limit : null;
+    const used = typeof individualLimit.used === "string" ? individualLimit.used : null;
+    windows.push({
+      key: "individual-limit",
+      label: "Spend limit",
+      usedPercent: clampPercentage(100 - remainingPercent),
+      resetAt: epochMilliseconds(individualLimit.resetsAt),
+      ...(limit && used ? { detail: `${used} of ${limit}` } : {}),
+    });
+  }
+
+  const credits = asRecord(snapshot.credits);
+  const creditBalance = typeof credits?.balance === "string" ? credits.balance.trim() : "";
+  if (credits && (credits.unlimited === true || creditBalance)) {
+    windows.push({
+      key: "credits",
+      label: "Credits",
+      usedPercent: null,
+      resetAt: null,
+      detail: credits.unlimited === true ? "Unlimited" : creditBalance,
+    });
+  }
+  return windows;
+}
+
+const CLAUDE_WINDOW_LABELS: Record<string, string> = {
+  one_day: "Day",
+  daily: "Day",
+  current_session: "Current session",
+  seven_day: "Weekly",
+  seven_day_oauth_apps: "OAuth apps weekly",
+  seven_day_opus: "Opus weekly",
+  seven_day_sonnet: "Sonnet weekly",
+  seven_day_fable: "Fable",
+  fable: "Fable",
+  fable_usage: "Fable",
+  overage: "Overage",
+};
+
+function normalizeClaudeWindowKey(key: string): string {
+  const normalized = key
+    .trim()
+    .replace(/([a-z\d])([A-Z])/g, "$1_$2")
+    .replaceAll(/[\s-]+/g, "_")
+    .toLowerCase();
+  // Claude has used both names for the same short account-usage window. The
+  // interactive /usage UI calls it "Current session", so use that user-facing
+  // terminology while retaining compatibility with older typed events.
+  return normalized === "five_hour" ? "current_session" : normalized;
+}
+
+function claudeWindowLabel(key: string): string {
+  if (CLAUDE_WINDOW_LABELS[key]) return CLAUDE_WINDOW_LABELS[key];
+  if (key.toLowerCase().includes("fable")) return "Fable";
+  return key.replaceAll("_", " ");
+}
+
+function claudeWindows(raw: unknown): ProviderUsageWindow[] {
+  const envelope = asRecord(raw);
+  const structuredRateLimits = asRecord(envelope?.rate_limits);
+  if (structuredRateLimits) {
+    const windows: ProviderUsageWindow[] = [];
+    for (const [rawKey, rawWindow] of Object.entries(structuredRateLimits)) {
+      const window = asRecord(rawWindow);
+      if (!window) continue;
+      const key = normalizeClaudeWindowKey(rawKey);
+      const utilization = finiteNumber(window.utilization);
+      if (utilization === null) continue;
+      windows.push({
+        key,
+        label: claudeWindowLabel(key),
+        usedPercent: clampPercentage(utilization),
+        resetAt: epochMilliseconds(window.resets_at),
+      });
+    }
+    return windows;
+  }
+  const info = asRecord(envelope?.rate_limit_info);
+  const key =
+    typeof info?.rateLimitType === "string" ? normalizeClaudeWindowKey(info.rateLimitType) : null;
+  const utilization = finiteNumber(info?.utilization);
+  if (!key || utilization === null) return [];
+  const normalizedUtilization = utilization <= 1 ? utilization * 100 : utilization;
+  return [
+    {
+      key,
+      label: claudeWindowLabel(key),
+      usedPercent: clampPercentage(normalizedUtilization),
+      resetAt: epochMilliseconds(info?.resetsAt ?? info?.overageResetsAt),
+    },
+  ];
+}
+
+function usageWindowsForDriver(driver: ProviderDriverKind, raw: unknown): ProviderUsageWindow[] {
+  if (driver === "codex") return codexWindows(raw);
+  if (driver === "claudeAgent") return claudeWindows(raw);
+  return [];
+}
+
+export function deriveProviderUsageSummaries(
+  providers: ReadonlyArray<ServerProvider>,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  persistedByAccountKey: Readonly<Record<string, PersistedProviderUsageEntry>> = {},
+  now = Date.now(),
+): ProviderUsageSummary[] {
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  const reportsByAccountKey = deriveProviderUsageReports(enabledProviders, activities);
+
+  return enabledProviders.map((provider) => {
+    const accountKey = providerUsageAccountKey(provider);
+    const currentReport = accountKey === null ? undefined : reportsByAccountKey[accountKey];
+    const effectiveReports =
+      currentReport === undefined
+        ? persistedByAccountKey
+        : mergeProviderUsageEntry(persistedByAccountKey, currentReport);
+    const report = accountKey === null ? undefined : effectiveReports[accountKey];
+    const windows = [...(report?.windows ?? [])].filter(
+      (window) => provider.driver !== "codex" || !isRetiredCodexFiveHourWindow(window),
+    );
+    const supported = SUPPORTED_USAGE_DRIVERS.has(provider.driver);
+    const stale =
+      report !== undefined && now - Date.parse(report.reportedAt) > PROVIDER_USAGE_STALE_AFTER_MS;
+    return {
+      provider,
+      state:
+        windows.length > 0
+          ? stale
+            ? "stale"
+            : "available"
+          : supported
+            ? "unavailable"
+            : "unsupported",
+      windows,
+      reportedAt: report?.reportedAt ?? null,
+    };
+  });
+}
+
+export function deriveProviderUsageReports(
+  providers: ReadonlyArray<ServerProvider>,
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): Readonly<Record<string, PersistedProviderUsageEntry>> {
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  let reports: Readonly<Record<string, PersistedProviderUsageEntry>> = {};
+  const record = (provider: ServerProvider, raw: unknown, reportedAt: string) => {
+    const accountKey = providerUsageAccountKey(provider);
+    if (accountKey === null) return;
+    const windows = usageWindowsForDriver(provider.driver, raw);
+    if (windows.length === 0) return;
+    reports = mergeProviderUsageEntry(reports, {
+      accountKey,
+      driver: provider.driver,
+      windows,
+      reportedAt,
+    });
+  };
+
+  for (const provider of enabledProviders) {
+    if (provider.accountUsage !== undefined && provider.accountUsageReportedAt !== undefined) {
+      record(provider, provider.accountUsage, provider.accountUsageReportedAt);
+    }
+  }
+
+  const sortedActivities = activities
+    .filter((activity) => activity.kind === "provider.usage.updated")
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+  for (const activity of sortedActivities) {
+    const payload = asRecord(activity.payload);
+    if (!payload) continue;
+    const rawDriver = payload?.provider;
+    if (typeof rawDriver !== "string") continue;
+    const explicitInstanceId =
+      typeof payload.providerInstanceId === "string"
+        ? (payload.providerInstanceId as ProviderInstanceId)
+        : null;
+    const matchingDriverProviders = enabledProviders.filter(
+      (candidate) => candidate.driver === rawDriver,
+    );
+    const provider = explicitInstanceId
+      ? matchingDriverProviders.find((candidate) => candidate.instanceId === explicitInstanceId)
+      : matchingDriverProviders.length === 1
+        ? matchingDriverProviders[0]
+        : undefined;
+    if (!provider) continue;
+    record(provider, payload.rateLimits, activity.createdAt);
+  }
+
+  return reports;
+}
+
+function formatReset(resetAt: number | null): string | null {
+  if (resetAt === null) return null;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(resetAt));
+}
+
+function formatReportedAt(reportedAt: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(reportedAt));
+}
+
+export type UsageThreshold = "neutral" | "warning" | "critical";
+
+export function usageThreshold(usedPercent: number): UsageThreshold {
+  if (usedPercent >= 75) return "critical";
+  if (usedPercent >= 50) return "warning";
+  return "neutral";
+}
+
+function usageProgressClass(usedPercent: number): string {
+  switch (usageThreshold(usedPercent)) {
+    case "critical":
+      return "bg-red-600 dark:bg-red-400";
+    case "warning":
+      return "bg-amber-500 dark:bg-amber-400";
+    case "neutral":
+      return "bg-foreground/55";
+  }
+}
+
+function usageValueClass(usedPercent: number): string {
+  switch (usageThreshold(usedPercent)) {
+    case "critical":
+      return "text-red-700 dark:text-red-300";
+    case "warning":
+      return "text-amber-700 dark:text-amber-300";
+    case "neutral":
+      return "text-foreground/80";
+  }
+}
+
+function usageDetail(window: ProviderUsageWindow): string {
+  return window.usedPercent === null
+    ? (window.detail ?? "Available")
+    : `${Math.round(100 - window.usedPercent)}% left`;
+}
+
+interface CompactProviderUsageMetric {
+  label: "Current session" | "Weekly";
+  window: ProviderUsageWindow | null;
+}
+
+export function compactProviderUsageMetric(
+  summary: ProviderUsageSummary,
+): CompactProviderUsageMetric | null {
+  if (summary.provider.driver === "claudeAgent") {
+    return {
+      label: "Current session",
+      window:
+        summary.windows.find(
+          (window) =>
+            window.key === "current_session" ||
+            window.label.trim().toLowerCase() === "current session",
+        ) ?? null,
+    };
+  }
+  if (summary.provider.driver === "codex") {
+    return {
+      label: "Weekly",
+      window:
+        summary.windows.find((window) => window.label.trim().toLowerCase() === "weekly") ?? null,
+    };
+  }
+  return null;
+}
+
+export function ProviderUsageDetails({
+  name,
+  driver,
+  state,
+  windows,
+  reportedAt,
+  onRefresh,
+  isRefreshing = false,
+  refreshError = null,
+}: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
+  name: string;
+  driver?: ProviderDriverKind;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
+  refreshError?: string | null;
+}) {
+  const hasUsage = state === "available" || state === "stale";
+  const currentSessionReported = windows.some(
+    (window) =>
+      window.key === "current_session" || window.label.trim().toLowerCase() === "current session",
+  );
+  const showClaudeCurrentSessionNotReported =
+    driver === "claudeAgent" && hasUsage && !currentSessionReported;
+  return (
+    <div className="w-72 max-w-[calc(100vw-1rem)]">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-semibold text-foreground text-sm leading-none">{name} usage</h3>
+        <div className="flex items-center gap-1.5">
+          {state === "stale" ? (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800 text-xs dark:bg-amber-950/70 dark:text-amber-200">
+              Stale
+            </span>
+          ) : null}
+          {state === "stale" && onRefresh ? (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              aria-label={`Refresh ${name} usage`}
+              aria-busy={isRefreshing}
+              className="rounded-md border border-border/70 px-2 py-0.5 font-medium text-foreground/80 text-xs hover:bg-muted disabled:cursor-wait disabled:opacity-60"
+            >
+              {isRefreshing ? "Refreshing…" : "Refresh"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <p className="mt-1 text-muted-foreground text-xs">
+        {reportedAt
+          ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
+          : "Account-level provider usage"}
+      </p>
+      {refreshError ? (
+        <p className="mt-2 text-red-700 text-xs dark:text-red-300" role="alert">
+          {refreshError}
+        </p>
+      ) : null}
+      {hasUsage ? (
+        <ul className="mt-3 space-y-3" aria-label={`${name} usage windows`}>
+          {windows.map((window) => {
+            const reset = formatReset(window.resetAt);
+            const detail = usageDetail(window);
+            return (
+              <li key={window.key} className="space-y-1">
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <span className="font-medium text-foreground">{window.label}</span>
+                  <span
+                    className={
+                      window.usedPercent === null
+                        ? "text-foreground/80"
+                        : usageValueClass(window.usedPercent)
+                    }
+                  >
+                    {detail}
+                  </span>
+                </div>
+                {window.usedPercent !== null ? (
+                  <span
+                    role="progressbar"
+                    aria-label={`${name} ${window.label} used`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(window.usedPercent)}
+                    className="block h-1.5 overflow-hidden rounded-full bg-foreground/10"
+                  >
+                    <span
+                      className={`block h-full rounded-full ${usageProgressClass(window.usedPercent)}`}
+                      style={{ width: `${window.usedPercent}%` }}
+                    />
+                  </span>
+                ) : null}
+                {reset ? (
+                  <div className="text-[11px] text-muted-foreground">Resets {reset}</div>
+                ) : null}
+              </li>
+            );
+          })}
+          {showClaudeCurrentSessionNotReported ? (
+            <li className="space-y-1" data-usage-unreported="current_session">
+              <div className="flex items-start justify-between gap-3 text-xs">
+                <span className="font-medium text-foreground">Current session</span>
+                <span className="text-muted-foreground">Not reported by Claude</span>
+              </div>
+            </li>
+          ) : null}
+        </ul>
+      ) : (
+        <p className="mt-3 text-muted-foreground text-xs">
+          {state === "unsupported"
+            ? "This provider does not expose account usage."
+            : "Usage has not been reported for this provider account yet."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ProviderUsageBadge({
+  summary,
+  compactMetric,
+  detailsSide,
+  onRefreshProvider,
+}: {
+  summary: ProviderUsageSummary;
+  compactMetric: CompactProviderUsageMetric;
+  detailsSide: "top" | "bottom";
+  onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const { provider, state, windows, reportedAt } = summary;
+  const name = provider.displayName?.trim() || provider.driver;
+  const compactUsedPercent = compactMetric.window?.usedPercent ?? null;
+  useEffect(() => {
+    setRefreshError(null);
+  }, [reportedAt]);
+  const refreshUsage = async () => {
+    if (!onRefreshProvider || refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      await onRefreshProvider(provider);
+    } catch {
+      setRefreshError("Usage refresh failed. Try again shortly.");
+    } finally {
+      refreshInFlightRef.current = false;
+      setIsRefreshing(false);
+    }
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        openOnHover
+        delay={150}
+        closeDelay={150}
+        aria-label={`Show ${name} account usage details`}
+        data-provider-usage-compact-driver={provider.driver}
+        className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
+        onFocus={() => setOpen(true)}
+      >
+        <ProviderInstanceIcon
+          driverKind={provider.driver}
+          displayName={name}
+          accentColor={provider.accentColor}
+          className="size-4"
+          iconClassName="size-3.5"
+        />
+        <span className="text-muted-foreground">{compactMetric.label}</span>
+        <span
+          className={`font-medium tabular-nums ${
+            compactUsedPercent === null
+              ? "text-muted-foreground/70"
+              : usageValueClass(compactUsedPercent)
+          }`}
+        >
+          {compactUsedPercent === null ? "—" : `${Math.round(compactUsedPercent)}%`}
+        </span>
+        {compactUsedPercent !== null ? (
+          <span
+            role="progressbar"
+            aria-label={`${name} ${compactMetric.label} used`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(compactUsedPercent)}
+            className="h-1 w-7 overflow-hidden rounded-full bg-foreground/10 sm:w-8"
+          >
+            <span
+              className={`block h-full rounded-full ${usageProgressClass(compactUsedPercent)}`}
+              style={{ width: `${compactUsedPercent}%` }}
+            />
+          </span>
+        ) : null}
+      </PopoverTrigger>
+      <PopoverPopup
+        align="start"
+        side={detailsSide}
+        sideOffset={8}
+        aria-label={`${name} account usage details`}
+        className="border border-border/70 bg-popover shadow-xl"
+      >
+        <ProviderUsageDetails
+          name={name}
+          driver={provider.driver}
+          state={state}
+          windows={windows}
+          reportedAt={reportedAt}
+          isRefreshing={isRefreshing}
+          refreshError={refreshError}
+          {...(state === "stale" && onRefreshProvider
+            ? { onRefresh: () => void refreshUsage() }
+            : {})}
+        />
+      </PopoverPopup>
+    </Popover>
+  );
+}
+
+export function ProviderUsageBar(props: {
+  providers: ReadonlyArray<ServerProvider>;
+  activities: ReadonlyArray<OrchestrationThreadActivity>;
+  detailsSide?: "top" | "bottom";
+  onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+}) {
+  const persistedByAccountKey = useProviderUsageStore((state) => state.byAccountKey);
+  const recordUsage = useProviderUsageStore((state) => state.record);
+  const reports = useMemo(
+    () => deriveProviderUsageReports(props.providers, props.activities),
+    [props.activities, props.providers],
+  );
+  useEffect(() => {
+    for (const report of Object.values(reports)) recordUsage(report);
+  }, [recordUsage, reports]);
+  const summaries = deriveProviderUsageSummaries(
+    props.providers,
+    props.activities,
+    persistedByAccountKey,
+  );
+  const compactEntries = summaries.flatMap((summary) => {
+    const compactMetric = compactProviderUsageMetric(summary);
+    return compactMetric ? [{ summary, compactMetric }] : [];
+  });
+  if (compactEntries.length === 0) return null;
+
+  return (
+    <section
+      aria-label="Provider usage"
+      className="pointer-events-auto mx-auto flex w-fit max-w-[calc(100%-1rem)] items-center gap-1.5 overflow-x-auto rounded-full border border-border/65 bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
+    >
+      {compactEntries.map(({ summary, compactMetric }) => (
+        <ProviderUsageBadge
+          key={summary.provider.instanceId}
+          summary={summary}
+          compactMetric={compactMetric}
+          detailsSide={props.detailsSide ?? "top"}
+          {...(props.onRefreshProvider ? { onRefreshProvider: props.onRefreshProvider } : {})}
+        />
+      ))}
+    </section>
+  );
+}

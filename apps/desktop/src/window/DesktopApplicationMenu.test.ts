@@ -8,12 +8,10 @@ import * as Option from "effect/Option";
 import type * as Electron from "electron";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
-import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopApplicationMenu from "./DesktopApplicationMenu.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
 const environmentInput = {
@@ -30,7 +28,7 @@ const environmentInput = {
 
 const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   metadata: Effect.die("unexpected metadata read"),
-  name: Effect.succeed("T3 Code"),
+  name: Effect.succeed("Solla Code"),
   whenReady: Effect.void,
   quit: Effect.void,
   exit: () => Effect.void,
@@ -46,27 +44,8 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   setDesktopName: () => Effect.void,
   setDockIcon: () => Effect.void,
   appendCommandLineSwitch: () => Effect.void,
-  onBeforeQuitForUpdate: () => Effect.void,
   on: () => Effect.void,
 } satisfies ElectronApp.ElectronApp["Service"]);
-
-const electronDialogLayer = Layer.succeed(ElectronDialog.ElectronDialog, {
-  pickFolder: () => Effect.succeed(Option.none()),
-  confirm: () => Effect.succeed(false),
-  showMessageBox: () => Effect.succeed({ response: 0, checkboxChecked: false }),
-  showErrorBox: () => Effect.void,
-} satisfies ElectronDialog.ElectronDialog["Service"]);
-
-const desktopUpdatesLayer = Layer.succeed(DesktopUpdates.DesktopUpdates, {
-  getState: Effect.die("unexpected getState"),
-  emitState: Effect.void,
-  disabledReason: Effect.succeed(Option.none()),
-  configure: Effect.void,
-  setChannel: () => Effect.die("unexpected setChannel"),
-  check: () => Effect.die("unexpected check"),
-  download: Effect.die("unexpected download"),
-  install: Effect.die("unexpected install"),
-} satisfies DesktopUpdates.DesktopUpdates["Service"]);
 
 const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
   Layer.succeed(DesktopWindow.DesktopWindow, {
@@ -108,8 +87,6 @@ describe("DesktopApplicationMenu", () => {
           DesktopApplicationMenu.layer.pipe(
             Layer.provideMerge(makeElectronMenuLayer(applicationMenuTemplate)),
             Layer.provideMerge(makeDesktopWindowLayer(selectedAction)),
-            Layer.provideMerge(desktopUpdatesLayer),
-            Layer.provideMerge(electronDialogLayer),
             Layer.provideMerge(electronAppLayer),
             Layer.provideMerge(
               DesktopEnvironment.layer(environmentInput).pipe(
@@ -135,6 +112,51 @@ describe("DesktopApplicationMenu", () => {
 
       settingsClick({} as Electron.MenuItem, {} as Electron.BrowserWindow, {} as KeyboardEvent);
       assert.equal(yield* Deferred.await(selectedAction), "open-settings");
+    }),
+  );
+
+  it.effect("uses the configured Solla Code identity for the macOS application menu", () =>
+    Effect.gen(function* () {
+      const selectedAction = yield* Deferred.make<string>();
+      const applicationMenuTemplate =
+        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+
+      yield* Effect.gen(function* () {
+        const menu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
+        yield* menu.configure;
+      }).pipe(
+        Effect.provide(
+          DesktopApplicationMenu.layer.pipe(
+            Layer.provideMerge(makeElectronMenuLayer(applicationMenuTemplate)),
+            Layer.provideMerge(makeDesktopWindowLayer(selectedAction)),
+            Layer.provideMerge(electronAppLayer),
+            Layer.provideMerge(
+              DesktopEnvironment.layer({ ...environmentInput, platform: "darwin" }).pipe(
+                Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({}))),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const template = yield* Deferred.await(applicationMenuTemplate);
+      assert.equal(template[0]?.label, "Solla Code");
+      const applicationSubmenu = template[0]?.submenu;
+      if (!Array.isArray(applicationSubmenu)) {
+        throw new Error("Expected application menu submenu to be an array.");
+      }
+      assert.equal(
+        applicationSubmenu.find((item) => item.role === "about")?.label,
+        "About Solla Code",
+      );
+      assert.equal(
+        applicationSubmenu.find((item) => item.role === "hide")?.label,
+        "Hide Solla Code",
+      );
+      assert.equal(
+        applicationSubmenu.find((item) => item.role === "quit")?.label,
+        "Quit Solla Code",
+      );
     }),
   );
 });

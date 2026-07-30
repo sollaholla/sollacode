@@ -28,6 +28,39 @@ export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
+export async function runResumeIncompleteTurn(input: {
+  inFlightRef: { current: boolean };
+  send: (message: "resume") => Promise<void>;
+}): Promise<boolean> {
+  if (input.inFlightRef.current) {
+    return false;
+  }
+  input.inFlightRef.current = true;
+  try {
+    await input.send("resume");
+    return true;
+  } finally {
+    input.inFlightRef.current = false;
+  }
+}
+
+export function isProviderOverloadRetrying(input: {
+  activities: Thread["activities"];
+  latestTurn: Thread["latestTurn"];
+  isWorking: boolean;
+}): boolean {
+  const startedAt = input.latestTurn?.startedAt;
+  if (!input.isWorking || !startedAt) {
+    return false;
+  }
+  return input.activities.some(
+    (activity) =>
+      activity.kind === "provider.overload.retrying" &&
+      activity.createdAt >= startedAt &&
+      (activity.turnId === null || activity.turnId === input.latestTurn?.turnId),
+  );
+}
+
 export function startNewThreadForProject(
   projectRef: ScopedProjectRef | null,
   handleNewThread: (projectRef: ScopedProjectRef) => Promise<void>,
@@ -123,6 +156,18 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
     input.activeServerThread.environmentId === input.routeThreadRef.environmentId &&
     input.activeServerThread.id === input.targetThreadId,
   );
+}
+
+export function resolveVisibleServerThreadError(
+  localEntry: { readonly message: string | null } | undefined,
+  serverLastError: string | null | undefined,
+  dismissedServerError?: string | null,
+): string | null {
+  if (localEntry?.message) {
+    return localEntry.message;
+  }
+  const serverError = serverLastError ?? null;
+  return serverError !== null && serverError === dismissedServerError ? null : serverError;
 }
 
 export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
@@ -377,6 +422,9 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
+  if (!input.thread?.session || input.thread.session.activeTurnId === null) {
+    return null;
+  }
   const sessionProvider = input.thread?.session?.providerName ?? null;
   if (sessionProvider && isProviderDriverKind(sessionProvider)) {
     return sessionProvider;
@@ -410,6 +458,9 @@ export function getStartedThreadModelChangeBlockReason(input: {
     currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
     currentModelSelection.model === input.nextModelSelection.model
   ) {
+    return null;
+  }
+  if (currentModelSelection.instanceId !== input.nextModelSelection.instanceId) {
     return null;
   }
   const currentProvider = input.providers.find(

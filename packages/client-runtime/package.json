@@ -7,6 +7,14 @@
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"
     },
+    "./connection/catalog": {
+      "types": "./src/connection/catalog.ts",
+      "default": "./src/connection/catalog.ts"
+    },
+    "./connection/model": {
+      "types": "./src/connection/model.ts",
+      "default": "./src/connection/model.ts"
+    },
     "./authorization": {
       "types": "./src/authorization/index.ts",
       "default": "./src/authorization/index.ts"
@@ -34,6 +42,10 @@
     "./platform": {
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
+    },
+    "./platform/storage-document": {
+      "types": "./src/platform/storageDocument.ts",
+      "default": "./src/platform/storageDocument.ts"
     },
     "./relay": {
       "types": "./src/relay/index.ts",

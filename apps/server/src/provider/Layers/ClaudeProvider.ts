@@ -23,6 +23,7 @@ import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   query as claudeQuery,
   type Options as ClaudeQueryOptions,
+  type SDKControlGetUsageResponse,
   type SlashCommand as ClaudeSlashCommand,
   type SDKUserMessage,
   type SettingSource,
@@ -616,6 +617,10 @@ type ClaudeCapabilitiesProbe = {
    */
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly accountUsage?: {
+    readonly rate_limits_available: boolean;
+    readonly rate_limits: SDKControlGetUsageResponse["rate_limits"];
+  };
 };
 
 function parseClaudeInitializationCommands(
@@ -731,6 +736,9 @@ const probeClaudeCapabilities = (
         }),
       });
       const init = await q.initializationResult();
+      const usage = await q
+        .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()
+        .catch(() => undefined);
       const account = init.account as
         | {
             readonly email?: string;
@@ -745,6 +753,14 @@ const probeClaudeCapabilities = (
         tokenSource: account?.tokenSource,
         apiProvider: account?.apiProvider,
         slashCommands: parseClaudeInitializationCommands(init.commands),
+        ...(usage
+          ? {
+              accountUsage: {
+                rate_limits_available: usage.rate_limits_available,
+                rate_limits: usage.rate_limits,
+              },
+            }
+          : {}),
       } satisfies ClaudeCapabilitiesProbe;
     });
   }).pipe(
@@ -809,7 +825,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Claude is disabled in T3 Code settings.",
+        message: "Claude is disabled in Solla Code settings.",
       },
     });
   }
@@ -934,6 +950,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
+    ...(capabilities.accountUsage
+      ? {
+          accountUsage: capabilities.accountUsage,
+          accountUsageReportedAt: checkedAt,
+        }
+      : {}),
     probe: {
       installed: true,
       version: parsedVersion,
@@ -972,7 +994,7 @@ export const makePendingClaudeProvider = (
           version: null,
           status: "warning",
           auth: { status: "unknown" },
-          message: "Claude is disabled in T3 Code settings.",
+          message: "Claude is disabled in Solla Code settings.",
         },
       });
     }

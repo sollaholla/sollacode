@@ -88,6 +88,9 @@ export class AuthSessionRepository extends Context.Service<
     readonly create: (
       input: CreateAuthSessionInput,
     ) => Effect.Effect<void, AuthSessionRepositoryError>;
+    readonly upsert: (
+      input: CreateAuthSessionInput,
+    ) => Effect.Effect<void, AuthSessionRepositoryError>;
     readonly getById: (
       input: GetAuthSessionByIdInput,
     ) => Effect.Effect<Option.Option<AuthSessionRecord>, AuthSessionRepositoryError>;
@@ -218,6 +221,56 @@ export const make = Effect.gen(function* () {
       `,
   });
 
+  const upsertSessionRow = SqlSchema.void({
+    Request: CreateAuthSessionInput,
+    execute: (input) =>
+      sql`
+        INSERT INTO auth_sessions (
+          session_id,
+          subject,
+          scopes,
+          method,
+          client_label,
+          client_ip_address,
+          client_user_agent,
+          client_device_type,
+          client_os,
+          client_browser,
+          issued_at,
+          expires_at,
+          revoked_at
+        )
+        VALUES (
+          ${input.sessionId},
+          ${input.subject},
+          ${JSON.stringify(input.scopes)},
+          ${input.method},
+          ${input.client.label},
+          ${input.client.ipAddress},
+          ${input.client.userAgent},
+          ${input.client.deviceType},
+          ${input.client.os},
+          ${input.client.browser},
+          ${input.issuedAt},
+          ${input.expiresAt},
+          NULL
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+          subject = excluded.subject,
+          scopes = excluded.scopes,
+          method = excluded.method,
+          client_label = excluded.client_label,
+          client_ip_address = excluded.client_ip_address,
+          client_user_agent = excluded.client_user_agent,
+          client_device_type = excluded.client_device_type,
+          client_os = excluded.client_os,
+          client_browser = excluded.client_browser,
+          issued_at = excluded.issued_at,
+          expires_at = excluded.expires_at,
+          revoked_at = NULL
+      `,
+  });
+
   const getSessionRowById = SqlSchema.findOneOption({
     Request: GetAuthSessionByIdInput,
     Result: AuthSessionRawDbRow,
@@ -318,6 +371,17 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const upsert: AuthSessionRepository["Service"]["upsert"] = (input) =>
+    upsertSessionRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "AuthSessionRepository.upsert:query",
+          "AuthSessionRepository.upsert:encodeRequest",
+          { sessionId: input.sessionId },
+        ),
+      ),
+    );
+
   const getById: AuthSessionRepository["Service"]["getById"] = (input) =>
     getSessionRowById(input).pipe(
       Effect.mapError(
@@ -406,6 +470,7 @@ export const make = Effect.gen(function* () {
 
   return {
     create,
+    upsert,
     getById,
     listActive,
     revoke,

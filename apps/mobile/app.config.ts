@@ -61,27 +61,24 @@ const RELEASE_ASSETS = {
 
 const VARIANT_CONFIG = {
   development: {
-    appName: "T3 Code Dev",
+    appName: "Solla Code Dev",
     scheme: "t3code-dev",
     iosBundleIdentifier: "com.t3tools.t3code.dev",
     androidPackage: "com.t3tools.t3code.dev",
-    relyingParty: "clerk.t3.codes",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
-    appName: "T3 Code Preview",
+    appName: "Solla Code Preview",
     scheme: "t3code-preview",
     iosBundleIdentifier: "com.t3tools.t3code.preview",
     androidPackage: "com.t3tools.t3code.preview",
-    relyingParty: "clerk.t3.codes",
     assets: PREVIEW_ASSETS,
   },
   production: {
-    appName: "T3 Code",
+    appName: "Solla Code",
     scheme: "t3code",
     iosBundleIdentifier: "com.t3tools.t3code",
     androidPackage: "com.t3tools.t3code",
-    relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
 } as const;
@@ -107,26 +104,6 @@ const dmSansFonts = {
   medium: "@expo-google-fonts/dm-sans/500Medium/DMSans_500Medium.ttf",
   bold: "@expo-google-fonts/dm-sans/700Bold/DMSans_700Bold.ttf",
 } as const;
-
-const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
-  "expo-widgets",
-  {
-    bundleIdentifier: `${iosBundleIdentifier}.widgets`,
-    groupIdentifier: `group.${iosBundleIdentifier}`,
-    enablePushNotifications: true,
-    // Agent activity can update many times an hour; without the
-    // frequent-updates entitlement iOS throttles the update budget sooner.
-    frequentUpdates: true,
-    widgets: [
-      {
-        name: "AgentActivity",
-        displayName: "Agent Activity",
-        description: "Shows the current state of active T3 Code agents.",
-        supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"],
-      },
-    ],
-  },
-];
 
 const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   "expo-sharing",
@@ -182,20 +159,15 @@ const config: ExpoConfig = {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
     bundleIdentifier: iosBundleIdentifier,
-    // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
-    // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-    ],
+    // Pin official builds to the T3 Tools team, but leave Personal Team builds
+    // unsigned until the user selects their own team in Xcode.
+    ...(isIosPersonalTeamBuild ? {} : { appleTeamId: "ARK85ZXQ4Z" }),
     infoPlist: {
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
       },
       NSLocalNetworkUsageDescription:
-        "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+        "Allow Solla Code to connect to Solla Code servers on your local network or tailnet.",
       ITSAppUsesNonExemptEncryption: false,
     },
   },
@@ -247,18 +219,6 @@ const config: ExpoConfig = {
       ? [sharingPlugin]
       : ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]),
     [
-      "expo-notifications",
-      {
-        icon: variant.assets.androidNotificationIcon,
-        color: variant.assets.androidNotificationColor,
-        mode: APP_VARIANT === "development" ? "development" : "production",
-      },
-    ],
-    // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
-    // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
-    ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
-    "expo-web-browser",
-    [
       "expo-quick-actions",
       {
         // Adaptive launcher-shortcut icon; referenced by resource name from
@@ -274,7 +234,8 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission:
+          "Allow Solla Code to access your camera so you can scan pairing QR codes.",
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
       },
@@ -297,21 +258,10 @@ const config: ExpoConfig = {
       {
         ios: {
           deploymentTarget: "18.0",
-          // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
-          extraPods: [
-            { name: "GoogleUtilities", modular_headers: true },
-            { name: "RecaptchaInterop", modular_headers: true },
-          ],
         },
       },
     ],
     "./plugins/withIosCocoaPodsUuidCache.cjs",
-    // Must be listed BEFORE expo-widgets: same-type mods run last-registered-
-    // first, so registering earlier makes this plugin's mods run AFTER
-    // expo-widgets' — its dangerous mod wipes ios/ExpoWidgetsTarget/ (which
-    // would delete the asset catalog) and its xcodeproj mod creates the widget
-    // target (which must exist before the compile phase can be attached).
-    ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withIosSceneLifecycle.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
@@ -323,22 +273,6 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
-    relay: {
-      url: repoEnv.T3CODE_RELAY_URL ?? null,
-    },
-    clerk: {
-      publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,
-      jwtTemplate: repoEnv.EXPO_PUBLIC_CLERK_JWT_TEMPLATE ?? null,
-    },
-    // Native Google sign-in credentials. @clerk/expo reads these from `extra`
-    // under their exact env-var names (not nested), and its config plugin reads
-    // the iOS URL scheme at prebuild to register it in Info.plist.
-    // Unset values must be omitted (not null): the public manifest serializes
-    // null to {}, which is truthy and would defeat Clerk's fallback checks.
-    EXPO_PUBLIC_CLERK_GOOGLE_WEB_CLIENT_ID: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_WEB_CLIENT_ID,
-    EXPO_PUBLIC_CLERK_GOOGLE_IOS_CLIENT_ID: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_IOS_CLIENT_ID,
-    EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID,
-    EXPO_PUBLIC_CLERK_GOOGLE_IOS_URL_SCHEME: repoEnv.EXPO_PUBLIC_CLERK_GOOGLE_IOS_URL_SCHEME,
     observability: {
       tracesUrl: repoEnv.EXPO_PUBLIC_OTLP_TRACES_URL ?? "https://api.axiom.co/v1/traces",
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,

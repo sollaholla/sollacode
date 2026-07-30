@@ -174,6 +174,10 @@ export const ServerProvider = Schema.Struct({
   auth: ServerProviderAuth,
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
+  // Latest account-level usage snapshot reported by a provider health probe.
+  // This is quota metadata only; producers must never place auth material here.
+  accountUsage: Schema.optional(Schema.Unknown),
+  accountUsageReportedAt: Schema.optional(IsoDateTime),
   // Optional for back-compat: every legacy producer omits this field and
   // an absent value is interpreted as `"available"` by consumers (see
   // `isProviderAvailable`). New `ProviderInstanceRegistry` outputs set it

@@ -51,10 +51,22 @@ export const setTailscaleServeEnabled = DesktopIpc.makeIpcMethod({
     const change = yield* serverExposure.setTailscaleServeEnabled(input);
     if (change.requiresRelaunch) {
       yield* lifecycle.relaunch(
-        change.state.tailscaleServeEnabled ? "tailscale-serve-enabled" : "tailscale-serve-disabled",
+        change.state.tailscaleServeRequested
+          ? "tailscale-serve-enabled"
+          : "tailscale-serve-disabled",
       );
     }
     return change.state;
+  }),
+});
+
+export const reconcileTailscaleServe = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.RECONCILE_TAILSCALE_SERVE_CHANNEL,
+  payload: Schema.Void,
+  result: DesktopServerExposureStateSchema,
+  handler: Effect.fn("desktop.ipc.serverExposure.reconcileTailscaleServe")(function* () {
+    const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+    return yield* serverExposure.reconcileTailscaleServe;
   }),
 });
 

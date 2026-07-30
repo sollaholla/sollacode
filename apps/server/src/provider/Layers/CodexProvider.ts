@@ -45,6 +45,7 @@ const CODEX_PRESENTATION = {
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
@@ -62,6 +63,8 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+const SOL_DEFAULT_REASONING_EFFORT = "medium";
+const SOL_MODEL_SLUG = "gpt-5.6-sol";
 
 function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
@@ -110,8 +113,15 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const defaultReasoningEffort =
+    model.model === SOL_MODEL_SLUG &&
+    model.supportedReasoningEfforts.some(
+      ({ reasoningEffort }) => reasoningEffort === SOL_DEFAULT_REASONING_EFFORT,
+    )
+      ? SOL_DEFAULT_REASONING_EFFORT
+      : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort === model.defaultReasoningEffort
+    reasoningEffort === defaultReasoningEffort
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -136,7 +146,10 @@ export function mapCodexModelCapabilities(
   )
     ? model.defaultServiceTier
     : null;
-  const defaultServiceTier = catalogDefaultServiceTier ?? DEFAULT_SERVICE_TIER_ID;
+  const defaultServiceTier =
+    model.model === SOL_MODEL_SLUG
+      ? DEFAULT_SERVICE_TIER_ID
+      : (catalogDefaultServiceTier ?? DEFAULT_SERVICE_TIER_ID);
   const optionDescriptors: ProviderOptionDescriptor[] = [];
 
   if (reasoningOptions.length > 0) {
@@ -304,7 +317,7 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   return {
     clientInfo: {
       name: "t3code_desktop",
-      title: "T3 Code Desktop",
+      title: "Solla Code Desktop",
       version: packageJson.version,
     },
     capabilities: {
@@ -366,7 +379,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const initialize = yield* client.request("initialize", {
     clientInfo: {
       name: "t3code_desktop",
-      title: "T3 Code Desktop",
+      title: "Solla Code Desktop",
       version: "0.1.0",
     },
     capabilities: {
@@ -389,12 +402,13 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      client.request("account/rateLimits/read", undefined).pipe(Effect.option),
     ],
     { concurrency: "unbounded" },
   );
@@ -406,6 +420,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       appendCustomCodexModels(models, input.customModels ?? []),
     ),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+    ...(Option.isSome(rateLimits) ? { rateLimits: rateLimits.value } : {}),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -444,7 +459,7 @@ const makePendingCodexProvider = (
           version: null,
           status: "warning",
           auth: { status: "unknown" },
-          message: "Codex is disabled in T3 Code settings.",
+          message: "Codex is disabled in Solla Code settings.",
         },
       });
     }
@@ -530,7 +545,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Codex is disabled in T3 Code settings.",
+        message: "Codex is disabled in Solla Code settings.",
       },
     });
   }
@@ -595,6 +610,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     checkedAt,
     models: snapshot.models,
     skills: snapshot.skills,
+    ...(snapshot.rateLimits !== undefined
+      ? {
+          accountUsage: snapshot.rateLimits,
+          accountUsageReportedAt: checkedAt,
+        }
+      : {}),
     probe: {
       installed: true,
       version: snapshot.version ?? null,

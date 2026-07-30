@@ -1,6 +1,8 @@
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
+  AssetPreviewFileTooLargeError,
+  AssetPreviewMimeTypeValidationError,
   AssetPreviewTypeValidationError,
   AssetProjectFaviconInspectionError,
   AssetProjectFaviconNotFoundError,
@@ -55,6 +57,80 @@ const PREVIEW_ASSET_EXTENSIONS = new Set([
   ".woff",
   ".woff2",
 ]);
+export const WORKSPACE_RASTER_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+const WORKSPACE_RASTER_IMAGE_EXTENSIONS = new Set([
+  ".avif",
+  ".gif",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".webp",
+]);
+
+type WorkspaceRasterMimeType =
+  | "image/avif"
+  | "image/gif"
+  | "image/jpeg"
+  | "image/png"
+  | "image/vnd.microsoft.icon"
+  | "image/webp";
+
+function startsWithBytes(bytes: Uint8Array, signature: ReadonlyArray<number>, offset = 0): boolean {
+  return signature.every((value, index) => bytes[offset + index] === value);
+}
+
+export function detectWorkspaceRasterMimeType(bytes: Uint8Array): WorkspaceRasterMimeType | null {
+  if (startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  if (startsWithBytes(bytes, [0xff, 0xd8, 0xff])) {
+    return "image/jpeg";
+  }
+  if (
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) ||
+    startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
+  ) {
+    return "image/gif";
+  }
+  if (
+    startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+    startsWithBytes(bytes, [0x57, 0x45, 0x42, 0x50], 8)
+  ) {
+    return "image/webp";
+  }
+  if (startsWithBytes(bytes, [0x00, 0x00, 0x01, 0x00])) {
+    return "image/vnd.microsoft.icon";
+  }
+  if (
+    startsWithBytes(bytes, [0x66, 0x74, 0x79, 0x70], 4) &&
+    (startsWithBytes(bytes, [0x61, 0x76, 0x69, 0x66], 8) ||
+      startsWithBytes(bytes, [0x61, 0x76, 0x69, 0x73], 8))
+  ) {
+    return "image/avif";
+  }
+  return null;
+}
+
+function extensionMatchesRasterMime(extension: string, mimeType: WorkspaceRasterMimeType): boolean {
+  switch (extension) {
+    case ".png":
+      return mimeType === "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return mimeType === "image/jpeg";
+    case ".gif":
+      return mimeType === "image/gif";
+    case ".webp":
+      return mimeType === "image/webp";
+    case ".avif":
+      return mimeType === "image/avif";
+    case ".ico":
+      return mimeType === "image/vnd.microsoft.icon";
+    default:
+      return false;
+  }
+}
 
 const AssetClaimsSchema = Schema.Union([
   Schema.Struct({
@@ -162,6 +238,60 @@ const resolveCanonicalWorkspaceFileForRequest = (input: {
     Effect.orElseSucceed(() => null),
   );
 
+const validateWorkspaceRasterImage = Effect.fn("AssetAccess.validateWorkspaceRasterImage")(
+  function* (input: {
+    readonly resource: AssetResource;
+    readonly canonicalFile: string;
+    readonly extension: string;
+  }) {
+    if (!WORKSPACE_RASTER_IMAGE_EXTENSIONS.has(input.extension)) return;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* fileSystem.stat(input.canonicalFile).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AssetWorkspaceAssetInspectionError({
+            resource: input.resource,
+            cause,
+          }),
+      ),
+    );
+    if (info.size > WORKSPACE_RASTER_IMAGE_MAX_BYTES) {
+      return yield* new AssetPreviewFileTooLargeError({
+        resource: input.resource,
+        byteLength: Number(info.size),
+        maxByteLength: WORKSPACE_RASTER_IMAGE_MAX_BYTES,
+      });
+    }
+    const bytes = yield* fileSystem.readFile(input.canonicalFile).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AssetWorkspaceAssetInspectionError({
+            resource: input.resource,
+            cause,
+          }),
+      ),
+    );
+    const mimeType = detectWorkspaceRasterMimeType(bytes);
+    if (!mimeType || !extensionMatchesRasterMime(input.extension, mimeType)) {
+      return yield* new AssetPreviewMimeTypeValidationError({
+        resource: input.resource,
+      });
+    }
+  },
+);
+
+const workspaceRasterImageIsStillValid = Effect.fn("AssetAccess.workspaceRasterImageIsStillValid")(
+  function* (canonicalFile: string, extension: string) {
+    if (!WORKSPACE_RASTER_IMAGE_EXTENSIONS.has(extension)) return true;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile));
+    if (Option.isNone(info) || info.value.size > WORKSPACE_RASTER_IMAGE_MAX_BYTES) return false;
+    const bytes = yield* fileSystem.readFile(canonicalFile);
+    const mimeType = detectWorkspaceRasterMimeType(bytes);
+    return mimeType !== null && extensionMatchesRasterMime(extension, mimeType);
+  },
+);
+
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
@@ -225,6 +355,11 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
           resource: input.resource,
         });
       }
+      yield* validateWorkspaceRasterImage({
+        resource: input.resource,
+        canonicalFile,
+        extension: path.extname(resolved.relativePath).toLowerCase(),
+      });
       const canonicalWorkspaceRoot = yield* fileSystem.realPath(workspaceRoot).pipe(
         Effect.mapError(
           (cause) =>
@@ -406,9 +541,18 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       workspaceRoot: claims.workspaceRoot,
       relativePath: claims.relativePath,
     });
-    return exactWorkspaceFile
-      ? ({ kind: "file", path: exactWorkspaceFile } satisfies ResolvedAsset)
-      : null;
+    if (!exactWorkspaceFile) return null;
+    const extension = path.extname(claims.relativePath).toLowerCase();
+    const isValid = yield* workspaceRasterImageIsStillValid(exactWorkspaceFile, extension).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to revalidate workspace image asset.", {
+          path: exactWorkspaceFile,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+    return isValid ? ({ kind: "file", path: exactWorkspaceFile } satisfies ResolvedAsset) : null;
   }
   const segments = decodedPath.split(/[\\/]/);
   if (

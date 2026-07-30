@@ -10,7 +10,10 @@ const serverExposureState: DesktopServerExposureState = {
   advertisedHost: "192.168.1.10",
   endpointUrl: "http://192.168.1.10:37737",
   mode: "network-accessible",
-  tailscaleServeEnabled: false,
+  tailscaleServeRequested: false,
+  tailscaleServeEffective: false,
+  tailscaleServeStatus: "disabled",
+  tailscaleServeConsentUrl: null,
   tailscaleServePort: 443,
 };
 
@@ -21,10 +24,12 @@ const advertisedEndpointsLoadCause = new Error("endpoints failed");
 describe("desktopNetworkAccessState", () => {
   it("retains the loaded snapshot when the settings screen remounts", async () => {
     const getServerExposureState = vi.fn(async () => serverExposureState);
+    const reconcileTailscaleServe = vi.fn(async () => serverExposureState);
     const getAdvertisedEndpoints = vi.fn(async () => advertisedEndpoints);
     const atom = createDesktopNetworkAccessStateAtom(() => ({
       getAdvertisedEndpoints,
       getServerExposureState,
+      reconcileTailscaleServe,
     }));
     const registry = AtomRegistry.make();
 
@@ -51,23 +56,66 @@ describe("desktopNetworkAccessState", () => {
     registry.dispose();
   });
 
+  it("reconciles requested Tailscale HTTPS before publishing the visible snapshot", async () => {
+    const consentRequired: DesktopServerExposureState = {
+      ...serverExposureState,
+      tailscaleServeRequested: true,
+      tailscaleServeStatus: "https-consent-required",
+      tailscaleServeConsentUrl: "https://login.tailscale.com/admin/feature/example",
+    };
+    const available: DesktopServerExposureState = {
+      ...consentRequired,
+      tailscaleServeEffective: true,
+      tailscaleServeStatus: "available",
+      tailscaleServeConsentUrl: null,
+    };
+    const getServerExposureState = vi.fn(async () => consentRequired);
+    const reconcileTailscaleServe = vi.fn(async () => available);
+    const getAdvertisedEndpoints = vi.fn(async () => advertisedEndpoints);
+    const atom = createDesktopNetworkAccessStateAtom(() => ({
+      getAdvertisedEndpoints,
+      getServerExposureState,
+      reconcileTailscaleServe,
+    }));
+    const registry = AtomRegistry.make();
+    registry.mount(atom);
+
+    await vi.waitFor(() => {
+      expect(AsyncResult.value(registry.get(atom))).toEqual(
+        expect.objectContaining({
+          _tag: "Some",
+          value: { advertisedEndpoints, serverExposureState: available },
+        }),
+      );
+    });
+    expect(reconcileTailscaleServe).toHaveBeenCalledOnce();
+    expect(getAdvertisedEndpoints).toHaveBeenCalledOnce();
+    expect(reconcileTailscaleServe.mock.invocationCallOrder[0]).toBeLessThan(
+      getAdvertisedEndpoints.mock.invocationCallOrder[0] ?? 0,
+    );
+    registry.dispose();
+  });
+
   it.each([
     {
       cause: serverExposureLoadCause,
       expectedTag: "DesktopServerExposureStateLoadError",
       getAdvertisedEndpoints: async () => advertisedEndpoints,
       getServerExposureState: async () => Promise.reject(serverExposureLoadCause),
+      reconcileTailscaleServe: async () => serverExposureState,
     },
     {
       cause: advertisedEndpointsLoadCause,
       expectedTag: "DesktopAdvertisedEndpointsLoadError",
       getAdvertisedEndpoints: async () => Promise.reject(advertisedEndpointsLoadCause),
       getServerExposureState: async () => serverExposureState,
+      reconcileTailscaleServe: async () => serverExposureState,
     },
   ])("retains the $expectedTag cause", async (testCase) => {
     const atom = createDesktopNetworkAccessStateAtom(() => ({
       getAdvertisedEndpoints: testCase.getAdvertisedEndpoints,
       getServerExposureState: testCase.getServerExposureState,
+      reconcileTailscaleServe: testCase.reconcileTailscaleServe,
     }));
     const registry = AtomRegistry.make();
     registry.mount(atom);

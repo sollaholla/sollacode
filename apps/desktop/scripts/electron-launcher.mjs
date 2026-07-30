@@ -1,4 +1,4 @@
-// This file mostly exists because we want dev mode to say "T3 Code (Dev)" instead of "electron"
+// This file mostly exists because we want dev mode to say "Solla Code Dev" instead of "electron"
 
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -15,12 +15,12 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-export const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+export const APP_DISPLAY_NAME = isDevelopment ? "Solla Code Dev" : "Solla Code";
 export const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
-const LAUNCHER_VERSION = 14;
+const LAUNCHER_VERSION = 15;
 const defaultIconPath = NodePath.join(desktopDir, "resources", "icon.icns");
 const developmentMacIconPngPath = NodePath.join(
   repoRoot,
@@ -126,17 +126,59 @@ export function makeDevelopmentLauncherScript({
   ].join("\n");
 }
 
-function writeDevelopmentLauncherScript(targetBinaryPath, electronBinaryPath) {
+function writeDevelopmentLauncherScript(targetBinaryPath, electronBinaryPath, mainEntryPath) {
   NodeFS.writeFileSync(
     targetBinaryPath,
     makeDevelopmentLauncherScript({
       electronBinaryPath,
-      mainEntryPath: NodePath.join(desktopDir, "dist-electron", "main.cjs"),
+      mainEntryPath,
       desktopRoot: desktopDir,
       environment: process.env,
     }),
   );
   NodeFS.chmodSync(targetBinaryPath, 0o755);
+}
+
+let developmentBundleSnapshotPath = null;
+
+function bundleFingerprint(directory) {
+  return NodeFS.readdirSync(directory)
+    .filter((fileName) => fileName.endsWith(".cjs"))
+    .sort()
+    .map((fileName) => {
+      const stat = NodeFS.statSync(NodePath.join(directory, fileName));
+      return `${fileName}:${stat.size}:${stat.mtimeMs}`;
+    })
+    .join("|");
+}
+
+/**
+ * Electron's ESM loader must not race the packer's clean-and-replace cycle.
+ * Launch from an immutable per-process snapshot outside macOS's protected
+ * Documents directory, while --t3code-dev-root keeps source/backend paths
+ * anchored to the checkout.
+ */
+function resolveDevelopmentBundleSnapshot() {
+  if (developmentBundleSnapshotPath) {
+    return developmentBundleSnapshotPath;
+  }
+
+  const sourceDirectory = NodePath.join(desktopDir, "dist-electron");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const before = bundleFingerprint(sourceDirectory);
+    const snapshotDirectory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), `solla-code-dev-${devBundleIdSuffix || "local"}-`),
+    );
+    NodeFS.cpSync(sourceDirectory, snapshotDirectory, { recursive: true });
+    const after = bundleFingerprint(sourceDirectory);
+    if (before === after) {
+      developmentBundleSnapshotPath = snapshotDirectory;
+      return snapshotDirectory;
+    }
+    NodeFS.rmSync(snapshotDirectory, { recursive: true, force: true });
+  }
+
+  throw new Error("Desktop bundles kept changing while preparing the Electron launch snapshot.");
 }
 
 function registerMacLauncherBundle(appBundlePath) {
@@ -299,6 +341,9 @@ function buildMacLauncher(electronBinaryPath) {
     : runtimeElectronBinaryPath;
   const iconPath = isDevelopment ? ensureDevelopmentIconIcns(runtimeDir) : defaultIconPath;
   const metadataPath = NodePath.join(runtimeDir, "metadata.json");
+  const developmentMainEntryPath = isDevelopment
+    ? NodePath.join(resolveDevelopmentBundleSnapshot(), "main.cjs")
+    : NodePath.join(desktopDir, "dist-electron", "main.cjs");
 
   NodeFS.mkdirSync(runtimeDir, { recursive: true });
 
@@ -322,7 +367,11 @@ function buildMacLauncher(electronBinaryPath) {
       // The launcher also handles protocol activations outside the dev runner,
       // so refresh its fallback environment on every launch. Never let a value
       // captured by an older parent app override the live dev-runner environment.
-      writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);
+      writeDevelopmentLauncherScript(
+        launcherBinaryPath,
+        runtimeElectronBinaryPath,
+        developmentMainEntryPath,
+      );
     }
     registerMacLauncherBundle(targetAppBundlePath);
     return launcherBinaryPath;
@@ -346,10 +395,14 @@ function buildMacLauncher(electronBinaryPath) {
   if (isDevelopment) {
     // Keep Electron's native executable inside the branded bundle. Launching the
     // node_modules copy makes macOS associate the process (and Dock label) with
-    // Electron.app even though this bundle's Info.plist has the T3 Code name.
+    // Electron.app even though this bundle's Info.plist has the Solla Code name.
     // Its conventional executable name also keeps Electron's default-app runtime
     // in development mode instead of making app.isPackaged report true.
-    writeDevelopmentLauncherScript(launcherBinaryPath, runtimeElectronBinaryPath);
+    writeDevelopmentLauncherScript(
+      launcherBinaryPath,
+      runtimeElectronBinaryPath,
+      developmentMainEntryPath,
+    );
   }
   NodeFS.writeFileSync(metadataPath, `${JSON.stringify(expectedMetadata, null, 2)}\n`);
   registerMacLauncherBundle(targetAppBundlePath);

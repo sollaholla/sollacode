@@ -133,7 +133,8 @@ export function ConnectionEnvironmentRow(props: {
         >
           {props.environment.isRelayManaged ? (
             <Text className="text-sm text-foreground-muted">
-              Managed by T3 Connect. Tunnel details update automatically.
+              This legacy cloud connection is no longer supported. Remove it and add the environment
+              directly to keep using it.
             </Text>
           ) : (
             <>
@@ -181,17 +182,19 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
             )}
 
-            <Pressable
-              className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70"
-              onPress={() => props.onReconnect(props.environment.environmentId)}
-            >
-              <SymbolView
-                name="arrow.clockwise"
-                size={14}
-                tintColor={mutedColor}
-                type="monochrome"
-              />
-            </Pressable>
+            {props.environment.isRelayManaged ? null : (
+              <Pressable
+                className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70"
+                onPress={() => props.onReconnect(props.environment.environmentId)}
+              >
+                <SymbolView
+                  name="arrow.clockwise"
+                  size={14}
+                  tintColor={mutedColor}
+                  type="monochrome"
+                />
+              </Pressable>
+            )}
 
             <Pressable
               className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"

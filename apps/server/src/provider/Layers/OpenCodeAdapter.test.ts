@@ -37,6 +37,7 @@ import {
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
+  openCodeOverloadRetryReason,
 } from "./OpenCodeAdapter.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
@@ -1188,6 +1189,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       if (metadataUpdated.type === "thread.metadata.updated") {
         NodeAssert.equal(metadataUpdated.payload.name, "Investigate OpenCode title sync");
       }
+    }),
+  );
+
+  it.effect("normalizes OpenCode's native HTTP 529 retry status", () =>
+    Effect.sync(() => {
+      NodeAssert.equal(
+        openCodeOverloadRetryReason({
+          attempt: 3,
+          error: { statusCode: 529 },
+        }),
+        "provider_overloaded:retrying;attempt=3",
+      );
+      NodeAssert.equal(
+        openCodeOverloadRetryReason({
+          attempt: 3,
+          error: { statusCode: 503 },
+        }),
+        undefined,
+      );
     }),
   );
 

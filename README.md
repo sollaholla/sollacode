@@ -1,19 +1,19 @@
-# T3 Code
+# Solla Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app, [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+Solla Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app, [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they're set up on your computer, T3 Code can control them.
+Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, and OpenCode. If they're set up on your computer, Solla Code can control them.
 
 ## "Wait, what are you selling me?"
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+Nothing. We built Solla Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
 
 We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build and OpenCode. Install and authenticate at least one provider before use:
+> Solla Code currently supports Codex, Claude, Cursor, Grok Build and OpenCode. Install and authenticate at least one provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
@@ -23,13 +23,13 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 
 ### Try it out (install-free)
 
-The easiest way to test T3 Code is to run the server in your terminal:
+The easiest way to test Solla Code is to run the server in your terminal:
 
 ```bash
 npx t3@latest
 ```
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+This will launch Solla Code's backend on your machine as well as the local web app to control your agents.
 
 Tip: Use `npx t3@latest --help` for the full CLI reference.
 
@@ -67,7 +67,7 @@ There's no public docs site yet, checkout the miscellaneous markdown files in [d
 
 - [Getting started](./docs/getting-started/quick-start.md)
 - [Remote access](./docs/user/remote-access.md)
-- [Keeping T3 Code in sync](./docs/user/server-updates.md)
+- [Keeping Solla Code in sync](./docs/user/server-updates.md)
 - [Architecture overview](./docs/architecture/overview.md)
 - [Provider guides](./docs/providers/codex.md)
 - [Operations](./docs/operations/ci.md)
@@ -77,7 +77,7 @@ There's no public docs site yet, checkout the miscellaneous markdown files in [d
 
 ### Install `vp`
 
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
+Solla Code uses Vite+ so you'll need to install the global `vp` command-line tool.
 
 #### macOS / Linux
 

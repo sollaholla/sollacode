@@ -14,13 +14,11 @@ const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
-  readonly liveActivitiesEnabled?: boolean;
   readonly baseFontSize?: number;
   readonly terminalFontSize?: number | null;
   readonly markdownFontSize?: number;
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
-  readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
   readonly collapsedProjectGroups?: readonly string[];
   readonly projectGroupingEnabled?: boolean;
   /**
@@ -71,21 +69,16 @@ export class MobilePreferencesStore extends Context.Service<
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
-    liveActivitiesEnabled?: boolean;
     baseFontSize?: number;
     terminalFontSize?: number | null;
     markdownFontSize?: number;
     codeFontSize?: number | null;
     codeWordBreak?: boolean;
-    connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
     collapsedProjectGroups?: readonly string[];
     projectGroupingEnabled?: boolean;
     threadListV2Enabled?: boolean;
   } = {};
 
-  if (typeof parsed.liveActivitiesEnabled === "boolean") {
-    preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
-  }
   if (typeof parsed.baseFontSize === "number") preferences.baseFontSize = parsed.baseFontSize;
   if (typeof parsed.terminalFontSize === "number" || parsed.terminalFontSize === null) {
     preferences.terminalFontSize = parsed.terminalFontSize;
@@ -97,11 +90,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     preferences.codeFontSize = parsed.codeFontSize;
   }
   if (typeof parsed.codeWordBreak === "boolean") preferences.codeWordBreak = parsed.codeWordBreak;
-  if (Array.isArray(parsed.connectOnboardingOptOutAccounts)) {
-    preferences.connectOnboardingOptOutAccounts = parsed.connectOnboardingOptOutAccounts.filter(
-      (account): account is string => typeof account === "string",
-    );
-  }
   if (Array.isArray(parsed.collapsedProjectGroups)) {
     preferences.collapsedProjectGroups = parsed.collapsedProjectGroups.filter(
       (key): key is string => typeof key === "string",

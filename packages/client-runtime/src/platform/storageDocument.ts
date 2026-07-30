@@ -6,7 +6,6 @@ import {
   ConnectionProfile,
 } from "../connection/catalog.ts";
 import { type ConnectionTarget, PersistedConnectionTarget } from "../connection/model.ts";
-import * as TokenStore from "../authorization/tokenStore.ts";
 
 export const StoredConnectionCredential = Schema.Struct({
   connectionId: Schema.String,
@@ -19,7 +18,9 @@ export const ConnectionCatalogDocument = Schema.Struct({
   targets: Schema.Array(PersistedConnectionTarget),
   profiles: Schema.Array(ConnectionProfile),
   credentials: Schema.Array(StoredConnectionCredential),
-  remoteDpopTokens: Schema.Array(TokenStore.RemoteDpopAccessToken),
+  // Retained as an opaque legacy field so existing local catalogs remain
+  // readable after removal of the T3 Connect DPoP token feature.
+  remoteDpopTokens: Schema.Array(Schema.Unknown),
 });
 export type ConnectionCatalogDocument = typeof ConnectionCatalogDocument.Type;
 
@@ -51,7 +52,6 @@ export function removeCatalogValue<A>(
 function connectionIdOf(target: ConnectionTarget): string | null {
   switch (target._tag) {
     case "PrimaryConnectionTarget":
-    case "RelayConnectionTarget":
       return null;
     case "BearerConnectionTarget":
     case "SshConnectionTarget":
@@ -80,13 +80,7 @@ function removeConnectionMetadata(
       connectionId === null
         ? document.credentials
         : removeCatalogValue(document.credentials, (value) => value.connectionId, connectionId),
-    remoteDpopTokens: removeRemoteToken
-      ? removeCatalogValue(
-          document.remoteDpopTokens,
-          (value) => value.environmentId,
-          target.environmentId,
-        )
-      : document.remoteDpopTokens,
+    remoteDpopTokens: removeRemoteToken ? [] : document.remoteDpopTokens,
   };
 }
 
@@ -106,8 +100,6 @@ export function registerConnectionInCatalog(
   };
 
   switch (registration._tag) {
-    case "RelayConnectionRegistration":
-      return next;
     case "BearerConnectionRegistration":
       return {
         ...next,

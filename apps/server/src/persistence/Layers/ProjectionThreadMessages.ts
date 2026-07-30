@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment } from "@t3tools/contracts";
+import { ChatAttachment, OrchestrationMessageInputOrigin } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -21,6 +21,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
+    inputOrigin: Schema.NullOr(OrchestrationMessageInputOrigin),
   }),
 );
 
@@ -33,6 +34,7 @@ function toProjectionThreadMessage(
     turnId: row.turnId,
     role: row.role,
     text: row.text,
+    ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
     isStreaming: row.isStreaming === 1,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -55,6 +57,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           turn_id,
           role,
           text,
+          input_origin,
           attachments_json,
           is_streaming,
           created_at,
@@ -66,6 +69,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.turnId},
           ${row.role},
           ${row.text},
+          ${row.inputOrigin ?? null},
           COALESCE(
             ${nextAttachmentsJson},
             (
@@ -84,6 +88,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           turn_id = excluded.turn_id,
           role = excluded.role,
           text = excluded.text,
+          input_origin = COALESCE(excluded.input_origin, projection_thread_messages.input_origin),
           attachments_json = COALESCE(
             excluded.attachments_json,
             projection_thread_messages.attachments_json
@@ -106,6 +111,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          input_origin AS "inputOrigin",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -127,6 +133,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           turn_id AS "turnId",
           role,
           text,
+          input_origin AS "inputOrigin",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",

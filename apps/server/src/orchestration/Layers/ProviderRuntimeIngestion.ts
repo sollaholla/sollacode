@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
@@ -28,6 +29,7 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -38,6 +40,12 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  buildProviderHandoffSummary,
+  detectProviderUsageLimitExhaustion,
+  selectProviderFailoverTarget,
+} from "../ProviderUsageLimitFailover.ts";
+import { PROVIDER_OVERLOAD_RETRY_REASON_PREFIX } from "../../provider/providerOverloadRetry.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -91,6 +99,8 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
+const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY = 10_000;
+const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL = Duration.hours(24);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -317,6 +327,29 @@ export function runtimeEventToActivities(
       : {};
   })();
   switch (event.type) {
+    case "session.state.changed": {
+      if (
+        event.payload.state !== "running" ||
+        !event.payload.reason?.startsWith(PROVIDER_OVERLOAD_RETRY_REASON_PREFIX)
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "provider.overload.retrying",
+          summary: "Provider overloaded — retrying shortly",
+          payload: {
+            reason: event.payload.reason,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "request.opened": {
       if (event.payload.requestType === "tool_user_input") {
         return [];
@@ -613,6 +646,25 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "account.rate-limits.updated": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "provider.usage.updated",
+          summary: "Provider usage updated",
+          payload: {
+            provider: event.provider,
+            ...(event.providerInstanceId ? { providerInstanceId: event.providerInstanceId } : {}),
+            rateLimits: event.payload.rateLimits,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "item.updated": {
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
@@ -691,6 +743,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const providerRegistry = yield* ProviderRegistry;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
@@ -731,6 +784,12 @@ const make = Effect.gen(function* () {
     capacity: TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY,
     timeToLive: TASK_DESCRIPTION_BY_TASK_TTL,
     lookup: () => Effect.succeed(""),
+  });
+
+  const exhaustedProviderInstancesByThread = yield* Cache.make<string, ReadonlySet<string>>({
+    capacity: EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY,
+    timeToLive: EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL,
+    lookup: () => Effect.succeed(new Set<string>()),
   });
 
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
@@ -1290,6 +1349,245 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const appendProviderFailoverActivity = Effect.fn("appendProviderFailoverActivity")(
+    function* (input: {
+      readonly event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>;
+      readonly tone: "info" | "error";
+      readonly kind: string;
+      readonly summary: string;
+      readonly payload: Readonly<Record<string, unknown>>;
+    }) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: yield* providerCommandId(input.event, input.kind),
+        threadId: input.event.threadId,
+        activity: {
+          id: EventId.make(`${input.event.eventId}:${input.kind}`),
+          tone: input.tone,
+          kind: input.kind,
+          summary: input.summary,
+          payload: input.payload,
+          turnId: toTurnId(input.event.turnId) ?? null,
+          createdAt: input.event.createdAt,
+        },
+        createdAt: input.event.createdAt,
+      });
+    },
+  );
+
+  const attemptProviderUsageLimitFailover = Effect.fn("attemptProviderUsageLimitFailover")(
+    function* (event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>) {
+      const sourceInstanceId = event.providerInstanceId;
+      if (sourceInstanceId === undefined) {
+        return;
+      }
+
+      const exhaustion = detectProviderUsageLimitExhaustion(
+        event.provider,
+        event.payload.rateLimits,
+      );
+      if (!exhaustion) {
+        return;
+      }
+
+      const thread = yield* resolveThreadDetail(event.threadId);
+      if (
+        !thread ||
+        thread.session?.providerInstanceId !== sourceInstanceId ||
+        thread.session.providerName !== event.provider
+      ) {
+        return;
+      }
+
+      const exhaustedOption = yield* Cache.getOption(
+        exhaustedProviderInstancesByThread,
+        String(thread.id),
+      );
+      const exhaustedInstances = new Set(
+        Option.getOrElse(exhaustedOption, (): ReadonlySet<string> => new Set<string>()),
+      );
+      if (exhaustedInstances.has(String(sourceInstanceId))) {
+        return;
+      }
+      exhaustedInstances.add(String(sourceInstanceId));
+      yield* Cache.set(exhaustedProviderInstancesByThread, String(thread.id), exhaustedInstances);
+
+      const target = selectProviderFailoverTarget({
+        providers: yield* providerRegistry.getProviders,
+        currentInstanceId: sourceInstanceId,
+        currentDriver: event.provider,
+        excludedInstanceIds: exhaustedInstances,
+      });
+      if (!target) {
+        yield* appendProviderFailoverActivity({
+          event,
+          tone: "error",
+          kind: "provider.failover.unavailable",
+          summary: "Provider usage limit reached",
+          payload: {
+            detail: "No other configured, authenticated provider with an available model can run.",
+            sourceInstanceId,
+            sourceProvider: event.provider,
+            reason: exhaustion.reason,
+            resetsAt: exhaustion.resetsAt,
+          },
+        });
+        return;
+      }
+
+      const activeSession = (yield* providerService.listSessions()).find(
+        (session) =>
+          session.threadId === thread.id &&
+          session.providerInstanceId === sourceInstanceId &&
+          session.provider === event.provider,
+      );
+      if (!activeSession) {
+        return;
+      }
+
+      const handoffSummary = buildProviderHandoffSummary({
+        threadId: thread.id,
+        threadTitle: thread.title,
+        messages: thread.messages,
+        from: {
+          instanceId: sourceInstanceId,
+          driver: event.provider,
+        },
+        to: target,
+        exhaustion,
+        generatedAt: event.createdAt,
+      });
+      const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
+
+      const replacementSession = yield* providerService
+        .startSession(thread.id, {
+          threadId: thread.id,
+          provider: target.driver,
+          providerInstanceId: target.instanceId,
+          ...(activeSession.cwd ? { cwd: activeSession.cwd } : {}),
+          modelSelection: target.modelSelection,
+          autoCompactionThresholdPercentage,
+          runtimeMode: thread.runtimeMode,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            appendProviderFailoverActivity({
+              event,
+              tone: "error",
+              kind: "provider.failover.start.failed",
+              summary: "Provider failover failed",
+              payload: {
+                detail: Cause.pretty(cause),
+                sourceInstanceId,
+                targetInstanceId: target.instanceId,
+                reason: exhaustion.reason,
+              },
+            }).pipe(Effect.as(null)),
+          ),
+        );
+      if (replacementSession === null) {
+        return;
+      }
+
+      const handoffTurn = yield* providerService
+        .sendTurn({
+          threadId: thread.id,
+          input: handoffSummary,
+          modelSelection: target.modelSelection,
+          interactionMode: thread.interactionMode,
+        })
+        .pipe(
+          Effect.map(Option.some),
+          Effect.catchCause((handoffCause) =>
+            providerService
+              .startSession(thread.id, {
+                threadId: thread.id,
+                provider: event.provider,
+                providerInstanceId: sourceInstanceId,
+                ...(activeSession.cwd ? { cwd: activeSession.cwd } : {}),
+                modelSelection: thread.modelSelection,
+                ...(activeSession.resumeCursor !== undefined
+                  ? { resumeCursor: activeSession.resumeCursor }
+                  : {}),
+                autoCompactionThresholdPercentage,
+                runtimeMode: thread.runtimeMode,
+              })
+              .pipe(
+                Effect.as(true),
+                Effect.catchCause((rollbackCause) =>
+                  Effect.logWarning("provider usage-limit failover rollback failed", {
+                    threadId: thread.id,
+                    sourceInstanceId,
+                    targetInstanceId: target.instanceId,
+                    handoffCause: Cause.pretty(handoffCause),
+                    rollbackCause: Cause.pretty(rollbackCause),
+                  }).pipe(Effect.as(false)),
+                ),
+                Effect.flatMap((rolledBack) =>
+                  appendProviderFailoverActivity({
+                    event,
+                    tone: "error",
+                    kind: "provider.failover.handoff.failed",
+                    summary: "Provider failover handoff failed",
+                    payload: {
+                      detail: Cause.pretty(handoffCause),
+                      sourceInstanceId,
+                      targetInstanceId: target.instanceId,
+                      rolledBack,
+                    },
+                  }),
+                ),
+                Effect.as(Option.none()),
+              ),
+          ),
+        );
+      if (Option.isNone(handoffTurn)) {
+        return;
+      }
+
+      // Only make the new selection durable after the replacement provider
+      // accepted the bounded handoff turn.
+      yield* orchestrationEngine.dispatch({
+        type: "thread.meta.update",
+        commandId: yield* providerCommandId(event, "provider-failover-model-selection"),
+        threadId: thread.id,
+        modelSelection: target.modelSelection,
+      });
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.set",
+        commandId: yield* providerCommandId(event, "provider-failover-session-set"),
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "running",
+          providerName: replacementSession.provider,
+          providerInstanceId: target.instanceId,
+          runtimeMode: thread.runtimeMode,
+          activeTurnId: handoffTurn.value.turnId,
+          lastError: null,
+          updatedAt: event.createdAt,
+        },
+        createdAt: event.createdAt,
+      });
+      yield* appendProviderFailoverActivity({
+        event,
+        tone: "info",
+        kind: "provider.failover.completed",
+        summary: "Switched provider after usage limit",
+        payload: {
+          sourceInstanceId,
+          sourceProvider: event.provider,
+          targetInstanceId: target.instanceId,
+          targetProvider: target.driver,
+          targetModel: target.modelSelection.model,
+          reason: exhaustion.reason,
+          resetsAt: exhaustion.resetsAt,
+          handoffSerializedChars: handoffSummary.length,
+        },
+      });
+    },
+  );
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const thread = yield* resolveThreadShell(event.threadId);
@@ -1778,6 +2076,10 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+
+      if (event.type === "account.rate-limits.updated") {
+        yield* attemptProviderUsageLimitFailover(event);
+      }
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;

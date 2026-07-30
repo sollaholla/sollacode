@@ -179,6 +179,28 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("ServerSettings auto-compaction threshold", () => {
+  it("defaults to 80 percent for legacy settings", () => {
+    expect(decodeServerSettings({}).autoCompactionThresholdPercentage).toBe(80);
+  });
+
+  it.each([50, 80, 95])("accepts a whole percentage within 50..95: %s", (value) => {
+    expect(
+      decodeServerSettings({ autoCompactionThresholdPercentage: value })
+        .autoCompactionThresholdPercentage,
+    ).toBe(value);
+    expect(
+      decodeServerSettingsPatch({ autoCompactionThresholdPercentage: value })
+        .autoCompactionThresholdPercentage,
+    ).toBe(value);
+  });
+
+  it.each([49, 96, 72.5])("rejects an invalid threshold percentage: %s", (value) => {
+    expect(() => decodeServerSettings({ autoCompactionThresholdPercentage: value })).toThrow();
+    expect(() => decodeServerSettingsPatch({ autoCompactionThresholdPercentage: value })).toThrow();
+  });
+});
+
 describe("ServerSettings.sourceControlWritingStyle", () => {
   it("defaults all style settings for legacy configs", () => {
     const settings = decodeServerSettings({});

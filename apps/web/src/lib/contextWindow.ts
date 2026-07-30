@@ -110,3 +110,21 @@ export function formatContextWindowTokens(value: number | null): string {
   }
   return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
+
+export function deriveAutoCompactionTokenThreshold(
+  maxTokens: number | null | undefined,
+  thresholdPercentage: number,
+): number | null {
+  if (
+    maxTokens === null ||
+    maxTokens === undefined ||
+    !Number.isFinite(maxTokens) ||
+    maxTokens <= 0 ||
+    !Number.isInteger(thresholdPercentage) ||
+    thresholdPercentage < 50 ||
+    thresholdPercentage > 95
+  ) {
+    return null;
+  }
+  return Math.floor((maxTokens * thresholdPercentage) / 100);
+}

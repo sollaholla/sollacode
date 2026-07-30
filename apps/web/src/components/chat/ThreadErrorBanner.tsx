@@ -13,7 +13,10 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
 }) {
   if (!error) return null;
   return (
-    <div className="mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
+    <div
+      className="pointer-events-auto relative z-30 mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3"
+      data-chat-thread-error-banner="true"
+    >
       <Alert variant="error">
         <CircleAlertIcon />
         <AlertDescription>
@@ -26,7 +29,15 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         </AlertDescription>
         {onDismiss && (
           <AlertAction>
-            <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
+            <Button
+              variant="destructive-outline"
+              size="icon-xs"
+              className="size-11 touch-manipulation text-destructive opacity-100 sm:size-6"
+              aria-label="Dismiss error"
+              data-chat-thread-error-dismiss="true"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={onDismiss}
+            >
               <XIcon className="text-destructive" />
             </Button>
           </AlertAction>

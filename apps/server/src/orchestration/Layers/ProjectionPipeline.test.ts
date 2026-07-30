@@ -52,6 +52,337 @@ const exists = (filePath: string) =>
 
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-backlog-test-"))(
+  "OrchestrationProjectionPipeline backlog",
+  (it) => {
+    it.effect("bootstraps every event when the backlog exceeds the default replay limit", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+
+        yield* sql`
+        WITH RECURSIVE backlog(event_number) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT event_number + 1
+          FROM backlog
+          WHERE event_number < 1001
+        )
+        INSERT INTO orchestration_events (
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          causation_event_id,
+          correlation_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        SELECT
+          'evt-backlog-' || event_number,
+          'project',
+          'project-backlog-' || event_number,
+          0,
+          'project.created',
+          ${now},
+          'cmd-backlog-' || event_number,
+          NULL,
+          'cmd-backlog-' || event_number,
+          'client',
+          json_object(
+            'projectId',
+            'project-backlog-' || event_number,
+            'title',
+            'Backlog Project ' || event_number,
+            'workspaceRoot',
+            '/tmp/project-backlog-' || event_number,
+            'defaultModelSelection',
+            NULL,
+            'scripts',
+            json('[]'),
+            'createdAt',
+            ${now},
+            'updatedAt',
+            ${now}
+          ),
+          json('{}')
+        FROM backlog
+      `;
+
+        yield* projectionPipeline.bootstrap;
+
+        const projectCountRows = yield* sql<{ readonly count: number }>`
+        SELECT count(*) AS count
+        FROM projection_projects
+      `;
+        assert.equal(projectCountRows[0]?.count, 1001);
+
+        const projectionStateRows = yield* sql<{
+          readonly projector: string;
+          readonly lastAppliedSequence: number;
+        }>`
+        SELECT
+          projector,
+          last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        ORDER BY projector
+      `;
+        assert.equal(projectionStateRows.length, 9);
+        assert.isTrue(projectionStateRows.every((row) => row.lastAppliedSequence === 1001));
+      }),
+    );
+  },
+);
+
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-revert-rebuild-test-"))(
+  "OrchestrationProjectionPipeline revert rebuild",
+  (it) => {
+    it.effect("rebuilds revert-sensitive projections after turns are materialized", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-revert-rebuild");
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-revert-rebuild-1"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-revert-rebuild"),
+          occurredAt: "2026-01-02T00:00:00.000Z",
+          commandId: CommandId.make("cmd-revert-rebuild-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-1"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-revert-rebuild"),
+            title: "Project Revert Rebuild",
+            workspaceRoot: "/tmp/project-revert-rebuild",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-01-02T00:00:00.000Z",
+            updatedAt: "2026-01-02T00:00:00.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-revert-rebuild-2"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:01.000Z",
+          commandId: CommandId.make("cmd-revert-rebuild-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-2"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-revert-rebuild"),
+            title: "Thread Revert Rebuild",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-01-02T00:00:01.000Z",
+            updatedAt: "2026-01-02T00:00:01.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.turn-diff-completed",
+          eventId: EventId.make("evt-revert-rebuild-3"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:02.000Z",
+          commandId: CommandId.make("cmd-revert-rebuild-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-3"),
+          metadata: {},
+          payload: {
+            threadId,
+            turnId: TurnId.make("turn-revert-rebuild-1"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-revert-rebuild/turn/1"),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make("message-revert-rebuild-keep"),
+            completedAt: "2026-01-02T00:00:02.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-revert-rebuild-4"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:02.100Z",
+          commandId: CommandId.make("cmd-revert-rebuild-4"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-4"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-revert-rebuild-keep"),
+            role: "user",
+            text: "keep",
+            turnId: TurnId.make("turn-revert-rebuild-1"),
+            streaming: false,
+            createdAt: "2026-01-02T00:00:02.100Z",
+            updatedAt: "2026-01-02T00:00:02.100Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-revert-rebuild-5"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:02.200Z",
+          commandId: CommandId.make("cmd-revert-rebuild-5"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-5"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-revert-rebuild-keep"),
+              tone: "info",
+              kind: "status",
+              summary: "keep",
+              payload: {},
+              turnId: TurnId.make("turn-revert-rebuild-1"),
+              createdAt: "2026-01-02T00:00:02.200Z",
+            },
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.turn-diff-completed",
+          eventId: EventId.make("evt-revert-rebuild-6"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:03.000Z",
+          commandId: CommandId.make("cmd-revert-rebuild-6"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-6"),
+          metadata: {},
+          payload: {
+            threadId,
+            turnId: TurnId.make("turn-revert-rebuild-2"),
+            checkpointTurnCount: 2,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-revert-rebuild/turn/2"),
+            status: "ready",
+            files: [],
+            assistantMessageId: MessageId.make("message-revert-rebuild-remove"),
+            completedAt: "2026-01-02T00:00:03.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-revert-rebuild-7"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:03.100Z",
+          commandId: CommandId.make("cmd-revert-rebuild-7"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-7"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-revert-rebuild-remove"),
+            role: "user",
+            text: "remove",
+            turnId: TurnId.make("turn-revert-rebuild-2"),
+            streaming: false,
+            createdAt: "2026-01-02T00:00:03.100Z",
+            updatedAt: "2026-01-02T00:00:03.100Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-revert-rebuild-8"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:03.200Z",
+          commandId: CommandId.make("cmd-revert-rebuild-8"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-8"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-revert-rebuild-remove"),
+              tone: "info",
+              kind: "status",
+              summary: "remove",
+              payload: {},
+              turnId: TurnId.make("turn-revert-rebuild-2"),
+              createdAt: "2026-01-02T00:00:03.200Z",
+            },
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.reverted",
+          eventId: EventId.make("evt-revert-rebuild-9"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-02T00:00:04.000Z",
+          commandId: CommandId.make("cmd-revert-rebuild-9"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-revert-rebuild-9"),
+          metadata: {},
+          payload: {
+            threadId,
+            turnCount: 1,
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const messageRows = yield* sql<{
+          readonly messageId: string;
+        }>`
+          SELECT message_id AS "messageId"
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+          ORDER BY message_id
+        `;
+        assert.deepEqual(messageRows, [{ messageId: "message-revert-rebuild-keep" }]);
+
+        const activityRows = yield* sql<{
+          readonly activityId: string;
+        }>`
+          SELECT activity_id AS "activityId"
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+          ORDER BY activity_id
+        `;
+        assert.deepEqual(activityRows, [{ activityId: "activity-revert-rebuild-keep" }]);
+
+        const threadRows = yield* sql<{
+          readonly latestTurnId: string | null;
+          readonly latestUserMessageAt: string | null;
+        }>`
+          SELECT
+            latest_turn_id AS "latestTurnId",
+            latest_user_message_at AS "latestUserMessageAt"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(threadRows, [
+          {
+            latestTurnId: "turn-revert-rebuild-1",
+            latestUserMessageAt: "2026-01-02T00:00:02.100Z",
+          },
+        ]);
+      }),
+    );
+  },
+);
+
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   it.effect("bootstraps all projection states and writes projection rows", () =>
     Effect.gen(function* () {
@@ -1429,6 +1760,12 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(settledRows, [
         { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
       ]);
+      const threadRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ latestTurnId: turnId }]);
     }),
   );
 

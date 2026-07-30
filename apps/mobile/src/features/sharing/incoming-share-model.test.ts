@@ -90,7 +90,7 @@ describe("incoming native shares", () => {
     });
 
     expect(result.attachments).toEqual([]);
-    expect(result.warnings).toEqual(["'huge.png' exceeds the 10 MB attachment limit."]);
+    expect(result.warnings).toEqual(["'huge.png' exceeds the 2 MiB attachment limit."]);
     expect(readBase64).not.toHaveBeenCalled();
     expect(removeOwnedFile).toHaveBeenCalledWith(image.value);
     expect(hasIncomingShareContent(result)).toBe(false);

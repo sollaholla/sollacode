@@ -118,6 +118,24 @@ describe("connection onboarding", () => {
     }),
   );
 
+  it.effect("pairs directly with a private Tailnet address without a relay", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const registration = yield* preparePairingRegistration({
+        pairingUrl: "http://100.65.180.100:3773/pair#token=pairing-token",
+      }).pipe(Effect.provide(Layer.mergeAll(CLIENT_PRESENTATION_LAYER, pairingHttpLayer(calls))));
+
+      expect(registration.profile).toMatchObject({
+        httpBaseUrl: "http://100.65.180.100:3773/",
+        wsBaseUrl: "ws://100.65.180.100:3773/",
+      });
+      expect(calls.map((call) => call.url)).toEqual([
+        "http://100.65.180.100:3773/.well-known/t3/environment",
+        "http://100.65.180.100:3773/oauth/token",
+      ]);
+    }),
+  );
+
   it.effect("does not consume a pairing credential when descriptor discovery fails", () =>
     Effect.gen(function* () {
       const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];

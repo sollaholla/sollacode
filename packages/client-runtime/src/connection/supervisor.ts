@@ -1,4 +1,3 @@
-import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -254,15 +253,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     yield* Queue.offer(signals, next);
   });
 
-  const logManagedRelayAccountChange = Effect.logInfo(
-    "Managed relay account changed; restarting the environment connection.",
-  ).pipe(
-    Effect.annotateLogs({
-      "environment.id": target.environmentId,
-      "environment.label": target.label,
-    }),
-  );
-
   const reportProgress = Effect.fn("EnvironmentSupervisor.reportProgress")(function* (
     attempt: number,
     generation: number,
@@ -287,64 +277,12 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
   });
 
-  const traceRelayEstablishment = (
-    effect: Effect.Effect<
-      ConnectionDriver.EnvironmentConnectionLease,
-      ConnectionAttemptError,
-      Scope.Scope
-    >,
-    attempt: number,
-    generation: number,
-    pendingRetry: Option.Option<PendingRetryTrace>,
-  ) => {
-    const traced = Effect.gen(function* () {
-      const attemptSpan = yield* Effect.currentSpan.pipe(Effect.orDie);
-      yield* annotateTarget(target);
-      yield* Effect.annotateCurrentSpan({
-        "connection.attempt": attempt,
-        "connection.generation": generation,
-        "connection.retry.failure_count": Option.match(pendingRetry, {
-          onNone: () => 0,
-          onSome: (retry) => retry.failureCount,
-        }),
-      });
-      const lease = yield* effect.pipe(
-        Effect.mapError(
-          (error): TracedAttemptFailure => ({
-            error,
-            attemptSpan: Option.some(attemptSpan),
-          }),
-        ),
-      );
-      return { attemptSpan: Option.some(attemptSpan), lease };
-    }).pipe(Effect.withSpan("relay.connection.attempt", { root: true }));
-
-    return Option.match(pendingRetry, {
-      onNone: () => traced,
-      onSome: (retry) =>
-        traced.pipe(
-          Effect.linkSpans(retry.previousAttempt, {
-            "connection.retry.delay_ms": retry.delayMs,
-            "connection.retry.reason": retry.reason,
-          }),
-        ),
-    }).pipe(withRelayClientTracing);
-  };
-
   const establishTracedConnection = Effect.fnUntraced(function* (
     attempt: number,
     generation: number,
     lastFailure: ConnectionAttemptError | null,
     pendingRetry: Option.Option<PendingRetryTrace>,
   ) {
-    if (target._tag === "RelayConnectionTarget") {
-      return yield* traceRelayEstablishment(
-        establishConnection(attempt, generation, lastFailure),
-        attempt,
-        generation,
-        pendingRetry,
-      );
-    }
     return yield* establishConnection(attempt, generation, lastFailure).pipe(
       Effect.map((lease) => ({
         attemptSpan: Option.none<Tracer.Span>(),
@@ -374,10 +312,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         case "ConnectRequested":
           break;
         case "Wakeup":
-          if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
-            yield* logManagedRelayAccountChange;
-            return;
-          }
           break;
       }
     }
@@ -398,10 +332,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           }
           break;
         case "Wakeup":
-          if (next.reason === "credentials-changed" && target._tag === "RelayConnectionTarget") {
-            yield* logManagedRelayAccountChange;
-            return;
-          }
           if (next.reason === "application-active") {
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({

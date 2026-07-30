@@ -62,6 +62,17 @@ export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill",
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
+export const MIN_AUTO_COMPACTION_THRESHOLD_PERCENTAGE = 50;
+export const MAX_AUTO_COMPACTION_THRESHOLD_PERCENTAGE = 95;
+export const DEFAULT_AUTO_COMPACTION_THRESHOLD_PERCENTAGE = 80;
+export const AutoCompactionThresholdPercentage = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
+    maximum: MAX_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
+  }),
+);
+export type AutoCompactionThresholdPercentage = typeof AutoCompactionThresholdPercentage.Type;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -125,7 +136,7 @@ export const ClientSettingsSchema = Schema.Struct({
   // Client settings persist as a whole blob, so every user who has ever touched
   // any setting already has `sidebarV2Enabled: false` stored — without this bit
   // there is no way to tell that apart from "left alone", and a channel-derived
-  // default could never reach them. Mirrors `updateChannelConfiguredByUser`.
+  // default could never reach them.
   sidebarV2ConfiguredByUser: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -468,6 +479,9 @@ export const BackgroundActivitySettings = Schema.Struct({
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_COMPACTION_THRESHOLD_PERCENTAGE)),
+  ),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   backgroundActivity: BackgroundActivitySettings,
@@ -625,6 +639,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
+  autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(

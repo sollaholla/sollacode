@@ -1,11 +1,15 @@
-import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { memo, type KeyboardEventHandler, type PointerEventHandler } from "react";
+import { ChevronDownIcon, ChevronLeftIcon, MicIcon } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { isElectron } from "../../env";
+import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 interface PendingActionState {
   questionIndex: number;
@@ -19,6 +23,7 @@ interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  sendWhileRunning?: boolean;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -27,7 +32,12 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
+  pushToTalkStatus?: "recording" | "loading" | "transcribing" | null;
+  pushToTalkDisabled?: boolean;
+  pushToTalkDisabledReason?: string | null;
   preserveComposerFocusOnPointerDown?: boolean;
+  onPushToTalkStart?: () => void;
+  onPushToTalkStop?: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -51,6 +61,27 @@ export const formatPendingPrimaryActionLabel = (input: {
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
 
+export const formatPushToTalkActionLabel = (
+  status: "recording" | "loading" | "transcribing" | null,
+  platform: string | undefined,
+  disabledReason?: string | null,
+): string => {
+  const shortcut = platform?.toLowerCase().includes("mac") ? "Cmd+D" : "Ctrl+D";
+  switch (status) {
+    case "recording":
+      return `Mute microphone — release to transcribe and send (${shortcut})`;
+    case "loading":
+      return `Loading local transcription model (${shortcut})`;
+    case "transcribing":
+      return `Transcribing voice message (${shortcut})`;
+    default:
+      if (disabledReason) {
+        return `${disabledReason} (${shortcut})`;
+      }
+      return `Unmute microphone — hold to record (${shortcut})`;
+  }
+};
+
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
@@ -59,6 +90,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
+  sendWhileRunning = false,
   showPlanFollowUpPrompt,
   promptHasText,
   isSendBusy,
@@ -67,7 +99,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
+  pushToTalkStatus = null,
+  pushToTalkDisabled = true,
+  pushToTalkDisabledReason = null,
   preserveComposerFocusOnPointerDown = false,
+  onPushToTalkStart = () => undefined,
+  onPushToTalkStop = () => undefined,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -76,14 +113,88 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     ? { onPointerDown: preventPointerFocus }
     : undefined;
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
+  const hasCoarsePointer = useMediaQuery({ pointer: "coarse" });
+  const showAppMicrophone = shouldOfferAppVoiceCapture({
+    isDesktopElectron: isElectron,
+    hasCoarsePointer,
+  });
   const isSendDisabled = sendDisabledReason !== null;
   const stageBackdropVariant = useSidebarStageBackdropVariant(
     environmentIdentificationMode === "artwork",
   );
+  const pushToTalkActive = pushToTalkStatus === "recording";
+  const microphoneDisabled = pushToTalkDisabled && !pushToTalkActive;
+  const pushToTalkLabel = formatPushToTalkActionLabel(
+    pushToTalkStatus,
+    typeof navigator === "undefined" ? undefined : navigator.platform,
+    microphoneDisabled ? pushToTalkDisabledReason : null,
+  );
+  const startPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
+    if (microphoneDisabled || event.repeat || (event.key !== " " && event.key !== "Enter")) {
+      return;
+    }
+    event.preventDefault();
+    onPushToTalkStart();
+  };
+  const stopPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    onPushToTalkStop();
+  };
+  const startPushToTalkOnPointer: PointerEventHandler<HTMLButtonElement> = (event) => {
+    if (microphoneDisabled || event.button !== 0) return;
+    if (preserveComposerFocusOnPointerDown) event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    onPushToTalkStart();
+  };
+  const stopPushToTalkOnPointer: PointerEventHandler<HTMLButtonElement> = (event) => {
+    onPushToTalkStop();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  const microphoneAction = showAppMicrophone ? (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className={cn(
+              "flex h-9 w-9 items-center justify-center rounded-full border text-muted-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer hover:scale-105 active:shadow-none aria-disabled:cursor-not-allowed aria-disabled:opacity-30 aria-disabled:hover:scale-100 sm:h-8 sm:w-8",
+              pushToTalkActive
+                ? "border-destructive/70 bg-destructive/15 text-destructive ring-2 ring-destructive/20"
+                : "border-border/70 bg-background/80 hover:border-border hover:bg-muted/70 hover:text-foreground",
+            )}
+            aria-disabled={microphoneDisabled}
+            aria-label={pushToTalkLabel}
+            aria-pressed={pushToTalkActive}
+            title={pushToTalkLabel}
+            onPointerDown={startPushToTalkOnPointer}
+            onPointerUp={stopPushToTalkOnPointer}
+            onPointerCancel={stopPushToTalkOnPointer}
+            onLostPointerCapture={() => onPushToTalkStop()}
+            onKeyDown={startPushToTalkOnKey}
+            onKeyUp={stopPushToTalkOnKey}
+          />
+        }
+      >
+        {pushToTalkStatus === "loading" || pushToTalkStatus === "transcribing" ? (
+          <Spinner className="size-3.5" aria-hidden="true" />
+        ) : (
+          <MicIcon
+            className={cn("size-4", pushToTalkActive && "animate-pulse")}
+            aria-hidden="true"
+          />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{pushToTalkLabel}</TooltipPopup>
+    </Tooltip>
+  ) : null;
 
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
+        {isRunning ? microphoneAction : null}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
             <Button
@@ -132,19 +243,22 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  if (isRunning) {
+  if (isRunning && !sendWhileRunning) {
     return (
-      <button
-        type="button"
-        className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
-        {...pointerFocusProps}
-        onClick={onInterrupt}
-        aria-label="Stop generation"
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <rect x="2" y="2" width="8" height="8" rx="1.5" />
-        </svg>
-      </button>
+      <div className="flex items-center justify-end gap-1.5">
+        {microphoneAction}
+        <button
+          type="button"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
+          {...pointerFocusProps}
+          onClick={onInterrupt}
+          aria-label="Stop generation"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+            <rect x="2" y="2" width="8" height="8" rx="1.5" />
+          </svg>
+        </button>
+      </div>
     );
   }
 
@@ -203,54 +317,61 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   }
 
   return (
-    <button
-      type="submit"
-      className={cn(
-        "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full text-primary-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none disabled:pointer-events-none disabled:opacity-30 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8",
-        stageBackdropVariant
-          ? "bg-transparent enabled:shadow-black/24 enabled:hover:brightness-110"
-          : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
-      )}
-      {...pointerFocusProps}
-      disabled={
-        isSendBusy ||
-        isSendDisabled ||
-        isConnecting ||
-        isEnvironmentUnavailable ||
-        !hasSendableContent
-      }
-      aria-label={
-        isEnvironmentUnavailable
-          ? "Environment disconnected"
-          : sendDisabledReason
-            ? sendDisabledReason
-            : isConnecting
-              ? "Connecting"
-              : isPreparingWorktree
-                ? "Preparing worktree"
-                : isSendBusy
-                  ? "Sending"
-                  : "Send message"
-      }
-    >
-      {stageBackdropVariant ? (
-        <span className="absolute inset-0 -z-10" aria-hidden="true">
-          <StageBackdropButtonArt variant={stageBackdropVariant} />
-        </span>
-      ) : null}
-      {isConnecting || isSendBusy ? (
-        <Spinner className="size-3.5" aria-hidden="true" />
-      ) : (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path
-            d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      )}
-    </button>
+    <div className="flex items-center justify-end gap-1.5">
+      {microphoneAction}
+
+      <button
+        type="submit"
+        className={cn(
+          "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full text-primary-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none disabled:pointer-events-none disabled:opacity-30 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8",
+          stageBackdropVariant
+            ? "bg-transparent enabled:shadow-black/24 enabled:hover:brightness-110"
+            : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
+        )}
+        {...pointerFocusProps}
+        disabled={
+          isSendBusy ||
+          isSendDisabled ||
+          isConnecting ||
+          isEnvironmentUnavailable ||
+          pushToTalkStatus !== null ||
+          !hasSendableContent
+        }
+        aria-label={
+          isEnvironmentUnavailable
+            ? "Environment disconnected"
+            : sendDisabledReason
+              ? sendDisabledReason
+              : pushToTalkStatus !== null
+                ? pushToTalkLabel
+                : isConnecting
+                  ? "Connecting"
+                  : isPreparingWorktree
+                    ? "Preparing worktree"
+                    : isSendBusy
+                      ? "Sending"
+                      : "Send message"
+        }
+      >
+        {stageBackdropVariant ? (
+          <span className="absolute inset-0 -z-10" aria-hidden="true">
+            <StageBackdropButtonArt variant={stageBackdropVariant} />
+          </span>
+        ) : null}
+        {isConnecting || isSendBusy ? (
+          <Spinner className="size-3.5" aria-hidden="true" />
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path
+              d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
+      </button>
+    </div>
   );
 });
