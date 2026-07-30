@@ -256,7 +256,12 @@ import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
-import { ProviderUsageBar, providerUsageDetailsSide } from "./chat/ProviderUsageBar";
+import {
+  ProviderUsageBar,
+  ProviderUsagePlacementRow,
+  providerUsageDetailsSide,
+  resolveProviderUsagePlacement,
+} from "./chat/ProviderUsageBar";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
   DRAFT_HERO_TRANSITION_DURATION_MS,
@@ -2510,6 +2515,9 @@ function ChatViewContent(props: ChatViewProps) {
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
   const isDraftHeroState =
     isLocalDraftThread && timelineEntries.length === 0 && !isWorking && !draftHeroDockRequested;
+  const providerUsagePlacement = showProviderUsageBar
+    ? resolveProviderUsagePlacement(isDraftHeroState)
+    : null;
   const dockPhoneDraftComposer = shouldDockPhoneDraftComposer({
     isDraftHeroState,
     isPhonePortrait: isPhonePortraitViewport,
@@ -6227,7 +6235,7 @@ function ChatViewContent(props: ChatViewProps) {
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
-          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div data-chat-main-pane="true" className="relative flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Provider status overlays the timeline without changing its content height. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
               <ProviderStatusBanner
@@ -6235,6 +6243,16 @@ function ChatViewContent(props: ChatViewProps) {
                 onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
               />
             </div>
+            {providerUsagePlacement === "draft-pane-top" ? (
+              <ProviderUsagePlacementRow placement={providerUsagePlacement}>
+                <ProviderUsageBar
+                  providers={providerStatuses}
+                  activities={activeThread.activities}
+                  detailsSide={providerUsageDetailsSide(true)}
+                  onRefreshProvider={refreshProviderUsage}
+                />
+              </ProviderUsagePlacementRow>
+            ) : null}
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -6333,18 +6351,15 @@ function ChatViewContent(props: ChatViewProps) {
                 ref={attachDraftHeroTransitionGroupRef}
                 className="chat-composer-horizontal-inset w-full"
               >
-                {showProviderUsageBar ? (
-                  <div
-                    data-chat-footer-provider-usage="true"
-                    className="pointer-events-none relative z-20 flex justify-center px-2 pb-1"
-                  >
+                {providerUsagePlacement === "active-footer" ? (
+                  <ProviderUsagePlacementRow placement={providerUsagePlacement}>
                     <ProviderUsageBar
                       providers={providerStatuses}
                       activities={activeThread.activities}
-                      detailsSide={providerUsageDetailsSide(isDraftHeroState)}
+                      detailsSide={providerUsageDetailsSide(false)}
                       onRefreshProvider={refreshProviderUsage}
                     />
-                  </div>
+                  </ProviderUsagePlacementRow>
                 ) : null}
                 <div className="pointer-events-auto relative z-10">
                   {isDraftHeroState ? (
@@ -6381,6 +6396,7 @@ function ChatViewContent(props: ChatViewProps) {
                     }
                   >
                     <div
+                      data-chat-composer-shell="true"
                       className={cn(
                         "chat-composer-glass-shell relative mx-auto w-full max-w-3xl",
                         showComposerContextStrip && "chat-composer-glass-shell-with-context",

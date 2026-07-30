@@ -4,7 +4,7 @@ import type {
   ProviderInstanceId,
   ServerProvider,
 } from "@t3tools/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   mergeProviderUsageEntry,
@@ -19,8 +19,39 @@ import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 export type ProviderUsageWindow = PersistedProviderUsageWindow;
 
+export type ProviderUsagePlacement = "draft-pane-top" | "active-footer";
+
+export function resolveProviderUsagePlacement(isDraftHeroState: boolean): ProviderUsagePlacement {
+  return isDraftHeroState ? "draft-pane-top" : "active-footer";
+}
+
+export function ProviderUsagePlacementRow(props: {
+  readonly placement: ProviderUsagePlacement;
+  readonly children: ReactNode;
+}) {
+  if (props.placement === "draft-pane-top") {
+    return (
+      <div
+        data-chat-draft-provider-usage="true"
+        className="pointer-events-none relative z-10 flex shrink-0 justify-center px-2 pt-3 sm:pt-4"
+      >
+        {props.children}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-chat-footer-provider-usage="true"
+      className="pointer-events-none relative z-20 flex justify-center px-2 pb-1"
+    >
+      {props.children}
+    </div>
+  );
+}
+
 export function providerUsageDetailsSide(isDraftHeroState: boolean): "top" | "bottom" {
-  // In the centered New Thread hero, the usage badge sits above the composer.
+  // In the New Thread view, the usage badge sits at the top of the main pane.
   // Opening downward keeps the shared details popup inside the viewport.
   return isDraftHeroState ? "bottom" : "top";
 }
