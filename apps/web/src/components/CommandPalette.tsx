@@ -53,6 +53,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useClientSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
@@ -133,6 +134,7 @@ import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
 } from "../sidebarProjectGrouping";
+import { shouldShowCommandPaletteKeybindingLegend } from "./CommandPalette.presentation";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -479,6 +481,12 @@ function OpenCommandPaletteDialog(props: {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
+  const isNarrowViewport = useMediaQuery("max-sm");
+  const hasCoarsePointer = useMediaQuery({ pointer: "coarse" });
+  const showKeybindingLegend = shouldShowCommandPaletteKeybindingLegend({
+    isNarrowViewport,
+    hasCoarsePointer,
+  });
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
@@ -2139,53 +2147,57 @@ function OpenCommandPaletteDialog(props: {
                     : {})}
           />
         </CommandPanel>
-        <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
-          <div className="flex items-center gap-3">
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>
-                <ArrowUpIcon />
-              </Kbd>
-              <Kbd>
-                <ArrowDownIcon />
-              </Kbd>
-              <span>Navigate</span>
-            </KbdGroup>
-            {addProjectCloneFlow?.step === "repository" ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Enter</Kbd>
-                <span>{remoteProjectButtonLabel ?? "Continue"}</span>
-              </KbdGroup>
-            ) : !canSubmitBrowsePath || hasHighlightedBrowseItem ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Enter</Kbd>
-                <span>Select</span>
-              </KbdGroup>
+        {showKeybindingLegend || canOpenProjectFromFileManager ? (
+          <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
+            {showKeybindingLegend ? (
+              <div className="flex items-center gap-3">
+                <KbdGroup className="items-center gap-1.5">
+                  <Kbd>
+                    <ArrowUpIcon />
+                  </Kbd>
+                  <Kbd>
+                    <ArrowDownIcon />
+                  </Kbd>
+                  <span>Navigate</span>
+                </KbdGroup>
+                {addProjectCloneFlow?.step === "repository" ? (
+                  <KbdGroup className="items-center gap-1.5">
+                    <Kbd>Enter</Kbd>
+                    <span>{remoteProjectButtonLabel ?? "Continue"}</span>
+                  </KbdGroup>
+                ) : !canSubmitBrowsePath || hasHighlightedBrowseItem ? (
+                  <KbdGroup className="items-center gap-1.5">
+                    <Kbd>Enter</Kbd>
+                    <span>Select</span>
+                  </KbdGroup>
+                ) : null}
+                {isSubmenu ? (
+                  <KbdGroup className="items-center gap-1.5">
+                    <Kbd>Backspace</Kbd>
+                    <span>Back</span>
+                  </KbdGroup>
+                ) : null}
+                <KbdGroup className="items-center gap-1.5">
+                  <Kbd>Esc</Kbd>
+                  <span>Close</span>
+                </KbdGroup>
+              </div>
             ) : null}
-            {isSubmenu ? (
-              <KbdGroup className="items-center gap-1.5">
-                <Kbd>Backspace</Kbd>
-                <span>Back</span>
-              </KbdGroup>
+            {canOpenProjectFromFileManager ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                className="h-auto px-2 text-muted-foreground text-xs hover:bg-transparent hover:text-foreground"
+                disabled={isPickingProjectFolder}
+                onClick={() => {
+                  void handleOpenProjectFromFileManager();
+                }}
+              >
+                {`Open in ${fileManagerName}`}
+              </Button>
             ) : null}
-            <KbdGroup className="items-center gap-1.5">
-              <Kbd>Esc</Kbd>
-              <span>Close</span>
-            </KbdGroup>
-          </div>
-          {canOpenProjectFromFileManager ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              className="h-auto px-2 text-muted-foreground text-xs hover:bg-transparent hover:text-foreground"
-              disabled={isPickingProjectFolder}
-              onClick={() => {
-                void handleOpenProjectFromFileManager();
-              }}
-            >
-              {`Open in ${fileManagerName}`}
-            </Button>
-          ) : null}
-        </CommandFooter>
+          </CommandFooter>
+        ) : null}
       </Command>
     </CommandDialogPopup>
   );
