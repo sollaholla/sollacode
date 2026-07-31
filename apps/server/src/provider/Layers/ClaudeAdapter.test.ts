@@ -34,6 +34,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { HEIC_FIXTURE_BASE64 } from "../../modelImageCompatibility.test-fixture.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
@@ -879,6 +880,134 @@ describe("ClaudeAdapterLive", () => {
             media_type: "image/png",
             data: "AQIDBA==",
           },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("converts persisted HEIC attachments before sending them to Claude", () => {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-heic-attachments-"));
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-heic-attachments",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() =>
+          NodeFS.rmSync(baseDir, {
+            recursive: true,
+            force: true,
+          }),
+        ),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const heicBytes = Buffer.from(HEIC_FIXTURE_BASE64, "base64");
+      const attachment = {
+        type: "image" as const,
+        id: "thread-claude-heic-12345678-1234-1234-1234-123456789abc",
+        name: "FullSizeRender.heic",
+        mimeType: "image/heic",
+        sizeBytes: heicBytes.byteLength,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, heicBytes);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "What's in this image?",
+        attachments: [attachment],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.isDefined(promptMessage);
+      const content = promptMessage?.message.content;
+      assert.isArray(content);
+      const imageBlock = content?.[1] as
+        | {
+            readonly type?: string;
+            readonly source?: { readonly media_type?: string; readonly data?: string };
+          }
+        | undefined;
+      assert.equal(imageBlock?.type, "image");
+      assert.equal(imageBlock?.source?.media_type, "image/jpeg");
+      assert.match(imageBlock?.source?.data ?? "", /^\/9j\//u);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("omits unsupported persisted attachments without failing the Claude turn", () => {
+    const baseDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "claude-unsupported-attachments-"),
+    );
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-unsupported-attachments",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() =>
+          NodeFS.rmSync(baseDir, {
+            recursive: true,
+            force: true,
+          }),
+        ),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachment = {
+        type: "image" as const,
+        id: "thread-claude-tiff-12345678-1234-1234-1234-123456789abc",
+        name: "legacy-scan.tiff",
+        mimeType: "image/tiff",
+        sizeBytes: 4,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      NodeFS.mkdirSync(NodePath.dirname(attachmentPath), { recursive: true });
+      NodeFS.writeFileSync(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Continue despite the legacy attachment.",
+        attachments: [attachment],
+      });
+
+      const promptMessage = yield* Effect.promise(() =>
+        readFirstPromptMessage(harness.getLastCreateQueryInput()),
+      );
+      assert.isDefined(promptMessage);
+      const content = promptMessage?.message.content;
+      assert.isArray(content);
+      assert.deepEqual(content, [
+        {
+          type: "text",
+          text: "Continue despite the legacy attachment.",
+        },
+        {
+          type: "text",
+          text: "[Attachment 'legacy-scan.tiff' was omitted because it could not be converted to a model-compatible image. Unsupported image attachment type 'image/tiff'.]",
         },
       ]);
     }).pipe(

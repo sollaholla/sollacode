@@ -277,7 +277,7 @@ export const assetRouteLayer = HttpRouter.add(
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
-    return yield* HttpServerResponse.file(asset.path, {
+    const responseOptions = {
       status: 200,
       headers: {
         // Unversioned workspace paths remain no-store. Remote/client previews
@@ -286,7 +286,14 @@ export const assetRouteLayer = HttpRouter.add(
         "Cache-Control": assetCacheControlForUrl(url.value),
         "X-Content-Type-Options": "nosniff",
       },
-    }).pipe(
+    } as const;
+    if (asset.kind === "bytes") {
+      return HttpServerResponse.uint8Array(asset.bytes, {
+        ...responseOptions,
+        contentType: asset.contentType,
+      });
+    }
+    return yield* HttpServerResponse.file(asset.path, responseOptions).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );
   }),

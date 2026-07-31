@@ -37,6 +37,7 @@ import {
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
   type ProviderSession,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
@@ -70,6 +71,7 @@ import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { prepareModelCompatibleImage } from "../../modelImageCompatibility.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
@@ -928,12 +930,6 @@ function titleForTool(itemType: CanonicalItemType): string {
   }
 }
 
-const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
-  "image/gif",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
@@ -1004,14 +1000,6 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       continue;
     }
 
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
-      });
-    }
-
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: dependencies.attachmentsDir,
       attachment,
@@ -1036,10 +1024,35 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       ),
     );
 
+    const prepared = yield* Effect.promise(async () => {
+      try {
+        const image = await prepareModelCompatibleImage({
+          bytes,
+          mimeType: attachment.mimeType,
+          name: attachment.name,
+          maxOutputBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+        });
+        return { type: "ready" as const, image };
+      } catch (cause) {
+        return {
+          type: "omitted" as const,
+          detail: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+    });
+
+    if (prepared.type === "omitted") {
+      sdkContent.push({
+        type: "text",
+        text: `[Attachment '${attachment.name}' was omitted because it could not be converted to a model-compatible image. ${prepared.detail}]`,
+      });
+      continue;
+    }
+
     sdkContent.push(
       buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
+        mimeType: prepared.image.mimeType,
+        bytes: prepared.image.bytes,
       }),
     );
   }
