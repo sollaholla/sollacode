@@ -13,6 +13,7 @@ import {
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
+import { prepareModelCompatibleImage } from "../modelImageCompatibility.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export function isSendImagePayloadByteLengthValid(byteLength: number): boolean {
@@ -126,6 +127,23 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             });
           }
 
+          const preparedImage = yield* Effect.tryPromise({
+            try: () =>
+              prepareModelCompatibleImage({
+                bytes,
+                mimeType: parsed.mimeType,
+                name: attachment.name,
+                maxOutputBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+              }),
+            catch: (cause) =>
+              new OrchestrationDispatchCommandError({
+                message:
+                  cause instanceof Error
+                    ? cause.message
+                    : `Failed to prepare image attachment '${attachment.name}'.`,
+              }),
+          });
+
           const attachmentId = createAttachmentId(canonicalCommand.threadId);
           if (!attachmentId) {
             return yield* new OrchestrationDispatchCommandError({
@@ -136,9 +154,9 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           const persistedAttachment = {
             type: "image" as const,
             id: attachmentId,
-            name: attachment.name,
-            mimeType: parsed.mimeType.toLowerCase(),
-            sizeBytes: bytes.byteLength,
+            name: preparedImage.name,
+            mimeType: preparedImage.mimeType,
+            sizeBytes: preparedImage.bytes.byteLength,
           };
 
           const attachmentPath = resolveAttachmentPath({
@@ -159,7 +177,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
                 }),
             ),
           );
-          yield* fileSystem.writeFile(attachmentPath, bytes).pipe(
+          yield* fileSystem.writeFile(attachmentPath, preparedImage.bytes).pipe(
             Effect.mapError(
               () =>
                 new OrchestrationDispatchCommandError({

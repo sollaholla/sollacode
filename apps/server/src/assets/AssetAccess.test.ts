@@ -19,6 +19,7 @@ import * as PlatformError from "effect/PlatformError";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import { HEIC_FIXTURE_BASE64 } from "../modelImageCompatibility.test-fixture.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -407,6 +408,31 @@ describe("AssetAccess", () => {
         kind: "file",
         path: attachmentPath,
       });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves legacy HEIC attachments as browser-compatible JPEG bytes", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const attachmentId = "thread-1-00000000-0000-4000-8000-000000000002";
+      const attachmentPath = path.join(config.attachmentsDir, `${attachmentId}.heic`);
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFile(attachmentPath, Buffer.from(HEIC_FIXTURE_BASE64, "base64"));
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "attachment", attachmentId },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+      const resolved = yield* resolveAsset(token, "ignored.heic");
+
+      expect(resolved?.kind).toBe("bytes");
+      if (resolved?.kind !== "bytes") return;
+      expect(resolved.contentType).toBe("image/jpeg");
+      expect(Array.from(resolved.bytes.slice(0, 3))).toEqual([0xff, 0xd8, 0xff]);
     }).pipe(Effect.provide(testLayer)),
   );
 

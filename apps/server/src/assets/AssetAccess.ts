@@ -14,6 +14,7 @@ import {
   AssetWorkspacePathValidationError,
   AssetWorkspaceResolutionError,
   AssetWorkspaceRootNormalizationError,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import {
   isWorkspaceImagePreviewPath,
@@ -40,6 +41,7 @@ import {
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { prepareModelCompatibleImage } from "../modelImageCompatibility.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
@@ -174,7 +176,9 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
+export type ResolvedAsset =
+  | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "bytes"; readonly bytes: Uint8Array; readonly contentType: string };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -578,6 +582,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     });
     if (!attachmentPath) return null;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const info = yield* optionOnNotFound(fileSystem.stat(attachmentPath)).pipe(
       Effect.tapError((cause) =>
         Effect.logError("Failed to inspect attachment asset.", {
@@ -588,8 +593,48 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       ),
       Effect.orElseSucceed(() => Option.none()),
     );
-    return Option.isSome(info) && info.value.type === "File"
-      ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
+    if (Option.isNone(info) || info.value.type !== "File") return null;
+
+    const extension = path.extname(attachmentPath).toLowerCase();
+    if (extension !== ".heic" && extension !== ".heif") {
+      return { kind: "file", path: attachmentPath } satisfies ResolvedAsset;
+    }
+
+    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to read legacy HEIC attachment asset.", {
+          attachmentId: claims.attachmentId,
+          path: attachmentPath,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+    if (!bytes) return null;
+
+    const converted = yield* Effect.tryPromise(() =>
+      prepareModelCompatibleImage({
+        bytes,
+        mimeType: extension === ".heif" ? "image/heif" : "image/heic",
+        name: path.basename(attachmentPath),
+        maxOutputBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+      }),
+    ).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to convert legacy HEIC attachment preview.", {
+          attachmentId: claims.attachmentId,
+          path: attachmentPath,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+    return converted
+      ? ({
+          kind: "bytes",
+          bytes: converted.bytes,
+          contentType: converted.mimeType,
+        } satisfies ResolvedAsset)
       : null;
   }
 
