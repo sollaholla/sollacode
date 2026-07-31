@@ -33,6 +33,8 @@ vi.mock("@legendapp/list/react", async () => {
           size?: boolean;
           shouldRestorePosition?: (item: { id: string }) => boolean;
         };
+    initialScrollAtEnd?: boolean;
+    initialScrollOffset?: number;
     onWheel?: (event: { deltaY: number }) => void;
     onTouchStart?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
     onTouchMove?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
@@ -86,6 +88,8 @@ vi.mock("@legendapp/list/react", async () => {
           props.onTouchStart && props.onTouchMove && props.onTouchEnd && props.onTouchCancel,
         )}
         data-manual-pointer-handler={Boolean(props.onPointerDown)}
+        data-initial-scroll-at-end={props.initialScrollAtEnd}
+        data-initial-scroll-offset={props.initialScrollOffset}
       >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
@@ -565,6 +569,20 @@ describe("MessagesTimeline", () => {
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
     expect(followingMarkup).toContain('data-manual-pointer-handler="false"');
+  });
+
+  it("restores a deep per-thread scroll offset instead of initializing at the end", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        initialScrollAtEnd={false}
+        initialScrollOffset={1280}
+        timelineEntries={[buildUserTimelineEntry("Restore this reading position")]}
+      />,
+    );
+
+    expect(markup).toContain('data-initial-scroll-at-end="false"');
+    expect(markup).toContain('data-initial-scroll-offset="1280"');
   });
 
   it("does not add synthetic end space for a sent attachment message", () => {

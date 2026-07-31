@@ -1,5 +1,25 @@
 export type TimelineScrollMode = "following-end" | "anchoring-new-turn" | "free-scrolling";
 
+export interface TimelineThreadScrollMemory {
+  readonly scrollOffset: number;
+  readonly followEnd: boolean;
+}
+
+export function rememberTimelineThreadScroll(
+  memories: Map<string, TimelineThreadScrollMemory>,
+  threadKey: string,
+  memory: TimelineThreadScrollMemory,
+  maxEntries = 200,
+): void {
+  memories.delete(threadKey);
+  memories.set(threadKey, memory);
+  while (memories.size > Math.max(1, maxEntries)) {
+    const oldestThreadKey = memories.keys().next().value;
+    if (typeof oldestThreadKey !== "string") break;
+    memories.delete(oldestThreadKey);
+  }
+}
+
 export interface TimelineSendScrollPlan<TMessageId> {
   readonly mode: Extract<TimelineScrollMode, "following-end">;
   readonly anchorMessageId: TMessageId | null;
@@ -15,14 +35,17 @@ export function resolveTimelineSendScrollPlan<TMessageId>({
 
 export function shouldResumeTimelineLiveFollow({
   isAtEnd,
-  manualNavigationActive,
-  manualNavigationTowardEnd,
+  manualNavigationActive: _manualNavigationActive,
+  manualNavigationTowardEnd: _manualNavigationTowardEnd,
 }: {
   readonly isAtEnd: boolean;
   readonly manualNavigationActive: boolean;
   readonly manualNavigationTowardEnd: boolean;
 }): boolean {
-  return isAtEnd && (!manualNavigationActive || manualNavigationTowardEnd);
+  // LegendList's `isNearEnd` feeds this value. A small upward gesture should
+  // not strand the user just above the live edge; only leaving the near-end
+  // zone is an intentional opt-out.
+  return isAtEnd;
 }
 
 /**
@@ -49,6 +72,16 @@ export function shouldReleaseTimelineLiveFollowForTouch(
     Number.isFinite(currentTouchY) &&
     currentTouchY > previousTouchY
   );
+}
+
+export function shouldCommitTimelineOlderNavigation({
+  olderNavigationIntent,
+  isAtEnd,
+}: {
+  readonly olderNavigationIntent: boolean;
+  readonly isAtEnd: boolean | undefined;
+}): boolean {
+  return olderNavigationIntent && isAtEnd === false;
 }
 
 /**
