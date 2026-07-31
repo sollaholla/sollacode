@@ -2,7 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   getAnchoredTurnMetrics,
   getRowBottom,
+  rememberTimelineThreadScroll,
   resolveTimelineSendScrollPlan,
+  shouldCommitTimelineOlderNavigation,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldReleaseTimelineLiveFollowForWheel,
   shouldMaintainTimelineVisibleContentPosition,
@@ -30,6 +32,36 @@ function buildState({
 }
 
 describe("timeline scroll anchoring", () => {
+  it("keeps deep and live-edge scroll memories isolated by thread", () => {
+    const memories = new Map();
+    rememberTimelineThreadScroll(memories, "thread-a", {
+      scrollOffset: 1280,
+      followEnd: false,
+    });
+    rememberTimelineThreadScroll(memories, "thread-b", {
+      scrollOffset: 0,
+      followEnd: true,
+    });
+
+    expect(memories.get("thread-a")).toEqual({
+      scrollOffset: 1280,
+      followEnd: false,
+    });
+    expect(memories.get("thread-b")).toEqual({
+      scrollOffset: 0,
+      followEnd: true,
+    });
+  });
+
+  it("bounds per-thread scroll memory without evicting the newest thread", () => {
+    const memories = new Map();
+    rememberTimelineThreadScroll(memories, "thread-a", { scrollOffset: 10, followEnd: false }, 2);
+    rememberTimelineThreadScroll(memories, "thread-b", { scrollOffset: 20, followEnd: false }, 2);
+    rememberTimelineThreadScroll(memories, "thread-c", { scrollOffset: 30, followEnd: false }, 2);
+
+    expect([...memories.keys()]).toEqual(["thread-b", "thread-c"]);
+  });
+
   it("uses end-following without a viewport-sized anchor on every viewport", () => {
     expect(
       resolveTimelineSendScrollPlan({
@@ -49,14 +81,14 @@ describe("timeline scroll anchoring", () => {
     });
   });
 
-  it("resumes live-follow only after manual navigation explicitly returns to the end", () => {
+  it("keeps live-follow while a manual gesture remains inside the near-end zone", () => {
     expect(
       shouldResumeTimelineLiveFollow({
         isAtEnd: true,
         manualNavigationActive: true,
         manualNavigationTowardEnd: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldResumeTimelineLiveFollow({
         isAtEnd: true,
@@ -83,6 +115,27 @@ describe("timeline scroll anchoring", () => {
     expect(shouldReleaseTimelineLiveFollowForTouch(null, 200)).toBe(false);
     expect(shouldReleaseTimelineLiveFollowForTouch(200, 220)).toBe(true);
     expect(shouldReleaseTimelineLiveFollowForTouch(220, 200)).toBe(false);
+  });
+
+  it("commits an opt-out only after older navigation leaves the near-end zone", () => {
+    expect(
+      shouldCommitTimelineOlderNavigation({
+        olderNavigationIntent: true,
+        isAtEnd: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldCommitTimelineOlderNavigation({
+        olderNavigationIntent: true,
+        isAtEnd: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldCommitTimelineOlderNavigation({
+        olderNavigationIntent: false,
+        isAtEnd: false,
+      }),
+    ).toBe(false);
   });
 
   it("does not let visible-row restoration compete with live end-following", () => {

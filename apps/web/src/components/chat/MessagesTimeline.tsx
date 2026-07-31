@@ -91,6 +91,7 @@ import {
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
 import {
+  shouldCommitTimelineOlderNavigation,
   shouldMaintainTimelineVisibleContentPosition,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldReleaseTimelineLiveFollowForWheel,
@@ -208,6 +209,8 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   followEnd?: boolean;
+  initialScrollAtEnd?: boolean;
+  initialScrollOffset?: number | null;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: (towardEnd?: boolean) => void;
   hideEmptyPlaceholder?: boolean;
@@ -247,6 +250,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   followEnd = true,
+  initialScrollAtEnd = true,
+  initialScrollOffset = null,
   onIsAtEndChange,
   onManualNavigation,
   hideEmptyPlaceholder = false,
@@ -369,10 +374,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
+  const olderNavigationIntentRef = useRef(false);
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
     if (isAtEnd !== undefined) {
+      if (
+        shouldCommitTimelineOlderNavigation({
+          olderNavigationIntent: olderNavigationIntentRef.current,
+          isAtEnd,
+        })
+      ) {
+        olderNavigationIntentRef.current = false;
+        onManualNavigation(false);
+      } else if (isAtEnd) {
+        olderNavigationIntentRef.current = false;
+      }
       onIsAtEndChange(isAtEnd);
     }
     if (!state || minimapItems.length === 0) {
@@ -397,30 +414,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange, onManualNavigation]);
   const previousTouchYRef = useRef<number | null>(null);
-  const handleWheelNavigation = useCallback(
-    (event: ReactWheelEvent<HTMLDivElement>) => {
-      if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
-        onManualNavigation(false);
-      }
-    },
-    [onManualNavigation],
-  );
+  const handleWheelNavigation = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
+      olderNavigationIntentRef.current = true;
+    }
+  }, []);
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     previousTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, []);
-  const handleTouchMove = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      const currentTouchY = event.touches[0]?.clientY ?? null;
-      const previousTouchY = previousTouchYRef.current;
-      previousTouchYRef.current = currentTouchY;
-      if (shouldReleaseTimelineLiveFollowForTouch(previousTouchY, currentTouchY)) {
-        onManualNavigation(false);
-      }
-    },
-    [onManualNavigation],
-  );
+  const handleTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const currentTouchY = event.touches[0]?.clientY ?? null;
+    const previousTouchY = previousTouchYRef.current;
+    previousTouchYRef.current = currentTouchY;
+    if (shouldReleaseTimelineLiveFollowForTouch(previousTouchY, currentTouchY)) {
+      olderNavigationIntentRef.current = true;
+    }
+  }, []);
   const handleTouchEnd = useCallback(() => {
     previousTouchYRef.current = null;
   }, []);
@@ -554,7 +565,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             getItemType={getItemType}
             renderItem={renderItem}
             estimatedItemSize={90}
-            initialScrollAtEnd
+            initialScrollAtEnd={initialScrollAtEnd}
+            {...(initialScrollOffset === null ? {} : { initialScrollOffset })}
             maintainScrollAtEnd={
               shouldMaintainTimelineScrollAtEnd({
                 hasAnchoredEndSpace: false,
