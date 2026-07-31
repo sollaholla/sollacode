@@ -8,6 +8,8 @@
  */
 import type {
   CheckpointRef,
+  EventId,
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationProject,
@@ -16,6 +18,7 @@ import type {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
   ProjectId,
@@ -57,6 +60,11 @@ export interface ProjectionThreadIngestionContext {
   readonly messages: ReadonlyArray<OrchestrationMessage>;
   readonly proposedPlans: ReadonlyArray<OrchestrationProposedPlan>;
   readonly taskTitle: string | null;
+}
+
+export interface ProjectionThreadAssetSource {
+  readonly activity: OrchestrationThreadActivity | null;
+  readonly message: OrchestrationMessage | null;
 }
 
 /**
@@ -169,6 +177,19 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     taskId?: string,
   ) => Effect.Effect<Option.Option<ProjectionThreadIngestionContext>, ProjectionRepositoryError>;
+
+  /**
+   * Read only the exact activity/message named by an asset URL request.
+   * Optional for compatibility with lightweight test doubles; the live
+   * implementation always provides it.
+   */
+  readonly getThreadAssetSource?: (
+    threadId: ThreadId,
+    source: {
+      readonly activityId?: EventId;
+      readonly messageId?: MessageId;
+    },
+  ) => Effect.Effect<ProjectionThreadAssetSource, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id.

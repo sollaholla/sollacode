@@ -16,6 +16,7 @@ import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
+import { StartupResumeCoordinator } from "../components/StartupResumeCoordinator";
 import { RemoteControlCoordinator } from "../components/remoteControl/RemoteControlCoordinator";
 import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
 import { LanPairingCoordinator } from "../components/LanPairingCoordinator";
@@ -136,6 +137,7 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {primaryEnvironmentAuthenticated ? <StartupResumeCoordinator /> : null}
         {appShell}
       </AnchoredToastProvider>
     </ToastProvider>

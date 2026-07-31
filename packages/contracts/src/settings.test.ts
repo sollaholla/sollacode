@@ -25,6 +25,15 @@ describe("ClientSettings voice transcription", () => {
   });
 });
 
+describe("ClientSettings startup resume prompt", () => {
+  it("is enabled by default and can be patched off", () => {
+    expect(decodeClientSettings({}).showResumeThreadsOnStartup).toBe(true);
+    expect(
+      decodeClientSettingsPatch({ showResumeThreadsOnStartup: false }).showResumeThreadsOnStartup,
+    ).toBe(false);
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);
