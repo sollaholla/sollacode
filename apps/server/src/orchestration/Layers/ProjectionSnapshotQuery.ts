@@ -56,6 +56,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
+  type ProjectionThreadIngestionContext,
   type ProjectionThreadCheckpointContext,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
@@ -118,6 +119,14 @@ const ProjectIdLookupInput = Schema.Struct({
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
+});
+const ThreadTaskLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: Schema.String,
+});
+const ProjectionTaskTitleRowSchema = Schema.Struct({
+  kind: Schema.String,
+  payload: Schema.fromJsonString(Schema.Unknown),
 });
 const ProjectionProjectLookupRowSchema = ProjectionProjectDbRowSchema;
 const ProjectionThreadIdLookupRowSchema = Schema.Struct({
@@ -256,6 +265,41 @@ function mapProposedPlanRow(
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function mapMessageRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,
+): OrchestrationMessage {
+  const message = {
+    id: row.messageId,
+    role: row.role,
+    text: row.text,
+    ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+    turnId: row.turnId,
+    streaming: row.isStreaming === 1,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+  return row.attachments === null
+    ? message
+    : Object.assign(message, { attachments: row.attachments });
+}
+
+function taskTitleFromRow(
+  row: Schema.Schema.Type<typeof ProjectionTaskTitleRowSchema>,
+): string | null {
+  const payload =
+    row.payload && typeof row.payload === "object"
+      ? (row.payload as { readonly title?: unknown; readonly detail?: unknown })
+      : null;
+  const title =
+    typeof payload?.title === "string"
+      ? payload.title
+      : row.kind === "task.started" && typeof payload?.detail === "string"
+        ? payload.detail
+        : null;
+  const normalizedTitle = title?.trim() ?? "";
+  return normalizedTitle.length > 0 ? normalizedTitle : null;
 }
 
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
@@ -878,6 +922,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sequence ASC,
           created_at ASC,
           activity_id ASC
+      `,
+  });
+
+  const getLatestTaskTitleRow = SqlSchema.findOneOption({
+    Request: ThreadTaskLookupInput,
+    Result: ProjectionTaskTitleRowSchema,
+    execute: ({ threadId, taskId }) =>
+      sql`
+        SELECT
+          kind,
+          payload_json AS "payload"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('task.started', 'task.progress')
+          AND json_valid(payload_json)
+          AND json_extract(payload_json, '$.taskId') = ${taskId}
+        ORDER BY created_at DESC, activity_id DESC
+        LIMIT 1
       `,
   });
 
@@ -1977,6 +2039,62 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
+  const getThreadIngestionContext: ProjectionSnapshotQueryShape["getThreadIngestionContext"] = (
+    threadId,
+    taskId,
+  ) =>
+    Effect.gen(function* () {
+      const [threadRow, messageRows, proposedPlanRows, taskTitleRow] = yield* Effect.all([
+        getActiveThreadRowById({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:query",
+              "ProjectionSnapshotQuery.getThreadIngestionContext:getThread:decodeRow",
+            ),
+          ),
+        ),
+        listThreadMessageRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadIngestionContext:listMessages:query",
+              "ProjectionSnapshotQuery.getThreadIngestionContext:listMessages:decodeRows",
+            ),
+          ),
+        ),
+        listThreadProposedPlanRowsByThread({ threadId }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getThreadIngestionContext:listPlans:query",
+              "ProjectionSnapshotQuery.getThreadIngestionContext:listPlans:decodeRows",
+            ),
+          ),
+        ),
+        taskId === undefined
+          ? Effect.succeed(Option.none())
+          : getLatestTaskTitleRow({ threadId, taskId }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadIngestionContext:getTaskTitle:query",
+                  "ProjectionSnapshotQuery.getThreadIngestionContext:getTaskTitle:decodeRow",
+                ),
+              ),
+            ),
+      ]);
+
+      if (Option.isNone(threadRow)) {
+        return Option.none<ProjectionThreadIngestionContext>();
+      }
+
+      return Option.some({
+        messages: messageRows.map(mapMessageRow),
+        proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
+        taskTitle: Option.match(taskTitleRow, {
+          onNone: () => null,
+          onSome: taskTitleFromRow,
+        }),
+      } satisfies ProjectionThreadIngestionContext);
+    });
+
   const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
     Effect.gen(function* () {
       const [
@@ -2068,22 +2186,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
         deletedAt: null,
-        messages: messageRows.map((row) => {
-          const message = {
-            id: row.messageId,
-            role: row.role,
-            text: row.text,
-            ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
-            turnId: row.turnId,
-            streaming: row.isStreaming === 1,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt,
-          };
-          if (row.attachments !== null) {
-            return Object.assign(message, { attachments: row.attachments });
-          }
-          return message;
-        }),
+        messages: messageRows.map(mapMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities: activityRows.map((row) => {
           const activity = {
@@ -2163,6 +2266,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadCheckpointContext,
     getFullThreadDiffContext,
     getThreadShellById,
+    getThreadIngestionContext,
     getThreadDetailById,
     getThreadDetailSnapshot,
   } satisfies ProjectionSnapshotQueryShape;

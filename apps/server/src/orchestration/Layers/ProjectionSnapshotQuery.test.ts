@@ -450,6 +450,175 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("reads bounded provider-ingestion context without hydrating activity history", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_proposed_plans`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-ingestion-context',
+          'Ingestion Context Project',
+          '/tmp/project-ingestion-context',
+          NULL,
+          '[]',
+          '2026-07-30T12:00:00.000Z',
+          '2026-07-30T12:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-ingestion-context',
+          'project-ingestion-context',
+          'Ingestion Context Thread',
+          '{"instanceId":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          'turn-ingestion-context',
+          NULL,
+          0,
+          0,
+          1,
+          '2026-07-30T12:00:01.000Z',
+          '2026-07-30T12:00:01.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          'message-ingestion-context',
+          'thread-ingestion-context',
+          'turn-ingestion-context',
+          'assistant',
+          'bounded message',
+          0,
+          '2026-07-30T12:00:02.000Z',
+          '2026-07-30T12:00:02.000Z'
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_proposed_plans (
+          plan_id,
+          thread_id,
+          turn_id,
+          plan_markdown,
+          implemented_at,
+          implementation_thread_id,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          'plan-ingestion-context',
+          'thread-ingestion-context',
+          'turn-ingestion-context',
+          '# Bounded plan',
+          NULL,
+          NULL,
+          '2026-07-30T12:00:03.000Z',
+          '2026-07-30T12:00:03.000Z'
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'activity-ingestion-context-malformed',
+            'thread-ingestion-context',
+            'turn-ingestion-context',
+            'info',
+            'tool.completed',
+            'Large historical tool payload',
+            '{malformed historical payload',
+            1,
+            '2026-07-30T12:00:04.000Z'
+          ),
+          (
+            'activity-ingestion-context-task',
+            'thread-ingestion-context',
+            'turn-ingestion-context',
+            'info',
+            'task.started',
+            'Task started',
+            '{"taskId":"task-ingestion-context","detail":"Recovered task title"}',
+            2,
+            '2026-07-30T12:00:05.000Z'
+          )
+      `;
+
+      const context = yield* snapshotQuery.getThreadIngestionContext(
+        ThreadId.make("thread-ingestion-context"),
+        "task-ingestion-context",
+      );
+
+      assert.equal(context._tag, "Some");
+      if (context._tag === "Some") {
+        assert.equal(context.value.messages.length, 1);
+        assert.equal(context.value.messages[0]?.text, "bounded message");
+        assert.equal(context.value.proposedPlans.length, 1);
+        assert.equal(context.value.proposedPlans[0]?.planMarkdown, "# Bounded plan");
+        assert.equal(context.value.taskTitle, "Recovered task title");
+        assert.notProperty(context.value, "activities");
+      }
+    }),
+  );
+
   it.effect("keeps archived threads out of the main shell snapshot", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

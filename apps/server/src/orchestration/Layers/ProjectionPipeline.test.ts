@@ -383,6 +383,187 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-revert-
   },
 );
 
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-bounded-summary-test-"))(
+  "OrchestrationProjectionPipeline bounded shell summaries",
+  (it) => {
+    it.effect("does not hydrate historical activity payloads for streaming and tool events", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-bounded-summary");
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "project.created",
+          eventId: EventId.make("evt-bounded-summary-1"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-bounded-summary"),
+          occurredAt: "2026-07-30T12:00:00.000Z",
+          commandId: CommandId.make("cmd-bounded-summary-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bounded-summary-1"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-bounded-summary"),
+            title: "Bounded Summary Project",
+            workspaceRoot: "/tmp/project-bounded-summary",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-07-30T12:00:00.000Z",
+            updatedAt: "2026-07-30T12:00:00.000Z",
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-bounded-summary-2"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-07-30T12:00:01.000Z",
+          commandId: CommandId.make("cmd-bounded-summary-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bounded-summary-2"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-bounded-summary"),
+            title: "Bounded Summary Thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-07-30T12:00:01.000Z",
+            updatedAt: "2026-07-30T12:00:01.000Z",
+          },
+        });
+
+        // A malformed historical payload stands in for the very large tool
+        // payload history that previously got decoded after every token and
+        // activity. Routine events must not read this row at all.
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at
+          )
+          VALUES (
+            'activity-bounded-summary-history',
+            ${threadId},
+            NULL,
+            'info',
+            'tool.completed',
+            'Historical tool payload',
+            '{malformed historical payload',
+            1,
+            '2026-07-30T12:00:01.500Z'
+          )
+        `;
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-bounded-summary-3"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-07-30T12:00:02.000Z",
+          commandId: CommandId.make("cmd-bounded-summary-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bounded-summary-3"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-bounded-summary"),
+            role: "assistant",
+            text: "streamed text",
+            turnId: TurnId.make("turn-bounded-summary"),
+            streaming: true,
+            createdAt: "2026-07-30T12:00:02.000Z",
+            updatedAt: "2026-07-30T12:00:02.000Z",
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-bounded-summary-4"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-07-30T12:00:03.000Z",
+          commandId: CommandId.make("cmd-bounded-summary-4"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bounded-summary-4"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-bounded-summary-current"),
+              tone: "info",
+              kind: "tool.updated",
+              summary: "Current tool update",
+              payload: { detail: "small" },
+              turnId: TurnId.make("turn-bounded-summary"),
+              createdAt: "2026-07-30T12:00:03.000Z",
+            },
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-bounded-summary-5"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-07-30T12:00:04.000Z",
+          commandId: CommandId.make("cmd-bounded-summary-5"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-bounded-summary-5"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-bounded-summary-nonstale-user-input-failure"),
+              tone: "error",
+              kind: "provider.user-input.respond.failed",
+              summary: "Provider user input response failed",
+              payload: {
+                requestId: "request-bounded-summary-never-opened",
+                detail: "Provider timed out while responding to user input",
+              },
+              turnId: TurnId.make("turn-bounded-summary"),
+              createdAt: "2026-07-30T12:00:04.000Z",
+            },
+          },
+        });
+
+        const threadRows = yield* sql<{
+          readonly updatedAt: string;
+          readonly pendingUserInputCount: number;
+        }>`
+          SELECT
+            updated_at AS "updatedAt",
+            pending_user_input_count AS "pendingUserInputCount"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(threadRows, [
+          {
+            updatedAt: "2026-07-30T12:00:04.000Z",
+            pendingUserInputCount: 0,
+          },
+        ]);
+      }),
+    );
+  },
+);
+
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   it.effect("bootstraps all projection states and writes projection rows", () =>
     Effect.gen(function* () {
