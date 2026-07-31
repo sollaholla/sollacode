@@ -107,6 +107,13 @@ import {
   shouldCollapseMobileComposer,
   shouldSendComposerWhileProcessing,
 } from "./mobileComposerPresentation";
+import {
+  discardComposerTransfer,
+  hasTransferableComposerContent,
+  readComposerTransferFromClipboard,
+  stageComposerTransfer,
+  writeComposerTransferToClipboard,
+} from "../../composerTransferClipboard";
 import { installMobileComposerTouchBoundary } from "./mobileComposerInteraction";
 import { shouldDismissMobileKeyboardOnSubmit } from "./mobileComposerViewport";
 import { ContextWindowMeter } from "./ContextWindowMeter";
@@ -185,6 +192,7 @@ import {
   LockIcon,
   LockOpenIcon,
   PenLineIcon,
+  ScissorsIcon,
   SparklesIcon,
   XIcon,
 } from "lucide-react";
@@ -1122,6 +1130,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [composerMenuAnchor, setComposerMenuAnchor] = useState<HTMLDivElement | null>(null);
   const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
+  const [isCuttingComposerContents, setIsCuttingComposerContents] = useState(false);
   const [stashPulse, setStashPulse] = useState<{ key: number; active: boolean }>({
     key: 0,
     active: false,
@@ -1414,6 +1423,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const collapsedComposerPrimaryActionLabel = "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
+  const showComposerCutButton =
+    !isComposerApprovalState &&
+    pendingUserInputs.length === 0 &&
+    hasTransferableComposerContent(prompt, composerImages.length);
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -2538,10 +2551,88 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     removeComposerImageFromDraft(imageId);
   };
 
+  const cutComposerContents = async () => {
+    if (isCuttingComposerContents) return;
+    const cutTarget = composerDraftTarget;
+    const cutPrompt = composerEditorRef.current?.readSnapshot().value ?? promptRef.current;
+    const cutImages = [...composerImagesRef.current];
+    if (!hasTransferableComposerContent(cutPrompt, cutImages.length)) return;
+
+    const transfer = stageComposerTransfer(
+      cutPrompt,
+      cutImages.map((image) => image.file),
+    );
+    setIsCuttingComposerContents(true);
+    try {
+      const copied = await writeComposerTransferToClipboard(transfer);
+      if (!copied) {
+        discardComposerTransfer(transfer.token);
+        toastManager.add({
+          type: "error",
+          title: "Could not cut this draft",
+          description: "Clipboard access was rejected, so the composer was left unchanged.",
+          data: { hideCopyButton: true },
+        });
+        return;
+      }
+
+      const currentImages = composerImagesRef.current;
+      const currentPrompt = composerEditorRef.current?.readSnapshot().value ?? promptRef.current;
+      const sourceIsUnchanged =
+        currentPrompt === cutPrompt &&
+        currentImages.length === cutImages.length &&
+        currentImages.every((image, index) => image.id === cutImages[index]?.id);
+      if (!sourceIsUnchanged) {
+        toastManager.add({
+          type: "info",
+          title: "Draft copied",
+          description:
+            "Newer edits were kept in this composer. Paste into another chat to transfer the copied snapshot.",
+          data: { hideCopyButton: true },
+        });
+        return;
+      }
+
+      promptRef.current = "";
+      clearComposerDraftPromptAndImages(cutTarget);
+      setComposerCursor(0);
+      setComposerTrigger(null);
+      setEditorHasText(false);
+      toastManager.add({
+        type: "success",
+        title: "Draft cut",
+        description: "Paste into another chat to move the text and attachments.",
+        data: { hideCopyButton: true },
+      });
+    } finally {
+      setIsCuttingComposerContents(false);
+    }
+  };
+
   // ------------------------------------------------------------------
   // Callbacks: paste / drag
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const transfer = readComposerTransferFromClipboard(event.clipboardData);
+    if (transfer) {
+      event.preventDefault();
+      if (transfer.prompt.length > 0) {
+        const snapshot = composerEditorRef.current?.readSnapshot();
+        if (snapshot && snapshot.value !== promptRef.current) {
+          promptRef.current = snapshot.value;
+        }
+        applyPromptReplacement(
+          snapshot?.expandedCursor ?? promptRef.current.length,
+          snapshot?.expandedCursor ?? promptRef.current.length,
+          transfer.prompt,
+        );
+      }
+      if (transfer.files.length > 0) {
+        addComposerImages([...transfer.files]);
+      }
+      return;
+    }
+
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) return;
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
@@ -3212,7 +3303,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     : []
                 }
                 skills={selectedProviderStatus?.skills ?? []}
-                {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
+                className={cn(
+                  showMobilePendingAnswerActions && "max-sm:pb-11",
+                  showComposerCutButton && "pr-16",
+                )}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
                 onTextPresenceChange={setEditorHasText}
@@ -3235,6 +3329,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 disabled={isConnecting || isComposerApprovalState || projectSelectionRequired}
               />
+              {showComposerCutButton ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  data-chat-composer-cut="true"
+                  className="absolute right-0 top-0 z-10 h-7 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
+                  disabled={isCuttingComposerContents}
+                  aria-label="Cut draft text and attachments"
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => void cutComposerContents()}
+                >
+                  <ScissorsIcon className="size-3" />
+                  Cut
+                </Button>
+              ) : null}
               {showMobilePendingAnswerActions ? (
                 <div
                   data-chat-composer-mobile-pending-actions="true"
