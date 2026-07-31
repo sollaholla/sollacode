@@ -3,6 +3,7 @@ import {
   getAnchoredTurnMetrics,
   getRowBottom,
   rememberTimelineThreadScroll,
+  resolveTimelineScrollSnapshotFollowEnd,
   resolveTimelineSendScrollPlan,
   shouldCommitTimelineOlderNavigation,
   shouldReleaseTimelineLiveFollowForTouch,
@@ -60,6 +61,27 @@ describe("timeline scroll anchoring", () => {
     rememberTimelineThreadScroll(memories, "thread-c", { scrollOffset: 30, followEnd: false }, 2);
 
     expect([...memories.keys()]).toEqual(["thread-b", "thread-c"]);
+  });
+
+  it("does not treat layout-driven movement as a live-follow opt-out", () => {
+    expect(
+      resolveTimelineScrollSnapshotFollowEnd({
+        isAtEnd: false,
+        scrollMode: "following-end",
+      }),
+    ).toBe(true);
+    expect(
+      resolveTimelineScrollSnapshotFollowEnd({
+        isAtEnd: false,
+        scrollMode: "free-scrolling",
+      }),
+    ).toBe(false);
+    expect(
+      resolveTimelineScrollSnapshotFollowEnd({
+        isAtEnd: true,
+        scrollMode: "free-scrolling",
+      }),
+    ).toBe(true);
   });
 
   it("uses end-following without a viewport-sized anchor on every viewport", () => {

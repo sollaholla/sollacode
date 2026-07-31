@@ -99,6 +99,7 @@ import {
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   rememberTimelineThreadScroll,
+  resolveTimelineScrollSnapshotFollowEnd,
   resolveTimelineSendScrollPlan,
   shouldResumeTimelineLiveFollow,
   type TimelineThreadScrollMemory,
@@ -4148,6 +4149,24 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [routeThreadKey, setTimelineLiveFollowEnabled],
   );
+  const onTimelineScrollStateChange = useCallback(
+    ({
+      scrollOffset,
+      isAtEnd,
+    }: {
+      readonly scrollOffset: number;
+      readonly isAtEnd: boolean | undefined;
+    }) => {
+      rememberTimelineThreadScroll(timelineThreadScrollMemory, routeThreadKey, {
+        scrollOffset,
+        followEnd: resolveTimelineScrollSnapshotFollowEnd({
+          isAtEnd,
+          scrollMode: timelineScrollModeRef.current,
+        }),
+      });
+    },
+    [routeThreadKey],
+  );
 
   useLayoutEffect(() => {
     const threadKey = routeThreadKey;
@@ -4164,33 +4183,8 @@ function ChatViewContent(props: ChatViewProps) {
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(!shouldFollowEnd);
 
-    let secondFrame: number | null = null;
-    const frame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        const list = legendListRef.current;
-        if (!list) return;
-        if (shouldFollowEnd) {
-          void list.scrollToEnd?.({ animated: false });
-          return;
-        }
-        if (restored && Number.isFinite(restored.scrollOffset)) {
-          void list.scrollToOffset?.({
-            offset: Math.max(0, restored.scrollOffset),
-            animated: false,
-          });
-        }
-      });
-    });
-
     return () => {
-      cancelAnimationFrame(frame);
-      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
-      const scrollOffset = legendListRef.current?.getState?.().scroll;
-      if (typeof scrollOffset !== "number" || !Number.isFinite(scrollOffset)) return;
-      rememberTimelineThreadScroll(timelineThreadScrollMemory, threadKey, {
-        scrollOffset,
-        followEnd: timelineScrollModeRef.current === "following-end",
-      });
+      showScrollDebouncer.current.cancel();
     };
   }, [routeThreadKey, setTimelineLiveFollowEnabled]);
 
@@ -6773,7 +6767,7 @@ function ChatViewContent(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
-                key={activeThread.id}
+                key={routeThreadKey}
                 isWorking={isWorking}
                 workingStatusLabel={
                   activeProviderOverloadRetrying
@@ -6818,6 +6812,7 @@ function ChatViewContent(props: ChatViewProps) {
                 }
                 onIsAtEndChange={onIsAtEndChange}
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                onScrollStateChange={onTimelineScrollStateChange}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 onCompactAndContinue={onCompactAndContinue}

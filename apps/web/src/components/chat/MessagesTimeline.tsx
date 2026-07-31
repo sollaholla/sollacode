@@ -213,6 +213,10 @@ interface MessagesTimelineProps {
   initialScrollOffset?: number | null;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   onManualNavigation: (towardEnd?: boolean) => void;
+  onScrollStateChange: (state: {
+    readonly scrollOffset: number;
+    readonly isAtEnd: boolean | undefined;
+  }) => void;
   hideEmptyPlaceholder?: boolean;
   topFadeEnabled?: boolean;
   onCompactAndContinue: () => void;
@@ -254,6 +258,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   initialScrollOffset = null,
   onIsAtEndChange,
   onManualNavigation,
+  onScrollStateChange,
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   onCompactAndContinue,
@@ -374,9 +379,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
+  const mountedListRef = useRef<LegendListRef | null>(null);
+  const attachListRef = useCallback(
+    (nextList: LegendListRef | null) => {
+      const previousList = mountedListRef.current;
+      mountedListRef.current = nextList;
+      if (nextList !== null || listRef.current === previousList) {
+        listRef.current = nextList;
+      }
+    },
+    [listRef],
+  );
   const olderNavigationIntentRef = useRef(false);
   const handleScroll = useCallback(() => {
-    const state = listRef.current?.getState?.();
+    const state = mountedListRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
     if (isAtEnd !== undefined) {
       if (
@@ -392,11 +408,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }
       onIsAtEndChange(isAtEnd);
     }
-    if (!state || minimapItems.length === 0) {
+    if (!state) {
       return;
     }
 
     const scrollTop = state.scroll ?? 0;
+    if (Number.isFinite(scrollTop)) {
+      onScrollStateChange({
+        scrollOffset: Math.max(0, scrollTop),
+        isAtEnd,
+      });
+    }
+    if (minimapItems.length === 0) {
+      return;
+    }
+
     const scrollBottom = scrollTop + (state.scrollLength ?? 0);
 
     for (const item of minimapItems) {
@@ -414,7 +440,56 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange, onManualNavigation]);
+  }, [minimapItems, minimapStripMap, onIsAtEndChange, onManualNavigation, onScrollStateChange]);
+  const positionReconcileFramesRef = useRef<{
+    first: number | null;
+    second: number | null;
+  }>({ first: null, second: null });
+  const cancelPositionReconcile = useCallback(() => {
+    const frames = positionReconcileFramesRef.current;
+    if (frames.first !== null) cancelAnimationFrame(frames.first);
+    if (frames.second !== null) cancelAnimationFrame(frames.second);
+    frames.first = null;
+    frames.second = null;
+  }, []);
+  const schedulePositionReconcile = useCallback(
+    (restoreSavedOffset: boolean) => {
+      cancelPositionReconcile();
+      positionReconcileFramesRef.current.first = requestAnimationFrame(() => {
+        positionReconcileFramesRef.current.first = null;
+        positionReconcileFramesRef.current.second = requestAnimationFrame(() => {
+          positionReconcileFramesRef.current.second = null;
+          const list = mountedListRef.current;
+          if (!list) return;
+          if (followEnd) {
+            void list.scrollToEnd({ animated: false }).then(handleScroll);
+            return;
+          }
+          if (restoreSavedOffset && initialScrollOffset !== null) {
+            void list
+              .scrollToOffset({
+                offset: Math.max(0, initialScrollOffset),
+                animated: false,
+              })
+              .then(handleScroll);
+            return;
+          }
+          handleScroll();
+        });
+      });
+    },
+    [cancelPositionReconcile, followEnd, handleScroll, initialScrollOffset],
+  );
+  const handleTimelineLoad = useCallback(() => {
+    schedulePositionReconcile(true);
+  }, [schedulePositionReconcile]);
+  const handleTimelineItemSizeChanged = useCallback(() => {
+    // First-time image measurements are not covered by LegendList's own
+    // maintainScrollAtEnd correction. Reconcile after the measurement settles
+    // so live-follow remains at the end and free-scrolling retains its anchor.
+    schedulePositionReconcile(false);
+  }, [schedulePositionReconcile]);
+  useEffect(() => cancelPositionReconcile, [cancelPositionReconcile]);
   const previousTouchYRef = useRef<number | null>(null);
   const handleWheelNavigation = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
@@ -559,7 +634,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           className="relative h-full min-h-0"
         >
           <LegendList<MessagesTimelineRow>
-            ref={listRef}
+            ref={attachListRef}
             data={rows}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
@@ -591,6 +666,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 : false
             }
             onScroll={handleScroll}
+            onLoad={handleTimelineLoad}
+            onItemSizeChanged={handleTimelineItemSizeChanged}
             onWheel={handleWheelNavigation}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}

@@ -35,6 +35,9 @@ vi.mock("@legendapp/list/react", async () => {
         };
     initialScrollAtEnd?: boolean;
     initialScrollOffset?: number;
+    onScroll?: () => void;
+    onLoad?: () => void;
+    onItemSizeChanged?: () => void;
     onWheel?: (event: { deltaY: number }) => void;
     onTouchStart?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
     onTouchMove?: (event: { touches: ArrayLike<{ clientY: number }> }) => void;
@@ -90,6 +93,9 @@ vi.mock("@legendapp/list/react", async () => {
         data-manual-pointer-handler={Boolean(props.onPointerDown)}
         data-initial-scroll-at-end={props.initialScrollAtEnd}
         data-initial-scroll-offset={props.initialScrollOffset}
+        data-load-handler={Boolean(props.onLoad)}
+        data-item-size-handler={Boolean(props.onItemSizeChanged)}
+        data-scroll-handler={Boolean(props.onScroll)}
       >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
@@ -203,6 +209,7 @@ function buildProps() {
     workspaceRoot: undefined,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
+    onScrollStateChange: () => {},
     onCompactAndContinue: () => {},
     isCompactAndContinueBusy: false,
     resumableAssistantMessageId: null,
@@ -583,6 +590,20 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-initial-scroll-at-end="false"');
     expect(markup).toContain('data-initial-scroll-offset="1280"');
+  });
+
+  it("reconciles position after initial layout and late image measurements", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        followEnd
+        timelineEntries={[buildUserTimelineEntry("Keep the live edge stable")]}
+      />,
+    );
+
+    expect(markup).toContain('data-load-handler="true"');
+    expect(markup).toContain('data-item-size-handler="true"');
+    expect(markup).toContain('data-scroll-handler="true"');
   });
 
   it("does not add synthetic end space for a sent attachment message", () => {
