@@ -71,6 +71,27 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  /**
+   * Native provider authentication commands captured with this instance's
+   * binary and isolated credential environment. Account switching is
+   * deliberately independent from provider sessions and active turns.
+   */
+  readonly accountAuth?: ProviderAccountAuthCapability | undefined;
+}
+
+export interface ProviderAccountAuthStatus {
+  readonly loggedIn: boolean;
+  readonly accountLabel: string | null;
+}
+
+export interface ProviderAccountAuthCapability {
+  readonly binaryPath: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly logoutArgs: ReadonlyArray<string>;
+  readonly loginArgs: ReadonlyArray<string>;
+  readonly statusArgs: ReadonlyArray<string>;
+  readonly acceptsManualAuthCode?: boolean | undefined;
+  readonly parseStatus: (stdout: string, stderr: string) => ProviderAccountAuthStatus;
 }
 
 export interface ProviderContinuationIdentity {

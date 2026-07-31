@@ -1308,6 +1308,133 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.readImagePath).toBe("/workspace/art/reference.JPG");
   });
 
+  it("recovers image previews from Claude Read invocation details", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "claude-image-read-complete",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: 'Read: {"file_path":"/Users/example/project/build/renders/stairdoor_in.png"}',
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      toolTitle: "Read image",
+      readImagePath: "/Users/example/project/build/renders/stairdoor_in.png",
+    });
+    expect(entry?.detail).toBeUndefined();
+  });
+
+  it("recovers an absolute Windows image path from a malformed project-prefixed tool path", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "windows-image-read-complete",
+        kind: "tool.completed",
+        summary: "Read File",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read File",
+          data: {
+            kind: "read",
+            rawInput: {
+              file_path:
+                "UndeadOpenWorld/C:/Users/soloman/UndeadOpenWorld/build/renders/preview.png",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe("C:/Users/soloman/UndeadOpenWorld/build/renders/preview.png");
+  });
+
+  it("preserves versioned Temp image paths from Windows image-view tool calls", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "windows-temp-image-view-complete",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          title: String.raw`Image view D:\TerraGen\Temp\billboard_scene_after_dominant_forest.png`,
+          data: {
+            rawInput: {
+              path: String.raw`D:\TerraGen\Temp\billboard_scene_after_dominant_forest.png`,
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe(
+      String.raw`D:\TerraGen\Temp\billboard_scene_after_dominant_forest.png`,
+    );
+  });
+
+  it("recovers a local image path when Image view only reports it in the title", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "mac-image-view-title-only",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          title: "Image view /Users/soloman/Desktop/UndeadOpenWorld/build/renders/landingguard.png",
+          detail: "/Users/soloman/Desktop/UndeadOpenWorld/build/renders/landingguard.png",
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe(
+      "/Users/soloman/Desktop/UndeadOpenWorld/build/renders/landingguard.png",
+    );
+  });
+
+  it("collapses a Windows image-view lifecycle without duplicating the raw path", () => {
+    const imagePath = String.raw`D:\TerraGen\Temp\BillboardNormalValidation\conifer_22_5.png`;
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "windows-image-view-update",
+        kind: "tool.updated",
+        summary: "Tool call",
+        payload: {
+          itemType: "image_view",
+          title: "Tool call",
+          detail: imagePath,
+          data: {
+            toolCallId: "tool-image-view-1",
+            item: { path: imagePath, type: "imageView" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "windows-image-view-complete",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          detail: imagePath,
+          data: {
+            toolCallId: "tool-image-view-1",
+            item: { path: imagePath, type: "imageView" },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "windows-image-view-complete",
+      readImagePath: imagePath,
+    });
+    expect(entries[0]?.detail).toBeUndefined();
+    expect(entries[0]?.changedFiles).toBeUndefined();
+  });
+
   it("does not preview non-raster or non-read tool paths", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({

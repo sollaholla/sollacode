@@ -1020,7 +1020,9 @@ export function deriveEffectiveComposerModelState(input: {
         input.settings,
         input.providers,
         activeSelection.model,
-      ))
+      ) ??
+      normalizeModelSlug(activeSelection.model, input.selectedProvider) ??
+      activeSelection.model)
     : baseModel;
   const modelOptions =
     modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??

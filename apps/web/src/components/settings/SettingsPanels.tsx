@@ -1139,6 +1139,33 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Auto-send voice transcription"
+          description="Send immediately after local transcription finishes. Off leaves the transcript in the composer for review."
+          resetAction={
+            settings.autoSendVoiceTranscription !==
+            DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription ? (
+              <SettingResetButton
+                label="voice transcription auto-send"
+                onClick={() =>
+                  updateSettings({
+                    autoSendVoiceTranscription: DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoSendVoiceTranscription}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoSendVoiceTranscription: Boolean(checked) })
+              }
+              aria-label="Automatically send voice transcriptions"
+            />
+          }
+        />
+
+        <SettingsRow
           title="Provider usage bar"
           description="Show provider-reported usage windows and quotas at the bottom of chat. Unsupported or not-yet-reported usage stays labeled as unavailable."
           control={
@@ -1625,8 +1652,11 @@ export function ProviderSettingsPanel() {
   );
 
   const providerUsageReports = useMemo(
-    () => deriveProviderUsageReports(serverProviders, []),
-    [serverProviders],
+    () =>
+      primaryEnvironment
+        ? deriveProviderUsageReports(serverProviders, [], primaryEnvironment.environmentId)
+        : {},
+    [primaryEnvironment, serverProviders],
   );
   useEffect(() => {
     for (const report of Object.values(providerUsageReports)) {
@@ -1637,6 +1667,8 @@ export function ProviderSettingsPanel() {
     serverProviders,
     [],
     persistedProviderUsage,
+    Date.now(),
+    primaryEnvironment?.environmentId,
   );
   const providerUsageSummaryByInstanceId = new Map(
     providerUsageSummaries.map((summary) => [summary.provider.instanceId, summary]),

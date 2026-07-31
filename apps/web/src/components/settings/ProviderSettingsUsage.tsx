@@ -49,7 +49,6 @@ export function ProviderSettingsUsage(props: {
     >
       <ProviderUsageDetails
         name={displayName}
-        driver={provider.driver}
         state={summary.state}
         windows={summary.windows}
         reportedAt={summary.reportedAt}

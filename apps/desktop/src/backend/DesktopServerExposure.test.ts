@@ -163,7 +163,7 @@ const withHarness = <A, E, R>(
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopServerExposure", () => {
-  it.effect("falls back to local-only without losing the requested network preference", () =>
+  it.effect("keeps the network bind while waiting for a LAN address after startup", () =>
     withHarness(
       emptyNetworkInterfaces,
       Effect.gen(function* () {
@@ -173,30 +173,62 @@ describe("DesktopServerExposure", () => {
         yield* settings.setServerExposureMode("network-accessible");
 
         const state = yield* serverExposure.configureFromSettings({ port: 4173 });
-        assert.equal(state.mode, "local-only");
+        assert.equal(state.mode, "network-accessible");
         assert.equal(state.endpointUrl, null);
         assert.equal((yield* settings.get).serverExposureMode, "network-accessible");
 
         const backendConfig = yield* serverExposure.backendConfig;
-        assert.equal(backendConfig.bindHost, "127.0.0.1");
+        assert.equal(backendConfig.bindHost, "0.0.0.0");
         assert.equal(backendConfig.httpBaseUrl.href, "http://127.0.0.1:4173/");
       }),
     ),
   );
 
-  it.effect("returns a typed error when network access is explicitly unavailable", () =>
+  it.effect("allows network access to be enabled before a LAN address is available", () =>
     withHarness(
       emptyNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* settings.setServerExposureMode("local-only");
         yield* serverExposure.configureFromSettings({ port: 4173 });
 
-        const error = yield* serverExposure.setMode("network-accessible").pipe(Effect.flip);
-        assert.ok(error._tag === "DesktopServerExposureNoNetworkAddressError");
-        assert.equal(error.port, 4173);
+        const change = yield* serverExposure.setMode("network-accessible");
+        assert.equal(change.state.mode, "network-accessible");
+        assert.equal(change.state.endpointUrl, null);
+        assert.equal(change.requiresRelaunch, true);
+        assert.equal((yield* serverExposure.backendConfig).bindHost, "0.0.0.0");
       }),
     ),
   );
+
+  it.effect("refreshes the advertised LAN endpoint when Wi-Fi appears after startup", () => {
+    const mutableNetworkInterfaces: Record<
+      string,
+      readonly DesktopNetworkInterfaces.DesktopNetworkInterfaceInfo[] | undefined
+    > = {};
+    return withHarness(
+      mutableNetworkInterfaces,
+      Effect.gen(function* () {
+        const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* settings.setServerExposureMode("network-accessible");
+        const initial = yield* serverExposure.configureFromSettings({ port: 4173 });
+        assert.equal(initial.endpointUrl, null);
+        assert.equal((yield* serverExposure.backendConfig).bindHost, "0.0.0.0");
+
+        mutableNetworkInterfaces.en0 = lanNetworkInterfaces.en0;
+
+        const recovered = yield* serverExposure.getState;
+        assert.equal(recovered.endpointUrl, "http://192.168.1.20:4173");
+        const endpoints = yield* serverExposure.getAdvertisedEndpoints;
+        assert.include(
+          endpoints.map((endpoint) => endpoint.httpBaseUrl),
+          "http://192.168.1.20:4173/",
+        );
+      }),
+    );
+  });
 
   it.effect("persists network-accessible mode and updates backend binding state", () =>
     withHarness(
@@ -206,6 +238,7 @@ describe("DesktopServerExposure", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
 
         yield* settings.load;
+        yield* settings.setServerExposureMode("local-only");
         yield* serverExposure.configureFromSettings({ port: 4173 });
 
         const change = yield* serverExposure.setMode("network-accessible");
@@ -408,8 +441,10 @@ describe("DesktopServerExposure", () => {
       lanNetworkInterfaces,
       Effect.gen(function* () {
         const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* settings.setServerExposureMode("local-only");
         yield* serverExposure.configureFromSettings({ port: 4173 });
-        // mode stays at default "local-only", tailscaleServeEnabled stays false.
+        // mode is explicitly local-only, tailscaleServeEnabled stays false.
 
         const endpoints = yield* serverExposure.getAdvertisedEndpoints;
         // Only the loopback endpoint; no tailscale spawn means the dieOnSpawnLayer

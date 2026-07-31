@@ -3,7 +3,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { beforeEach, vi } from "vite-plus/test";
+import { beforeEach, expect, vi } from "vite-plus/test";
 
 const { networkInterfacesMock } = vi.hoisted(() => ({
   networkInterfacesMock: vi.fn(),
@@ -61,5 +61,52 @@ describe("DesktopNetworkInterfaces", () => {
         assert.equal(error.message, "Failed to read desktop network interfaces on linux.");
       }
     }).pipe(Effect.provide(TestLayer));
+  });
+
+  it("prefers a physical Wi-Fi adapter over Windows virtual adapters", () => {
+    expect(
+      DesktopNetworkInterfaces.selectPreferredLanIpv4Address({
+        "Local Area Connection* 10": [
+          {
+            address: "192.168.137.1",
+            family: "IPv4",
+            internal: false,
+          },
+        ],
+        "vEthernet (Default Switch)": [
+          {
+            address: "172.21.144.1",
+            family: "IPv4",
+            internal: false,
+          },
+        ],
+        "Wi-Fi": [
+          {
+            address: "10.2.1.243",
+            family: "IPv4",
+            internal: false,
+          },
+        ],
+      }),
+    ).toBe("10.2.1.243");
+  });
+
+  it("falls back to an unknown private adapter and rejects public addresses", () => {
+    expect(
+      DesktopNetworkInterfaces.selectPreferredLanIpv4Address({
+        mystery0: [
+          {
+            address: "8.8.8.8",
+            family: "IPv4",
+            internal: false,
+          },
+          {
+            address: "172.20.4.9",
+            family: "IPv4",
+            internal: false,
+          },
+        ],
+      }),
+    ).toBe("172.20.4.9");
   });
 });

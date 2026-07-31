@@ -11,6 +11,8 @@ import * as Electron from "electron";
 export const DESKTOP_HOST = "app";
 export const DESKTOP_PRODUCTION_SCHEME = "sollacode";
 export const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
+export const DESKTOP_REMOTE_ASSET_PROXY_PATH = "/__solla/remote-asset";
+export const DESKTOP_REMOTE_ASSET_CACHE_CONTROL = "private, max-age=300, immutable";
 
 export function getDesktopScheme(isDevelopment: boolean): string {
   return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
@@ -106,6 +108,54 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
   });
 }
 
+function withRemoteAssetCachePolicy(response: Response, requestUrl: URL): Response {
+  const revision = requestUrl.searchParams.get("solla_revision")?.trim();
+  if (!revision) return response;
+
+  const headers = new Headers(response.headers);
+  // The host correctly marks workspace files as no-store because a path is
+  // mutable. The renderer adds a content revision to remote previews, making
+  // that proxy URL immutable for a short window while a new message/revision
+  // naturally produces a different cache key.
+  headers.set("Cache-Control", DESKTOP_REMOTE_ASSET_CACHE_CONTROL);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+export function resolveRemoteAssetProxyTarget(requestUrl: URL): URL | null {
+  if (requestUrl.pathname !== DESKTOP_REMOTE_ASSET_PROXY_PATH) return null;
+
+  const targetValue = requestUrl.searchParams.get("url");
+  if (!targetValue) return null;
+
+  try {
+    const target = new URL(targetValue);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username.length > 0 ||
+      target.password.length > 0 ||
+      !target.pathname.startsWith("/api/assets/")
+    ) {
+      return null;
+    }
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function remoteAssetRequestHeaders(request: Request): Headers {
+  const headers = new Headers();
+  for (const name of ["accept", "accept-language", "if-modified-since", "if-none-match", "range"]) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  return headers;
+}
+
 async function proxyRequest(
   request: Request,
   targetOrigin: URL,
@@ -114,6 +164,25 @@ async function proxyRequest(
   const requestUrl = new URL(request.url);
   if (requestUrl.host !== DESKTOP_HOST) {
     return new Response(null, { status: 404 });
+  }
+
+  if (requestUrl.pathname === DESKTOP_REMOTE_ASSET_PROXY_PATH) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response(null, { status: 405 });
+    }
+    const remoteAssetUrl = resolveRemoteAssetProxyTarget(requestUrl);
+    if (remoteAssetUrl === null) {
+      return new Response(null, { status: 400 });
+    }
+    const response = await fetchWithTransientRetry(remoteAssetUrl.toString(), {
+      method: request.method,
+      headers: remoteAssetRequestHeaders(request),
+      redirect: "error",
+    });
+    return withContentSecurityPolicy(
+      withRemoteAssetCachePolicy(response, requestUrl),
+      contentSecurityPolicy,
+    );
   }
 
   const targetUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, targetOrigin);

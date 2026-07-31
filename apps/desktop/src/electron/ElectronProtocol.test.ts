@@ -111,6 +111,86 @@ describe("ElectronProtocol", () => {
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 
+  it.effect("loads signed remote assets through Electron without renderer network policy", () =>
+    Effect.gen(function* () {
+      let handler: ((request: Request) => Promise<Response>) | undefined;
+      handleMock.mockImplementation((_scheme, nextHandler) => {
+        handler = nextHandler;
+      });
+      netFetchMock.mockResolvedValue(
+        new Response("image-bytes", {
+          headers: { "content-type": "image/png" },
+        }),
+      );
+
+      const response = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* ElectronProtocol.ElectronProtocol;
+          yield* protocol.registerDesktopProtocol({
+            scheme: "sollacode",
+            targetOrigin: new URL("http://127.0.0.1:3773/"),
+            backendOrigin: new URL("http://127.0.0.1:3773/"),
+          });
+          const target = encodeURIComponent(
+            "http://10.2.1.249:3773/api/assets/signed-token/check_knuckle.png",
+          );
+          return yield* Effect.promise(() =>
+            handler!(
+              new Request(
+                `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ASSET_PROXY_PATH}?url=${target}&solla_revision=assistant-message-42`,
+                {
+                  headers: {
+                    accept: "image/avif,image/webp,image/*",
+                    authorization: "Bearer must-not-leak",
+                    cookie: "session=must-not-leak",
+                  },
+                },
+              ),
+            ),
+          );
+        }),
+      );
+
+      assert.equal(yield* Effect.promise(() => response.text()), "image-bytes");
+      assert.equal(
+        netFetchMock.mock.calls[0]?.[0],
+        "http://10.2.1.249:3773/api/assets/signed-token/check_knuckle.png",
+      );
+      const init = netFetchMock.mock.calls[0]?.[1];
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("accept"), "image/avif,image/webp,image/*");
+      assert.isNull(headers.get("authorization"));
+      assert.isNull(headers.get("cookie"));
+      assert.equal(init?.redirect, "error");
+      assert.equal(
+        response.headers.get("cache-control"),
+        ElectronProtocol.DESKTOP_REMOTE_ASSET_CACHE_CONTROL,
+      );
+    }).pipe(Effect.provide(ElectronProtocol.layer)),
+  );
+
+  it("rejects malformed and non-asset remote proxy targets", () => {
+    assert.isNull(
+      ElectronProtocol.resolveRemoteAssetProxyTarget(
+        new URL("sollacode://app/__solla/remote-asset?url=not-a-url"),
+      ),
+    );
+    assert.isNull(
+      ElectronProtocol.resolveRemoteAssetProxyTarget(
+        new URL(
+          "sollacode://app/__solla/remote-asset?url=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Fsession",
+        ),
+      ),
+    );
+    assert.isNull(
+      ElectronProtocol.resolveRemoteAssetProxyTarget(
+        new URL(
+          "sollacode://app/__solla/remote-asset?url=https%3A%2F%2Fuser%3Asecret%40example.com%2Fapi%2Fassets%2Ftoken%2Fimage.png",
+        ),
+      ),
+    );
+  });
+
   it.effect("retries transient renderer target failures", () =>
     Effect.gen(function* () {
       let handler: ((request: Request) => Promise<Response>) | undefined;

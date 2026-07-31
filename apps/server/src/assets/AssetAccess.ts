@@ -21,6 +21,7 @@ import {
   WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
   WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
 } from "@t3tools/shared/filePreview";
+import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -145,6 +146,12 @@ const AssetClaimsSchema = Schema.Union([
     kind: Schema.Literal("workspace-file-exact"),
     workspaceRoot: Schema.String,
     relativePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("external-image-exact"),
+    canonicalFile: Schema.String,
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
@@ -295,6 +302,7 @@ const workspaceRasterImageIsStillValid = Effect.fn("AssetAccess.workspaceRasterI
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
+  readonly allowExternalExactImage?: boolean;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -319,9 +327,71 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      const relativePath = path.isAbsolute(input.resource.path)
-        ? path.relative(workspaceRoot, input.resource.path)
-        : input.resource.path;
+      const normalizedResourcePath = normalizeEmbeddedWindowsAbsolutePath(input.resource.path);
+      const resourcePathIsAbsolute = path.isAbsolute(normalizedResourcePath);
+      const relativePath = resourcePathIsAbsolute
+        ? path.relative(workspaceRoot, normalizedResourcePath)
+        : normalizedResourcePath;
+      const resourcePathIsOutsideRoot =
+        relativePath === ".." ||
+        relativePath.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePath);
+
+      if (resourcePathIsAbsolute && resourcePathIsOutsideRoot && input.allowExternalExactImage) {
+        const extension = path.extname(normalizedResourcePath).toLowerCase();
+        if (
+          !isWorkspaceImagePreviewPath(normalizedResourcePath) ||
+          !WORKSPACE_RASTER_IMAGE_EXTENSIONS.has(extension)
+        ) {
+          return yield* new AssetPreviewTypeValidationError({
+            resource: input.resource,
+          });
+        }
+        const canonicalFile = yield* optionOnNotFound(
+          fileSystem.realPath(normalizedResourcePath),
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AssetWorkspaceAssetInspectionError({
+                resource: input.resource,
+                cause,
+              }),
+          ),
+        );
+        if (Option.isNone(canonicalFile)) {
+          return yield* new AssetWorkspaceAssetNotFoundError({
+            resource: input.resource,
+          });
+        }
+        const info = yield* optionOnNotFound(fileSystem.stat(canonicalFile.value)).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AssetWorkspaceAssetInspectionError({
+                resource: input.resource,
+                cause,
+              }),
+          ),
+        );
+        if (Option.isNone(info) || info.value.type !== "File") {
+          return yield* new AssetWorkspaceAssetNotFoundError({
+            resource: input.resource,
+          });
+        }
+        yield* validateWorkspaceRasterImage({
+          resource: input.resource,
+          canonicalFile: canonicalFile.value,
+          extension,
+        });
+        claims = {
+          version: 1,
+          kind: "external-image-exact",
+          canonicalFile: canonicalFile.value,
+          expiresAt,
+        };
+        fileName = path.basename(canonicalFile.value);
+        break;
+      }
+
       const resolved = yield* workspacePaths
         .resolveRelativePathWithinRoot({ workspaceRoot, relativePath })
         .pipe(
@@ -535,6 +605,20 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const decodedPath = decodeRelativePath(relativePath);
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
+  if (claims.kind === "external-image-exact") {
+    if (decodedPath !== path.basename(claims.canonicalFile)) return null;
+    const extension = path.extname(claims.canonicalFile).toLowerCase();
+    const isValid = yield* workspaceRasterImageIsStillValid(claims.canonicalFile, extension).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to revalidate external image asset.", {
+          path: claims.canonicalFile,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+    return isValid ? ({ kind: "file", path: claims.canonicalFile } satisfies ResolvedAsset) : null;
+  }
   if (claims.kind === "workspace-file-exact") {
     if (decodedPath !== path.basename(claims.relativePath)) return null;
     const exactWorkspaceFile = yield* resolveCanonicalWorkspaceFileForRequest({

@@ -25,10 +25,8 @@ describe("ProviderAccountSwitcher", () => {
       <ProviderAccountSwitcher
         providers={[provider]}
         activeInstanceId={provider.instanceId}
-        disabledReason={null}
-        hasDraftContent={false}
-        onSelectProfile={() => undefined}
-        onPrepareNativeLogin={() => undefined}
+        activeSwitch={null}
+        onSwitchUser={() => undefined}
       />,
     );
 
@@ -45,10 +43,8 @@ describe("ProviderAccountSwitcher", () => {
       <ProviderAccountSwitcher
         providers={[signedOut]}
         activeInstanceId={signedOut.instanceId}
-        disabledReason="Finish or stop the active turn before switching accounts."
-        hasDraftContent={false}
-        onSelectProfile={() => undefined}
-        onPrepareNativeLogin={() => undefined}
+        activeSwitch={null}
+        onSwitchUser={() => undefined}
       />,
     );
 

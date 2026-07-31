@@ -19,6 +19,7 @@ import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { cn } from "~/lib/utils";
+import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -152,6 +153,7 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
+        <RemoteConnectionControl activeEnvironmentId={activeThreadEnvironmentId} />
         {showOpenInPicker && (
           <OpenInPicker
             environmentId={activeThreadEnvironmentId}

@@ -52,7 +52,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
-import { makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -128,6 +128,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       });
       const effectiveConfig = { ...config, enabled } satisfies ClaudeSettings;
+      const accountEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
@@ -204,6 +205,32 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        accountAuth: {
+          binaryPath: effectiveConfig.binaryPath,
+          environment: accountEnvironment,
+          logoutArgs: ["auth", "logout"],
+          loginArgs: ["auth", "login", "--claudeai"],
+          statusArgs: ["auth", "status", "--json"],
+          acceptsManualAuthCode: true,
+          parseStatus: (stdout, stderr) => {
+            try {
+              const parsed = JSON.parse(stdout.trim()) as {
+                readonly loggedIn?: boolean;
+                readonly email?: string;
+              };
+              return {
+                loggedIn: parsed.loggedIn === true,
+                accountLabel: parsed.email?.trim() || null,
+              };
+            } catch {
+              const output = `${stdout}\n${stderr}`;
+              return {
+                loggedIn: /logged\s+in/i.test(output) && !/not\s+logged\s+in/i.test(output),
+                accountLabel: null,
+              };
+            }
+          },
+        },
       } satisfies ProviderInstance;
     }),
 };

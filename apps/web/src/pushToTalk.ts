@@ -51,22 +51,99 @@ export function downmixAudioChannels(channels: ReadonlyArray<Float32Array>): Flo
   return mono;
 }
 
-async function decodeAudio(blob: Blob): Promise<Float32Array> {
+function transcriptionCancellationError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Local transcription was cancelled.");
+}
+
+function createTranscriptionCancellationError(): Error {
+  const error = new Error("Local transcription was cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+
+export function isTranscriptionCancellationError(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === "AbortError";
+}
+
+export function raceWithTranscriptionCancellation<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(transcriptionCancellationError(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(transcriptionCancellationError(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(cause);
+      },
+    );
+  });
+}
+
+async function decodeAudio(blob: Blob, signal: AbortSignal): Promise<Float32Array> {
   const context = new AudioContext({ sampleRate: 16_000 });
   try {
-    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    const encodedAudio = await raceWithTranscriptionCancellation(blob.arrayBuffer(), signal);
+    const buffer = await raceWithTranscriptionCancellation(
+      context.decodeAudioData(encodedAudio),
+      signal,
+    );
     const channels = Array.from({ length: buffer.numberOfChannels }, (_, index) =>
       buffer.getChannelData(index),
     );
     return downmixAudioChannels(channels);
   } finally {
-    await context.close();
+    void context.close().catch(() => undefined);
   }
 }
 
 export interface TranscriptionProgress {
   readonly status: "loading" | "transcribing";
   readonly progress?: number;
+}
+
+export function resolveVisiblePushToTalkStatus(
+  localStatus: "recording" | "loading" | "transcribing" | null,
+  backgroundStatus: "loading" | "transcribing" | null,
+): "recording" | "loading" | "transcribing" | null {
+  // A background task can only exist after recording has stopped. Prefer it
+  // over a stale route-local recording value so the UI cannot remain latched
+  // on "Release to transcribe" after the microphone has already closed.
+  if (backgroundStatus !== null) return backgroundStatus;
+  return localStatus === "recording" ? localStatus : null;
+}
+
+export const TRANSCRIPTION_DEADLINE_MS = 6 * 60_000;
+export const AUDIO_DECODE_DEADLINE_MS = 30_000;
+
+export function withTranscriptionDeadline<T>(
+  operation: Promise<T>,
+  onTimeout: (error: Error) => void,
+  timeoutMs = TRANSCRIPTION_DEADLINE_MS,
+  timeoutMessage = "Local transcription took too long and was stopped. Your recording was not added; try recording again.",
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => {
+      const error = new Error(timeoutMessage);
+      onTimeout(error);
+      reject(error);
+    }, timeoutMs);
+
+    void operation.then(resolve, reject).finally(() => {
+      globalThis.clearTimeout(timeoutId);
+    });
+  });
 }
 
 type RecorderStartTarget = Pick<MediaRecorder, "start" | "state">;
@@ -122,6 +199,7 @@ interface WorkerResponse {
 }
 
 let transcriptionWorker: Worker | null = null;
+let activeTranscriptionController: AbortController | null = null;
 let nextRequestId = 0;
 const pendingRequests = new Map<
   number,
@@ -131,6 +209,15 @@ const pendingRequests = new Map<
     readonly onProgress?: (progress: TranscriptionProgress) => void;
   }
 >();
+
+function resetTranscriptionWorker(error: Error, expectedWorker?: Worker): void {
+  if (expectedWorker && transcriptionWorker !== expectedWorker) return;
+  const worker = transcriptionWorker;
+  transcriptionWorker = null;
+  for (const pending of pendingRequests.values()) pending.reject(error);
+  pendingRequests.clear();
+  worker?.terminate();
+}
 
 function getTranscriptionWorker(): Worker {
   if (transcriptionWorker) return transcriptionWorker;
@@ -152,42 +239,85 @@ function getTranscriptionWorker(): Worker {
     }
     pending.resolve(event.data.text?.trim() ?? "");
   });
-  worker.addEventListener("error", () => {
-    const error = new Error("The local transcription worker stopped unexpectedly.");
-    for (const pending of pendingRequests.values()) pending.reject(error);
-    pendingRequests.clear();
-    worker.terminate();
-    transcriptionWorker = null;
-  });
+  const rejectWorkerRequests = () => {
+    resetTranscriptionWorker(
+      new Error("The local transcription worker stopped unexpectedly."),
+      worker,
+    );
+  };
+  worker.addEventListener("error", rejectWorkerRequests);
+  worker.addEventListener("messageerror", rejectWorkerRequests);
   transcriptionWorker = worker;
   return worker;
 }
 
-export async function transcribeRecordedAudio(
+export function transcribeRecordedAudio(
   blob: Blob,
   onProgress?: (progress: TranscriptionProgress) => void,
 ): Promise<string> {
-  const audio = await decodeAudio(blob);
-  if (audio.length === 0) return "";
-  const id = ++nextRequestId;
-  const worker = getTranscriptionWorker();
-  return new Promise<string>((resolve, reject) => {
-    pendingRequests.set(id, {
-      resolve,
-      reject,
-      ...(onProgress !== undefined ? { onProgress } : {}),
+  if (activeTranscriptionController) {
+    return Promise.reject(new Error("Another voice transcription is already in progress."));
+  }
+
+  const controller = new AbortController();
+  activeTranscriptionController = controller;
+  const operation = (async () => {
+    const audio = await withTranscriptionDeadline(
+      decodeAudio(blob, controller.signal),
+      (error) => {
+        controller.abort(error);
+        resetTranscriptionWorker(error);
+      },
+      AUDIO_DECODE_DEADLINE_MS,
+      "Audio preparation did not finish and was reset. Try recording again.",
+    );
+    if (audio.length === 0) return "";
+    if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
+
+    const id = ++nextRequestId;
+    const worker = getTranscriptionWorker();
+    const workerOperation = new Promise<string>((resolve, reject) => {
+      pendingRequests.set(id, {
+        resolve,
+        reject,
+        ...(onProgress !== undefined ? { onProgress } : {}),
+      });
+      try {
+        worker.postMessage({ id, audio }, [audio.buffer]);
+      } catch (cause) {
+        pendingRequests.delete(id);
+        reject(cause instanceof Error ? cause : new Error("Local transcription could not start."));
+      }
     });
-    worker.postMessage({ id, audio }, [audio.buffer]);
+    return raceWithTranscriptionCancellation(workerOperation, controller.signal);
+  })();
+
+  const guardedOperation = withTranscriptionDeadline(
+    operation,
+    (error) => {
+      controller.abort(error);
+      resetTranscriptionWorker(error);
+    },
+    TRANSCRIPTION_DEADLINE_MS,
+  );
+  return guardedOperation.finally(() => {
+    if (activeTranscriptionController === controller) {
+      activeTranscriptionController = null;
+    }
   });
 }
 
+export function cancelActiveTranscription(): boolean {
+  const controller = activeTranscriptionController;
+  if (!controller) return false;
+  const error = createTranscriptionCancellationError();
+  controller.abort(error);
+  resetTranscriptionWorker(error);
+  return true;
+}
+
 export function disposeTranscriptionWorker(): void {
-  if (!transcriptionWorker) return;
-  const worker = transcriptionWorker;
-  const error = new Error("Local transcription was cancelled.");
-  for (const pending of pendingRequests.values()) pending.reject(error);
-  pendingRequests.clear();
-  worker.postMessage({ type: "dispose" });
-  transcriptionWorker = null;
-  window.setTimeout(() => worker.terminate(), 250);
+  const error = createTranscriptionCancellationError();
+  activeTranscriptionController?.abort(error);
+  resetTranscriptionWorker(error);
 }

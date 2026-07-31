@@ -6,6 +6,7 @@ import { memo, useEffect } from "react";
 import {
   canCancelBackgroundTask,
   isBackgroundTaskActive,
+  type BackgroundTask,
   type ThreadExportBackgroundTask,
   useBackgroundTaskStore,
 } from "../backgroundTasks";
@@ -24,7 +25,11 @@ import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "./ui/sidebar";
 const processingTaskIds = new Set<string>();
 
 function currentTask(id: string): ThreadExportBackgroundTask | undefined {
-  return useBackgroundTaskStore.getState().tasks.find((task) => task.id === id);
+  return useBackgroundTaskStore
+    .getState()
+    .tasks.find(
+      (task): task is ThreadExportBackgroundTask => task.id === id && task.kind === "thread-export",
+    );
 }
 
 function taskWasCancelled(id: string): boolean {
@@ -124,16 +129,24 @@ const ThreadExportTaskRunner = memo(function ThreadExportTaskRunner({
 export const BackgroundTaskRunners = memo(function BackgroundTaskRunners() {
   const tasks = useBackgroundTaskStore((state) => state.tasks);
   return tasks
-    .filter((task) => isBackgroundTaskActive(task.status))
+    .filter(
+      (task): task is ThreadExportBackgroundTask =>
+        task.kind === "thread-export" && isBackgroundTaskActive(task.status),
+    )
     .map((task) => <ThreadExportTaskRunner key={task.id} task={task} />);
 });
 
-function taskStatusLabel(task: ThreadExportBackgroundTask): string {
+function taskStatusLabel(task: BackgroundTask): string {
+  if (task.kind === "voice-transcription") {
+    return task.status === "loading" ? "Loading local model" : "Transcribing";
+  }
   switch (task.status) {
     case "queued":
       return "Queued";
     case "loading":
       return "Loading conversation";
+    case "transcribing":
+      return "Transcribing";
     case "awaiting-confirmation":
       return "Awaiting confirmation";
     case "serializing":
@@ -194,7 +207,7 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
             </p>
           ) : (
             <ul className="space-y-2">
-              {[...tasks].reverse().map((task) => (
+              {tasks.toReversed().map((task) => (
                 <li className="rounded-md border bg-background/70 p-2" key={task.id}>
                   <div className="flex items-start gap-2">
                     {task.status === "completed" ? (
@@ -210,7 +223,7 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
                       <p className="truncate text-xs font-medium">{task.title}</p>
                       <p className="text-[11px] text-muted-foreground">{taskStatusLabel(task)}</p>
                     </div>
-                    {canCancelBackgroundTask(task.status) ? (
+                    {task.kind === "thread-export" && canCancelBackgroundTask(task.status) ? (
                       <Button
                         aria-label={`Cancel export of ${task.title}`}
                         className="size-6"
@@ -250,7 +263,7 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
                   {task.error ? (
                     <p className="mt-2 text-[11px] text-destructive">{task.error}</p>
                   ) : null}
-                  {task.outputPath ? (
+                  {task.kind === "thread-export" && task.outputPath ? (
                     <button
                       className="mt-2 flex w-full cursor-grab items-center gap-1 rounded bg-muted/70 px-2 py-1 text-left text-[11px] hover:bg-muted"
                       draggable={Boolean(window.desktopBridge)}

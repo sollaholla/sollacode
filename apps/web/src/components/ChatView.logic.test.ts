@@ -12,12 +12,14 @@ import type { Thread, ThreadShell } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  authoritativeThreadSettingsFingerprint,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveLockedProvider,
   dismissBranchMismatchForSession,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
@@ -30,6 +32,7 @@ import {
   resolveSendEnvMode,
   startNewThreadForProject,
   shouldShowBranchMismatchBanner,
+  shouldConfirmRemoteProviderAccountSwitch,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -65,6 +68,24 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+describe("shouldConfirmRemoteProviderAccountSwitch", () => {
+  it("warns only when authentication will run on another environment", () => {
+    const primaryEnvironmentId = EnvironmentId.make("environment-primary");
+    expect(
+      shouldConfirmRemoteProviderAccountSwitch({
+        activeEnvironmentId: EnvironmentId.make("environment-remote"),
+        primaryEnvironmentId,
+      }),
+    ).toBe(true);
+    expect(
+      shouldConfirmRemoteProviderAccountSwitch({
+        activeEnvironmentId: primaryEnvironmentId,
+        primaryEnvironmentId,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("isProviderOverloadRetrying", () => {
   const latestTurn = {
@@ -236,6 +257,38 @@ describe("resolveThreadMetadataUpdateForNextTurn", () => {
   });
 });
 
+describe("authoritativeThreadSettingsFingerprint", () => {
+  it("changes for provider, model options, runtime mode, and interaction mode updates", () => {
+    const base = makeThread();
+    const fingerprint = authoritativeThreadSettingsFingerprint(base);
+
+    expect(
+      authoritativeThreadSettingsFingerprint({
+        ...base,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-fable",
+        },
+      }),
+    ).not.toBe(fingerprint);
+    expect(
+      authoritativeThreadSettingsFingerprint({
+        ...base,
+        modelSelection: {
+          ...base.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      }),
+    ).not.toBe(fingerprint);
+    expect(
+      authoritativeThreadSettingsFingerprint({ ...base, runtimeMode: "approval-required" }),
+    ).not.toBe(fingerprint);
+    expect(authoritativeThreadSettingsFingerprint({ ...base, interactionMode: "plan" })).not.toBe(
+      fingerprint,
+    );
+  });
+});
+
 describe("buildThreadTurnInterruptInput", () => {
   it("targets the session's active running turn", () => {
     const activeTurnId = TurnId.make("turn-running");
@@ -257,6 +310,24 @@ describe("buildThreadTurnInterruptInput", () => {
     expect(buildThreadTurnInterruptInput(makeThread({ session: readySession }))).toEqual({
       threadId,
     });
+  });
+});
+
+describe("deriveLockedProvider", () => {
+  it("keeps provider selection unlocked while another provider turn is active", () => {
+    expect(
+      deriveLockedProvider({
+        thread: makeThread({
+          session: {
+            ...readySession,
+            status: "running",
+            activeTurnId: TurnId.make("turn-running"),
+          },
+        }),
+        selectedProvider: "claude",
+        threadProvider: "codex",
+      }),
+    ).toBeNull();
   });
 });
 

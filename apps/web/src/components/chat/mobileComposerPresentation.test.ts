@@ -99,6 +99,16 @@ describe("processing composer primary action", () => {
     ).toBe(false);
   });
 
+  it("shows Send for an attachment-only draft while the agent is processing", () => {
+    expect(
+      shouldSendComposerWhileProcessing({
+        isProcessing: true,
+        hasCurrentEditorText: false,
+        hasPendingComposerContent: true,
+      }),
+    ).toBe(true);
+  });
+
   it("does not force Send when the agent is idle", () => {
     expect(
       shouldSendComposerWhileProcessing({

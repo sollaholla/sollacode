@@ -3,6 +3,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
+import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
@@ -112,6 +113,22 @@ import {
   PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
 import {
+  RemoteControlCancelInput,
+  RemoteControlControllerStreamEvent,
+  RemoteControlError,
+  RemoteControlHost,
+  RemoteControlHostEndInput,
+  RemoteControlHostPublishFrameInput,
+  RemoteControlHostRespondInput,
+  RemoteControlHostStreamEvent,
+  RemoteControlRequestAccessInput,
+  RemoteControlSendInputInput,
+  RemoteControlSession,
+  RemoteControlWatchInput,
+} from "./remoteControl.ts";
+import {
+  ProviderAccountSwitchError,
+  ProviderAccountSwitchState,
   ServerConfigStreamEvent,
   ServerConfig,
   ServerProviderUpdateError,
@@ -206,11 +223,24 @@ export const WS_METHODS = {
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
+  remoteControlHostConnect: "remoteControl.hostConnect",
+  remoteControlHostRespond: "remoteControl.hostRespond",
+  remoteControlHostPublishFrame: "remoteControl.hostPublishFrame",
+  remoteControlHostEnd: "remoteControl.hostEnd",
+  remoteControlRequestAccess: "remoteControl.requestAccess",
+  remoteControlWatch: "remoteControl.watch",
+  remoteControlSendInput: "remoteControl.sendInput",
+  remoteControlCancel: "remoteControl.cancel",
 
   // Server meta
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverStartProviderAccountSwitch: "server.startProviderAccountSwitch",
+  serverGetProviderAccountSwitch: "server.getProviderAccountSwitch",
+  serverOpenProviderAccountSwitchAuthLink: "server.openProviderAccountSwitchAuthLink",
+  serverSubmitProviderAccountSwitchCode: "server.submitProviderAccountSwitchCode",
+  serverCancelProviderAccountSwitch: "server.cancelProviderAccountSwitch",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -283,6 +313,64 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
   success: ServerProviderUpdatedPayload,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsServerStartProviderAccountSwitchRpc = Rpc.make(
+  WS_METHODS.serverStartProviderAccountSwitch,
+  {
+    payload: Schema.Struct({ instanceId: ProviderInstanceId }),
+    success: ProviderAccountSwitchState,
+    error: Schema.Union([ProviderAccountSwitchError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerGetProviderAccountSwitchRpc = Rpc.make(
+  WS_METHODS.serverGetProviderAccountSwitch,
+  {
+    payload: Schema.Struct({
+      instanceId: ProviderInstanceId,
+      switchId: Schema.optionalKey(Schema.String),
+    }),
+    success: Schema.NullOr(ProviderAccountSwitchState),
+    error: EnvironmentAuthorizationError,
+  },
+);
+
+export const WsServerOpenProviderAccountSwitchAuthLinkRpc = Rpc.make(
+  WS_METHODS.serverOpenProviderAccountSwitchAuthLink,
+  {
+    payload: Schema.Struct({
+      instanceId: ProviderInstanceId,
+      switchId: Schema.String,
+    }),
+    success: ProviderAccountSwitchState,
+    error: Schema.Union([ProviderAccountSwitchError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerSubmitProviderAccountSwitchCodeRpc = Rpc.make(
+  WS_METHODS.serverSubmitProviderAccountSwitchCode,
+  {
+    payload: Schema.Struct({
+      instanceId: ProviderInstanceId,
+      switchId: Schema.String,
+      code: TrimmedNonEmptyString.check(Schema.isMaxLength(16_384)),
+    }),
+    success: ProviderAccountSwitchState,
+    error: Schema.Union([ProviderAccountSwitchError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsServerCancelProviderAccountSwitchRpc = Rpc.make(
+  WS_METHODS.serverCancelProviderAccountSwitch,
+  {
+    payload: Schema.Struct({
+      instanceId: ProviderInstanceId,
+      switchId: Schema.String,
+    }),
+    success: ProviderAccountSwitchState,
+    error: Schema.Union([ProviderAccountSwitchError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerUpdateProviderRpc = Rpc.make(WS_METHODS.serverUpdateProvider, {
   payload: ServerProviderUpdateInput,
@@ -615,6 +703,57 @@ export const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutoma
   error: EnvironmentAuthorizationError,
 });
 
+export const WsRemoteControlHostConnectRpc = Rpc.make(WS_METHODS.remoteControlHostConnect, {
+  payload: RemoteControlHost,
+  success: RemoteControlHostStreamEvent,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsRemoteControlHostRespondRpc = Rpc.make(WS_METHODS.remoteControlHostRespond, {
+  payload: RemoteControlHostRespondInput,
+  success: RemoteControlSession,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlHostPublishFrameRpc = Rpc.make(
+  WS_METHODS.remoteControlHostPublishFrame,
+  {
+    payload: RemoteControlHostPublishFrameInput,
+    error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsRemoteControlHostEndRpc = Rpc.make(WS_METHODS.remoteControlHostEnd, {
+  payload: RemoteControlHostEndInput,
+  success: RemoteControlSession,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlRequestAccessRpc = Rpc.make(WS_METHODS.remoteControlRequestAccess, {
+  payload: RemoteControlRequestAccessInput,
+  success: RemoteControlSession,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlWatchRpc = Rpc.make(WS_METHODS.remoteControlWatch, {
+  payload: RemoteControlWatchInput,
+  success: RemoteControlControllerStreamEvent,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsRemoteControlSendInputRpc = Rpc.make(WS_METHODS.remoteControlSendInput, {
+  payload: RemoteControlSendInputInput,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsRemoteControlCancelRpc = Rpc.make(WS_METHODS.remoteControlCancel, {
+  payload: RemoteControlCancelInput,
+  success: RemoteControlSession,
+  error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
 export const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -735,6 +874,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerStartProviderAccountSwitchRpc,
+  WsServerGetProviderAccountSwitchRpc,
+  WsServerOpenProviderAccountSwitchAuthLinkRpc,
+  WsServerSubmitProviderAccountSwitchCodeRpc,
+  WsServerCancelProviderAccountSwitchRpc,
   WsServerUpdateProviderRpc,
   WsServerUpdateServerRpc,
   WsServerUpsertKeybindingRpc,
@@ -793,6 +937,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
+  WsRemoteControlHostConnectRpc,
+  WsRemoteControlHostRespondRpc,
+  WsRemoteControlHostPublishFrameRpc,
+  WsRemoteControlHostEndRpc,
+  WsRemoteControlRequestAccessRpc,
+  WsRemoteControlWatchRpc,
+  WsRemoteControlSendInputRpc,
+  WsRemoteControlCancelRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeServerConfigRpc,

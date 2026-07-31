@@ -64,7 +64,9 @@ export const DEFAULT_MAIN_WINDOW_SIZE = {
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   mainWindowBounds: null,
   mainWindowMaximized: false,
-  serverExposureMode: "local-only",
+  // Auth still protects the backend; LAN discovery advertises no credentials
+  // and requires an explicit trust prompt before exchanging one-time tokens.
+  serverExposureMode: "network-accessible",
   tailscaleServeEnabled: false,
   tailscaleServePort: DEFAULT_TAILSCALE_SERVE_PORT,
   wslBackendEnabled: false,
@@ -190,8 +192,7 @@ function normalizeDesktopSettingsDocument(parsed: DesktopSettingsDocument): Desk
   return {
     mainWindowBounds,
     mainWindowMaximized: mainWindowBounds !== null && parsed.mainWindowMaximized === true,
-    serverExposureMode:
-      parsed.serverExposureMode === "network-accessible" ? "network-accessible" : "local-only",
+    serverExposureMode: parsed.serverExposureMode ?? DEFAULT_DESKTOP_SETTINGS.serverExposureMode,
     tailscaleServeEnabled: parsed.tailscaleServeEnabled === true,
     tailscaleServePort: normalizeTailscaleServePort(parsed.tailscaleServePort),
     wslBackendEnabled,

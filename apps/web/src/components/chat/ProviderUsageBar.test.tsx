@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -9,9 +10,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  claudePopupWindows,
   deriveProviderUsageReports,
   deriveProviderUsageSummaries,
   ProviderUsageBar,
+  ProviderUsageBadgeDetails,
   ProviderUsageDetails,
   ProviderUsagePlacementRow,
   providerUsageDetailsSide,
@@ -34,6 +37,7 @@ const makeProvider = (driver: string, instanceId = driver, email?: string): Serv
   slashCommands: [],
   skills: [],
 });
+const localEnvironmentId = EnvironmentId.make("environment-local");
 
 const usageActivity = (
   id: string,
@@ -88,71 +92,63 @@ describe("provider usage summaries", () => {
     );
   });
 
-  it("merges Claude day, current-session, weekly, and Fable windows only when reported", () => {
+  it("normalizes Claude current, weekly, and Fable quota fields into used percentages", () => {
+    const claude = {
+      ...makeProvider("claudeAgent"),
+      accountUsage: {
+        rate_limits: {
+          five_hour: { utilization: 2, resets_at: "2026-07-30T18:00:00.000Z" },
+          seven_day: { utilization: 79, resets_at: "2026-08-03T00:00:00.000Z" },
+          model_scoped: {
+            utilization: 38,
+            resets_at: "2026-08-04T00:00:00.000Z",
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-07-30T15:00:00.000Z",
+    } satisfies ServerProvider;
+
+    const summaries = deriveProviderUsageSummaries(
+      [claude],
+      [],
+      {},
+      Date.parse("2026-07-30T15:03:00.000Z"),
+    );
+
+    expect(summaries[0]?.windows).toEqual([
+      expect.objectContaining({ key: "current_session", usedPercent: 2 }),
+      expect.objectContaining({ key: "seven_day", usedPercent: 79 }),
+      expect.objectContaining({ key: "fable", label: "Fable", usedPercent: 38 }),
+    ]);
+  });
+
+  it("reads the Fable quota from Claude Code model_scoped arrays", () => {
     const summaries = deriveProviderUsageSummaries(
       [makeProvider("claudeAgent")],
       [
-        usageActivity("claude-day", "claudeAgent", "claudeAgent", {
-          type: "rate_limit_event",
-          rate_limit_info: {
-            status: "allowed",
-            rateLimitType: "one_day",
-            utilization: 0.2,
+        usageActivity("claude-model-scoped", "claudeAgent", "claudeAgent", {
+          rate_limits: {
+            five_hour: { utilization: 2, resets_at: "2026-07-30T18:49:59.000Z" },
+            seven_day: { utilization: 79, resets_at: "2026-08-01T05:59:59.000Z" },
+            model_scoped: [
+              {
+                display_name: "Fable",
+                utilization: 100,
+                resets_at: "2026-08-01T05:59:59.000Z",
+              },
+            ],
           },
         }),
-        usageActivity("claude-5h", "claudeAgent", "claudeAgent", {
-          type: "rate_limit_event",
-          rate_limit_info: {
-            status: "allowed",
-            rateLimitType: "five_hour",
-            utilization: 0.4,
-            resetsAt: 1_800_000_000,
-          },
-        }),
-        usageActivity(
-          "claude-week",
-          "claudeAgent",
-          "claudeAgent",
-          {
-            type: "rate_limit_event",
-            rate_limit_info: {
-              status: "allowed_warning",
-              rateLimitType: "seven_day_opus",
-              utilization: 0.85,
-            },
-          },
-          "2026-07-29T15:01:00.000Z",
-        ),
-        usageActivity(
-          "claude-fable",
-          "claudeAgent",
-          "claudeAgent",
-          {
-            type: "rate_limit_event",
-            rate_limit_info: {
-              status: "allowed",
-              rateLimitType: "seven_day_fable",
-              utilization: 0.6,
-            },
-          },
-          "2026-07-29T15:02:00.000Z",
-        ),
       ],
+      {},
+      Date.parse("2026-07-30T13:00:00.000Z"),
     );
 
     expect(summaries[0]?.windows).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: "Day", usedPercent: 20 }),
-        expect.objectContaining({
-          key: "current_session",
-          label: "Current session",
-          usedPercent: 40,
-        }),
-        expect.objectContaining({ label: "Opus weekly", usedPercent: 85 }),
-        expect.objectContaining({ label: "Fable", usedPercent: 60 }),
+        expect.objectContaining({ key: "fable", label: "Fable", usedPercent: 100 }),
       ]),
     );
-    expect(summaries[0]?.windows).toHaveLength(4);
   });
 
   it("normalizes Claude's interactive Current session label", () => {
@@ -276,6 +272,43 @@ describe("provider usage summaries", () => {
     expect(inAnotherChat[1]?.state).toBe("unavailable");
   });
 
+  it("never reuses a persisted usage snapshot from another environment", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const localKey = providerUsageAccountKey(provider, localEnvironmentId)!;
+    const persisted = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey: localKey,
+        driver: provider.driver,
+        reportedAt: "2026-07-29T15:00:00.000Z",
+        windows: [{ key: "secondary", label: "Weekly", usedPercent: 20, resetAt: null }],
+      },
+    );
+
+    const localSummary = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      persisted,
+      Date.parse("2026-07-29T15:05:00.000Z"),
+      localEnvironmentId,
+    );
+    const remoteSummary = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      persisted,
+      Date.parse("2026-07-29T15:05:00.000Z"),
+      remoteEnvironmentId,
+    );
+
+    expect(providerUsageAccountKey(provider, remoteEnvironmentId)).not.toBe(localKey);
+    expect(localSummary[0]).toMatchObject({
+      state: "available",
+      windows: [expect.objectContaining({ usedPercent: 20 })],
+    });
+    expect(remoteSummary[0]).toMatchObject({ state: "unavailable", windows: [] });
+  });
+
   it("filters a retired Codex five-hour window from an older account cache", () => {
     const provider = makeProvider("codex", "codex-work", "work@example.com");
     const accountKey = providerUsageAccountKey(provider)!;
@@ -336,9 +369,118 @@ describe("provider usage summaries", () => {
     );
 
     expect(reports[providerUsageAccountKey(provider)!]).toMatchObject({
-      windows: [expect.objectContaining({ label: "Weekly", usedPercent: 41 })],
+      windows: [expect.objectContaining({ key: "weekly", label: "Weekly", usedPercent: 41 })],
       reportedAt: "2026-07-29T15:00:00.000Z",
     });
+  });
+
+  it("ignores a transient Codex zero within the same weekly reset cycle", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const resetAt = Date.parse("2026-08-05T15:00:00.000Z");
+    const previous = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-07-30T15:00:00.000Z",
+        windows: [{ key: "weekly", label: "Weekly", usedPercent: 49, resetAt }],
+      },
+    );
+    const transientZero = mergeProviderUsageEntry(previous, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-07-30T15:01:00.000Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: resetAt + 1_000,
+        },
+      ],
+    });
+
+    expect(transientZero[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 49 }),
+    ]);
+  });
+
+  it("accepts a real Codex reset when the weekly cycle changes", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const previous = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-07-30T15:00:00.000Z",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 49,
+            resetAt: Date.parse("2026-08-05T15:00:00.000Z"),
+          },
+        ],
+      },
+    );
+    const reset = mergeProviderUsageEntry(previous, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-05T15:01:00.000Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-08-12T15:00:00.000Z"),
+        },
+      ],
+    });
+
+    expect(reset[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 0 }),
+    ]);
+  });
+
+  it("ignores a Codex zero with a changed reset timestamp before the current cycle ends", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const currentResetAt = Date.parse("2026-08-05T15:00:00.000Z");
+    const previous = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-07-30T15:00:00.000Z",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 49,
+            resetAt: currentResetAt,
+          },
+        ],
+      },
+    );
+    const transientZero = mergeProviderUsageEntry(previous, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-07-30T15:01:00.000Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-08-12T15:00:00.000Z"),
+        },
+      ],
+    });
+
+    expect(transientZero[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 49 }),
+    ]);
   });
 
   it("ignores ambiguous events and disabled provider instances", () => {
@@ -476,7 +618,6 @@ describe("provider usage summaries", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageDetails
         name="Claude"
-        driver={ProviderDriverKind.make("claudeAgent")}
         state="stale"
         reportedAt="2026-07-29T15:00:00.000Z"
         windows={[
@@ -498,15 +639,126 @@ describe("provider usage summaries", () => {
     expect(markup).toContain("Current session");
     expect(markup).toContain("Weekly");
     expect(markup).toContain("Fable");
-    expect(markup).toContain("80% left");
-    expect(markup).toContain("50% left");
-    expect(markup).toContain("25% left");
+    expect(markup).toContain("20% used");
+    expect(markup).toContain("50% used");
+    expect(markup).toContain("75% used");
     expect(markup).toContain("Stale");
     expect(markup).toContain("bg-foreground/55");
     expect(markup).toContain("bg-amber-500");
     expect(markup).toContain("bg-red-600");
     expect(markup).toContain('aria-label="Claude usage windows"');
     expect(markup).toContain('role="progressbar"');
+  });
+
+  it("renders exactly one Claude card with Current session, Weekly, and Fable", () => {
+    const claude = {
+      ...makeProvider("claudeAgent", "claudeAgent", "claude-secret@example.com"),
+      accountUsage: {
+        rate_limits: {
+          five_hour: {
+            utilization: 2,
+            resets_at: "2026-07-30T18:00:00.000Z",
+          },
+          seven_day: {
+            utilization: 79,
+            resets_at: "2026-08-03T00:00:00.000Z",
+          },
+          model_scoped: {
+            utilization: 38,
+            resets_at: "2026-08-04T00:00:00.000Z",
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-07-30T15:00:00.000Z",
+    } satisfies ServerProvider;
+    const summary = deriveProviderUsageSummaries(
+      [claude],
+      [],
+      {},
+      Date.parse("2026-07-30T15:03:00.000Z"),
+    )[0]!;
+
+    const markup = renderToStaticMarkup(<ProviderUsageBadgeDetails summary={summary} />);
+    expect(markup).toContain('data-provider-usage-card-count="1"');
+    expect(markup).toContain('data-provider-usage-card="Claude"');
+    expect(markup).toContain('data-provider-instance-id="claudeAgent"');
+    expect(markup.match(/>Claude usage</g)).toHaveLength(1);
+    expect(markup.match(/>Current session</g)).toHaveLength(1);
+    expect(markup.match(/>Weekly</g)).toHaveLength(1);
+    expect(markup.match(/>Fable</g)).toHaveLength(1);
+    expect(markup.match(/role="progressbar"/g)).toHaveLength(3);
+    expect(markup).toContain('aria-label="Claude Current session used"');
+    expect(markup).toContain('aria-label="Claude Weekly used"');
+    expect(markup).toContain('aria-label="Claude Fable used"');
+    expect(markup).toContain('aria-valuenow="2"');
+    expect(markup).toContain('aria-valuenow="79"');
+    expect(markup).toContain('aria-valuenow="38"');
+    expect(markup).toContain(">2% used<");
+    expect(markup).toContain(">79% used<");
+    expect(markup).toContain(">38% used<");
+    expect(markup.match(/>Reported /g)).toHaveLength(1);
+    expect(markup.match(/>Resets /g)).toHaveLength(3);
+    expect(markup).not.toContain("claude-secret@example.com");
+  });
+
+  it("keeps the three Claude rows ordered and marks missing values Not reported", () => {
+    const windows = claudePopupWindows([
+      { key: "seven_day", label: "Weekly", usedPercent: 100, resetAt: null },
+      { key: "current_session", label: "Current session", usedPercent: 0, resetAt: null },
+    ]);
+
+    expect(windows.map((window) => window.label)).toEqual(["Current session", "Weekly", "Fable"]);
+    expect(windows.map((window) => window.usedPercent)).toEqual([0, 100, null]);
+    expect(windows[2]?.detail).toBe("Not reported");
+
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Claude"
+        state="available"
+        reportedAt="2026-07-30T15:00:00.000Z"
+        windows={windows}
+      />,
+    );
+    expect(markup).toContain(">0% used<");
+    expect(markup).toContain(">100% used<");
+    expect(markup).toContain(">Not reported<");
+    expect(markup).not.toContain("% left");
+    expect(markup.match(/role="progressbar"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-valuenow="0"');
+    expect(markup).toContain('aria-valuenow="100"');
+  });
+
+  it("renders loading, unavailable, and stale state per card", () => {
+    const loadingMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Claude"
+        state="unavailable"
+        reportedAt={null}
+        windows={[]}
+        isRefreshing
+      />,
+    );
+    expect(loadingMarkup).toContain('data-provider-usage-state="loading"');
+    expect(loadingMarkup).toContain(">Loading<");
+    expect(loadingMarkup).toContain("Loading usage…");
+
+    const unavailableMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails name="Fable" state="unavailable" reportedAt={null} windows={[]} />,
+    );
+    expect(unavailableMarkup).toContain('data-provider-usage-state="unavailable"');
+    expect(unavailableMarkup).toContain(">Unavailable<");
+
+    const staleMarkup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Claude"
+        state="stale"
+        reportedAt="2026-07-30T15:00:00.000Z"
+        windows={[{ key: "seven_day", label: "Weekly", usedPercent: 44, resetAt: null }]}
+      />,
+    );
+    expect(staleMarkup).toContain('data-provider-usage-state="stale"');
+    expect(staleMarkup).toContain(">Stale<");
+    expect(staleMarkup).toContain("Last reported");
   });
 
   it("opens New Thread usage details into the viewport and exposes stale refresh state", () => {
@@ -516,7 +768,6 @@ describe("provider usage summaries", () => {
     const idleMarkup = renderToStaticMarkup(
       <ProviderUsageDetails
         name="Claude"
-        driver={ProviderDriverKind.make("claudeAgent")}
         state="stale"
         reportedAt="2026-07-29T15:00:00.000Z"
         windows={[{ key: "seven_day", label: "Weekly", usedPercent: 78, resetAt: null }]}
@@ -562,28 +813,10 @@ describe("provider usage summaries", () => {
     expect(activeMarkup).not.toContain("data-chat-draft-provider-usage");
   });
 
-  it("explains when Claude does not report Current session without inventing usage", () => {
-    const markup = renderToStaticMarkup(
-      <ProviderUsageDetails
-        name="Claude"
-        driver={ProviderDriverKind.make("claudeAgent")}
-        state="available"
-        reportedAt="2026-07-29T15:00:00.000Z"
-        windows={[{ key: "seven_day", label: "Weekly", usedPercent: 78, resetAt: null }]}
-      />,
-    );
-
-    expect(markup).toContain("Current session");
-    expect(markup).toContain("Not reported by Claude");
-    expect(markup).toContain('data-usage-unreported="current_session"');
-    expect(markup.match(/role="progressbar"/g)).toHaveLength(1);
-  });
-
-  it("does not add a Current session placeholder to Codex", () => {
+  it("does not add Claude quota placeholders to Codex", () => {
     const markup = renderToStaticMarkup(
       <ProviderUsageDetails
         name="Codex"
-        driver={ProviderDriverKind.make("codex")}
         state="available"
         reportedAt="2026-07-29T15:00:00.000Z"
         windows={[{ key: "secondary", label: "Weekly", usedPercent: 12, resetAt: null }]}
@@ -591,7 +824,7 @@ describe("provider usage summaries", () => {
     );
 
     expect(markup).not.toContain("Current session");
-    expect(markup).not.toContain("Not reported by Claude");
+    expect(markup).not.toContain("Fable");
   });
 
   it("renders clear unavailable detail state without a fabricated progress value", () => {
@@ -603,42 +836,54 @@ describe("provider usage summaries", () => {
     expect(markup).not.toContain('role="progressbar"');
   });
 
-  it("renders only Claude current-session and Codex weekly metrics in the compact bar", () => {
+  it("renders only icon, percent used, and matching bars while keeping metric names accessible", () => {
     const providers = [makeProvider("claudeAgent"), makeProvider("codex")];
     const activities = [
       usageActivity("claude-render", "claudeAgent", "claudeAgent", {
         rate_limits: {
-          current_session: { utilization: 40 },
-          seven_day: { utilization: 85 },
+          current_session: { utilization: 2 },
+          seven_day: { utilization: 79 },
         },
       }),
       usageActivity("codex-render", "codex", "codex", {
         rateLimits: {
-          secondary: { usedPercent: 75, windowDurationMins: 10_080 },
+          secondary: { usedPercent: 38, windowDurationMins: 10_080 },
           credits: { hasCredits: true, unlimited: false, balance: "42" },
         },
       }),
     ];
     const markup = renderToStaticMarkup(
-      <ProviderUsageBar providers={providers} activities={activities} />,
+      <ProviderUsageBar
+        environmentId={localEnvironmentId}
+        providers={providers}
+        activities={activities}
+      />,
     );
 
     expect(markup).toContain('aria-label="Provider usage"');
-    expect(markup).toContain('aria-label="Show Claude account usage details"');
-    expect(markup).toContain('aria-label="Show Codex account usage details"');
+    expect(markup).toContain(
+      'aria-label="Show Claude usage details; Claude Current session: 2% used"',
+    );
+    expect(markup).toContain(
+      'aria-label="Show Codex account usage details; Codex Weekly: 38% used"',
+    );
+    expect(markup).toContain('title="Claude Current session: 2% used"');
+    expect(markup).toContain('title="Codex Weekly: 38% used"');
     expect(markup).toContain('data-provider-usage-compact-driver="claudeAgent"');
     expect(markup).toContain('data-provider-usage-compact-driver="codex"');
-    expect(markup).toContain(">Current session<");
-    expect(markup.match(/>Weekly</g)).toHaveLength(1);
-    expect(markup).toContain(">40%<");
-    expect(markup).toContain(">75%<");
+    expect(markup).not.toContain(">Current session<");
+    expect(markup).not.toContain(">Weekly<");
+    expect(markup).toContain(">2%<");
+    expect(markup).toContain(">38%<");
     expect(markup.match(/role="progressbar"/g)).toHaveLength(2);
-    expect(markup).toContain('aria-valuenow="40"');
-    expect(markup).toContain('aria-valuenow="75"');
+    expect(markup).toContain('aria-label="Claude Current session used"');
+    expect(markup).toContain('aria-label="Codex Weekly used"');
+    expect(markup).toContain('aria-valuenow="2"');
+    expect(markup).toContain('aria-valuenow="38"');
     expect(markup).not.toContain(">Claude<");
     expect(markup).not.toContain(">Codex<");
     expect(markup).not.toContain(">Credits<");
-    expect(markup).not.toContain(">85%<");
-    expect(markup).toContain("bg-red-600");
+    expect(markup).not.toContain(">79%<");
+    expect(markup).not.toContain("% left");
   });
 });

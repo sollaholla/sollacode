@@ -1,5 +1,14 @@
+import * as NodeOS from "node:os";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import {
+  EventId,
+  MessageId,
+  ThreadId,
+  type OrchestrationMessage,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -20,6 +29,10 @@ import {
   issueAssetUrl,
   resolveAsset,
 } from "./AssetAccess.ts";
+import {
+  activityAuthorizesExternalImagePath,
+  messageAuthorizesExternalImagePath,
+} from "./ThreadAssetAuthorization.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-asset-access-test-",
@@ -196,6 +209,140 @@ describe("AssetAccess", () => {
       });
       expect(yield* resolveAsset(token, "other.png")).toBeNull();
       expect(yield* resolveAsset(token, "../icon.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues exact capabilities for activity-authorized external raster images", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-external-image-root-",
+      });
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-external-image-file-",
+      });
+      const imagePath = path.join(outside, "preview.png");
+      const siblingPath = path.join(outside, "other.png");
+      const pngSignature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      yield* fileSystem.writeFile(imagePath, pngSignature);
+      yield* fileSystem.writeFile(siblingPath, pngSignature);
+      const canonicalImagePath = yield* fileSystem.realPath(imagePath);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: imagePath,
+          sourceActivityId: EventId.make("activity-image-view"),
+        },
+        workspaceRoot: root,
+        allowExternalExactImage: true,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, "preview.png")).toEqual({
+        kind: "file",
+        path: canonicalImagePath,
+      });
+      expect(yield* resolveAsset(token, "other.png")).toBeNull();
+
+      yield* fileSystem.writeFileString(imagePath, "no longer a png");
+      expect(yield* resolveAsset(token, "preview.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves valid image bytes for an exact dynamic Read path under the OS temp root", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const hostPlatform = yield* HostProcessPlatform;
+      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-read-workspace-",
+      });
+      const tempRoot = hostPlatform === "win32" ? NodeOS.tmpdir() : "/tmp";
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        directory: tempRoot,
+        prefix: "solla-read-image-",
+      });
+      const imagePath = path.join(outside, "wood_maps.png");
+      const siblingPath = path.join(outside, "private.png");
+      const pngBytes = new Uint8Array([
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+      ]);
+      yield* fileSystem.writeFile(imagePath, pngBytes);
+      yield* fileSystem.writeFile(siblingPath, pngBytes);
+
+      const sourceActivityId = EventId.make("activity-dynamic-read-temp-image");
+      const activity: OrchestrationThreadActivity = {
+        id: sourceActivityId,
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read File",
+          data: {
+            kind: "read",
+            input: { file_path: imagePath },
+          },
+        },
+        turnId: null,
+        createdAt: "2026-07-30T12:00:00.000Z",
+      };
+      const allowExternalExactImage = activityAuthorizesExternalImagePath(activity, imagePath);
+      expect(allowExternalExactImage).toBe(true);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-temp-read"),
+          path: imagePath,
+          sourceActivityId,
+        },
+        workspaceRoot,
+        allowExternalExactImage,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+      const resolved = yield* resolveAsset(token, "wood_maps.png");
+      expect(resolved).not.toBeNull();
+      if (!resolved || resolved.kind !== "file") {
+        return;
+      }
+      expect(Array.from(yield* fileSystem.readFile(resolved.path))).toEqual(Array.from(pngBytes));
+      expect(yield* resolveAsset(token, "private.png")).toBeNull();
+
+      const sourceMessageId = MessageId.make("assistant-temp-image-link");
+      const sourceMessage: OrchestrationMessage = {
+        id: sourceMessageId,
+        role: "assistant",
+        text: `[wood_maps.png](${imagePath})`,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-07-30T12:00:01.000Z",
+        updatedAt: "2026-07-30T12:00:01.000Z",
+      };
+      const allowLinkedExternalImage = messageAuthorizesExternalImagePath(sourceMessage, imagePath);
+      expect(allowLinkedExternalImage).toBe(true);
+      const linkedResult = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-temp-link"),
+          path: imagePath,
+          sourceMessageId,
+        },
+        workspaceRoot,
+        allowExternalExactImage: allowLinkedExternalImage,
+      });
+      const linkedSuffix = linkedResult.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const linkedSeparatorIndex = linkedSuffix.indexOf("/");
+      const linkedToken = linkedSuffix.slice(0, linkedSeparatorIndex);
+      expect(yield* resolveAsset(linkedToken, "wood_maps.png")).toEqual(resolved);
+      expect(yield* resolveAsset(linkedToken, "private.png")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 

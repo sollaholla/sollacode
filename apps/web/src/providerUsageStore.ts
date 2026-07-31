@@ -1,7 +1,7 @@
-import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
 import { create } from "zustand";
 
-export const PROVIDER_USAGE_STORAGE_KEY = "solla:provider-usage:v1";
+export const PROVIDER_USAGE_STORAGE_KEY = "solla:provider-usage:v2";
 export const PROVIDER_USAGE_STALE_AFTER_MS = 15 * 60_000;
 
 export interface PersistedProviderUsageWindow {
@@ -19,6 +19,40 @@ export interface PersistedProviderUsageEntry {
   readonly reportedAt: string;
 }
 
+const CODEX_RESET_TIME_JITTER_MS = 60_000;
+
+function mergeUsageWindow(
+  driver: ProviderDriverKind,
+  previous: PersistedProviderUsageWindow | undefined,
+  next: PersistedProviderUsageWindow,
+  reportedAt: string,
+): PersistedProviderUsageWindow {
+  if (
+    driver !== "codex" ||
+    previous?.usedPercent === null ||
+    previous?.usedPercent === undefined ||
+    next.usedPercent === null ||
+    next.usedPercent >= previous.usedPercent
+  ) {
+    return next;
+  }
+
+  const reportedAtMs = Date.parse(reportedAt);
+  const nextCycleIsLater =
+    previous.resetAt !== null &&
+    next.resetAt !== null &&
+    next.resetAt > previous.resetAt + CODEX_RESET_TIME_JITTER_MS;
+  const previousCycleElapsed =
+    previous.resetAt !== null &&
+    Number.isFinite(reportedAtMs) &&
+    reportedAtMs >= previous.resetAt - CODEX_RESET_TIME_JITTER_MS;
+
+  // Codex usage is monotonically consumed inside one quota window. Ignore a
+  // transient lower snapshot (especially 0%) unless the old window has elapsed
+  // and the provider also advances the reset timestamp to a later cycle.
+  return nextCycleIsLater && previousCycleElapsed ? next : previous;
+}
+
 interface ProviderUsageState {
   readonly byAccountKey: Readonly<Record<string, PersistedProviderUsageEntry>>;
   record: (entry: PersistedProviderUsageEntry) => void;
@@ -32,17 +66,26 @@ function normalizeIdentityPart(value: string): string {
  * Uses only provider-reported public account metadata. Tokens, home paths,
  * cookies, and credentials never participate in the key or persisted value.
  */
-export function providerUsageAccountKey(provider: ServerProvider): string | null {
+export function providerUsageAccountKey(
+  provider: ServerProvider,
+  environmentId?: EnvironmentId,
+): string | null {
   if (provider.auth.status !== "authenticated") return null;
+  let accountKey: string;
   if (provider.auth.email) {
-    return `${provider.driver}:account:${normalizeIdentityPart(provider.auth.email)}`;
+    accountKey = `${provider.driver}:account:${normalizeIdentityPart(provider.auth.email)}`;
+  } else {
+    // Labels describe plans/auth methods and can be shared by many accounts.
+    // Without a provider-reported email, keep usage isolated to the configured
+    // instance because a cross-instance account match cannot be proven.
+    accountKey = `${provider.driver}:instance:${provider.instanceId}:type:${normalizeIdentityPart(
+      provider.auth.type ?? "authenticated",
+    )}`;
   }
-  // Labels describe plans/auth methods and can be shared by many accounts.
-  // Without a provider-reported email, keep usage isolated to the configured
-  // instance because a cross-instance account match cannot be proven.
-  return `${provider.driver}:instance:${provider.instanceId}:type:${normalizeIdentityPart(
-    provider.auth.type ?? "authenticated",
-  )}`;
+  // Provider accounts and instance IDs are not globally unique across hosts.
+  // Scope persisted usage to its authoritative environment so a remote tab can
+  // never inherit a same-account snapshot reported by the local machine.
+  return environmentId ? `${environmentId}\u0000${accountKey}` : accountKey;
 }
 
 export function mergeProviderUsageEntry(
@@ -56,7 +99,10 @@ export function mergeProviderUsageEntry(
   const entryIsOlder = previous !== undefined && previous.reportedAt > entry.reportedAt;
   for (const window of entry.windows) {
     if (!entryIsOlder || !windowsByKey.has(window.key)) {
-      windowsByKey.set(window.key, window);
+      windowsByKey.set(
+        window.key,
+        mergeUsageWindow(entry.driver, windowsByKey.get(window.key), window, entry.reportedAt),
+      );
     }
   }
   const merged = {

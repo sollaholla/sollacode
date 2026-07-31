@@ -556,6 +556,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         signed: Option.none(),
         verbose: Option.none(),
         wslPrebuild: Option.none(),
+        resourceMonitorPrebuild: Option.none(),
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -594,6 +595,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             signed: Option.none(),
             verbose: Option.none(),
             wslPrebuild: Option.none(),
+            resourceMonitorPrebuild: Option.none(),
           }),
         );
 
@@ -616,6 +618,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         signed: Option.some(false),
         verbose: Option.some(false),
         wslPrebuild: Option.none(),
+        resourceMonitorPrebuild: Option.none(),
       }).pipe(
         Effect.provide(
           ConfigProvider.layer(

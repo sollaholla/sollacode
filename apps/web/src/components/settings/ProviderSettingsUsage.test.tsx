@@ -138,8 +138,8 @@ describe("ProviderSettingsUsage", () => {
 
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(markup).toContain("Current session");
-    expect(markup).toContain("63% left");
+    expect(markup).toContain("37% used");
     expect(markup).toContain("Weekly");
-    expect(markup).toContain("39% left");
+    expect(markup).toContain("61% used");
   });
 });

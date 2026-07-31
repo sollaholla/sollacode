@@ -58,6 +58,7 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
+import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
 
 // Custom schemes must be registered before Electron becomes ready. Marking
 // them standard and CORS-capable gives renderer assets a real same-origin
@@ -193,11 +194,16 @@ const desktopLocalEnvironmentAuthLayer = DesktopLocalEnvironmentAuth.layer.pipe(
   Layer.provideMerge(desktopBackendLayer),
 );
 
+const desktopLanDiscoveryLayer = DesktopLanDiscovery.layer.pipe(
+  Layer.provide(desktopServerExposureLayer),
+);
+
 const desktopApplicationLayer = Layer.mergeAll(
   DesktopLifecycle.layer,
   DesktopApplicationMenu.layer,
   DesktopShellEnvironment.layer,
   desktopSshLayer,
+  desktopLanDiscoveryLayer,
 ).pipe(
   Layer.provideMerge(desktopWslBackendLayer),
   Layer.provideMerge(desktopLocalEnvironmentAuthLayer),

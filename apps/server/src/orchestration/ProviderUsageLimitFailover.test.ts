@@ -12,6 +12,7 @@ import {
   buildProviderHandoffTurnInput,
   buildProviderHandoffSummary,
   detectProviderUsageLimitExhaustion,
+  deriveProviderHandoffContinuity,
   PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,
   selectProviderFailoverTarget,
 } from "./ProviderUsageLimitFailover.ts";
@@ -156,6 +157,47 @@ describe("selectProviderFailoverTarget", () => {
 });
 
 describe("buildProviderHandoffSummary", () => {
+  it("calls out the latest user requirement and active assistant work", () => {
+    const messages = [
+      message(0, "Keep the mobile composer anchored."),
+      message(1, "I am tracing visualViewport and scroll ownership now."),
+    ];
+
+    expect(deriveProviderHandoffContinuity(messages)).toEqual({
+      immediateRequirement: "Keep the mobile composer anchored.",
+      inProgressWork: "I am tracing visualViewport and scroll ownership now.",
+    });
+
+    const decoded = JSON.parse(
+      buildProviderHandoffSummary({
+        threadId: ThreadId.make("thread-continuity"),
+        threadTitle: "Mobile composer",
+        messages,
+        from: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+        },
+        to: {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.6",
+          },
+        },
+        exhaustion: { reason: "manual_provider_switch", resetsAt: null },
+        generatedAt: "2026-01-01T00:01:00.000Z",
+      }),
+    ) as {
+      continuity?: { immediateRequirement?: string; inProgressWork?: string };
+    };
+
+    expect(decoded.continuity).toEqual({
+      immediateRequirement: "Keep the mobile composer anchored.",
+      inProgressWork: "I am tracing visualViewport and scroll ownership now.",
+    });
+  });
+
   it("always emits valid JSON within the hard serialized cap", () => {
     const messages = Array.from({ length: 50 }, (_, index) =>
       message(index, `${"\u0000".repeat(2_500)}-${index}`),

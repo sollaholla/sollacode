@@ -1,7 +1,23 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AutoCompactionThresholdControl } from "./ContextWindowMeter";
+import {
+  AutoCompactionThresholdControl,
+  providerSupportsConfigurableAutoCompaction,
+} from "./ContextWindowMeter";
+
+describe("providerSupportsConfigurableAutoCompaction", () => {
+  it("keeps the real threshold control available for both Codex and Claude chats", () => {
+    expect(providerSupportsConfigurableAutoCompaction(ProviderDriverKind.make("codex"))).toBe(true);
+    expect(providerSupportsConfigurableAutoCompaction(ProviderDriverKind.make("claudeAgent"))).toBe(
+      true,
+    );
+    expect(providerSupportsConfigurableAutoCompaction(ProviderDriverKind.make("cursor"))).toBe(
+      false,
+    );
+  });
+});
 
 describe("AutoCompactionThresholdControl", () => {
   it("renders an accessible 50..95 percent slider with visible ticks and token threshold", () => {

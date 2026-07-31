@@ -25,6 +25,32 @@ export function shouldResumeTimelineLiveFollow({
   return isAtEnd && (!manualNavigationActive || manualNavigationTowardEnd);
 }
 
+/**
+ * Sending deliberately enables live-follow. Do not release that lock for
+ * downward wheel motion (which is already asking to see newer content); only
+ * an explicit gesture toward older content opts the user out.
+ */
+export function shouldReleaseTimelineLiveFollowForWheel(deltaY: number): boolean {
+  return Number.isFinite(deltaY) && deltaY < 0;
+}
+
+/**
+ * On a touch surface, dragging a finger down moves the timeline toward older
+ * content. Touch-start alone is not navigation and must not disable follow.
+ */
+export function shouldReleaseTimelineLiveFollowForTouch(
+  previousTouchY: number | null,
+  currentTouchY: number | null,
+): boolean {
+  return (
+    previousTouchY !== null &&
+    currentTouchY !== null &&
+    Number.isFinite(previousTouchY) &&
+    Number.isFinite(currentTouchY) &&
+    currentTouchY > previousTouchY
+  );
+}
+
 export interface TimelineListMeasurementState {
   readonly data: readonly unknown[];
   readonly scroll: number;

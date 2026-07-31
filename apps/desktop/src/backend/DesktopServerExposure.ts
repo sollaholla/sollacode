@@ -72,9 +72,6 @@ const normalizeOptionalHost = (value: string | undefined): string | undefined =>
   return normalized && normalized.length > 0 ? normalized : undefined;
 };
 
-const isUsableLanIpv4Address = (address: string): boolean =>
-  !address.startsWith("127.") && !address.startsWith("169.254.");
-
 const isHttpsEndpointUrl = (value: string): boolean => {
   try {
     return new URL(value).protocol === "https:";
@@ -92,18 +89,7 @@ const resolveLanAdvertisedHost = (
     return normalizedExplicitHost;
   }
 
-  for (const interfaceAddresses of Object.values(networkInterfaces)) {
-    if (!interfaceAddresses) continue;
-
-    for (const address of interfaceAddresses) {
-      if (address.internal) continue;
-      if (address.family !== "IPv4") continue;
-      if (!isUsableLanIpv4Address(address.address)) continue;
-      return address.address;
-    }
-  }
-
-  return null;
+  return DesktopNetworkInterfaces.selectPreferredLanIpv4Address(networkInterfaces);
 };
 
 const resolveDesktopServerExposure = (input: {
@@ -420,20 +406,15 @@ function resolveRuntimeState(input: {
   });
   const unavailable =
     input.requestedMode === "network-accessible" && requestedExposure.endpointUrl === null;
-  const exposure = unavailable
-    ? resolveDesktopServerExposure({
-        mode: "local-only",
-        port: input.port,
-        networkInterfaces: input.networkInterfaces,
-        ...(advertisedHostOverride ? { advertisedHostOverride } : {}),
-      })
-    : requestedExposure;
 
   return {
     state: runtimeStateFromResolvedExposure({
       requestedMode: input.requestedMode,
       settings: input.settings,
-      exposure,
+      // Keep the requested all-interface bind even when Wi-Fi has not exposed
+      // an address yet. Downgrading to loopback here makes network access stay
+      // broken for the entire app run after a machine boots before its network.
+      exposure: requestedExposure,
       port: input.port,
     }),
     unavailable,
@@ -467,7 +448,31 @@ export const make = Effect.gen(function* () {
 
   const readNetworkInterfaces = networkInterfaces.read;
 
-  const getState = Ref.get(stateRef).pipe(Effect.map(toContractState));
+  const refreshNetworkState = Effect.gen(function* () {
+    const previous = yield* Ref.get(stateRef);
+    const currentNetworkInterfaces = yield* readNetworkInterfaces;
+    const advertisedHostOverride = Option.getOrUndefined(config.desktopLanHostOverride);
+    const exposure = resolveDesktopServerExposure({
+      mode: previous.requestedMode,
+      port: previous.port,
+      networkInterfaces: currentNetworkInterfaces,
+      ...(advertisedHostOverride ? { advertisedHostOverride } : {}),
+    });
+    const next = {
+      ...previous,
+      mode: exposure.mode,
+      bindHost: exposure.bindHost,
+      localHttpUrl: exposure.localHttpUrl,
+      localWsUrl: exposure.localWsUrl,
+      httpBaseUrl: new URL(exposure.localHttpUrl),
+      endpointUrl: Option.fromNullishOr(exposure.endpointUrl),
+      advertisedHost: Option.fromNullishOr(exposure.advertisedHost),
+    };
+    yield* Ref.set(stateRef, next);
+    return { state: next, networkInterfaces: currentNetworkInterfaces };
+  });
+
+  const getState = refreshNetworkState.pipe(Effect.map(({ state }) => toContractState(state)));
   const backendConfig = Ref.get(stateRef).pipe(Effect.map(toBackendConfig));
 
   const configureFromSettings = Effect.fn("desktop.serverExposure.configureFromSettings")(
@@ -505,10 +510,6 @@ export const make = Effect.gen(function* () {
       networkInterfaces: currentNetworkInterfaces,
       advertisedHostOverride: config.desktopLanHostOverride,
     });
-
-    if (resolved.unavailable) {
-      return yield* new DesktopServerExposureNoNetworkAddressError({ port: previous.port });
-    }
 
     const change = yield* desktopSettings.setServerExposureMode(mode).pipe(
       Effect.mapError(
@@ -677,8 +678,7 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.serverExposure.reconcileTailscaleServe"));
 
   const getAdvertisedEndpoints = Effect.gen(function* () {
-    const state = yield* Ref.get(stateRef);
-    const currentNetworkInterfaces = yield* readNetworkInterfaces;
+    const { state, networkInterfaces: currentNetworkInterfaces } = yield* refreshNetworkState;
     const coreEndpoints = resolveDesktopCoreAdvertisedEndpoints({
       port: state.port,
       exposure: toResolvedExposure(state),

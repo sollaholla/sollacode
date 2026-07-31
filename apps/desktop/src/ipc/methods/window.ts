@@ -7,6 +7,7 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   type DesktopEnvironmentBootstrap,
 } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -19,6 +20,7 @@ import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
+import { setPushToTalkSystemAudioMuted as setSystemAudioMutedForPushToTalk } from "../../app/SystemAudioMute.ts";
 import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
@@ -314,6 +316,16 @@ export const revealFile = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.window.revealFile")(function* (path) {
     yield* Effect.sync(() => Electron.shell.showItemInFolder(path));
+  }),
+});
+
+export const setPushToTalkSystemAudioMuted = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.setPushToTalkSystemAudioMuted")(function* (muted) {
+    const platform = yield* HostProcessPlatform;
+    return setSystemAudioMutedForPushToTalk(platform, muted);
   }),
 });
 

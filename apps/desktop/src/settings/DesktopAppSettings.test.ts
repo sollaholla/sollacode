@@ -138,7 +138,7 @@ describe("DesktopSettings", () => {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         yield* fileSystem.makeDirectory(environment.desktopSettingsPath, { recursive: true });
 
-        const error = yield* settings.setServerExposureMode("network-accessible").pipe(Effect.flip);
+        const error = yield* settings.setServerExposureMode("local-only").pipe(Effect.flip);
         assert.instanceOf(error, DesktopAppSettings.DesktopSettingsWriteError);
         assert.equal(error.operation, "replace-settings-file");
         assert.equal(error.path, environment.desktopSettingsPath);
@@ -156,7 +156,7 @@ describe("DesktopSettings", () => {
       Effect.gen(function* () {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
 
-        const exposure = yield* settings.setServerExposureMode("local-only");
+        const exposure = yield* settings.setServerExposureMode("network-accessible");
         assert.isFalse(exposure.changed);
 
         const tailscale = yield* settings.setTailscaleServe({
@@ -248,7 +248,6 @@ describe("DesktopSettings", () => {
         assert.deepEqual(persisted, {
           mainWindowBounds: { x: -1200, y: 40, width: 1440, height: 960 },
           mainWindowMaximized: true,
-          serverExposureMode: "network-accessible",
         } satisfies typeof DesktopSettingsPatch.Type);
       }),
     ),
@@ -266,7 +265,7 @@ describe("DesktopSettings", () => {
         assert.deepEqual(yield* settings.load, {
           mainWindowBounds: null,
           mainWindowMaximized: false,
-          serverExposureMode: "local-only",
+          serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
           tailscaleServePort: 443,
           wslBackendEnabled: false,

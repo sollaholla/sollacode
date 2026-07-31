@@ -1,3 +1,5 @@
+import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
+
 import { isMacPlatform } from "./lib/utils";
 
 export type TerminalLinkKind = "url" | "path";
@@ -267,7 +269,9 @@ export function isTerminalLinkActivation(
 }
 
 export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
-  const { path, line, column } = splitPathAndPosition(rawPath);
+  const { path, line, column } = splitPathAndPosition(
+    normalizeEmbeddedWindowsAbsolutePath(rawPath),
+  );
 
   let resolvedPath = path;
   if (path.startsWith("~/")) {

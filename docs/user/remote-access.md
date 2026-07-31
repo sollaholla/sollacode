@@ -4,13 +4,38 @@ Use this when you want to connect to a Solla Code server from another device suc
 
 ## Recommended Setup
 
-Use a trusted private network that meshes your devices together, such as a tailnet.
+For devices on the same trusted Wi-Fi or Ethernet network, use the built-in LAN connection flow.
+Tailscale is not required.
 
-That gives you:
+1. Open **Settings** → **Connections**.
+2. Under **Connect another device**, choose **Show QR code**.
+3. Scan the large QR code with the other device, or copy and open the connection link.
+4. Solla Code opens, exchanges the one-time credential, and saves the environment automatically.
+   There is no code to type.
 
-- a stable address to connect to
-- transport security at the network layer
-- less exposure than opening the server to the public internet
+For another computer already running Solla Code on the same private network, use **Nearby Solla
+Code** instead. Choose **Trust and add**, then approve the native trust prompt on the other
+computer. Both environments are added in parallel and can reconnect automatically.
+
+Use Tailscale or another trusted HTTPS/private-network endpoint when the devices are not on the
+same LAN or when you need a stable address across networks.
+
+## Remote Control
+
+The conversation header includes **Remote connection** beside the project action controls. On a
+local thread it opens connection setup. On a connected remote thread it opens that computer's live
+remote-control window directly.
+
+Remote control always starts with approval on the host computer. The host can decline, grant
+view-only access, or allow screen, pointer, and keyboard control. Primary shortcuts translate
+between Command on macOS and Control on Windows. The host can stop the session at any time.
+
+Selecting **Remember for this device** remembers only the capabilities approved for that paired
+device. A later request for additional capabilities still requires approval, and removing then
+pairing the device again clears the remembered approval.
+
+On macOS, screen streaming requires Screen Recording permission and interactive control requires
+Accessibility permission under **System Settings** → **Privacy & Security**.
 
 ## Enabling Network Access
 
@@ -21,11 +46,16 @@ There are two ways to expose your server for remote connections: from the deskto
 If you are already running the desktop app and want to make it reachable from other devices:
 
 1. Open **Settings** → **Connections**.
-2. Under **Manage Local Backend**, toggle **Network access** on. This will restart the app and run the backend on all network interfaces.
-3. The settings panel will show the default reachable endpoint, with a `+N` control when more endpoints are available. Expand it to inspect alternatives such as loopback, LAN, private-network, or HTTPS endpoints.
-4. Use **Create Link** to generate a pairing link you can share with another device.
+2. Choose **Show QR code** under **Connect another device**.
+3. Scan the QR code or open the link on the other device.
 
-The default endpoint controls the QR code and primary copy action for pairing links. You can change it from the expanded endpoint list. The preference is stored by endpoint type, so choosing the local LAN endpoint survives normal IP address changes when you move between networks.
+New desktop installs enable private-network access by default. If the QR panel asks you to enable
+it, open **Advanced connection settings**, turn on **Network access**, and let Solla Code restart.
+
+Advanced connection settings show the default reachable endpoint, with a `+N` control when more
+endpoints are available. The default controls the QR code and connection link. The preference is
+stored by endpoint type, so choosing the local LAN endpoint survives normal IP address changes when
+you move between networks.
 
 When no user default is saved, the app uses the built-in LAN endpoint for pairing links when
 available. You can set another endpoint as the default from the expanded endpoint list.
@@ -36,6 +66,24 @@ available. You can set another endpoint as the default from the expanded endpoin
 - Loopback-only endpoints are not useful for another device unless that device is the same machine.
 
 If the copied link points directly at `http://192.168.x.y:3773`, open it from a client that can reach that LAN address. If it points at `https://app.t3.codes/pair?...`, the hosted web app will save the environment and connect directly to the backend URL in the link.
+
+### LAN Troubleshooting
+
+Nearby discovery advertises separately on every private IPv4 subnet so Windows virtual adapters,
+hotspots, WSL, Hyper-V, VPNs, and Docker networks do not hide the active Wi-Fi or Ethernet adapter.
+Solla Code retries discovery automatically if the network or permission is temporarily unavailable.
+
+If another device does not appear:
+
+- confirm both devices are on the same private Wi-Fi or Ethernet network
+- keep Solla Code open on both devices
+- on Windows, allow **Solla Code** through Windows Defender Firewall for the current network profile
+- on macOS, allow Local Network access if macOS asks
+- check that guest Wi-Fi or access-point isolation is not blocking devices from reaching each other
+
+The Connections screen reports permission, unavailable-network, and UDP port conflicts directly and
+continues retrying after the problem is corrected. Installing Tailscale is not a LAN troubleshooting
+step.
 
 ### Tailscale Endpoints
 

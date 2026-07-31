@@ -9,7 +9,8 @@ import {
   Minimize2Icon,
   WrapTextIcon,
 } from "lucide-react";
-import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import type { MessageId, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -75,9 +76,11 @@ import {
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
-import { resolveAssetUrl } from "../assets/assetUrls";
+import { resolveDisplayAssetUrl, withAssetRevision } from "../assets/assetUrls";
+import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useRightPanelStore } from "../rightPanelStore";
 import { useActiveEnvironmentId } from "../state/entities";
+import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { serverEnvironment } from "../state/server";
 import { assetEnvironment } from "../state/assets";
 import { usePreparedConnection } from "../state/session";
@@ -93,7 +96,13 @@ import {
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
 import { useExpandedImagePreviewController } from "./chat/ExpandedImagePreview";
-import { shouldOpenImageReferenceInFullScreen } from "./chat/mobileImageViewer";
+import {
+  isRemoteImageReferenceContext,
+  resolveImageReferenceAssetPath,
+  shouldOpenImageReferenceInFullScreen,
+} from "./chat/mobileImageViewer";
+import { shouldRevealLinkedFileByDefault } from "./chat/linkedFileBehavior";
+import { revealInFileExplorerLabel } from "./preview/fileExplorerLabel";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -122,6 +131,8 @@ interface ChatMarkdownProps {
   threadRef?: ScopedThreadRef | undefined;
   onTaskListChange?: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
   isStreaming?: boolean;
+  assetRevision?: string;
+  sourceMessageId?: MessageId;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   className?: string;
   /** Treat single newlines as hard breaks — chat-style user input. */
@@ -1208,6 +1219,27 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
   }, [handleOpenInEditor, line, threadRef, workspaceRelativePath]);
 
+  const handleRevealInFileExplorer = useCallback(() => {
+    const bridge = window.desktopBridge;
+    if (!bridge) {
+      handleOpenInEditor();
+      return;
+    }
+    void bridge.revealFile(iconPath).catch((cause) => {
+      reportMarkdownActionFailure(
+        { operation: "reveal-file-in-explorer", target: iconPath },
+        cause,
+      );
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to locate file",
+          description: cause instanceof Error ? cause.message : "An error occurred.",
+        }),
+      );
+    });
+  }, [handleOpenInEditor, iconPath]);
+
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
       return;
@@ -1300,6 +1332,14 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
+            ...(window.desktopBridge
+              ? ([
+                  {
+                    id: "reveal",
+                    label: revealInFileExplorerLabel(navigator.platform),
+                  },
+                ] as const)
+              : []),
             { id: "copy-relative", label: "Copy relative path" },
             { id: "copy-full", label: "Copy full path" },
           ] as const,
@@ -1312,6 +1352,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }
         if (clicked === "open-in-browser") {
           handleOpenInBrowser();
+          return;
+        }
+        if (clicked === "reveal") {
+          handleRevealInFileExplorer();
           return;
         }
         if (clicked === "copy-relative") {
@@ -1328,7 +1372,15 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       }
     },
-    [displayPath, handleCopy, handleOpenInBrowser, handleOpenInEditor, onOpenInBrowser, targetPath],
+    [
+      displayPath,
+      handleCopy,
+      handleOpenInBrowser,
+      handleOpenInEditor,
+      handleRevealInFileExplorer,
+      onOpenInBrowser,
+      targetPath,
+    ],
   );
 
   return (
@@ -1348,6 +1400,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
               }
               if (onOpenInBrowser) {
                 handleOpenInBrowser();
+                return;
+              }
+              if (window.desktopBridge && shouldRevealLinkedFileByDefault(iconPath)) {
+                handleRevealInFileExplorer();
                 return;
               }
               handleOpenInFilePreview();
@@ -1398,6 +1454,8 @@ function ChatMarkdown({
   threadRef,
   onTaskListChange,
   isStreaming = false,
+  assetRevision,
+  sourceMessageId,
   skills = EMPTY_MARKDOWN_SKILLS,
   className,
   lineBreaks = false,
@@ -1413,6 +1471,27 @@ function ChatMarkdown({
   });
   const preparedConnection = usePreparedConnection(threadRef?.environmentId ?? null);
   const environmentId = useActiveEnvironmentId();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const threadEnvironment = useEnvironment(threadRef?.environmentId ?? null);
+  const threadEnvironmentTarget = threadEnvironment?.entry.target;
+  const threadEnvironmentKind =
+    threadEnvironmentTarget === undefined
+      ? "unknown"
+      : threadEnvironmentTarget._tag === "PrimaryConnectionTarget"
+        ? "primary"
+        : isDesktopLocalConnectionTarget(threadEnvironmentTarget)
+          ? "desktop-local"
+          : "remote";
+  const isRemoteThread = isRemoteImageReferenceContext({
+    hasThreadContext: threadRef !== undefined,
+    isDesktopRuntime: typeof window !== "undefined" && window.desktopBridge !== undefined,
+    environmentKind: threadEnvironmentKind,
+    differsFromPrimaryEnvironment:
+      threadRef !== undefined &&
+      primaryEnvironmentId !== null &&
+      threadRef.environmentId !== primaryEnvironmentId,
+  });
+  const imageAssetRevision = assetRevision ?? String(fnv1a32(text));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
@@ -1513,9 +1592,8 @@ function ChatMarkdown({
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
   const openMarkdownImageInFullScreen = useCallback(
-    (fileLinkMeta: MarkdownFileLinkMeta) => {
-      const workspaceRelativePath = fileLinkMeta.workspaceRelativePath;
-      if (!expandedImagePreviewController || !threadRef || !workspaceRelativePath) {
+    (fileLinkMeta: MarkdownFileLinkMeta, assetPath: string) => {
+      if (!expandedImagePreviewController || !threadRef) {
         return;
       }
 
@@ -1530,7 +1608,8 @@ function ChatMarkdown({
               resource: {
                 _tag: "workspace-file",
                 threadId: threadRef.threadId,
-                path: workspaceRelativePath,
+                path: assetPath,
+                ...(sourceMessageId ? { sourceMessageId } : {}),
               },
             },
           });
@@ -1538,20 +1617,21 @@ function ChatMarkdown({
             if (isAtomCommandInterrupted(assetResult)) return;
             throw squashAtomCommandFailure(assetResult);
           }
-          const src = resolveAssetUrl(
+          const resolvedSrc = resolveDisplayAssetUrl(
             preparedConnection.value.httpBaseUrl,
             assetResult.value.relativeUrl,
           );
-          if (src === null) {
+          if (resolvedSrc === null) {
             throw new Error("The environment returned an invalid asset URL.");
           }
+          const src = withAssetRevision(resolvedSrc, imageAssetRevision);
           expandedImagePreviewController.open({
             images: [{ src, name: fileLinkMeta.displayPath }],
             index: 0,
           });
         } catch (cause) {
           reportMarkdownActionFailure(
-            { operation: "open-image-in-full-screen", target: workspaceRelativePath },
+            { operation: "open-image-in-full-screen", target: assetPath },
             cause,
           );
           toastManager.add(
@@ -1564,7 +1644,14 @@ function ChatMarkdown({
         }
       })();
     },
-    [createAssetUrl, expandedImagePreviewController, preparedConnection, threadRef],
+    [
+      createAssetUrl,
+      expandedImagePreviewController,
+      imageAssetRevision,
+      preparedConnection,
+      sourceMessageId,
+      threadRef,
+    ],
   );
   const markdownComponents = useMemo<Components>(() => {
     const fileLinkChip = (
@@ -1582,14 +1669,21 @@ function ChatMarkdown({
           `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
         );
       }
-      const onOpenImage = shouldOpenImageReferenceInFullScreen({
-        isThinPortraitMobile: expandedImagePreviewController?.fullScreenMobile ?? false,
+      const imageAssetPath = resolveImageReferenceAssetPath({
         filePath: fileLinkMeta.filePath,
         workspaceRelativePath: fileLinkMeta.workspaceRelativePath,
+        isRemoteThread,
+        hasSourceMessage: sourceMessageId !== undefined,
+      });
+      const onOpenImage = shouldOpenImageReferenceInFullScreen({
+        isThinPortraitMobile: expandedImagePreviewController?.fullScreenMobile ?? false,
+        isRemoteThread: isRemoteThread && isWorkspaceImagePreviewPath(fileLinkMeta.filePath),
+        filePath: fileLinkMeta.filePath,
+        assetPath: imageAssetPath,
         hasThreadContext: threadRef !== undefined,
         hasImageViewer: expandedImagePreviewController !== null,
       })
-        ? () => openMarkdownImageInFullScreen(fileLinkMeta)
+        ? () => openMarkdownImageInFullScreen(fileLinkMeta, imageAssetPath!)
         : undefined;
 
       return (

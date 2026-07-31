@@ -15,6 +15,12 @@ import {
   setTailscaleServeEnabled,
 } from "./methods/serverExposure.ts";
 import {
+  completeLanPairing,
+  getLanDiscoveryState,
+  listLanPeers,
+  requestLanPairing,
+} from "./methods/lanPairing.ts";
+import {
   bootstrapSshBearerSession,
   disconnectSshEnvironment,
   discoverSshHosts,
@@ -34,11 +40,17 @@ import {
   pickFolder,
   revealFile,
   saveThreadExportJson,
+  setPushToTalkSystemAudioMuted,
   setTheme,
   startFileDrag,
   showContextMenu,
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
+import {
+  captureRemoteControlFrame,
+  resetRemoteControlInput,
+  sendRemoteControlInput,
+} from "./methods/remoteControl.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
@@ -70,6 +82,10 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setTailscaleServeEnabled);
   yield* ipc.handle(reconcileTailscaleServe);
   yield* ipc.handle(getAdvertisedEndpoints);
+  yield* ipc.handle(listLanPeers);
+  yield* ipc.handle(getLanDiscoveryState);
+  yield* ipc.handle(requestLanPairing);
+  yield* ipc.handle(completeLanPairing);
 
   yield* ipc.handle(getWslState);
   yield* ipc.handle(setWslBackendEnabled);
@@ -83,6 +99,10 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(openExternal);
   yield* ipc.handle(saveThreadExportJson);
   yield* ipc.handle(revealFile);
+  yield* ipc.handle(setPushToTalkSystemAudioMuted);
+  yield* ipc.handle(captureRemoteControlFrame);
+  yield* ipc.handle(sendRemoteControlInput);
+  yield* ipc.handle(resetRemoteControlInput);
   yield* ipc.handle(startFileDrag);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);

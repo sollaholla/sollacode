@@ -47,6 +47,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import {
   buildProviderHandoffSummary,
   buildProviderHandoffTurnInput,
+  deriveProviderHandoffContinuity,
 } from "../ProviderUsageLimitFailover.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -67,6 +68,24 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function modelSelectionStatusDetail(
+  selection: ModelSelection,
+  interactionMode: "default" | "plan",
+  runtimeMode: RuntimeMode,
+): string {
+  const effort = selection.options?.find(
+    (option) => option.id === "effort" || option.id === "reasoningEffort",
+  )?.value;
+  return [
+    selection.model,
+    typeof effort === "string" ? `${effort} effort` : null,
+    interactionMode === "plan" ? "Plan" : "Build",
+    runtimeMode === "full-access" ? "Full access" : "Approval required",
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -94,6 +113,7 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
+const SETTINGS_UPDATE_MESSAGE_PREFIX = "Settings updated:";
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -407,7 +427,7 @@ const make = Effect.gen(function* () {
         : thread.modelSelection.instanceId;
     const desiredModelSelection = requestedModelSelection ?? thread.modelSelection;
     const desiredInstanceId = desiredModelSelection.instanceId;
-    const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
+    yield* providerService.getInstanceInfo(currentInstanceId).pipe(
       Effect.mapError(
         () =>
           new ProviderAdapterRequestError({
@@ -472,16 +492,20 @@ const make = Effect.gen(function* () {
         requestedModelSelection,
       });
     }
-    if (
+    const switchingProviderDuringActiveTurn =
       activeThreadSession !== null &&
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== currentInstanceId &&
-      activeThreadSession.activeTurnId !== null
-    ) {
-      return yield* new ProviderAdapterRequestError({
-        provider: preferredProvider,
-        method: "thread.turn.start",
-        detail: `Thread '${threadId}' has an active turn. Wait for it to finish or interrupt it before switching providers.`,
+      activeThreadSession.activeTurnId !== null;
+    if (switchingProviderDuringActiveTurn) {
+      // A provider change is an explicit handoff, not a validation error. Stop
+      // the source turn before rebinding the shared thread id so stale output
+      // cannot continue racing the replacement provider.
+      yield* providerService.interruptTurn({
+        threadId,
+        ...(activeThreadSession.activeTurnId !== null
+          ? { turnId: activeThreadSession.activeTurnId }
+          : {}),
       });
     }
     const project = yield* resolveProject(thread.projectId);
@@ -632,6 +656,21 @@ const make = Effect.gen(function* () {
       thread.session?.providerInstanceId ??
       thread.modelSelection.instanceId;
     const requestedInstanceId = input.modelSelection?.instanceId;
+    const settingsUpdateRequested = input.messageText.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
+    if (
+      settingsUpdateRequested &&
+      thread.session?.status === "running" &&
+      thread.session.activeTurnId !== null &&
+      (requestedInstanceId === undefined || requestedInstanceId === currentInstanceId)
+    ) {
+      // Applying effort/mode/access changes is an immediate control action.
+      // Stop the in-flight turn first so the update is not merely queued
+      // behind work that is still using the previous settings.
+      yield* providerService.interruptTurn({
+        threadId: input.threadId,
+        turnId: thread.session.activeTurnId,
+      });
+    }
     let providerInput = input.messageText;
     if (requestedInstanceId !== undefined && requestedInstanceId !== currentInstanceId) {
       const requestedModelSelection = input.modelSelection;
@@ -667,6 +706,10 @@ const make = Effect.gen(function* () {
           resetsAt: null,
         },
         generatedAt: input.createdAt,
+        immediateRequirement: input.messageText.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)
+          ? deriveProviderHandoffContinuity(historyMessages).immediateRequirement
+          : input.messageText,
+        inProgressWork: deriveProviderHandoffContinuity(historyMessages).inProgressWork,
       });
       providerInput = buildProviderHandoffTurnInput({
         summary,
@@ -943,6 +986,7 @@ const make = Effect.gen(function* () {
     const providerSwitched =
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== sourceInstanceId;
+    const settingsUpdateRequested = message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
     yield* providerService.sendTurn(sendTurnRequest.value).pipe(
       Effect.flatMap((turn) => {
         if (requestedModelSelection === undefined) {
@@ -956,6 +1000,15 @@ const make = Effect.gen(function* () {
             modelSelection: requestedModelSelection,
           });
           if (providerSwitched) {
+            const sourceInfo = yield* providerService.getInstanceInfo(sourceInstanceId);
+            const targetInfo = yield* providerService.getInstanceInfo(
+              requestedModelSelection.instanceId,
+            );
+            const lastAssistantMessage = thread.messages
+              .toReversed()
+              .find((entry) => entry.role === "assistant" && entry.text.trim().length > 0);
+            const sourceLabel = sourceInfo.displayName?.trim() || String(sourceInfo.driverKind);
+            const targetLabel = targetInfo.displayName?.trim() || String(targetInfo.driverKind);
             const { commandId, eventId } = yield* Effect.all({
               commandId: serverCommandId("provider-manual-handoff-activity"),
               eventId: serverEventId(),
@@ -968,11 +1021,56 @@ const make = Effect.gen(function* () {
                 id: eventId,
                 tone: "info",
                 kind: "provider.handoff.completed",
-                summary: "Continued thread with a different provider",
+                summary: `Switched from ${sourceLabel} to ${targetLabel}`,
                 payload: {
+                  detail: modelSelectionStatusDetail(
+                    requestedModelSelection,
+                    event.payload.interactionMode,
+                    thread.runtimeMode,
+                  ),
                   sourceInstanceId,
+                  sourceProvider: sourceInfo.driverKind,
+                  sourceLabel,
+                  targetInstanceId: requestedModelSelection.instanceId,
+                  targetProvider: targetInfo.driverKind,
+                  targetLabel,
+                  targetModel: requestedModelSelection.model,
+                  targetOptions: requestedModelSelection.options ?? null,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: event.payload.interactionMode,
+                  immediateRequirement: message.text,
+                  inProgressWork: lastAssistantMessage?.text.trim() || null,
+                },
+                turnId: turn.turnId,
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          } else if (settingsUpdateRequested) {
+            const { commandId, eventId } = yield* Effect.all({
+              commandId: serverCommandId("thread-settings-applied-activity"),
+              eventId: serverEventId(),
+            });
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId: thread.id,
+              activity: {
+                id: eventId,
+                tone: "info",
+                kind: "thread.settings.applied",
+                summary: "Conversation settings updated",
+                payload: {
+                  detail: modelSelectionStatusDetail(
+                    requestedModelSelection,
+                    event.payload.interactionMode,
+                    thread.runtimeMode,
+                  ),
                   targetInstanceId: requestedModelSelection.instanceId,
                   targetModel: requestedModelSelection.model,
+                  targetOptions: requestedModelSelection.options ?? null,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: event.payload.interactionMode,
                 },
                 turnId: turn.turnId,
                 createdAt: event.payload.createdAt,
@@ -1008,7 +1106,59 @@ const make = Effect.gen(function* () {
     }
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    // A provider interrupt is cooperative and can acknowledge before its CLI or
+    // an in-flight tool actually exits. Explicit Stop is stronger: try the
+    // cooperative path briefly, then close the provider session so no orphaned
+    // process can continue emitting work. The next message restores the
+    // provider from its persisted resume cursor.
+    let cooperativeInterruptFailure: string | null = null;
+    yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+      Effect.timeout("2 seconds"),
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          cooperativeInterruptFailure = formatFailureDetail(cause);
+        }),
+      ),
+    );
+    const stopped = yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.interrupt.failed",
+          summary: "Provider turn interrupt failed",
+          detail: [
+            cooperativeInterruptFailure
+              ? `The provider did not acknowledge the cooperative interrupt: ${cooperativeInterruptFailure}`
+              : null,
+            `The provider session could not be stopped: ${formatFailureDetail(cause)}`,
+          ]
+            .filter((entry): entry is string => entry !== null)
+            .join("\n"),
+          turnId: event.payload.turnId ?? thread.session?.activeTurnId ?? null,
+          createdAt: event.payload.createdAt,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+    if (!stopped) return;
+    if (cooperativeInterruptFailure) {
+      yield* Effect.logWarning("provider cooperative interrupt required a forced session stop", {
+        threadId: event.payload.threadId,
+        detail: cooperativeInterruptFailure,
+      });
+    }
+    const interruptedAt = event.payload.createdAt;
+    yield* setThreadSession({
+      threadId: event.payload.threadId,
+      session: {
+        ...thread.session,
+        status: "stopped",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: interruptedAt,
+      },
+      createdAt: interruptedAt,
+    });
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
