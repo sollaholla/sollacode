@@ -106,6 +106,42 @@ describe("provider usage activity projection", () => {
   });
 });
 
+describe("Token Optimizer activity projection", () => {
+  it("projects optimizer telemetry as a first-class informational activity", () => {
+    const [activity] = runtimeEventToActivities({
+      type: "runtime.warning",
+      eventId: asEventId("optimizer-applied"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: "2026-07-31T00:00:00.000Z",
+      threadId: asThreadId("thread-optimizer"),
+      turnId: asTurnId("turn-optimizer"),
+      payload: {
+        message: "Optimized 2 pages · saved ~1,200 tokens",
+        detail: {
+          kind: "token-optimizer.applied",
+          compressedChars: 42_000,
+          pageCount: 2,
+          estimatedTokensSaved: 1_200,
+          attachments: [],
+        },
+      },
+      providerRefs: {},
+    });
+
+    expect(activity).toMatchObject({
+      kind: "token-optimizer.applied",
+      tone: "info",
+      summary: "Optimized 2 pages · saved ~1,200 tokens",
+      turnId: "turn-optimizer",
+      payload: {
+        compressedChars: 42_000,
+        pageCount: 2,
+        estimatedTokensSaved: 1_200,
+      },
+    });
+  });
+});
+
 describe("provider overload retry activity projection", () => {
   it("projects only the structured running retry reason for the chat status UI", () => {
     const base = {

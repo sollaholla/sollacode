@@ -2086,6 +2086,28 @@ function buildToolCallExpandedBody(
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
+  if (workEntry.tokenOptimizer) {
+    const optimized = workEntry.tokenOptimizer;
+    blocks.push(
+      [
+        `${optimized.compressedChars.toLocaleString()} characters rendered across ${optimized.pageCount.toLocaleString()} ${optimized.pageCount === 1 ? "page" : "pages"}`,
+        optimized.estimatedTextTokens !== undefined
+          ? `Text baseline: ~${optimized.estimatedTextTokens.toLocaleString()} tokens`
+          : null,
+        optimized.estimatedImageTokens !== undefined
+          ? `Image input: ~${optimized.estimatedImageTokens.toLocaleString()} tokens`
+          : null,
+        optimized.estimatedNativeTokens !== undefined
+          ? `Optimizer framing: ~${optimized.estimatedNativeTokens.toLocaleString()} tokens`
+          : null,
+        optimized.estimatedTokensSaved !== undefined
+          ? `Estimated saved: ~${optimized.estimatedTokensSaved.toLocaleString()} tokens`
+          : null,
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n"),
+    );
+  }
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
   }
@@ -2110,6 +2132,9 @@ function buildToolCallExpandedBody(
 }
 
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
+  if (workEntry.sourceActivityKind === "token-optimizer.applied") {
+    return "zap";
+  }
   if (
     workEntry.sourceActivityKind === "user-input.requested" ||
     workEntry.sourceActivityKind === "user-input.resolved"
@@ -2227,7 +2252,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {...rowToggleProps}
     >
       <div className="flex select-none items-center gap-1.5 transition-[opacity,translate] duration-200">
-        <span className={iconWrapperClass}>
+        <span
+          className={iconWrapperClass}
+          {...(workEntry.sourceActivityKind === "token-optimizer.applied"
+            ? { title: "Optimized", "aria-label": "Optimized" }
+            : {})}
+        >
           <WorkEntryIconSvg
             name={entryIconName}
             className="block size-3.5 shrink-0 stroke-[1.8] opacity-80"
@@ -2318,11 +2348,88 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
             {expandedBody}
           </pre>
+          {workEntry.tokenOptimizer?.attachments.length ? (
+            <TokenOptimizerPages
+              attachments={workEntry.tokenOptimizer.attachments}
+              revision={workEntry.id}
+            />
+          ) : null}
         </div>
       ) : null}
     </div>
   );
 });
+
+function TokenOptimizerPages(props: {
+  readonly attachments: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  readonly revision: string;
+}) {
+  return (
+    <div className="mt-2 grid max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
+      {props.attachments.map((attachment) => (
+        <TokenOptimizerPage key={attachment.id} attachment={attachment} revision={props.revision} />
+      ))}
+    </div>
+  );
+}
+
+function TokenOptimizerPage(props: {
+  readonly attachment: { readonly id: string; readonly name: string };
+  readonly revision: string;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const asset = useAssetUrlState(ctx.activeThreadEnvironmentId, {
+    _tag: "attachment",
+    attachmentId: props.attachment.id,
+  });
+  const previewUrl = asset._tag === "Success" ? withAssetRevision(asset.url, props.revision) : null;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const failed = asset._tag === "Failure" || (previewUrl !== null && failedUrl === previewUrl);
+
+  useEffect(() => setFailedUrl(null), [previewUrl]);
+
+  if (failed) {
+    return (
+      <div className="flex min-h-24 items-center justify-center rounded-md border border-border/45 px-3 text-center text-[11px] text-muted-foreground">
+        Optimized page preview unavailable.
+      </div>
+    );
+  }
+  if (!previewUrl) {
+    return (
+      <div className="flex min-h-24 items-center justify-center rounded-md border border-border/45 text-muted-foreground">
+        <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading optimized page" />
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="overflow-hidden rounded-md border border-border/45 bg-black/10 text-left"
+      aria-label={`Open optimized page: ${props.attachment.name}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        ctx.onImageExpand({
+          images: [{ src: previewUrl, name: props.attachment.name }],
+          index: 0,
+        });
+      }}
+      onPointerDown={stopRowToggle}
+    >
+      <img
+        src={previewUrl}
+        alt={props.attachment.name}
+        className="block max-h-72 w-full object-contain"
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailedUrl(previewUrl)}
+      />
+      <span className="block truncate border-t border-border/45 px-2 py-1 text-[10px] text-muted-foreground">
+        {props.attachment.name}
+      </span>
+    </button>
+  );
+}
 
 function ToolReadImagePreview(props: {
   readonly path: string;

@@ -761,6 +761,42 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
+  it("renders Token Optimizer evidence with a hoverable lightning affordance", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-optimizer",
+            kind: "work",
+            createdAt: "2026-07-31T00:00:00.000Z",
+            entry: {
+              id: "work-optimizer",
+              createdAt: "2026-07-31T00:00:00.000Z",
+              label: "Optimized 2 pages · saved ~4,200 tokens",
+              tone: "info",
+              sourceActivityKind: "token-optimizer.applied",
+              tokenOptimizer: {
+                model: "claude-fable-5",
+                compressedChars: 42_000,
+                pageCount: 2,
+                estimatedTextTokens: 10_500,
+                estimatedImageTokens: 6_000,
+                estimatedNativeTokens: 300,
+                estimatedTokensSaved: 4_200,
+                attachments: [{ id: "optimizer-page-1", name: "token-optimizer-page-1.png" }],
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Optimized 2 pages · saved ~4,200 tokens");
+    expect(markup).toContain('title="Optimized"');
+    expect(markup).toContain('aria-label="Optimized"');
+  });
+
   it("formats changed file paths from the workspace root", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline

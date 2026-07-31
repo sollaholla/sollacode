@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 
 import {
   useClientSettings,
+  usePrimarySettings,
   useSidebarV2Enabled,
   useUpdateClientSettings,
+  useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -56,14 +58,33 @@ function AutoSettleDaysInput({
 
 export function BetaSettingsPanel() {
   const sidebarV2Enabled = useSidebarV2Enabled();
+  const claudeTokenOptimizerEnabled = usePrimarySettings(
+    (settings) => settings.claudeTokenOptimizerEnabled,
+  );
   const sidebarAutoSettleAfterDays = useClientSettings(
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
   const updateSettings = useUpdateClientSettings();
+  const updatePrimarySettings = useUpdatePrimarySettings();
 
   return (
     <SettingsPageContainer>
       <SettingsSection title="Beta features">
+        <SettingsRow
+          title="Token Optimizer"
+          description="Fable 5 only. For new Claude sessions, when the measured ROI is positive, converts repeated bulk context such as tool documentation, large tool results, and older history into dense image pages. Your prompt, recent turns, and exact-value factsheet remain text. Off by default."
+          control={
+            <Switch
+              checked={claudeTokenOptimizerEnabled}
+              onCheckedChange={(checked) =>
+                updatePrimarySettings({
+                  claudeTokenOptimizerEnabled: Boolean(checked),
+                })
+              }
+              aria-label="Enable the Token Optimizer beta"
+            />
+          }
+        />
         <SettingsRow
           title="Sidebar v2"
           description="One flat thread list in creation order. Active work renders as rich cards; settled threads collapse to compact rows. Settling requires an up-to-date server — on older servers threads simply stay active. Switch back any time."

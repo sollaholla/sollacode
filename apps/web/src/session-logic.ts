@@ -87,6 +87,19 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  tokenOptimizer?: {
+    readonly model?: string;
+    readonly compressedChars: number;
+    readonly pageCount: number;
+    readonly estimatedTextTokens?: number;
+    readonly estimatedImageTokens?: number;
+    readonly estimatedNativeTokens?: number;
+    readonly estimatedTokensSaved?: number;
+    readonly attachments: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+    }>;
+  };
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -727,6 +740,35 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           : activity.tone,
     activityKind: activity.kind,
   };
+  if (activity.kind === "token-optimizer.applied" && payload) {
+    const compressedChars = asNumber(payload.compressedChars);
+    const pageCount = asNumber(payload.pageCount);
+    const attachments = Array.isArray(payload.attachments)
+      ? payload.attachments.flatMap((value) => {
+          const attachment = asRecord(value);
+          const id = asTrimmedString(attachment?.id);
+          const name = asTrimmedString(attachment?.name);
+          return id && name ? [{ id, name }] : [];
+        })
+      : [];
+    if (compressedChars !== null && pageCount !== null) {
+      const model = asTrimmedString(payload.model);
+      const estimatedTextTokens = asNumber(payload.estimatedTextTokens);
+      const estimatedImageTokens = asNumber(payload.estimatedImageTokens);
+      const estimatedNativeTokens = asNumber(payload.estimatedNativeTokens);
+      const estimatedTokensSaved = asNumber(payload.estimatedTokensSaved);
+      entry.tokenOptimizer = {
+        ...(model ? { model } : {}),
+        compressedChars,
+        pageCount,
+        ...(estimatedTextTokens !== null ? { estimatedTextTokens } : {}),
+        ...(estimatedImageTokens !== null ? { estimatedImageTokens } : {}),
+        ...(estimatedNativeTokens !== null ? { estimatedNativeTokens } : {}),
+        ...(estimatedTokensSaved !== null ? { estimatedTokensSaved } : {}),
+        attachments,
+      };
+    }
+  }
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   const readImagePath = extractReadImagePath(payload, {

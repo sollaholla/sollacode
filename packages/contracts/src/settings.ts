@@ -486,6 +486,9 @@ export const ServerSettings = Schema.Struct({
   autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_COMPACTION_THRESHOLD_PERCENTAGE)),
   ),
+  claudeTokenOptimizerEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   backgroundActivity: BackgroundActivitySettings,
@@ -644,6 +647,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
+  claudeTokenOptimizerEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(

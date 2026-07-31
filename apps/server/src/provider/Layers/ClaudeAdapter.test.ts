@@ -567,6 +567,33 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("routes opted-in Claude sessions through the loopback Token Optimizer", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+        ),
+        tokenOptimizerEnabled: true,
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.match(
+        createInput?.options.env?.ANTHROPIC_BASE_URL ?? "",
+        /^http:\/\/127\.0\.0\.1:\d+$/u,
+      );
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("preserves xhigh effort for Claude Opus 5", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

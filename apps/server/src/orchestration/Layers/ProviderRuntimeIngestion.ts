@@ -410,6 +410,26 @@ export function runtimeEventToActivities(
     }
 
     case "runtime.warning": {
+      const detail =
+        event.payload.detail !== null &&
+        typeof event.payload.detail === "object" &&
+        !Array.isArray(event.payload.detail)
+          ? (event.payload.detail as Record<string, unknown>)
+          : null;
+      if (detail?.kind === "token-optimizer.applied") {
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "token-optimizer.applied",
+            summary: truncateDetail(event.payload.message, 120),
+            payload: detail,
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       return [
         {
           id: event.eventId,
