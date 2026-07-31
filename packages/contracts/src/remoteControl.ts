@@ -113,6 +113,7 @@ export const RemoteControlHostEndInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
   sessionId: RemoteControlSessionId,
+  failureReason: Schema.optional(TrimmedNonEmptyString),
 });
 export type RemoteControlHostEndInput = typeof RemoteControlHostEndInput.Type;
 

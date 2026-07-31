@@ -280,3 +280,55 @@ it.effect("rejects controller input that the host approved as view-only", () =>
     }),
   ),
 );
+
+it.effect("reports host input failures to the controlling client", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const waiting = yield* broker.requestAccess(
+        {
+          clientId: "controller-client",
+          requestedCapabilities: ["screen", "pointer", "keyboard"],
+        },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find((event) => event.type === "access-requested");
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+
+      yield* broker.respondToRequest(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "approve",
+          grantedCapabilities: ["screen", "pointer", "keyboard"],
+        },
+        hostSessionId,
+      );
+
+      const failed = yield* broker.endByHost(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          sessionId: waiting.sessionId,
+          failureReason: "Windows rejected remote pointer input.",
+        },
+        hostSessionId,
+      );
+
+      expect(failed.status).toBe("failed");
+      expect(failed.failureReason).toBe("Windows rejected remote pointer input.");
+    }),
+  ),
+);
