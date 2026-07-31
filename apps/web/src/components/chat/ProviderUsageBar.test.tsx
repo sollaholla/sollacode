@@ -11,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   claudePopupWindows,
+  compactProviderUsageMetric,
   deriveProviderUsageReports,
   deriveProviderUsageSummaries,
   ProviderUsageBar,
@@ -843,6 +844,7 @@ describe("provider usage summaries", () => {
         rate_limits: {
           current_session: { utilization: 2 },
           seven_day: { utilization: 79 },
+          seven_day_fable: { utilization: 91 },
         },
       }),
       usageActivity("codex-render", "codex", "codex", {
@@ -861,29 +863,52 @@ describe("provider usage summaries", () => {
     );
 
     expect(markup).toContain('aria-label="Provider usage"');
-    expect(markup).toContain(
-      'aria-label="Show Claude usage details; Claude Current session: 2% used"',
-    );
+    expect(markup).toContain('aria-label="Show Claude usage details; Claude Fable: 91% used"');
     expect(markup).toContain(
       'aria-label="Show Codex account usage details; Codex Weekly: 38% used"',
     );
-    expect(markup).toContain('title="Claude Current session: 2% used"');
+    expect(markup).toContain('title="Claude Fable: 91% used"');
     expect(markup).toContain('title="Codex Weekly: 38% used"');
     expect(markup).toContain('data-provider-usage-compact-driver="claudeAgent"');
     expect(markup).toContain('data-provider-usage-compact-driver="codex"');
     expect(markup).not.toContain(">Current session<");
     expect(markup).not.toContain(">Weekly<");
-    expect(markup).toContain(">2%<");
+    expect(markup).toContain(">91%<");
     expect(markup).toContain(">38%<");
     expect(markup.match(/role="progressbar"/g)).toHaveLength(2);
-    expect(markup).toContain('aria-label="Claude Current session used"');
+    expect(markup).toContain('aria-label="Claude Fable used"');
     expect(markup).toContain('aria-label="Codex Weekly used"');
-    expect(markup).toContain('aria-valuenow="2"');
+    expect(markup).toContain('aria-valuenow="91"');
     expect(markup).toContain('aria-valuenow="38"');
     expect(markup).not.toContain(">Claude<");
     expect(markup).not.toContain(">Codex<");
     expect(markup).not.toContain(">Credits<");
     expect(markup).not.toContain(">79%<");
     expect(markup).not.toContain("% left");
+  });
+
+  it("uses the highest reported compact usage limit and ignores unreported limits", () => {
+    const provider = makeProvider("claudeAgent");
+    const metric = compactProviderUsageMetric({
+      provider,
+      state: "available",
+      reportedAt: null,
+      windows: [
+        { key: "current_session", label: "Current session", usedPercent: 74, resetAt: null },
+        { key: "seven_day", label: "Weekly", usedPercent: 81, resetAt: null },
+        {
+          key: "fable",
+          label: "Fable",
+          usedPercent: null,
+          resetAt: null,
+          detail: "Not reported",
+        },
+      ],
+    });
+
+    expect(metric).toEqual({
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
+    });
   });
 });

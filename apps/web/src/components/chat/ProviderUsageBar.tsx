@@ -441,32 +441,50 @@ function usageDetail(window: ProviderUsageWindow): string {
 }
 
 interface CompactProviderUsageMetric {
-  label: "Current session" | "Weekly";
+  label: string;
   window: ProviderUsageWindow | null;
 }
 
 export function compactProviderUsageMetric(
   summary: ProviderUsageSummary,
 ): CompactProviderUsageMetric | null {
+  if (summary.provider.driver !== "claudeAgent" && summary.provider.driver !== "codex") {
+    return null;
+  }
+
+  const highestReportedWindow = summary.windows.reduce<ProviderUsageWindow | null>(
+    (highest, candidate) => {
+      if (candidate.usedPercent === null) return highest;
+      if (highest === null || highest.usedPercent === null) return candidate;
+      return candidate.usedPercent > highest.usedPercent ? candidate : highest;
+    },
+    null,
+  );
+  if (highestReportedWindow) {
+    return {
+      label: highestReportedWindow.label,
+      window: highestReportedWindow,
+    };
+  }
+
   if (summary.provider.driver === "claudeAgent") {
+    const currentSession =
+      summary.windows.find(
+        (window) =>
+          window.key === "current_session" ||
+          window.label.trim().toLowerCase() === "current session",
+      ) ?? null;
     return {
       label: "Current session",
-      window:
-        summary.windows.find(
-          (window) =>
-            window.key === "current_session" ||
-            window.label.trim().toLowerCase() === "current session",
-        ) ?? null,
+      window: currentSession,
     };
   }
-  if (summary.provider.driver === "codex") {
-    return {
-      label: "Weekly",
-      window:
-        summary.windows.find((window) => window.label.trim().toLowerCase() === "weekly") ?? null,
-    };
-  }
-  return null;
+  const weekly =
+    summary.windows.find((window) => window.label.trim().toLowerCase() === "weekly") ?? null;
+  return {
+    label: "Weekly",
+    window: weekly,
+  };
 }
 
 function providerUsageName(provider: ServerProvider): string {
