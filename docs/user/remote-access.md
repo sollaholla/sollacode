@@ -22,9 +22,9 @@ same LAN or when you need a stable address across networks.
 
 ## Remote Control
 
-The conversation header includes **Remote connection** beside the project action controls. On a
-local thread it opens connection setup. On a connected remote thread it opens that computer's live
-remote-control window directly.
+Only remote-hosted threads show **Remote control** beside the project action controls. Selecting it
+connects directly to that thread's saved host when necessary, then opens that computer's live
+remote-control window. Local threads do not show the control.
 
 Remote control always starts with approval on the host computer. The host can decline, grant
 view-only access, or allow screen, pointer, and keyboard control. Primary shortcuts translate
@@ -36,6 +36,10 @@ pairing the device again clears the remembered approval.
 
 On macOS, screen streaming requires Screen Recording permission and interactive control requires
 Accessibility permission under **System Settings** → **Privacy & Security**.
+
+On Windows, Solla Code must run in the signed-in desktop session and at the same or a higher
+privilege level than the application being controlled. If Windows rejects pointer or keyboard
+injection, the controller receives the host error instead of a false success.
 
 ## Enabling Network Access
 

@@ -175,19 +175,105 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class SollaRemoteInput {
-  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
-  [DllImport("user32.dll")] public static extern void mouse_event(
-    uint flags, uint dx, uint dy, int data, UIntPtr extraInfo);
-  [DllImport("user32.dll")] public static extern void keybd_event(
-    byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+  private const uint INPUT_MOUSE = 0;
+  private const uint INPUT_KEYBOARD = 1;
+  private const uint MOUSEEVENTF_MOVE = 0x0001;
+  private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+  private const uint KEYEVENTF_KEYUP = 0x0002;
 
-  public static void Mouse(uint flags, int data) {
-    mouse_event(flags, 0, 0, data, UIntPtr.Zero);
+  [StructLayout(LayoutKind.Sequential)]
+  private struct INPUT {
+    public uint type;
+    public InputUnion data;
   }
 
-  public static void Key(byte virtualKey, bool down) {
-    keybd_event(virtualKey, 0, down ? 0u : 2u, UIntPtr.Zero);
+  [StructLayout(LayoutKind.Explicit)]
+  private struct InputUnion {
+    [FieldOffset(0)] public MOUSEINPUT mouse;
+    [FieldOffset(0)] public KEYBDINPUT keyboard;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct MOUSEINPUT {
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint flags;
+    public uint time;
+    public UIntPtr extraInfo;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct KEYBDINPUT {
+    public ushort virtualKey;
+    public ushort scanCode;
+    public uint flags;
+    public uint time;
+    public UIntPtr extraInfo;
+  }
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
+
+  private static void SendChecked(INPUT input, string description) {
+    var sent = SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+    if (sent == 1) return;
+    var code = Marshal.GetLastWin32Error();
+    var suffix = code == 0 ? "" : " Windows error " + code + ".";
+    throw new InvalidOperationException(
+      "Windows rejected remote " + description +
+      ". Make sure Solla Code is running in the signed-in desktop session and at the same " +
+      "privilege level as the app being controlled." + suffix);
+  }
+
+  public static void Pointer(double normalizedX, double normalizedY, uint flags, int data) {
+    var input = new INPUT {
+      type = INPUT_MOUSE,
+      data = new InputUnion {
+        mouse = new MOUSEINPUT {
+          dx = (int)Math.Round(Math.Max(0, Math.Min(1, normalizedX)) * 65535),
+          dy = (int)Math.Round(Math.Max(0, Math.Min(1, normalizedY)) * 65535),
+          mouseData = unchecked((uint)data),
+          flags = flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+          time = 0,
+          extraInfo = UIntPtr.Zero
+        }
+      }
+    };
+    SendChecked(input, "pointer input");
+  }
+
+  public static void Mouse(uint flags, int data) {
+    var input = new INPUT {
+      type = INPUT_MOUSE,
+      data = new InputUnion {
+        mouse = new MOUSEINPUT {
+          dx = 0,
+          dy = 0,
+          mouseData = unchecked((uint)data),
+          flags = flags,
+          time = 0,
+          extraInfo = UIntPtr.Zero
+        }
+      }
+    };
+    SendChecked(input, "mouse input");
+  }
+
+  public static void Key(ushort virtualKey, bool down) {
+    var input = new INPUT {
+      type = INPUT_KEYBOARD,
+      data = new InputUnion {
+        keyboard = new KEYBDINPUT {
+          virtualKey = virtualKey,
+          scanCode = 0,
+          flags = down ? 0u : KEYEVENTF_KEYUP,
+          time = 0,
+          extraInfo = UIntPtr.Zero
+        }
+      }
+    };
+    SendChecked(input, "keyboard input");
   }
 }
 '@
@@ -221,11 +307,7 @@ $pressedKeys = @{}
 $pressedButtons = @{}
 
 function Set-PointerPosition($eventData) {
-  $width = [SollaRemoteInput]::GetSystemMetrics(0)
-  $height = [SollaRemoteInput]::GetSystemMetrics(1)
-  $x = [Math]::Round([Math]::Max(0, [Math]::Min(1, [double]$eventData.x)) * [Math]::Max(0, $width - 1))
-  $y = [Math]::Round([Math]::Max(0, [Math]::Min(1, [double]$eventData.y)) * [Math]::Max(0, $height - 1))
-  [void][SollaRemoteInput]::SetCursorPos($x, $y)
+  [SollaRemoteInput]::Pointer([double]$eventData.x, [double]$eventData.y, 0, 0)
 }
 
 function Get-MouseFlag([string]$button, [string]$action) {
@@ -236,9 +318,18 @@ function Get-MouseFlag([string]$button, [string]$action) {
 
 function Invoke-RemoteInput($eventData) {
   if ($eventData.type -eq 'pointer') {
-    Set-PointerPosition $eventData
+    $flag = if ($eventData.action -eq 'move') {
+      0
+    } else {
+      Get-MouseFlag $eventData.button $eventData.action
+    }
+    [SollaRemoteInput]::Pointer(
+      [double]$eventData.x,
+      [double]$eventData.y,
+      [uint32]$flag,
+      0
+    )
     if ($eventData.action -ne 'move') {
-      [SollaRemoteInput]::Mouse((Get-MouseFlag $eventData.button $eventData.action), 0)
       if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = $true }
       else { $pressedButtons.Remove([string]$eventData.button) }
     }
@@ -256,15 +347,15 @@ function Invoke-RemoteInput($eventData) {
     $virtualKey = $keyCodes[[string]$eventData.code]
     if ($null -eq $virtualKey) { return }
     $down = $eventData.action -eq 'down'
-    [SollaRemoteInput]::Key([byte]$virtualKey, $down)
-    if ($down) { $pressedKeys[[string]$eventData.code] = [byte]$virtualKey }
+    [SollaRemoteInput]::Key([uint16]$virtualKey, $down)
+    if ($down) { $pressedKeys[[string]$eventData.code] = [uint16]$virtualKey }
     else { $pressedKeys.Remove([string]$eventData.code) }
   }
 }
 
 function Reset-RemoteInput {
   foreach ($virtualKey in @($pressedKeys.Values)) {
-    [SollaRemoteInput]::Key([byte]$virtualKey, $false)
+    [SollaRemoteInput]::Key([uint16]$virtualKey, $false)
   }
   foreach ($button in @($pressedButtons.Keys)) {
     [SollaRemoteInput]::Mouse((Get-MouseFlag ([string]$button) 'up'), 0)
@@ -302,6 +393,10 @@ interface PendingCommand {
 
 let remoteInputHelperDirectory: string | null = null;
 
+export function remoteInputScriptSource(platform: "darwin" | "win32"): string {
+  return platform === "darwin" ? MACOS_REMOTE_INPUT_SOURCE : WINDOWS_REMOTE_INPUT_SOURCE;
+}
+
 function remoteInputScriptPath(platform: "darwin" | "win32"): string {
   remoteInputHelperDirectory ??= NodeFS.mkdtempSync(
     NodePath.join(NodeOS.tmpdir(), "solla-remote-input-"),
@@ -310,14 +405,10 @@ function remoteInputScriptPath(platform: "darwin" | "win32"): string {
     remoteInputHelperDirectory,
     platform === "darwin" ? "solla-remote-input.js" : "solla-remote-input.ps1",
   );
-  NodeFS.writeFileSync(
-    path,
-    platform === "darwin" ? MACOS_REMOTE_INPUT_SOURCE : WINDOWS_REMOTE_INPUT_SOURCE,
-    {
-      encoding: "utf8",
-      mode: 0o600,
-    },
-  );
+  NodeFS.writeFileSync(path, remoteInputScriptSource(platform), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   return path;
 }
 

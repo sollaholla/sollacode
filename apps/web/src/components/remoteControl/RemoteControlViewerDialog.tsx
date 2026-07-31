@@ -9,7 +9,6 @@ import type {
 } from "@t3tools/contracts";
 import { MonitorIcon, ShieldCheckIcon } from "lucide-react";
 import {
-  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
   useCallback,
@@ -64,6 +63,7 @@ export function RemoteControlViewerDialog(props: {
   const [error, setError] = useState<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
   const [inputCaptured, setInputCaptured] = useState(false);
+  const inputCapturedRef = useRef(false);
   const requestStartedRef = useRef(false);
   const frameImageRef = useRef<HTMLImageElement>(null);
   const sessionRef = useRef(session);
@@ -209,9 +209,16 @@ export function RemoteControlViewerDialog(props: {
   }, [enqueueInput]);
 
   const releaseInputCapture = useCallback(() => {
+    inputCapturedRef.current = false;
     setInputCaptured(false);
     releasePressedInputs();
   }, [releasePressedInputs]);
+
+  const captureInput = useCallback(() => {
+    inputCapturedRef.current = true;
+    setInputCaptured(true);
+    setInputError(null);
+  }, []);
 
   useEffect(() => {
     if (!inputCaptured) return;
@@ -229,6 +236,7 @@ export function RemoteControlViewerDialog(props: {
 
   useEffect(
     () => () => {
+      inputCapturedRef.current = false;
       inputQueueRef.current = [];
       pressedKeysRef.current.clear();
       pressedPointerButtonRef.current = null;
@@ -243,6 +251,7 @@ export function RemoteControlViewerDialog(props: {
     setFrameData(null);
     setError(null);
     setInputError(null);
+    inputCapturedRef.current = false;
     setInputCaptured(false);
     inputQueueRef.current = [];
     pressedKeysRef.current.clear();
@@ -279,7 +288,7 @@ export function RemoteControlViewerDialog(props: {
     if (
       !shouldForwardRemoteSurfaceInput({
         capabilityGranted: canPointer,
-        inputCaptured,
+        inputCaptured: inputCapturedRef.current,
         kind: `pointer-${action}`,
         hasActivePointerPress: pressedPointerButtonRef.current !== null,
       })
@@ -307,7 +316,7 @@ export function RemoteControlViewerDialog(props: {
     if (
       !shouldForwardRemoteSurfaceInput({
         capabilityGranted: canPointer,
-        inputCaptured,
+        inputCaptured: inputCapturedRef.current,
         kind: "wheel",
       })
     ) {
@@ -330,30 +339,45 @@ export function RemoteControlViewerDialog(props: {
     });
   };
 
-  const sendKey = (event: ReactKeyboardEvent<HTMLDivElement>, action: "down" | "up") => {
-    if (
-      !event.code ||
-      !shouldForwardRemoteSurfaceInput({
-        capabilityGranted: canKeyboard,
-        inputCaptured,
-        kind: "key",
-      })
-    ) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    const code = normalizeRemoteControlKeyCode(event.code, platform);
-    if (action === "down") pressedKeysRef.current.set(code, event.key);
-    else pressedKeysRef.current.delete(code);
-    enqueueInput({
-      type: "key",
-      action,
-      code,
-      key: event.key.slice(0, 64),
-      repeat: action === "down" && event.repeat,
-    });
-  };
+  const sendKey = useCallback(
+    (event: KeyboardEvent, action: "down" | "up") => {
+      if (
+        !event.code ||
+        !shouldForwardRemoteSurfaceInput({
+          capabilityGranted: canKeyboard,
+          inputCaptured: inputCapturedRef.current,
+          kind: "key",
+        })
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const code = normalizeRemoteControlKeyCode(event.code, platform);
+      if (action === "down") pressedKeysRef.current.set(code, event.key);
+      else pressedKeysRef.current.delete(code);
+      enqueueInput({
+        type: "key",
+        action,
+        code,
+        key: event.key.slice(0, 64),
+        repeat: action === "down" && event.repeat,
+      });
+    },
+    [canKeyboard, enqueueInput, platform],
+  );
+
+  useEffect(() => {
+    if (!inputCaptured || !canKeyboard) return;
+    const handleKeyDown = (event: KeyboardEvent) => sendKey(event, "down");
+    const handleKeyUp = (event: KeyboardEvent) => sendKey(event, "up");
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
+    };
+  }, [canKeyboard, inputCaptured, sendKey]);
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && void close()}>
@@ -415,11 +439,9 @@ export function RemoteControlViewerDialog(props: {
               }`}
               tabIndex={canControl ? 0 : -1}
               onFocus={() => {
-                if (canControl) setInputCaptured(true);
+                if (canControl) captureInput();
               }}
               onBlur={releaseInputCapture}
-              onKeyDown={(event) => sendKey(event, "down")}
-              onKeyUp={(event) => sendKey(event, "up")}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -436,7 +458,7 @@ export function RemoteControlViewerDialog(props: {
               }}
               onPointerDown={(event) => {
                 if (!canControl) return;
-                setInputCaptured(true);
+                captureInput();
                 event.currentTarget.focus({ preventScroll: true });
                 if (!canPointer) return;
                 event.currentTarget.setPointerCapture(event.pointerId);

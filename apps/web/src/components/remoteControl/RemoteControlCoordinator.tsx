@@ -131,6 +131,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             clientId,
             connectionId: event.connectionId,
             sessionId: event.sessionId,
+            failureReason: message,
           },
         });
       });
@@ -244,6 +245,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             clientId,
             connectionId: active.connectionId,
             sessionId: active.session.sessionId,
+            failureReason: message,
           },
         });
       }

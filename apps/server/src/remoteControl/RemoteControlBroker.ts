@@ -508,8 +508,9 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           ...record,
           session: {
             ...record.session,
-            status: "ended",
+            status: input.failureReason ? "failed" : "ended",
             updatedAt: now,
+            ...(input.failureReason ? { failureReason: input.failureReason } : {}),
           },
         };
         const sessions = new Map(current.sessions);

@@ -2,7 +2,11 @@ import { assert, describe, it } from "@effect/vitest";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 
-import { RemoteInputController, remoteInputCommand } from "./RemoteInput.ts";
+import {
+  RemoteInputController,
+  remoteInputCommand,
+  remoteInputScriptSource,
+} from "./RemoteInput.ts";
 
 describe("RemoteInput", () => {
   it.effect("starts the persistent macOS helper and acknowledges a safe reset command", () =>
@@ -21,5 +25,14 @@ describe("RemoteInput", () => {
     assert.isTrue(command.args.includes("-File"));
     assert.isFalse(command.args.includes("-EncodedCommand"));
     assert.match(command.args.at(-1) ?? "", /solla-remote-input\.ps1$/u);
+  });
+
+  it("uses checked SendInput calls instead of silently acknowledged legacy Windows input", () => {
+    const source = remoteInputScriptSource("win32");
+    assert.include(source, "SendInput");
+    assert.include(source, "Windows rejected remote ");
+    assert.notInclude(source, "mouse_event");
+    assert.notInclude(source, "keybd_event");
+    assert.notInclude(source, "SetCursorPos");
   });
 });
