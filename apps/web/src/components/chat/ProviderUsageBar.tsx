@@ -445,6 +445,17 @@ interface CompactProviderUsageMetric {
   window: ProviderUsageWindow | null;
 }
 
+function maxReportedUsageWindow(
+  left: ProviderUsageWindow | null,
+  right: ProviderUsageWindow | null,
+): ProviderUsageWindow | null {
+  if (left === null || left.usedPercent === null) {
+    return right === null || right.usedPercent === null ? null : right;
+  }
+  if (right === null || right.usedPercent === null) return left;
+  return right.usedPercent > left.usedPercent ? right : left;
+}
+
 export function compactProviderUsageMetric(
   summary: ProviderUsageSummary,
 ): CompactProviderUsageMetric | null {
@@ -452,12 +463,20 @@ export function compactProviderUsageMetric(
     return null;
   }
 
+  if (summary.provider.driver === "claudeAgent") {
+    const [currentSession, weekly, fable] = claudePopupWindows(summary.windows);
+    const highestClaudeWindow = maxReportedUsageWindow(
+      maxReportedUsageWindow(fable ?? null, currentSession ?? null),
+      weekly ?? null,
+    );
+    return {
+      label: highestClaudeWindow?.label ?? "Current session",
+      window: highestClaudeWindow,
+    };
+  }
+
   const highestReportedWindow = summary.windows.reduce<ProviderUsageWindow | null>(
-    (highest, candidate) => {
-      if (candidate.usedPercent === null) return highest;
-      if (highest === null || highest.usedPercent === null) return candidate;
-      return candidate.usedPercent > highest.usedPercent ? candidate : highest;
-    },
+    (highest, candidate) => maxReportedUsageWindow(highest, candidate),
     null,
   );
   if (highestReportedWindow) {
@@ -467,18 +486,6 @@ export function compactProviderUsageMetric(
     };
   }
 
-  if (summary.provider.driver === "claudeAgent") {
-    const currentSession =
-      summary.windows.find(
-        (window) =>
-          window.key === "current_session" ||
-          window.label.trim().toLowerCase() === "current session",
-      ) ?? null;
-    return {
-      label: "Current session",
-      window: currentSession,
-    };
-  }
   const weekly =
     summary.windows.find((window) => window.label.trim().toLowerCase() === "weekly") ?? null;
   return {
