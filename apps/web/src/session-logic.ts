@@ -78,6 +78,11 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   /** Structured workspace path targeted by a recognized image-read tool call. */
   readImagePath?: string;
+  /**
+   * Activity that actually supplied `readImagePath`. Display rows merge tool
+   * lifecycle updates, so this can differ from the final row id.
+   */
+  readImageSourceActivityId?: string;
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
@@ -761,6 +766,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (readImagePath) {
     entry.readImagePath = readImagePath;
+    entry.readImageSourceActivityId = activity.id;
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;
@@ -824,6 +830,9 @@ function mergeDerivedWorkLogEntries(
   next: DerivedWorkLogEntry,
 ): DerivedWorkLogEntry {
   const readImagePath = next.readImagePath ?? previous.readImagePath;
+  const readImageSourceActivityId = next.readImagePath
+    ? next.readImageSourceActivityId
+    : previous.readImageSourceActivityId;
   const changedFiles = readImagePath
     ? []
     : mergeChangedFiles(previous.changedFiles, next.changedFiles);
@@ -848,6 +857,7 @@ function mergeDerivedWorkLogEntries(
     ...(itemType ? { itemType } : {}),
     ...(requestKind ? { requestKind } : {}),
     ...(readImagePath ? { readImagePath } : {}),
+    ...(readImageSourceActivityId ? { readImageSourceActivityId } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),

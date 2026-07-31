@@ -1313,6 +1313,33 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="Resume unfinished threads on startup"
+          description="Ask which incomplete threads should continue when Solla Code starts."
+          resetAction={
+            settings.showResumeThreadsOnStartup !==
+            DEFAULT_UNIFIED_SETTINGS.showResumeThreadsOnStartup ? (
+              <SettingResetButton
+                label="startup resume prompt"
+                onClick={() =>
+                  updateSettings({
+                    showResumeThreadsOnStartup: DEFAULT_UNIFIED_SETTINGS.showResumeThreadsOnStartup,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showResumeThreadsOnStartup}
+              onCheckedChange={(checked) =>
+                updateSettings({ showResumeThreadsOnStartup: Boolean(checked) })
+              }
+              aria-label="Show resume prompt on startup"
+            />
+          }
+        />
+
+        <SettingsRow
           title="New threads"
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={

@@ -1430,9 +1430,44 @@ describe("deriveWorkLogEntries", () => {
     expect(entries[0]).toMatchObject({
       id: "windows-image-view-complete",
       readImagePath: imagePath,
+      readImageSourceActivityId: "windows-image-view-complete",
     });
     expect(entries[0]?.detail).toBeUndefined();
     expect(entries[0]?.changedFiles).toBeUndefined();
+  });
+
+  it("keeps the authorizing activity id when a later lifecycle row omits the image path", () => {
+    const imagePath = "/tmp/sig_b.png";
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "image-read-update-with-path",
+        kind: "tool.updated",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: `Read: {"file_path":"${imagePath}"}`,
+          data: { toolCallId: "tool-read-image-lifecycle" },
+        },
+      }),
+      makeActivity({
+        id: "image-read-complete-without-path",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          data: { toolCallId: "tool-read-image-lifecycle", status: "completed" },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "image-read-complete-without-path",
+      readImagePath: imagePath,
+      readImageSourceActivityId: "image-read-update-with-path",
+    });
   });
 
   it("does not preview non-raster or non-read tool paths", () => {

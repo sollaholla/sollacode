@@ -2211,6 +2211,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         <ToolReadImagePreview
           path={workEntry.readImagePath}
           revision={workEntry.id}
+          sourceActivityId={workEntry.readImageSourceActivityId ?? workEntry.id}
           workspaceRoot={workspaceRoot}
         />
       ) : null}
@@ -2232,6 +2233,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 function ToolReadImagePreview(props: {
   readonly path: string;
   readonly revision: string;
+  readonly sourceActivityId: string;
   readonly workspaceRoot: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
@@ -2241,6 +2243,7 @@ function ToolReadImagePreview(props: {
     <ToolReadImagePreviewWithThread
       path={props.path}
       revision={props.revision}
+      sourceActivityId={props.sourceActivityId}
       workspaceRoot={props.workspaceRoot}
       threadRef={threadRef}
     />
@@ -2250,6 +2253,7 @@ function ToolReadImagePreview(props: {
 function ToolReadImagePreviewWithThread(props: {
   readonly path: string;
   readonly revision: string;
+  readonly sourceActivityId: string;
   readonly workspaceRoot: string | undefined;
   readonly threadRef: ScopedThreadRef;
 }) {
@@ -2267,9 +2271,9 @@ function ToolReadImagePreviewWithThread(props: {
       _tag: "workspace-file" as const,
       threadId: props.threadRef.threadId,
       path: props.path,
-      sourceActivityId: EventId.make(props.revision),
+      sourceActivityId: EventId.make(props.sourceActivityId),
     }),
-    [props.path, props.revision, props.threadRef.threadId],
+    [props.path, props.sourceActivityId, props.threadRef.threadId],
   );
   const asset = useAssetUrlState(ctx.activeThreadEnvironmentId, resource);
   const previewUrl = asset._tag === "Success" ? withAssetRevision(asset.url, props.revision) : null;

@@ -1695,41 +1695,61 @@ const makeWsRpcLayer = (
               }
               const allowExternalExactImage =
                 workspaceResource.sourceActivityId || workspaceResource.sourceMessageId
-                  ? yield* projectionSnapshotQuery
-                      .getThreadDetailById(workspaceResource.threadId)
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new AssetWorkspaceContextResolutionError({
-                              resource: workspaceResource,
-                              cause,
-                            }),
-                        ),
-                        Effect.map((detail) => {
-                          if (Option.isNone(detail)) return false;
-                          const sourceActivity = detail.value.activities.find(
-                            (activity) => activity.id === workspaceResource.sourceActivityId,
-                          );
-                          if (
-                            sourceActivity &&
-                            activityAuthorizesExternalImagePath(
-                              sourceActivity,
+                  ? yield* (
+                      projectionSnapshotQuery.getThreadAssetSource
+                        ? projectionSnapshotQuery.getThreadAssetSource(workspaceResource.threadId, {
+                            ...(workspaceResource.sourceActivityId
+                              ? { activityId: workspaceResource.sourceActivityId }
+                              : {}),
+                            ...(workspaceResource.sourceMessageId
+                              ? { messageId: workspaceResource.sourceMessageId }
+                              : {}),
+                          })
+                        : projectionSnapshotQuery
+                            .getThreadDetailById(workspaceResource.threadId)
+                            .pipe(
+                              Effect.map((detail) => ({
+                                activity: Option.isSome(detail)
+                                  ? (detail.value.activities.find(
+                                      (activity) =>
+                                        activity.id === workspaceResource.sourceActivityId,
+                                    ) ?? null)
+                                  : null,
+                                message: Option.isSome(detail)
+                                  ? (detail.value.messages.find(
+                                      (message) => message.id === workspaceResource.sourceMessageId,
+                                    ) ?? null)
+                                  : null,
+                              })),
+                            )
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new AssetWorkspaceContextResolutionError({
+                            resource: workspaceResource,
+                            cause,
+                          }),
+                      ),
+                      Effect.map((source) => {
+                        const sourceActivity = source.activity;
+                        if (
+                          sourceActivity &&
+                          activityAuthorizesExternalImagePath(
+                            sourceActivity,
+                            workspaceResource.path,
+                          )
+                        ) {
+                          return true;
+                        }
+                        const sourceMessage = source.message;
+                        return sourceMessage
+                          ? messageAuthorizesExternalImagePath(
+                              sourceMessage,
                               workspaceResource.path,
                             )
-                          ) {
-                            return true;
-                          }
-                          const sourceMessage = detail.value.messages.find(
-                            (message) => message.id === workspaceResource.sourceMessageId,
-                          );
-                          return sourceMessage
-                            ? messageAuthorizesExternalImagePath(
-                                sourceMessage,
-                                workspaceResource.path,
-                              )
-                            : false;
-                        }),
-                      )
+                          : false;
+                      }),
+                    )
                   : false;
               return yield* issueAssetUrl({
                 resource: workspaceResource,

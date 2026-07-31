@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
 
+const assetUrlStateCalls = vi.hoisted(() => [] as Array<unknown>);
+
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
 
@@ -118,10 +120,13 @@ vi.mock("@pierre/diffs/react", () => {
 
 vi.mock("../../assets/assetUrls", () => ({
   withAssetRevision: (url: string, revision: string) => `${url}?solla_revision=${revision}`,
-  useAssetUrlState: () => ({
-    _tag: "Success" as const,
-    url: "https://environment.example/api/assets/signed/reference.png",
-  }),
+  useAssetUrlState: (_environmentId: unknown, resource: unknown) => {
+    assetUrlStateCalls.push(resource);
+    return {
+      _tag: "Success" as const,
+      url: "https://environment.example/api/assets/signed/reference.png",
+    };
+  },
 }));
 
 function matchMedia() {
@@ -742,6 +747,7 @@ describe("MessagesTimeline", () => {
   });
 
   it("renders a signed inline image preview beneath an image-read tool call", () => {
+    assetUrlStateCalls.length = 0;
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -757,6 +763,7 @@ describe("MessagesTimeline", () => {
               tone: "tool",
               itemType: "dynamic_tool_call",
               readImagePath: "/workspace/art/reference.png",
+              readImageSourceActivityId: "activity-that-supplied-image-path",
             },
           },
         ]}
@@ -772,6 +779,9 @@ describe("MessagesTimeline", () => {
       'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-image-read"',
     );
     expect(markup).toContain("workspace/art/reference.png");
+    expect(assetUrlStateCalls.at(-1)).toMatchObject({
+      sourceActivityId: "activity-that-supplied-image-path",
+    });
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {

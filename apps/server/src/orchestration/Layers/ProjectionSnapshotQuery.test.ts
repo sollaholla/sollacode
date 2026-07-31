@@ -619,6 +619,97 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("reads only the exact activity and message used to authorize an asset", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const getThreadAssetSource = snapshotQuery.getThreadAssetSource;
+      assert.isDefined(getThreadAssetSource);
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          created_at
+        )
+        VALUES
+          (
+            'asset-source-activity',
+            'asset-source-thread',
+            NULL,
+            'tool',
+            'tool.completed',
+            'Read image',
+            '{"detail":"Read: {\\"file_path\\":\\"/tmp/sig_b.png\\"}"}',
+            '2026-07-30T20:00:00.000Z'
+          ),
+          (
+            'unrelated-poison-activity',
+            'asset-source-thread',
+            NULL,
+            'tool',
+            'tool.completed',
+            'Unrelated',
+            '{"unrelated":true}',
+            '2026-07-30T20:00:01.000Z'
+          )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          attachments_json,
+          created_at,
+          updated_at
+        )
+        VALUES
+          (
+            'asset-source-message',
+            'asset-source-thread',
+            NULL,
+            'assistant',
+            '[sig_b.png](/tmp/sig_b.png)',
+            0,
+            NULL,
+            '2026-07-30T20:00:02.000Z',
+            '2026-07-30T20:00:02.000Z'
+          ),
+          (
+            'unrelated-poison-message',
+            'asset-source-thread',
+            NULL,
+            'assistant',
+            'unrelated',
+            0,
+            NULL,
+            '2026-07-30T20:00:03.000Z',
+            '2026-07-30T20:00:03.000Z'
+          )
+      `;
+
+      const source = yield* getThreadAssetSource(ThreadId.make("asset-source-thread"), {
+        activityId: EventId.make("asset-source-activity"),
+        messageId: MessageId.make("asset-source-message"),
+      });
+
+      assert.equal(source.activity?.id, EventId.make("asset-source-activity"));
+      assert.equal(source.message?.id, MessageId.make("asset-source-message"));
+      yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = 'asset-source-thread'`;
+      yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = 'asset-source-thread'`;
+    }),
+  );
+
   it.effect("keeps archived threads out of the main shell snapshot", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
