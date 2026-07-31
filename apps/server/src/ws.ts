@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
+  AuthOrchestrationOperateScope,
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
@@ -29,6 +30,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
+  ProviderAccountSwitchError,
   ORCHESTRATION_WS_METHODS,
   type ProjectId,
   type ProjectEntriesFailure,
@@ -58,6 +60,10 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import {
+  activityAuthorizesExternalImagePath,
+  messageAuthorizesExternalImagePath,
+} from "./assets/ThreadAssetAuthorization.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
@@ -74,12 +80,14 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import * as ProviderAccountSwitch from "./provider/providerAccountSwitch.ts";
 import * as ServerSelfUpdate from "./service/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -334,6 +342,7 @@ function toAuthAccessStreamEvent(
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+  remoteControlBroker: RemoteControlBroker.RemoteControlBroker["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -353,6 +362,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
+      const providerAccountSwitch = yield* ProviderAccountSwitch.ProviderAccountSwitch;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -416,6 +426,19 @@ const makeWsRpcLayer = (
         currentSession.scopes.includes(requiredScope)
           ? stream
           : Stream.fail(authorizationError(requiredScope));
+      const authorizeDesktopHostEffect = <A, E, R>(
+        effect: Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
+        currentSession.subject === "desktop-bootstrap" &&
+        currentSession.method === "bearer-access-token"
+          ? effect
+          : Effect.fail(
+              new EnvironmentAuthorizationError({
+                message:
+                  "Remote-control host operations are only available to the local Solla Code desktop app.",
+                requiredScope: AuthOrchestrationOperateScope,
+              }),
+            );
       const observeRpcEffect = <A, E, R>(
         method: string,
         effect: Effect.Effect<A, E, R>,
@@ -1348,6 +1371,55 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverStartProviderAccountSwitch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverStartProviderAccountSwitch,
+            providerAccountSwitch.start(input.instanceId),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetProviderAccountSwitch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetProviderAccountSwitch,
+            providerAccountSwitch.get(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverOpenProviderAccountSwitchAuthLink]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverOpenProviderAccountSwitchAuthLink,
+            Effect.gen(function* () {
+              const state = yield* providerAccountSwitch.get(input);
+              if (!state || !state.authUrl) {
+                return yield* new ProviderAccountSwitchError({
+                  instanceId: input.instanceId,
+                  reason: "The provider login link is not available yet.",
+                });
+              }
+              yield* externalLauncher.launchBrowser(state.authUrl).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAccountSwitchError({
+                      instanceId: input.instanceId,
+                      reason: "The provider login link could not be opened on the host machine.",
+                      cause,
+                    }),
+                ),
+              );
+              return state;
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSubmitProviderAccountSwitchCode]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSubmitProviderAccountSwitchCode,
+            providerAccountSwitch.submitCode(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverCancelProviderAccountSwitch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCancelProviderAccountSwitch,
+            providerAccountSwitch.cancel(input),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
@@ -1588,20 +1660,21 @@ const makeWsRpcLayer = (
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
+              const workspaceResource = input.resource;
               const thread = yield* projectionSnapshotQuery
-                .getThreadShellById(input.resource.threadId)
+                .getThreadShellById(workspaceResource.threadId)
                 .pipe(
                   Effect.mapError(
                     (cause) =>
                       new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
+                        resource: workspaceResource,
                         cause,
                       }),
                   ),
                 );
               if (Option.isNone(thread)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
+                  resource: workspaceResource,
                 });
               }
               const project = yield* projectionSnapshotQuery
@@ -1610,19 +1683,58 @@ const makeWsRpcLayer = (
                   Effect.mapError(
                     (cause) =>
                       new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
+                        resource: workspaceResource,
                         cause,
                       }),
                   ),
                 );
               if (Option.isNone(project)) {
                 return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
+                  resource: workspaceResource,
                 });
               }
+              const allowExternalExactImage =
+                workspaceResource.sourceActivityId || workspaceResource.sourceMessageId
+                  ? yield* projectionSnapshotQuery
+                      .getThreadDetailById(workspaceResource.threadId)
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new AssetWorkspaceContextResolutionError({
+                              resource: workspaceResource,
+                              cause,
+                            }),
+                        ),
+                        Effect.map((detail) => {
+                          if (Option.isNone(detail)) return false;
+                          const sourceActivity = detail.value.activities.find(
+                            (activity) => activity.id === workspaceResource.sourceActivityId,
+                          );
+                          if (
+                            sourceActivity &&
+                            activityAuthorizesExternalImagePath(
+                              sourceActivity,
+                              workspaceResource.path,
+                            )
+                          ) {
+                            return true;
+                          }
+                          const sourceMessage = detail.value.messages.find(
+                            (message) => message.id === workspaceResource.sourceMessageId,
+                          );
+                          return sourceMessage
+                            ? messageAuthorizesExternalImagePath(
+                                sourceMessage,
+                                workspaceResource.path,
+                              )
+                            : false;
+                        }),
+                      )
+                  : false;
               return yield* issueAssetUrl({
-                resource: input.resource,
+                resource: workspaceResource,
                 workspaceRoot: thread.value.worktreePath ?? project.value.workspaceRoot,
+                allowExternalExactImage,
               });
             }),
             { "rpc.aggregate": "workspace" },
@@ -1839,6 +1951,63 @@ const makeWsRpcLayer = (
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
           ),
+        [WS_METHODS.remoteControlHostConnect]: (input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.remoteControlHostConnect,
+            authorizeDesktopHostEffect(remoteControlBroker.connectHost(input, currentSessionId)),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostRespond]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostRespond,
+            authorizeDesktopHostEffect(
+              remoteControlBroker.respondToRequest(input, currentSessionId),
+            ),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostPublishFrame]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostPublishFrame,
+            authorizeDesktopHostEffect(remoteControlBroker.publishFrame(input, currentSessionId)),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostEnd]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostEnd,
+            authorizeDesktopHostEffect(remoteControlBroker.endByHost(input, currentSessionId)),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlRequestAccess]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlRequestAccess,
+            remoteControlBroker.requestAccess(input, {
+              sessionId: currentSessionId,
+              subject: currentSession.subject,
+              client: {
+                label: currentSession.subject,
+                deviceType: "unknown",
+              },
+            }),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlWatch]: (input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.remoteControlWatch,
+            remoteControlBroker.watch(input, currentSessionId),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlSendInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlSendInput,
+            remoteControlBroker.sendInput(input, currentSessionId),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlCancel]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlCancel,
+            remoteControlBroker.cancel(input, currentSessionId),
+            { "rpc.aggregate": "remote-control" },
+          ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
@@ -1990,6 +2159,7 @@ const makeWsRpcLayer = (
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const remoteControlBroker = yield* RemoteControlBroker.RemoteControlBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     return HttpRouter.add(
       "GET",
@@ -2010,9 +2180,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           disableTracing: true,
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, previewAutomationBroker).pipe(
+            makeWsRpcLayer(session, previewAutomationBroker, remoteControlBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),
+              Layer.provide(ProviderAccountSwitch.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

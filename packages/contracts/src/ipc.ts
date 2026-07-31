@@ -44,6 +44,7 @@ import type {
   TerminalWriteInput,
 } from "./terminal.ts";
 import * as Schema from "effect/Schema";
+import { RemoteControlInput } from "./remoteControl.ts";
 import type {
   DiscoveredLocalServerList,
   PreviewCloseInput,
@@ -348,6 +349,100 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   tailscaleServeStatus: DesktopTailscaleServeStatusSchema,
   tailscaleServeConsentUrl: Schema.NullOr(Schema.String),
   tailscaleServePort: Schema.Number,
+});
+
+export interface DesktopLanPeer {
+  readonly id: string;
+  readonly environmentId: EnvironmentId | null;
+  readonly label: string;
+  readonly backendUrl: string;
+  readonly lastSeenAt: number;
+}
+
+export const DesktopLanPeerSchema = Schema.Struct({
+  id: Schema.String,
+  environmentId: Schema.NullOr(EnvironmentId),
+  label: Schema.String,
+  backendUrl: Schema.String,
+  lastSeenAt: Schema.Number,
+});
+
+export const DesktopLanDiscoveryIssueKindSchema = Schema.Literals([
+  "permission-denied",
+  "port-unavailable",
+  "network-unavailable",
+  "unknown",
+]);
+export type DesktopLanDiscoveryIssueKind = typeof DesktopLanDiscoveryIssueKindSchema.Type;
+
+export interface DesktopLanDiscoveryIssue {
+  readonly kind: DesktopLanDiscoveryIssueKind;
+  readonly title: string;
+  readonly detail: string;
+}
+
+export const DesktopLanDiscoveryIssueSchema = Schema.Struct({
+  kind: DesktopLanDiscoveryIssueKindSchema,
+  title: Schema.String,
+  detail: Schema.String,
+});
+
+export interface DesktopLanDiscoveryState {
+  readonly status: "ready" | "retrying";
+  readonly peers: ReadonlyArray<DesktopLanPeer>;
+  readonly issue: DesktopLanDiscoveryIssue | null;
+}
+
+export const DesktopLanDiscoveryStateSchema = Schema.Struct({
+  status: Schema.Literals(["ready", "retrying"]),
+  peers: Schema.Array(DesktopLanPeerSchema),
+  issue: Schema.NullOr(DesktopLanDiscoveryIssueSchema),
+});
+
+export interface DesktopLanPairingRequestInput {
+  readonly peerId: string;
+  readonly initiatorPairingUrl: string;
+}
+
+export const DesktopLanPairingRequestInputSchema = Schema.Struct({
+  peerId: Schema.String,
+  initiatorPairingUrl: Schema.String,
+});
+
+export interface DesktopLanPairingRequestResult {
+  readonly requestId: string;
+  readonly responderPairingUrl: string;
+}
+
+export const DesktopLanPairingRequestResultSchema = Schema.Struct({
+  requestId: Schema.String,
+  responderPairingUrl: Schema.String,
+});
+
+export interface DesktopLanPairingCompletionInput {
+  readonly requestId: string;
+  readonly responderPairingUrl?: string;
+  readonly error?: string;
+}
+
+export const DesktopLanPairingCompletionInputSchema = Schema.Struct({
+  requestId: Schema.String,
+  responderPairingUrl: Schema.optionalKey(Schema.String),
+  error: Schema.optionalKey(Schema.String),
+});
+
+export interface DesktopLanPairingApprovedEvent {
+  readonly type: "approved-request";
+  readonly requestId: string;
+  readonly initiatorLabel: string;
+  readonly initiatorPairingUrl: string;
+}
+
+export const DesktopLanPairingApprovedEventSchema = Schema.Struct({
+  type: Schema.Literal("approved-request"),
+  requestId: Schema.String,
+  initiatorLabel: Schema.String,
+  initiatorPairingUrl: Schema.String,
 });
 
 export interface PickFolderOptions {
@@ -888,6 +983,24 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   input: PreviewAutomationWaitForInput,
 });
 
+export const DesktopRemoteControlCaptureInputSchema = Schema.Struct({
+  maxWidth: Schema.Int.check(Schema.isBetween({ minimum: 640, maximum: 1_920 })),
+  jpegQuality: Schema.Int.check(Schema.isBetween({ minimum: 20, maximum: 90 })),
+});
+export type DesktopRemoteControlCaptureInput = typeof DesktopRemoteControlCaptureInputSchema.Type;
+
+export const DesktopRemoteControlFrameSchema = Schema.Struct({
+  capturedAt: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  mimeType: Schema.Literal("image/jpeg"),
+  width: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_840 })),
+  height: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_160 })),
+  data: Schema.String.check(Schema.isNonEmpty()),
+});
+export type DesktopRemoteControlFrame = typeof DesktopRemoteControlFrameSchema.Type;
+
+export const DesktopRemoteControlInputSchema = RemoteControlInput;
+export type DesktopRemoteControlInput = typeof DesktopRemoteControlInputSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
@@ -926,6 +1039,13 @@ export interface DesktopBridge {
   }) => Promise<DesktopServerExposureState>;
   reconcileTailscaleServe: () => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  listLanPeers: () => Promise<readonly DesktopLanPeer[]>;
+  getLanDiscoveryState: () => Promise<DesktopLanDiscoveryState>;
+  requestLanPairing: (
+    input: DesktopLanPairingRequestInput,
+  ) => Promise<DesktopLanPairingRequestResult>;
+  completeLanPairing: (input: DesktopLanPairingCompletionInput) => Promise<void>;
+  onLanPairingEvent: (listener: (event: DesktopLanPairingApprovedEvent) => void) => () => void;
   getWslState: () => Promise<DesktopWslState>;
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
@@ -943,6 +1063,12 @@ export interface DesktopBridge {
     readonly contents: string;
   }) => Promise<string>;
   revealFile: (path: string) => Promise<void>;
+  setPushToTalkSystemAudioMuted: (muted: boolean) => Promise<boolean>;
+  captureRemoteControlFrame: (
+    input: DesktopRemoteControlCaptureInput,
+  ) => Promise<DesktopRemoteControlFrame>;
+  sendRemoteControlInput: (input: DesktopRemoteControlInput) => Promise<void>;
+  resetRemoteControlInput: () => Promise<void>;
   startFileDrag: (path: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;

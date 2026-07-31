@@ -1,3 +1,5 @@
+import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
+
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
 
@@ -161,8 +163,8 @@ export function resolveMarkdownFileLinkTarget(
     ? parseFileUrlHref(rawHref)
     : null;
   const source = fileUrlTarget ?? stripSearchAndHash(rawHref);
-  const decodedPath = normalizeWindowsDrivePath(
-    fileUrlTarget ? source.path.trim() : safeDecode(source.path.trim()),
+  const decodedPath = normalizeEmbeddedWindowsAbsolutePath(
+    normalizeWindowsDrivePath(fileUrlTarget ? source.path.trim() : safeDecode(source.path.trim())),
   );
   const decodedHash = safeDecode(source.hash.trim());
 
@@ -365,11 +367,12 @@ function basenameOfPath(path: string): string {
 
 function workspaceRelativePath(path: string, workspaceRoot: string | undefined): string | null {
   if (!workspaceRoot) return null;
-  const normalizedPath = normalizeWindowsDrivePath(path.replaceAll("\\", "/"));
-  const normalizedRoot = normalizeWindowsDrivePath(workspaceRoot.replaceAll("\\", "/")).replace(
-    /\/+$/,
-    "",
+  const normalizedPath = normalizeWindowsDrivePath(
+    normalizeEmbeddedWindowsAbsolutePath(path).replaceAll("\\", "/"),
   );
+  const normalizedRoot = normalizeWindowsDrivePath(
+    normalizeEmbeddedWindowsAbsolutePath(workspaceRoot).replaceAll("\\", "/"),
+  ).replace(/\/+$/, "");
   const pathForCompare = normalizedPath.toLowerCase();
   const rootForCompare = normalizedRoot.toLowerCase();
   if (!pathForCompare.startsWith(`${rootForCompare}/`)) return null;

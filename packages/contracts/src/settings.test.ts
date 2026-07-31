@@ -16,6 +16,15 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
+describe("ClientSettings voice transcription", () => {
+  it("defaults auto-send off and accepts an explicit opt-in", () => {
+    expect(decodeClientSettings({}).autoSendVoiceTranscription).toBe(false);
+    expect(
+      decodeClientSettingsPatch({ autoSendVoiceTranscription: true }).autoSendVoiceTranscription,
+    ).toBe(true);
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);

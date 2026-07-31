@@ -4,6 +4,7 @@ import {
   isUncPath,
   isWindowsAbsolutePath,
   isWindowsDrivePath,
+  normalizeEmbeddedWindowsAbsolutePath,
 } from "./path.ts";
 
 describe("path helpers", () => {
@@ -22,6 +23,23 @@ describe("path helpers", () => {
     expect(isWindowsAbsolutePath("C:\\repo")).toBe(true);
     expect(isWindowsAbsolutePath("\\\\server\\share\\repo")).toBe(true);
     expect(isWindowsAbsolutePath("./repo")).toBe(false);
+  });
+
+  it("recovers drive-absolute paths accidentally prefixed with a project label", () => {
+    expect(
+      normalizeEmbeddedWindowsAbsolutePath(
+        "OpenWorldGame/C:/Users/me/OpenWorldGame/build/render.png",
+      ),
+    ).toBe("C:/Users/me/OpenWorldGame/build/render.png");
+    expect(
+      normalizeEmbeddedWindowsAbsolutePath(String.raw`OpenWorldGame\D:\renders\preview.png`),
+    ).toBe(String.raw`D:\renders\preview.png`);
+    expect(
+      normalizeEmbeddedWindowsAbsolutePath(
+        "GameProject/D:/GameProject/Temp/billboard_scene_after_dominant_forest.png",
+      ),
+    ).toBe("D:/GameProject/Temp/billboard_scene_after_dominant_forest.png");
+    expect(normalizeEmbeddedWindowsAbsolutePath("build/render.png")).toBe("build/render.png");
   });
 
   it("detects explicit relative paths", () => {

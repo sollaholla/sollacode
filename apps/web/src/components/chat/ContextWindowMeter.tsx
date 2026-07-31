@@ -8,11 +8,18 @@ import {
   MAX_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
   MIN_AUTO_COMPACTION_THRESHOLD_PERCENTAGE,
   type AutoCompactionThresholdPercentage,
+  type ProviderDriverKind,
 } from "@t3tools/contracts";
 import { useId } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 
 const AUTO_COMPACTION_TICKS = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95] as const;
+
+export function providerSupportsConfigurableAutoCompaction(
+  driver: ProviderDriverKind | null | undefined,
+): boolean {
+  return driver === "claudeAgent" || driver === "codex";
+}
 
 export function AutoCompactionThresholdControl(props: {
   maxTokens: number;

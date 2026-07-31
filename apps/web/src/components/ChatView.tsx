@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
+  type ProviderAccountSwitchState,
   type ProviderApprovalDecision,
   ProviderInstanceId,
   type ServerProvider,
@@ -73,6 +74,15 @@ import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
+import {
+  mergeVoiceTranscriptPrompt,
+  shouldTranscribeStoppedRecording,
+} from "../pushToTalkTranscription";
+import {
+  finishVoiceTranscriptionBackgroundTask,
+  startVoiceTranscriptionBackgroundTask,
+  useBackgroundTaskStore,
+} from "../backgroundTasks";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -233,6 +243,10 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import {
+  isProviderAccountSwitchActive,
+  ProviderAccountSwitchOverlay,
+} from "./chat/ProviderAccountSwitchOverlay";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
@@ -272,6 +286,7 @@ import {
 } from "./chat/draftHeroTransition";
 import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  authoritativeThreadSettingsFingerprint,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
@@ -285,6 +300,7 @@ import {
   isBranchMismatchDismissedForSession,
   isProviderOverloadRetrying,
   shouldShowBranchMismatchBanner,
+  shouldConfirmRemoteProviderAccountSwitch,
   getStartedThreadModelChangeBlockReason,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -335,9 +351,11 @@ import {
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
 import {
-  disposeTranscriptionWorker,
+  cancelActiveTranscription,
   isPushToTalkReleaseEvent,
   isPushToTalkShortcut,
+  isTranscriptionCancellationError,
+  resolveVisiblePushToTalkStatus,
   startRecorderWithCue,
   transcribeRecordedAudio,
 } from "../pushToTalk";
@@ -349,6 +367,7 @@ const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const PUSH_TO_TALK_MAX_RECORDING_MS = 120_000;
+const observedAuthoritativeThreadSettings = new Map<string, string>();
 function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
   const transitionGroupRef = useRef<HTMLDivElement | null>(null);
   const composerAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -1182,6 +1201,8 @@ function ChatViewContent(props: ChatViewProps) {
     [environmentId, threadId],
   );
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
+  const { environments } = useEnvironments();
+  const primaryEnvironment = usePrimaryEnvironment();
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
@@ -1189,6 +1210,33 @@ function ChatViewContent(props: ChatViewProps) {
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const startProviderAccountSwitch = useAtomCommand(serverEnvironment.startProviderAccountSwitch, {
+    reportFailure: false,
+  });
+  const getProviderAccountSwitch = useAtomCommand(serverEnvironment.getProviderAccountSwitch, {
+    reportFailure: false,
+  });
+  const openProviderAccountSwitchAuthLink = useAtomCommand(
+    serverEnvironment.openProviderAccountSwitchAuthLink,
+    { reportFailure: false },
+  );
+  const submitProviderAccountSwitchCode = useAtomCommand(
+    serverEnvironment.submitProviderAccountSwitchCode,
+    { reportFailure: false },
+  );
+  const cancelProviderAccountSwitch = useAtomCommand(
+    serverEnvironment.cancelProviderAccountSwitch,
+    { reportFailure: false },
+  );
+  const [providerAccountSwitch, setProviderAccountSwitch] =
+    useState<ProviderAccountSwitchState | null>(null);
+  const [providerAccountSwitchCancelling, setProviderAccountSwitchCancelling] = useState(false);
+  const [providerAccountSwitchSubmittingCode, setProviderAccountSwitchSubmittingCode] =
+    useState(false);
+  const [
+    pendingRemoteProviderAccountSwitchInstanceId,
+    setPendingRemoteProviderAccountSwitchInstanceId,
+  ] = useState<ProviderInstanceId | null>(null);
   const providerUsageRefreshRpcRef = useRef<(instanceId: ProviderInstanceId) => Promise<void>>(
     async () => undefined,
   );
@@ -1197,6 +1245,163 @@ function ChatViewContent(props: ChatViewProps) {
       refresh: (instanceId) => providerUsageRefreshRpcRef.current(instanceId),
     }),
   );
+
+  const beginProviderAccountSwitch = useCallback(
+    async (instanceId: ProviderInstanceId) => {
+      setProviderAccountSwitchCancelling(false);
+      setProviderAccountSwitchSubmittingCode(false);
+      const result = await startProviderAccountSwitch({
+        environmentId,
+        input: { instanceId },
+      });
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not switch provider account",
+          description: chatActionErrorMessage(error),
+        });
+        return;
+      }
+      setProviderAccountSwitch(result.value);
+    },
+    [environmentId, startProviderAccountSwitch],
+  );
+
+  const requestProviderAccountSwitch = useCallback(
+    (instanceId: ProviderInstanceId) => {
+      if (
+        shouldConfirmRemoteProviderAccountSwitch({
+          activeEnvironmentId: environmentId,
+          primaryEnvironmentId: primaryEnvironment?.environmentId ?? null,
+        })
+      ) {
+        setPendingRemoteProviderAccountSwitchInstanceId(instanceId);
+        return;
+      }
+      void beginProviderAccountSwitch(instanceId);
+    },
+    [beginProviderAccountSwitch, environmentId, primaryEnvironment?.environmentId],
+  );
+
+  const dismissProviderAccountSwitch = useCallback(() => {
+    setProviderAccountSwitch(null);
+    setProviderAccountSwitchCancelling(false);
+    setProviderAccountSwitchSubmittingCode(false);
+  }, []);
+
+  const cancelActiveProviderAccountSwitch = useCallback(async () => {
+    if (!providerAccountSwitch || !isProviderAccountSwitchActive(providerAccountSwitch)) return;
+    setProviderAccountSwitchCancelling(true);
+    const result = await cancelProviderAccountSwitch({
+      environmentId,
+      input: {
+        instanceId: providerAccountSwitch.instanceId,
+        switchId: providerAccountSwitch.id,
+      },
+    });
+    setProviderAccountSwitchCancelling(false);
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "error",
+        title: "Could not cancel account switch",
+        description: chatActionErrorMessage(error),
+      });
+      return;
+    }
+    setProviderAccountSwitch(result.value);
+  }, [cancelProviderAccountSwitch, environmentId, providerAccountSwitch]);
+
+  const submitActiveProviderAuthenticationCode = useCallback(
+    async (code: string): Promise<boolean> => {
+      if (!providerAccountSwitch || providerAccountSwitch.status !== "waiting_for_code") {
+        return false;
+      }
+      setProviderAccountSwitchSubmittingCode(true);
+      const result = await submitProviderAccountSwitchCode({
+        environmentId,
+        input: {
+          instanceId: providerAccountSwitch.instanceId,
+          switchId: providerAccountSwitch.id,
+          code,
+        },
+      });
+      setProviderAccountSwitchSubmittingCode(false);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not submit authentication code",
+          description: chatActionErrorMessage(error),
+        });
+        return false;
+      }
+      setProviderAccountSwitch(result.value);
+      return true;
+    },
+    [environmentId, providerAccountSwitch, submitProviderAccountSwitchCode],
+  );
+
+  const openProviderAuthenticationLink = useCallback(() => {
+    if (!providerAccountSwitch?.authUrl) return;
+    void openProviderAccountSwitchAuthLink({
+      environmentId,
+      input: {
+        instanceId: providerAccountSwitch.instanceId,
+        switchId: providerAccountSwitch.id,
+      },
+    }).then((result) => {
+      if (result._tag !== "Failure") return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add({
+        type: "warning",
+        title: "Could not open the provider login on the host",
+        description: chatActionErrorMessage(error),
+      });
+    });
+  }, [environmentId, openProviderAccountSwitchAuthLink, providerAccountSwitch]);
+
+  useEffect(() => {
+    if (!providerAccountSwitch || !isProviderAccountSwitchActive(providerAccountSwitch)) return;
+    let disposed = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling || disposed) return;
+      polling = true;
+      const result = await getProviderAccountSwitch({
+        environmentId,
+        input: {
+          instanceId: providerAccountSwitch.instanceId,
+          switchId: providerAccountSwitch.id,
+        },
+      });
+      polling = false;
+      if (disposed || result._tag === "Failure" || result.value === null) return;
+      setProviderAccountSwitch(result.value);
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 750);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [environmentId, getProviderAccountSwitch, providerAccountSwitch]);
+
+  useEffect(() => {
+    if (!providerAccountSwitch) return;
+    if (
+      providerAccountSwitch.status !== "succeeded" &&
+      providerAccountSwitch.status !== "cancelled"
+    ) {
+      return;
+    }
+    const timeout = window.setTimeout(
+      dismissProviderAccountSwitch,
+      providerAccountSwitch.status === "succeeded" ? 1_200 : 350,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [dismissProviderAccountSwitch, providerAccountSwitch]);
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
@@ -1227,8 +1432,6 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
-  const { environments } = useEnvironments();
-  const primaryEnvironment = usePrimaryEnvironment();
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
@@ -1331,6 +1534,14 @@ function ChatViewContent(props: ChatViewProps) {
   const [pushToTalkStatus, setPushToTalkStatus] = useState<
     "recording" | "loading" | "transcribing" | null
   >(null);
+  const backgroundPushToTalkStatus = useBackgroundTaskStore((store) => {
+    const task = store.tasks.find((candidate) => candidate.kind === "voice-transcription");
+    return task?.status === "loading" || task?.status === "transcribing" ? task.status : null;
+  });
+  const visiblePushToTalkStatus = resolveVisiblePushToTalkStatus(
+    pushToTalkStatus,
+    backgroundPushToTalkStatus,
+  );
   const pushToTalkStatusRef = useRef(pushToTalkStatus);
   pushToTalkStatusRef.current = pushToTalkStatus;
   const pushToTalkEnabledRef = useRef(false);
@@ -1980,6 +2191,28 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;
+  useLayoutEffect(() => {
+    if (!isServerThread || !activeThread || !activeThreadKey) return;
+    const fingerprint = authoritativeThreadSettingsFingerprint(activeThread);
+    if (observedAuthoritativeThreadSettings.get(activeThreadKey) === fingerprint) return;
+    observedAuthoritativeThreadSettings.set(activeThreadKey, fingerprint);
+    const nextSelection = activeThread.modelSelection;
+    setComposerDraftModelSelection(
+      scopeThreadRef(activeThread.environmentId, activeThread.id),
+      nextSelection,
+      { replaceOptions: true },
+    );
+    setComposerDraftRuntimeMode(composerDraftTarget, activeThread.runtimeMode);
+    setComposerDraftInteractionMode(composerDraftTarget, activeThread.interactionMode);
+  }, [
+    activeThread,
+    activeThreadKey,
+    composerDraftTarget,
+    isServerThread,
+    setComposerDraftInteractionMode,
+    setComposerDraftModelSelection,
+    setComposerDraftRuntimeMode,
+  ]);
   const threadProvider =
     activeThread?.modelSelection.instanceId ??
     activeProject?.defaultModelSelection?.instanceId ??
@@ -2151,6 +2384,16 @@ function ChatViewContent(props: ChatViewProps) {
   const compactAndContinueInFlightRef = useRef(false);
   const resumeIncompleteTurnInFlightRef = useRef(false);
   const [isResumeIncompleteTurnBusy, setIsResumeIncompleteTurnBusy] = useState(false);
+  const [isApplyingComposerSettings, setIsApplyingComposerSettings] = useState(false);
+  const [interruptRequestedThreadKey, setInterruptRequestedThreadKey] = useState<string | null>(
+    null,
+  );
+  const isInterrupting = phase === "running" && interruptRequestedThreadKey === activeThreadKey;
+  useEffect(() => {
+    if (phase !== "running" && interruptRequestedThreadKey !== null) {
+      setInterruptRequestedThreadKey(null);
+    }
+  }, [interruptRequestedThreadKey, phase]);
   const resumableAssistantMessageId = useMemo(
     () =>
       deriveResumableAssistantMessageId({
@@ -2615,6 +2858,28 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  useEffect(() => {
+    if (providerAccountSwitch || !activeProviderInstanceId) return;
+    let disposed = false;
+    let polling = false;
+    const discoverHostAccountSwitch = async () => {
+      if (disposed || polling) return;
+      polling = true;
+      const result = await getProviderAccountSwitch({
+        environmentId,
+        input: { instanceId: activeProviderInstanceId },
+      });
+      polling = false;
+      if (disposed || result._tag === "Failure" || result.value === null) return;
+      setProviderAccountSwitch(result.value);
+    };
+    void discoverHostAccountSwitch();
+    const interval = window.setInterval(() => void discoverHostAccountSwitch(), 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [activeProviderInstanceId, environmentId, getProviderAccountSwitch, providerAccountSwitch]);
   const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
@@ -5006,6 +5271,7 @@ function ChatViewContent(props: ChatViewProps) {
       sendInFlightRef.current = true;
       beginLocalDispatch({ preparingWorktree: false });
       setThreadError(activeThread.id, null);
+      prepareTimelineForSend(messageId);
       setOptimisticUserMessages((existing) => [
         ...existing,
         {
@@ -5077,11 +5343,30 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  const onApplyComposerSettings = useCallback(
+    (description: string) => {
+      if (isApplyingComposerSettings) return;
+      setIsApplyingComposerSettings(true);
+      void sendAutomatedConversationTurn(
+        `Settings updated: ${description}. Apply these settings immediately and continue the current task without waiting for another message.`,
+        { preserveExactText: true },
+      )
+        .catch((error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : "Failed to apply conversation settings.";
+          if (activeThread) setThreadError(activeThread.id, message);
+        })
+        .finally(() => setIsApplyingComposerSettings(false));
+    },
+    [activeThread, isApplyingComposerSettings, sendAutomatedConversationTurn, setThreadError],
+  );
+
   const onResumeIncompleteTurn = useCallback(() => {
     if (
       !activeThread ||
       resumableAssistantMessageId === null ||
       isWorking ||
+      activeEnvironmentUnavailable ||
       resumeIncompleteTurnInFlightRef.current ||
       sendInFlightRef.current
     ) {
@@ -5113,6 +5398,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
   }, [
     activeThread,
+    activeEnvironmentUnavailable,
     isWorking,
     resumableAssistantMessageId,
     sendAutomatedConversationTurn,
@@ -5220,8 +5506,9 @@ function ChatViewContent(props: ChatViewProps) {
 
   pushToTalkEnabledRef.current =
     appVoiceCaptureEnabled &&
+    backgroundPushToTalkStatus === null &&
     Boolean(activeThread) &&
-    !isWorking &&
+    !isRevertingCheckpoint &&
     !isSendBusy &&
     !isConnecting &&
     !threadDetailLoading &&
@@ -5242,6 +5529,7 @@ function ChatViewContent(props: ChatViewProps) {
     let chunks: Blob[] = [];
     let recordingTimeout: number | null = null;
     let recordingTimedOut = false;
+    let systemAudioMuteRequested = false;
 
     const clearRecordingTimeout = () => {
       if (recordingTimeout === null) return;
@@ -5250,8 +5538,14 @@ function ChatViewContent(props: ChatViewProps) {
     };
 
     const reportError = (title: string, description: string) => {
-      setPushToTalkStatus(null);
+      if (!disposed) setPushToTalkStatus(null);
       toastManager.add(stackedThreadToast({ type: "error", title, description }));
+    };
+
+    const restoreSystemAudio = () => {
+      if (!systemAudioMuteRequested) return;
+      systemAudioMuteRequested = false;
+      void window.desktopBridge?.setPushToTalkSystemAudioMuted(false).catch(() => undefined);
     };
 
     const startRecording = async () => {
@@ -5273,9 +5567,20 @@ function ChatViewContent(props: ChatViewProps) {
       }
 
       try {
-        const nextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (window.desktopBridge) {
+          systemAudioMuteRequested = true;
+          await window.desktopBridge.setPushToTalkSystemAudioMuted(true).catch(() => false);
+        }
+        const nextStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
         if (disposed || !held) {
           nextStream.getTracks().forEach((track) => track.stop());
+          restoreSystemAudio();
           return;
         }
         stream = nextStream;
@@ -5288,28 +5593,43 @@ function ChatViewContent(props: ChatViewProps) {
           "stop",
           () => {
             clearRecordingTimeout();
+            restoreSystemAudio();
             const audio = new Blob(chunks, { type: recorder?.mimeType || "audio/webm" });
             recorder = null;
             stream?.getTracks().forEach((track) => track.stop());
             stream = null;
-            if (recordingTimedOut) {
-              recordingTimedOut = false;
-              reportError(
-                "Recording stopped",
-                "Push-to-talk recordings are limited to two minutes.",
-              );
-              return;
-            }
-            if (disposed || audio.size === 0) {
+            if (!disposed) setPushToTalkStatus(null);
+            const reachedRecordingLimit = recordingTimedOut;
+            recordingTimedOut = false;
+            if (
+              !shouldTranscribeStoppedRecording({
+                audioByteLength: audio.size,
+                reachedRecordingLimit,
+              })
+            ) {
               setPushToTalkStatus(null);
               return;
             }
-            setPushToTalkStatus("loading");
+            if (reachedRecordingLimit) {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "info",
+                  title: "Two-minute recording limit reached",
+                  description: "Transcribing everything recorded so far.",
+                }),
+              );
+            }
+            const transcriptionTaskId = startVoiceTranscriptionBackgroundTask();
             void transcribeRecordedAudio(audio, (progress) => {
-              if (!disposed) setPushToTalkStatus(progress.status);
+              useBackgroundTaskStore.getState().updateTask(transcriptionTaskId, {
+                status: progress.status,
+                progress:
+                  progress.status === "loading"
+                    ? Math.max(5, progress.progress ?? 5)
+                    : Math.max(15, progress.progress ?? 50),
+              });
             })
               .then((transcript) => {
-                if (disposed) return;
                 if (!transcript) {
                   reportError(
                     "No speech detected",
@@ -5317,23 +5637,60 @@ function ChatViewContent(props: ChatViewProps) {
                   );
                   return;
                 }
-                promptRef.current = transcript;
-                setComposerDraftPrompt(composerDraftTarget, transcript);
-                composerRef.current?.resetCursorState({
-                  cursor: transcript.length,
-                  prompt: transcript,
-                });
-                setPushToTalkStatus(null);
-                void onSendRef.current(undefined, "transcription");
+                const draftStore = useComposerDraftStore.getState();
+                const persistedPrompt =
+                  draftStore.getComposerDraft(composerDraftTarget)?.prompt ?? promptRef.current;
+                const nextPrompt = mergeVoiceTranscriptPrompt(persistedPrompt, transcript);
+                draftStore.setPrompt(composerDraftTarget, nextPrompt);
+                if (!disposed) {
+                  promptRef.current = nextPrompt;
+                  composerRef.current?.resetCursorState({
+                    cursor: nextPrompt.length,
+                    prompt: nextPrompt,
+                  });
+                }
+                if (settings.autoSendVoiceTranscription && !disposed) {
+                  void onSendRef.current(undefined, "transcription");
+                } else if (!disposed) {
+                  // Let the draft-store render reach the editor before
+                  // focusing it. Focusing the old editor value synchronously
+                  // can emit a stale empty change and erase the transcript.
+                  window.requestAnimationFrame(() => {
+                    if (disposed) return;
+                    const persistedPrompt =
+                      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
+                        ?.prompt ?? "";
+                    let promptForFocus = persistedPrompt;
+                    if (persistedPrompt !== nextPrompt && persistedPrompt.length === 0) {
+                      promptRef.current = nextPrompt;
+                      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+                      promptForFocus = nextPrompt;
+                    }
+                    composerRef.current?.resetCursorState({
+                      cursor: promptForFocus.length,
+                      prompt: promptForFocus,
+                    });
+                    composerRef.current?.focusAtEnd();
+                  });
+                } else {
+                  toastManager.add({
+                    type: "success",
+                    title: "Transcription added to your draft",
+                    description: "Return to the conversation when you are ready to send it.",
+                  });
+                }
               })
               .catch((cause) => {
-                if (disposed) return;
+                if (isTranscriptionCancellationError(cause)) return;
                 reportError(
                   "Transcription failed",
                   cause instanceof Error
                     ? cause.message
                     : "The local Whisper model could not transcribe this recording.",
                 );
+              })
+              .finally(() => {
+                finishVoiceTranscriptionBackgroundTask(transcriptionTaskId);
               });
           },
           { once: true },
@@ -5346,9 +5703,11 @@ function ChatViewContent(props: ChatViewProps) {
           if (recorder?.state !== "recording") return;
           recordingTimedOut = true;
           held = false;
+          restoreSystemAudio();
           recorder.stop();
         }, PUSH_TO_TALK_MAX_RECORDING_MS);
       } catch (cause) {
+        restoreSystemAudio();
         reportError(
           "Microphone access failed",
           cause instanceof Error ? cause.message : "Solla Code could not access the microphone.",
@@ -5362,8 +5721,11 @@ function ChatViewContent(props: ChatViewProps) {
       void startRecording();
     };
     const endHolding = () => {
-      if (!held) return;
       held = false;
+      restoreSystemAudio();
+      if (pushToTalkStatusRef.current === "recording" && !disposed) {
+        setPushToTalkStatus(null);
+      }
       if (recorder?.state === "recording") recorder.stop();
     };
     pushToTalkStartRef.current = beginHolding;
@@ -5397,8 +5759,10 @@ function ChatViewContent(props: ChatViewProps) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disposed = true;
+      setPushToTalkStatus(null);
       pushToTalkStartRef.current = () => undefined;
       pushToTalkStopRef.current = () => undefined;
+      const recordingWasActive = recorder?.state === "recording";
       endHolding();
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
@@ -5407,19 +5771,26 @@ function ChatViewContent(props: ChatViewProps) {
       document.removeEventListener("focusout", stopOnFocusLoss, true);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       clearRecordingTimeout();
-      if (recorder?.state === "recording") recorder.stop();
-      stream?.getTracks().forEach((track) => track.stop());
-      disposeTranscriptionWorker();
+      if (!recordingWasActive) stream?.getTracks().forEach((track) => track.stop());
+      restoreSystemAudio();
     };
-  }, [appVoiceCaptureEnabled, composerDraftTarget, composerRef, setComposerDraftPrompt]);
+  }, [
+    appVoiceCaptureEnabled,
+    composerDraftTarget,
+    composerRef,
+    setComposerDraftPrompt,
+    settings.autoSendVoiceTranscription,
+  ]);
 
   const onInterrupt = async () => {
-    if (!activeThread) return;
+    if (!activeThread || isInterrupting) return;
+    setInterruptRequestedThreadKey(activeThreadKey);
     const result = await interruptThreadTurn({
       environmentId,
       input: buildThreadTurnInterruptInput(activeThread),
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      setInterruptRequestedThreadKey(null);
       const error = squashAtomCommandFailure(result);
       setThreadError(
         activeThread.id,
@@ -6236,6 +6607,27 @@ function ChatViewContent(props: ChatViewProps) {
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
           <div data-chat-main-pane="true" className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            {providerAccountSwitch ? (
+              <ProviderAccountSwitchOverlay
+                state={providerAccountSwitch}
+                provider={
+                  providerStatuses.find(
+                    (provider) => provider.instanceId === providerAccountSwitch.instanceId,
+                  ) ?? null
+                }
+                cancelling={providerAccountSwitchCancelling}
+                submittingCode={providerAccountSwitchSubmittingCode}
+                onCancel={() => void cancelActiveProviderAccountSwitch()}
+                onDismiss={dismissProviderAccountSwitch}
+                onOpenAuthLink={openProviderAuthenticationLink}
+                onRetry={() => {
+                  const instanceId = providerAccountSwitch.instanceId;
+                  setProviderAccountSwitch(null);
+                  void beginProviderAccountSwitch(instanceId);
+                }}
+                onSubmitAuthCode={submitActiveProviderAuthenticationCode}
+              />
+            ) : null}
             {/* Provider status overlays the timeline without changing its content height. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
               <ProviderStatusBanner
@@ -6246,6 +6638,7 @@ function ChatViewContent(props: ChatViewProps) {
             {providerUsagePlacement === "draft-pane-top" ? (
               <ProviderUsagePlacementRow placement={providerUsagePlacement}>
                 <ProviderUsageBar
+                  environmentId={environmentId}
                   providers={providerStatuses}
                   activities={activeThread.activities}
                   detailsSide={providerUsageDetailsSide(true)}
@@ -6303,6 +6696,7 @@ function ChatViewContent(props: ChatViewProps) {
                 resumableAssistantMessageId={resumableAssistantMessageId}
                 onResumeIncompleteTurn={onResumeIncompleteTurn}
                 isResumeIncompleteTurnBusy={isResumeIncompleteTurnBusy}
+                isResumeIncompleteTurnDisabled={activeEnvironmentUnavailable}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
@@ -6354,6 +6748,7 @@ function ChatViewContent(props: ChatViewProps) {
                 {providerUsagePlacement === "active-footer" ? (
                   <ProviderUsagePlacementRow placement={providerUsagePlacement}>
                     <ProviderUsageBar
+                      environmentId={environmentId}
                       providers={providerStatuses}
                       activities={activeThread.activities}
                       detailsSide={providerUsageDetailsSide(false)}
@@ -6404,18 +6799,45 @@ function ChatViewContent(props: ChatViewProps) {
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
-                          {pushToTalkStatus ? (
-                            <div
-                              className="absolute -top-8 left-3 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm"
+                          {visiblePushToTalkStatus ? (
+                            <button
+                              aria-label={
+                                visiblePushToTalkStatus === "recording"
+                                  ? undefined
+                                  : "Cancel voice transcription"
+                              }
+                              className="absolute -top-8 left-3 flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm disabled:cursor-default"
+                              disabled={visiblePushToTalkStatus === "recording"}
+                              onClick={() => {
+                                cancelActiveTranscription();
+                              }}
                               role="status"
                               aria-live="polite"
+                              title={
+                                visiblePushToTalkStatus === "recording"
+                                  ? undefined
+                                  : "Cancel voice transcription"
+                              }
+                              type="button"
                             >
-                              {pushToTalkStatus === "recording"
-                                ? "Listening… release to send"
-                                : pushToTalkStatus === "loading"
-                                  ? "Loading local transcription model…"
-                                  : "Transcribing…"}
-                            </div>
+                              <span>
+                                {visiblePushToTalkStatus === "recording"
+                                  ? settings.autoSendVoiceTranscription
+                                    ? "Listening… release to transcribe and send"
+                                    : "Listening… release to transcribe"
+                                  : visiblePushToTalkStatus === "loading"
+                                    ? "Loading local transcription model…"
+                                    : "Transcribing…"}
+                              </span>
+                              {visiblePushToTalkStatus === "recording" ? null : (
+                                <span
+                                  aria-hidden="true"
+                                  className="text-base leading-none text-foreground/75"
+                                >
+                                  ×
+                                </span>
+                              )}
+                            </button>
                           ) : null}
                           <ChatComposer
                             composerRef={composerRef}
@@ -6436,13 +6858,13 @@ function ChatViewContent(props: ChatViewProps) {
                             isSendBusy={isSendBusy}
                             sendDisabledReason={threadDetailLoading ? "Messages loading" : null}
                             isPreparingWorktree={isPreparingWorktree}
-                            pushToTalkStatus={pushToTalkStatus}
+                            pushToTalkStatus={visiblePushToTalkStatus}
                             pushToTalkDisabled={
-                              !pushToTalkEnabledRef.current || pushToTalkStatus !== null
+                              !pushToTalkEnabledRef.current || visiblePushToTalkStatus !== null
                             }
-                            pushToTalkDisabledReason={
-                              isWorking ? "Microphone unavailable while the agent is working" : null
-                            }
+                            pushToTalkDisabledReason={null}
+                            isApplyingSettings={isApplyingComposerSettings}
+                            isInterrupting={isInterrupting}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
                             pendingApprovals={pendingApprovals}
@@ -6480,6 +6902,9 @@ function ChatViewContent(props: ChatViewProps) {
                             onSend={onSend}
                             onPushToTalkStart={() => pushToTalkStartRef.current()}
                             onPushToTalkStop={() => pushToTalkStopRef.current()}
+                            activeProviderAccountSwitch={providerAccountSwitch}
+                            onSwitchProviderAccount={requestProviderAccountSwitch}
+                            onApplySettings={onApplyComposerSettings}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
@@ -6560,6 +6985,38 @@ function ChatViewContent(props: ChatViewProps) {
                 bottomInset={isDraftHeroState ? 0 : floatingFooterBottomInset}
               />
             ) : null}
+
+            <AlertDialog
+              open={pendingRemoteProviderAccountSwitchInstanceId !== null}
+              onOpenChange={(open) => {
+                if (!open) setPendingRemoteProviderAccountSwitchInstanceId(null);
+              }}
+            >
+              <AlertDialogPopup>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Switch the account on the host machine?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Authentication will run on{" "}
+                    {activeEnvironment?.label ? `${activeEnvironment.label}, ` : "the host, "}
+                    not on this device. You’ll need access to that machine to complete its browser
+                    sign-in. The conversation can keep running while you switch accounts.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+                  <Button
+                    variant="default"
+                    onClick={() => {
+                      const instanceId = pendingRemoteProviderAccountSwitchInstanceId;
+                      setPendingRemoteProviderAccountSwitchInstanceId(null);
+                      if (instanceId) void beginProviderAccountSwitch(instanceId);
+                    }}
+                  >
+                    Continue on host
+                  </Button>
+                </AlertDialogFooter>
+              </AlertDialogPopup>
+            </AlertDialog>
 
             <AlertDialog open={branchRestoreConfirmOpen} onOpenChange={setBranchRestoreConfirmOpen}>
               <AlertDialogPopup>

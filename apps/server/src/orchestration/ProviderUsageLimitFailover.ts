@@ -12,6 +12,7 @@ export const PROVIDER_HANDOFF_MAX_MESSAGES = 24;
 export const PROVIDER_HANDOFF_MAX_MESSAGE_CHARS = 2_000;
 
 const METADATA_STRING_MAX_CHARS = 256;
+const CONTINUITY_STRING_MAX_CHARS = 512;
 
 type UnknownRecord = Readonly<Record<string, unknown>>;
 
@@ -37,6 +38,8 @@ export interface ProviderHandoffSummaryInput {
   readonly to: ProviderFailoverTarget;
   readonly exhaustion: ProviderUsageLimitExhaustion;
   readonly generatedAt: string;
+  readonly immediateRequirement?: string | null;
+  readonly inProgressWork?: string | null;
 }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
@@ -53,6 +56,12 @@ function boundedMetadata(value: string): string {
   return value.length <= METADATA_STRING_MAX_CHARS
     ? value
     : `${value.slice(0, METADATA_STRING_MAX_CHARS - 1)}…`;
+}
+
+function boundedContinuity(value: string): string {
+  return value.length <= CONTINUITY_STRING_MAX_CHARS
+    ? value
+    : `${value.slice(0, CONTINUITY_STRING_MAX_CHARS - 1)}…`;
 }
 
 function latestResetAt(records: ReadonlyArray<UnknownRecord | undefined>): number | null {
@@ -153,12 +162,27 @@ function targetFromProvider(provider: ServerProvider): ProviderFailoverTarget | 
   if (!model) {
     return null;
   }
+  const options: Array<{ readonly id: string; readonly value: string | boolean }> = [];
+  for (const descriptor of model.capabilities?.optionDescriptors ?? []) {
+    if (descriptor.type === "select") {
+      const value =
+        descriptor.currentValue ?? descriptor.options.find((option) => option.isDefault)?.id;
+      if (value !== undefined) {
+        options.push({ id: descriptor.id, value });
+      }
+      continue;
+    }
+    if (descriptor.currentValue !== undefined) {
+      options.push({ id: descriptor.id, value: descriptor.currentValue });
+    }
+  }
   return {
     instanceId: provider.instanceId,
     driver: provider.driver,
     modelSelection: {
       instanceId: provider.instanceId,
       model: model.slug,
+      ...(options.length > 0 ? { options } : {}),
     },
   };
 }
@@ -195,6 +219,29 @@ function boundedMessageText(text: string): { readonly text: string; readonly tru
   };
 }
 
+function latestMessageText(
+  messages: ReadonlyArray<OrchestrationMessage>,
+  role: OrchestrationMessage["role"],
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== role) continue;
+    const text = message.text.trim();
+    if (text.length > 0) return boundedMessageText(text).text;
+  }
+  return null;
+}
+
+export function deriveProviderHandoffContinuity(messages: ReadonlyArray<OrchestrationMessage>): {
+  readonly immediateRequirement: string | null;
+  readonly inProgressWork: string | null;
+} {
+  return {
+    immediateRequirement: latestMessageText(messages, "user"),
+    inProgressWork: latestMessageText(messages, "assistant"),
+  };
+}
+
 /**
  * Builds valid JSON under a hard post-serialization character cap. Messages
  * are selected from the newest end of the persisted T3 history, then emitted
@@ -202,6 +249,10 @@ function boundedMessageText(text: string): { readonly text: string; readonly tru
  * semantic summary: the exhausted provider is never asked to produce it.
  */
 export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput): string {
+  const derivedContinuity = deriveProviderHandoffContinuity(input.messages);
+  const immediateRequirement =
+    input.immediateRequirement?.trim() || derivedContinuity.immediateRequirement;
+  const inProgressWork = input.inProgressWork?.trim() || derivedContinuity.inProgressWork;
   const selectedMessages = input.messages.slice(-PROVIDER_HANDOFF_MAX_MESSAGES).map((message) => {
     const bounded = boundedMessageText(message.text);
     return {
@@ -238,6 +289,11 @@ export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput):
           driver: boundedMetadata(String(input.to.driver)),
           model: boundedMetadata(input.to.modelSelection.model),
         },
+      },
+      continuity: {
+        immediateRequirement:
+          immediateRequirement === null ? null : boundedContinuity(immediateRequirement),
+        inProgressWork: inProgressWork === null ? null : boundedContinuity(inProgressWork),
       },
       limits: {
         maxSerializedChars: PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,

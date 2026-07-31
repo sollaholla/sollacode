@@ -144,6 +144,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? "",
       } satisfies CodexSettings;
+      const accountEnvironment = {
+        ...processEnv,
+        ...(homeLayout.effectiveHomePath ? { CODEX_HOME: homeLayout.effectiveHomePath } : {}),
+      };
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
@@ -208,6 +212,20 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        accountAuth: {
+          binaryPath: effectiveConfig.binaryPath,
+          environment: accountEnvironment,
+          logoutArgs: ["logout"],
+          loginArgs: ["login"],
+          statusArgs: ["login", "status"],
+          parseStatus: (stdout, stderr) => {
+            const output = `${stdout}\n${stderr}`;
+            return {
+              loggedIn: /logged\s+in/i.test(output) && !/not\s+logged\s+in/i.test(output),
+              accountLabel: null,
+            };
+          },
+        },
       } satisfies ProviderInstance;
     }),
 };

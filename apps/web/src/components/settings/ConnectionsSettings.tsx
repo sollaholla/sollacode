@@ -1,6 +1,7 @@
 import {
   ChevronDownIcon,
   ChevronsLeftRightEllipsisIcon,
+  MonitorUpIcon,
   PlusIcon,
   QrCodeIcon,
   RefreshCwIcon,
@@ -80,6 +81,7 @@ import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Group, GroupSeparator } from "../ui/group";
 import { AnimatedHeight } from "../AnimatedHeight";
+import { RemoteControlViewerDialog } from "../remoteControl/RemoteControlViewerDialog";
 import {
   Menu,
   MenuGroup,
@@ -128,6 +130,8 @@ import {
 } from "~/state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
+import { NearbySollaEnvironments } from "./NearbySollaEnvironments";
+import { QuickConnectDevice } from "./QuickConnectDevice";
 import { ServerUpdateAction } from "../ServerUpdateAction";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 import { presentTailscaleServe } from "./tailscaleServePresentation";
@@ -1043,13 +1047,13 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
           render={
             <Button size="xs" variant="default">
               <PlusIcon className="size-3" />
-              Create link
+              Custom link
             </Button>
           }
         />
         <DialogPopup className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Create pairing link</DialogTitle>
+            <DialogTitle>Create custom pairing link</DialogTitle>
             <DialogDescription>
               Generate a one-time link that another device can use to pair with this backend as an
               authorized client.
@@ -1440,6 +1444,7 @@ type SavedBackendListRowProps = {
   removingEnvironmentId: EnvironmentId | null;
   onConnect: (environmentId: EnvironmentId) => void;
   onRemove: (environmentId: EnvironmentId) => void;
+  onRemoteControl: (environment: EnvironmentPresentation) => void;
 };
 
 function SavedBackendListRow({
@@ -1447,6 +1452,7 @@ function SavedBackendListRow({
   removingEnvironmentId,
   onConnect,
   onRemove,
+  onRemoteControl,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
   const connectionState = environment.connection.phase;
@@ -1569,6 +1575,12 @@ function SavedBackendListRow({
             </Tooltip>
           ) : (
             <>
+              {isConnected ? (
+                <Button size="xs" variant="outline" onClick={() => onRemoteControl(environment)}>
+                  <MonitorUpIcon className="size-3.5" />
+                  Control
+                </Button>
+              ) : null}
               {!isConnected ? (
                 <Button
                   size="xs"
@@ -1744,6 +1756,9 @@ export function ConnectionsSettings() {
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
+  const [remoteControlTarget, setRemoteControlTarget] = useState<EnvironmentPresentation | null>(
+    null,
+  );
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
   const [isDesktopServerExposureDialogOpen, setIsDesktopServerExposureDialogOpen] = useState(false);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
@@ -3000,7 +3015,33 @@ export function ConnectionsSettings() {
     <SettingsPageContainer>
       {canManageLocalBackend ? (
         <>
-          <SettingsSection title="This environment">
+          <SettingsSection title="Connect another device">
+            <SettingsRow
+              title="Scan and connect"
+              description={
+                isLocalBackendRemotelyReachable
+                  ? "Open your phone or another computer, scan the QR code, and Solla Code connects automatically. No access code is required."
+                  : "Turn on Network access in Advanced connection settings first. Tailscale is optional on the same private network."
+              }
+              control={
+                <QuickConnectDevice
+                  pairingBaseUrl={
+                    defaultDesktopAdvertisedEndpoint?.httpBaseUrl ??
+                    desktopServerExposureState?.endpointUrl ??
+                    null
+                  }
+                  clientSessions={desktopClientSessions}
+                />
+              }
+            />
+          </SettingsSection>
+          <NearbySollaEnvironments />
+        </>
+      ) : null}
+
+      {canManageLocalBackend ? (
+        <>
+          <SettingsSection title="Advanced connection settings">
             {primaryVersionMismatch ? (
               <SettingsRow
                 title="Version drift"
@@ -3330,6 +3371,22 @@ export function ConnectionsSettings() {
             title="Administrative access"
             description="Pairing links and client-session management require the access:write scope for this backend."
           />
+          {primaryEnvironment ? (
+            <SettingsRow
+              title="Remote control"
+              description="Request a live view of this computer. Someone at the host must approve before its screen is shared."
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setRemoteControlTarget(primaryEnvironment)}
+                >
+                  <MonitorUpIcon className="size-4" />
+                  Control this computer
+                </Button>
+              }
+            />
+          ) : null}
         </SettingsSection>
       )}
 
@@ -3404,10 +3461,21 @@ export function ConnectionsSettings() {
             removingEnvironmentId={removingSavedEnvironmentId}
             onConnect={handleConnectSavedBackend}
             onRemove={handleRemoveSavedBackend}
+            onRemoteControl={setRemoteControlTarget}
           />
         ))}
         {savedEnvironments.length === 0 ? <EmptyRemoteEnvironments /> : null}
       </SettingsSection>
+      {remoteControlTarget ? (
+        <RemoteControlViewerDialog
+          environmentId={remoteControlTarget.environmentId}
+          environmentLabel={remoteControlTarget.label}
+          open
+          onOpenChange={(open) => {
+            if (!open) setRemoteControlTarget(null);
+          }}
+        />
+      ) : null}
     </SettingsPageContainer>
   );
 }

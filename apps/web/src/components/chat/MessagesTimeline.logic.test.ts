@@ -261,6 +261,45 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("keeps provider handoffs visible as separators instead of folding them into work", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "provider-switch",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:10Z",
+          entry: {
+            id: "provider-switch",
+            createdAt: "2026-01-01T00:00:10Z",
+            turnId: "turn-2" as never,
+            label: "Switched from Claude to Codex",
+            detail: "gpt-5.6-sol · medium effort · Build · Full access",
+            tone: "info" as const,
+            sourceActivityKind: "provider.handoff.completed",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-2" as never,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:10Z",
+        completedAt: "2026-01-01T00:00:20Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        kind: "provider-transition",
+        label: "Switched from Claude to Codex",
+        detail: "gpt-5.6-sol · medium effort · Build · Full access",
+      }),
+    ]);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
@@ -438,6 +477,77 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(userRow?.revertTurnCount).toBe(1);
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
+  });
+
+  it("withholds the final changed-files panel until the assistant turn settles", () => {
+    const assistantMessageId = "assistant-active" as never;
+    const turnId = "turn-active" as never;
+    const assistantTurnDiffSummary = {
+      turnId,
+      completedAt: "2026-01-01T00:00:30Z",
+      assistantMessageId,
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-active" as never,
+      status: "ready" as const,
+      files: [{ path: "src/index.ts", kind: "modified", additions: 3, deletions: 1 }],
+    };
+    const timelineEntries = [
+      {
+        id: "assistant-active-entry",
+        kind: "message" as const,
+        createdAt: "2026-01-01T00:00:20Z",
+        message: {
+          id: assistantMessageId,
+          role: "assistant" as const,
+          text: "Still working",
+          turnId,
+          createdAt: "2026-01-01T00:00:20Z",
+          updatedAt: "2026-01-01T00:00:30Z",
+          streaming: false,
+        },
+      },
+    ];
+    const turnDiffSummaryByAssistantMessageId = new Map([
+      [assistantMessageId, assistantTurnDiffSummary],
+    ]);
+
+    const runningRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestTurn: {
+        turnId,
+        state: "running",
+        startedAt: "2026-01-01T00:00:19Z",
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:19Z",
+      turnDiffSummaryByAssistantMessageId,
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    const runningAssistantRow = runningRows.find(
+      (row): row is Extract<(typeof runningRows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+    expect(runningAssistantRow?.assistantTurnDiffSummary).toBeUndefined();
+
+    const completedRows = deriveMessagesTimelineRows({
+      timelineEntries,
+      latestTurn: {
+        turnId,
+        state: "completed",
+        startedAt: "2026-01-01T00:00:19Z",
+        completedAt: "2026-01-01T00:00:31Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId,
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    const completedAssistantRow = completedRows.find(
+      (row): row is Extract<(typeof completedRows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.role === "assistant",
+    );
+    expect(completedAssistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
   it("folds settled-turn commentary and work behind a Worked-for row", () => {

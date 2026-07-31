@@ -10,6 +10,18 @@ export function isWindowsAbsolutePath(value: string): boolean {
   return isUncPath(value) || isWindowsDrivePath(value);
 }
 
+/**
+ * Provider tool payloads occasionally prepend a project label to an already
+ * absolute Windows path (for example `Project/C:/repo/render.png`). Recover
+ * the drive-absolute suffix so callers never join that malformed value back
+ * onto the workspace root.
+ */
+export function normalizeEmbeddedWindowsAbsolutePath(value: string): string {
+  const normalized = value.trim();
+  const match = /(?:^|[/\\])([a-zA-Z]:[/\\][\s\S]*)$/.exec(normalized);
+  return match?.[1] ?? normalized;
+}
+
 export function isExplicitRelativePath(value: string): boolean {
   return (
     value === "." ||

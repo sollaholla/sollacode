@@ -1,5 +1,5 @@
 import { memo, type KeyboardEventHandler, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon, MicIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, MicIcon, RefreshCwIcon } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
@@ -35,9 +35,14 @@ interface ComposerPrimaryActionsProps {
   pushToTalkStatus?: "recording" | "loading" | "transcribing" | null;
   pushToTalkDisabled?: boolean;
   pushToTalkDisabledReason?: string | null;
+  pushToTalkAutoSend?: boolean;
+  settingsUpdateLabel?: string | null;
+  isApplyingSettings?: boolean;
+  isInterrupting?: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart?: () => void;
   onPushToTalkStop?: () => void;
+  onApplySettings?: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -65,11 +70,14 @@ export const formatPushToTalkActionLabel = (
   status: "recording" | "loading" | "transcribing" | null,
   platform: string | undefined,
   disabledReason?: string | null,
+  autoSend = false,
 ): string => {
   const shortcut = platform?.toLowerCase().includes("mac") ? "Cmd+D" : "Ctrl+D";
   switch (status) {
     case "recording":
-      return `Mute microphone — release to transcribe and send (${shortcut})`;
+      return `Mute microphone — release to ${
+        autoSend ? "transcribe and send" : "transcribe"
+      } (${shortcut})`;
     case "loading":
       return `Loading local transcription model (${shortcut})`;
     case "transcribing":
@@ -85,6 +93,8 @@ export const formatPushToTalkActionLabel = (
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
+
+const noop = () => undefined;
 
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
@@ -102,9 +112,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   pushToTalkStatus = null,
   pushToTalkDisabled = true,
   pushToTalkDisabledReason = null,
+  pushToTalkAutoSend = false,
+  settingsUpdateLabel = null,
+  isApplyingSettings = false,
+  isInterrupting = false,
   preserveComposerFocusOnPointerDown = false,
-  onPushToTalkStart = () => undefined,
-  onPushToTalkStop = () => undefined,
+  onPushToTalkStart = noop,
+  onPushToTalkStop = noop,
+  onApplySettings = noop,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -128,7 +143,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     pushToTalkStatus,
     typeof navigator === "undefined" ? undefined : navigator.platform,
     microphoneDisabled ? pushToTalkDisabledReason : null,
+    pushToTalkAutoSend,
   );
+  const settingsUpdateIconOnly = compact || isRunning;
   const startPushToTalkOnKey: KeyboardEventHandler<HTMLButtonElement> = (event) => {
     if (microphoneDisabled || event.repeat || (event.key !== " " && event.key !== "Enter")) {
       return;
@@ -190,6 +207,43 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <TooltipPopup side="top">{pushToTalkLabel}</TooltipPopup>
     </Tooltip>
   ) : null;
+  const settingsUpdateAction = settingsUpdateLabel ? (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size={settingsUpdateIconOnly ? "icon-sm" : "sm"}
+            variant="outline"
+            className={cn(
+              "rounded-full",
+              settingsUpdateIconOnly ? "size-9 p-0 sm:size-8" : "h-9 px-3 sm:h-8",
+            )}
+            {...pointerFocusProps}
+            disabled={
+              isApplyingSettings ||
+              isSendBusy ||
+              isConnecting ||
+              isEnvironmentUnavailable ||
+              isPreparingWorktree
+            }
+            onClick={onApplySettings}
+            aria-label={`Apply conversation changes: ${settingsUpdateLabel}`}
+          />
+        }
+      >
+        {isApplyingSettings ? (
+          <Spinner className="size-3.5" aria-hidden="true" />
+        ) : (
+          <RefreshCwIcon className="size-3.5" aria-hidden="true" />
+        )}
+        {!settingsUpdateIconOnly ? (
+          <span>{isApplyingSettings ? "Applying…" : "Apply changes"}</span>
+        ) : null}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{settingsUpdateLabel}</TooltipPopup>
+    </Tooltip>
+  ) : null;
 
   if (pendingAction) {
     return (
@@ -246,17 +300,23 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (isRunning && !sendWhileRunning) {
     return (
       <div className="flex items-center justify-end gap-1.5">
+        {settingsUpdateAction}
         {microphoneAction}
         <button
           type="button"
           className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
           {...pointerFocusProps}
           onClick={onInterrupt}
-          aria-label="Stop generation"
+          disabled={isInterrupting}
+          aria-label={isInterrupting ? "Stopping generation" : "Stop generation"}
         >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-            <rect x="2" y="2" width="8" height="8" rx="1.5" />
-          </svg>
+          {isInterrupting ? (
+            <Spinner className="size-3.5" aria-hidden="true" />
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+              <rect x="2" y="2" width="8" height="8" rx="1.5" />
+            </svg>
+          )}
         </button>
       </div>
     );
@@ -318,6 +378,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
 
   return (
     <div className="flex items-center justify-end gap-1.5">
+      {settingsUpdateAction}
       {microphoneAction}
 
       <button

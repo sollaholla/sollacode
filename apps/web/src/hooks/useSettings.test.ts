@@ -6,7 +6,11 @@ import {
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
-import { mergeEnvironmentSettings, resolveEnvironmentIdentificationMode } from "./useSettings";
+import {
+  mergeEnvironmentSettings,
+  resolveEnvironmentIdentificationMode,
+  splitEnvironmentSettingsPatch,
+} from "./useSettings";
 
 describe("resolveEnvironmentIdentificationMode", () => {
   it("keeps identification hidden until client settings hydrate", () => {
@@ -44,5 +48,16 @@ describe("mergeEnvironmentSettings", () => {
 
     expect(settings.providerInstances).toBe(serverSettings.providerInstances);
     expect(settings.favorites).toBe(clientSettings.favorites);
+  });
+});
+
+describe("splitEnvironmentSettingsPatch", () => {
+  it("routes compaction percentage through the selected host server", () => {
+    const { serverPatch, clientPatch } = splitEnvironmentSettingsPatch({
+      autoCompactionThresholdPercentage: 72,
+    });
+
+    expect(serverPatch).toEqual({ autoCompactionThresholdPercentage: 72 });
+    expect(clientPatch).toEqual({});
   });
 });

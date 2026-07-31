@@ -44,6 +44,14 @@ const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
 const GZIP_MIN_BYTES = 1024;
+export const MUTABLE_ASSET_CACHE_CONTROL = "private, no-store, max-age=0";
+export const REVISIONED_ASSET_CACHE_CONTROL = "private, max-age=300, immutable";
+
+export function assetCacheControlForUrl(url: URL): string {
+  return url.searchParams.get("solla_revision")?.trim()
+    ? REVISIONED_ASSET_CACHE_CONTROL
+    : MUTABLE_ASSET_CACHE_CONTROL;
+}
 
 function acceptsGzip(value: string | undefined): boolean {
   if (!value) return false;
@@ -272,7 +280,10 @@ export const assetRouteLayer = HttpRouter.add(
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,
       headers: {
-        "Cache-Control": "private, max-age=3600",
+        // Unversioned workspace paths remain no-store. Remote/client previews
+        // attach the message/activity revision, producing an immutable cache
+        // key that changes when a newer result references the same filename.
+        "Cache-Control": assetCacheControlForUrl(url.value),
         "X-Content-Type-Options": "nosniff",
       },
     }).pipe(

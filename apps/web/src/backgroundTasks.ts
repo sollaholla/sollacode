@@ -4,6 +4,7 @@ import { create } from "zustand";
 export type BackgroundTaskStatus =
   | "queued"
   | "loading"
+  | "transcribing"
   | "awaiting-confirmation"
   | "serializing"
   | "writing"
@@ -11,22 +12,32 @@ export type BackgroundTaskStatus =
   | "failed"
   | "cancelled";
 
-export interface ThreadExportBackgroundTask {
+interface BackgroundTaskBase {
   readonly id: string;
-  readonly kind: "thread-export";
-  readonly threadRef: ScopedThreadRef;
   readonly title: string;
   readonly status: BackgroundTaskStatus;
   readonly progress: number;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly outputPath?: string;
   readonly error?: string;
 }
 
+export interface ThreadExportBackgroundTask extends BackgroundTaskBase {
+  readonly kind: "thread-export";
+  readonly threadRef: ScopedThreadRef;
+  readonly outputPath?: string;
+}
+
+export interface VoiceTranscriptionBackgroundTask extends BackgroundTaskBase {
+  readonly kind: "voice-transcription";
+}
+
+export type BackgroundTask = ThreadExportBackgroundTask | VoiceTranscriptionBackgroundTask;
+
 interface BackgroundTaskStore {
-  readonly tasks: readonly ThreadExportBackgroundTask[];
+  readonly tasks: readonly BackgroundTask[];
   startThreadExport: (threadRef: ScopedThreadRef, title: string) => string;
+  startVoiceTranscription: () => string;
   updateTask: (
     id: string,
     update: Partial<
@@ -39,6 +50,7 @@ interface BackgroundTaskStore {
 }
 
 let nextTaskId = 1;
+const VOICE_TRANSCRIPTION_TASK_ID = "voice-transcription";
 
 export function isBackgroundTaskActive(status: BackgroundTaskStatus): boolean {
   return !["completed", "failed", "cancelled"].includes(status);
@@ -69,6 +81,24 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
       ],
     }));
     return id;
+  },
+  startVoiceTranscription: () => {
+    const now = new Date().toISOString();
+    set((state) => ({
+      tasks: [
+        ...state.tasks.filter((task) => task.kind !== "voice-transcription"),
+        {
+          id: VOICE_TRANSCRIPTION_TASK_ID,
+          kind: "voice-transcription",
+          title: "Voice transcription",
+          status: "loading",
+          progress: 5,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    }));
+    return VOICE_TRANSCRIPTION_TASK_ID;
   },
   updateTask: (id, update) => {
     set((state) => ({
@@ -109,6 +139,14 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
 
 export function startThreadExportBackgroundTask(threadRef: ScopedThreadRef, title: string): string {
   return useBackgroundTaskStore.getState().startThreadExport(threadRef, title);
+}
+
+export function startVoiceTranscriptionBackgroundTask(): string {
+  return useBackgroundTaskStore.getState().startVoiceTranscription();
+}
+
+export function finishVoiceTranscriptionBackgroundTask(id: string): void {
+  useBackgroundTaskStore.getState().removeTask(id);
 }
 
 export function resetBackgroundTasksForTests(): void {

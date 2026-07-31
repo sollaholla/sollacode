@@ -3,8 +3,11 @@ export type MobileComposerVoiceStatus = "recording" | "loading" | "transcribing"
 export function shouldSendComposerWhileProcessing(input: {
   readonly isProcessing: boolean;
   readonly hasCurrentEditorText: boolean;
+  readonly hasPendingComposerContent?: boolean;
 }): boolean {
-  return input.isProcessing && input.hasCurrentEditorText;
+  return (
+    input.isProcessing && (input.hasCurrentEditorText || input.hasPendingComposerContent === true)
+  );
 }
 
 export function shouldCollapseMobileComposer(input: {

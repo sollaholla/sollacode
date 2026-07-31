@@ -38,4 +38,22 @@ describe("formatWorkspaceRelativePath", () => {
       ),
     ).toBe("t3code/apps/web/src/session-logic.ts:501:9");
   });
+
+  it("recovers an absolute Windows image path from a project-prefixed tool path", () => {
+    expect(
+      formatWorkspaceRelativePath(
+        "GameProject/D:/GameProject/Temp/billboard_scene_after_dominant_forest.png",
+        String.raw`D:\GameProject`,
+      ),
+    ).toBe("GameProject/Temp/billboard_scene_after_dominant_forest.png");
+  });
+
+  it("does not prefix an absolute Windows path from a different drive", () => {
+    expect(
+      formatWorkspaceRelativePath(
+        String.raw`D:\GameProject\Temp\BillboardNormalValidation\conifer_22_5.png`,
+        String.raw`C:\Users\me\Desktop\GameProject`,
+      ),
+    ).toBe("D:/GameProject/Temp/BillboardNormalValidation/conifer_22_5.png");
+  });
 });

@@ -3,8 +3,10 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 
 import {
   canCancelBackgroundTask,
+  finishVoiceTranscriptionBackgroundTask,
   isBackgroundTaskActive,
   resetBackgroundTasksForTests,
+  startVoiceTranscriptionBackgroundTask,
   useBackgroundTaskStore,
 } from "./backgroundTasks";
 
@@ -43,5 +45,25 @@ describe("background task store", () => {
     useBackgroundTaskStore.getState().cancelTask(second);
     expect(useBackgroundTaskStore.getState().tasks[1]?.status).toBe("writing");
     expect(canCancelBackgroundTask("writing")).toBe(false);
+  });
+
+  it("keeps one transient voice transcription task and removes it when complete", () => {
+    resetBackgroundTasksForTests();
+    const first = startVoiceTranscriptionBackgroundTask();
+    const second = startVoiceTranscriptionBackgroundTask();
+
+    expect(first).toBe(second);
+    expect(useBackgroundTaskStore.getState().tasks).toHaveLength(1);
+    expect(useBackgroundTaskStore.getState().tasks[0]).toMatchObject({
+      kind: "voice-transcription",
+      status: "loading",
+    });
+
+    useBackgroundTaskStore.getState().updateTask(second, {
+      status: "transcribing",
+      progress: 55,
+    });
+    finishVoiceTranscriptionBackgroundTask(second);
+    expect(useBackgroundTaskStore.getState().tasks).toEqual([]);
   });
 });

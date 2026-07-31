@@ -89,6 +89,21 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   reconcileTailscaleServe: () => ipcRenderer.invoke(IpcChannels.RECONCILE_TAILSCALE_SERVE_CHANNEL),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
+  listLanPeers: () => ipcRenderer.invoke(IpcChannels.LIST_LAN_PEERS_CHANNEL),
+  getLanDiscoveryState: () => ipcRenderer.invoke(IpcChannels.GET_LAN_DISCOVERY_STATE_CHANNEL),
+  requestLanPairing: (input) => ipcRenderer.invoke(IpcChannels.REQUEST_LAN_PAIRING_CHANNEL, input),
+  completeLanPairing: (input) =>
+    ipcRenderer.invoke(IpcChannels.COMPLETE_LAN_PAIRING_CHANNEL, input),
+  onLanPairingEvent: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+      if (typeof event !== "object" || event === null) return;
+      listener(event as Parameters<typeof listener>[0]);
+    };
+    ipcRenderer.on(IpcChannels.LAN_PAIRING_EVENT_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.LAN_PAIRING_EVENT_CHANNEL, wrappedListener);
+    };
+  },
   getWslState: () => ipcRenderer.invoke(IpcChannels.GET_WSL_STATE_CHANNEL),
   setWslBackendEnabled: (enabled) =>
     ipcRenderer.invoke(IpcChannels.SET_WSL_BACKEND_ENABLED_CHANNEL, enabled),
@@ -106,6 +121,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   saveThreadExportJson: (input) =>
     ipcRenderer.invoke(IpcChannels.SAVE_THREAD_EXPORT_JSON_CHANNEL, input),
   revealFile: (path) => ipcRenderer.invoke(IpcChannels.REVEAL_FILE_CHANNEL, path),
+  setPushToTalkSystemAudioMuted: (muted) =>
+    ipcRenderer.invoke(IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL, muted),
+  captureRemoteControlFrame: (input) =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL, input),
+  sendRemoteControlInput: (input) =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL, input),
+  resetRemoteControlInput: () =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_RESET_INPUT_CHANNEL, {}),
   startFileDrag: (path) => ipcRenderer.invoke(IpcChannels.START_FILE_DRAG_CHANNEL, path),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {

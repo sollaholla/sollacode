@@ -1412,8 +1412,9 @@ const make = Effect.gen(function* () {
       exhaustedInstances.add(String(sourceInstanceId));
       yield* Cache.set(exhaustedProviderInstancesByThread, String(thread.id), exhaustedInstances);
 
+      const providers = yield* providerRegistry.getProviders;
       const target = selectProviderFailoverTarget({
-        providers: yield* providerRegistry.getProviders,
+        providers,
         currentInstanceId: sourceInstanceId,
         currentDriver: event.provider,
         excludedInstanceIds: exhaustedInstances,
@@ -1444,6 +1445,14 @@ const make = Effect.gen(function* () {
       if (!activeSession) {
         return;
       }
+      const sourceLabel =
+        providers
+          .find((provider) => provider.instanceId === sourceInstanceId)
+          ?.displayName?.trim() || String(event.provider);
+      const targetLabel =
+        providers
+          .find((provider) => provider.instanceId === target.instanceId)
+          ?.displayName?.trim() || String(target.driver);
 
       const handoffSummary = buildProviderHandoffSummary({
         threadId: thread.id,
@@ -1573,13 +1582,33 @@ const make = Effect.gen(function* () {
         event,
         tone: "info",
         kind: "provider.failover.completed",
-        summary: "Switched provider after usage limit",
+        summary: `${thread.modelSelection.model} usage exhausted · switched from ${sourceLabel} to ${targetLabel}`,
         payload: {
+          detail: [
+            `${sourceLabel} / ${thread.modelSelection.model} → ${targetLabel} / ${target.modelSelection.model}`,
+            (() => {
+              const effort = target.modelSelection.options?.find(
+                (option) => option.id === "effort" || option.id === "reasoningEffort",
+              )?.value;
+              return typeof effort === "string" ? `${effort} effort` : null;
+            })(),
+            thread.interactionMode === "plan" ? "Plan" : "Build",
+            thread.runtimeMode === "full-access" ? "Full access" : "Approval required",
+          ]
+            .filter((part): part is string => typeof part === "string" && part.length > 0)
+            .join(" · "),
           sourceInstanceId,
           sourceProvider: event.provider,
+          sourceLabel,
+          sourceModel: thread.modelSelection.model,
+          sourceOptions: thread.modelSelection.options ?? null,
           targetInstanceId: target.instanceId,
           targetProvider: target.driver,
+          targetLabel,
           targetModel: target.modelSelection.model,
+          targetOptions: target.modelSelection.options ?? null,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
           reason: exhaustion.reason,
           resetsAt: exhaustion.resetsAt,
           handoffSerializedChars: handoffSummary.length,

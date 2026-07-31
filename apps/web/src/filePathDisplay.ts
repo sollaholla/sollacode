@@ -1,3 +1,5 @@
+import { isWindowsAbsolutePath, normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
+
 import { splitPathAndPosition } from "./terminal-links";
 
 function normalizePathSeparators(path: string): string {
@@ -26,12 +28,16 @@ export function formatWorkspaceRelativePath(
   workspaceRoot: string | undefined,
 ): string {
   const { path, line, column } = splitPathAndPosition(pathWithPosition);
-  const normalizedPath = canonicalizeWindowsDrivePath(normalizePathSeparators(path));
+  const normalizedPath = canonicalizeWindowsDrivePath(
+    normalizePathSeparators(normalizeEmbeddedWindowsAbsolutePath(path)),
+  );
 
   let displayPath = normalizedPath;
   if (workspaceRoot) {
     const normalizedWorkspaceRoot = canonicalizeWindowsDrivePath(
-      normalizePathSeparators(trimTrailingPathSeparators(workspaceRoot)),
+      normalizePathSeparators(
+        trimTrailingPathSeparators(normalizeEmbeddedWindowsAbsolutePath(workspaceRoot)),
+      ),
     );
     const workspaceLabel = basenameOfPath(normalizedWorkspaceRoot);
     const pathForCompare = normalizedPath.toLowerCase();
@@ -44,7 +50,7 @@ export function formatWorkspaceRelativePath(
     } else if (pathForCompare.startsWith(workspaceWithSeparator)) {
       const relativeSuffix = normalizedPath.slice(normalizedWorkspaceRoot.length + 1);
       displayPath = `${workspaceLabel}/${relativeSuffix}`;
-    } else if (!normalizedPath.startsWith("/")) {
+    } else if (!normalizedPath.startsWith("/") && !isWindowsAbsolutePath(normalizedPath)) {
       const relativePath = stripRelativePrefixes(normalizedPath);
       displayPath = pathForCompare.startsWith(workspaceLabelWithSeparator)
         ? normalizedPath

@@ -3,6 +3,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   PreviewAnnotationPayload,
+  ProviderAccountSwitchState,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   ResolvedKeybindingsConfig,
@@ -192,7 +193,6 @@ import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
-  getDefaultProviderInstanceModel,
   NO_PROVIDER_MODEL_SELECTION,
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
@@ -208,12 +208,12 @@ import {
   deriveLatestContextWindowSnapshot,
   formatProviderDisplayName,
 } from "../../lib/contextWindow";
+import { providerSupportsConfigurableAutoCompaction } from "./ContextWindowMeter";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
-import { providerAccountSwitchDisabledReason } from "../../providerAccountProfiles";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -415,8 +415,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   compact: boolean;
   providers: ReadonlyArray<ServerProvider>;
   activeProviderInstanceId: ProviderInstanceId;
-  providerAccountSwitchDisabledReason: string | null;
-  hasDraftContent: boolean;
+  activeProviderAccountSwitch: ProviderAccountSwitchState | null;
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadProviderDisplayName: string | null;
   activeThreadSupportsConfigurableAutoCompaction: boolean;
@@ -444,11 +443,15 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
   pushToTalkDisabled: boolean;
   pushToTalkDisabledReason: string | null;
+  pushToTalkAutoSend: boolean;
+  settingsUpdateLabel: string | null;
+  isApplyingSettings: boolean;
+  isInterrupting: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart: () => void;
   onPushToTalkStop: () => void;
-  onSelectProviderAccount: (instanceId: ProviderInstanceId) => void;
-  onPrepareProviderLogin: (instanceId: ProviderInstanceId) => void;
+  onApplySettings: () => void;
+  onSwitchProviderAccount: (instanceId: ProviderInstanceId) => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -473,10 +476,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       <ProviderAccountSwitcher
         providers={props.providers}
         activeInstanceId={props.activeProviderInstanceId}
-        disabledReason={props.providerAccountSwitchDisabledReason}
-        hasDraftContent={props.hasDraftContent}
-        onSelectProfile={props.onSelectProviderAccount}
-        onPrepareNativeLogin={props.onPrepareProviderLogin}
+        activeSwitch={props.activeProviderAccountSwitch}
+        onSwitchUser={props.onSwitchProviderAccount}
       />
       <ComposerPrimaryActions
         compact={props.compact}
@@ -494,9 +495,14 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         pushToTalkStatus={props.pushToTalkStatus}
         pushToTalkDisabled={props.pushToTalkDisabled}
         pushToTalkDisabledReason={props.pushToTalkDisabledReason}
+        pushToTalkAutoSend={props.pushToTalkAutoSend}
+        settingsUpdateLabel={props.settingsUpdateLabel}
+        isApplyingSettings={props.isApplyingSettings}
+        isInterrupting={props.isInterrupting}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPushToTalkStart={props.onPushToTalkStart}
         onPushToTalkStop={props.onPushToTalkStop}
+        onApplySettings={props.onApplySettings}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
@@ -577,6 +583,8 @@ export interface ChatComposerProps {
   pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
   pushToTalkDisabled: boolean;
   pushToTalkDisabledReason: string | null;
+  isApplyingSettings: boolean;
+  isInterrupting: boolean;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -638,6 +646,9 @@ export interface ChatComposerProps {
   onSend: (e?: { preventDefault: () => void }) => void;
   onPushToTalkStart: () => void;
   onPushToTalkStop: () => void;
+  activeProviderAccountSwitch: ProviderAccountSwitchState | null;
+  onSwitchProviderAccount: (instanceId: ProviderInstanceId) => void;
+  onApplySettings: (description: string) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
@@ -694,6 +705,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pushToTalkStatus,
     pushToTalkDisabled,
     pushToTalkDisabledReason,
+    isApplyingSettings,
+    isInterrupting,
     environmentUnavailable,
     activePendingApproval,
     pendingApprovals,
@@ -730,6 +743,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSend,
     onPushToTalkStart,
     onPushToTalkStop,
+    activeProviderAccountSwitch,
+    onSwitchProviderAccount,
+    onApplySettings,
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
@@ -865,13 +881,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   //   5. First enabled entry overall / default instance for the kind.
   //
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ];
-    for (const candidate of candidates) {
+    const authoritativeInstanceId =
+      activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId ?? null;
+    const localOverride =
+      composerDraft.activeProvider !== authoritativeInstanceId
+        ? composerDraft.activeProvider
+        : null;
+    for (const candidate of [localOverride, authoritativeInstanceId]) {
       if (!candidate) continue;
       const match = providerInstanceEntries.find(
         (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
@@ -888,6 +904,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         return match.instanceId;
       }
+    }
+    // A server-backed thread's provider is host-authoritative. Preserve that
+    // identity even when the host no longer exposes the provider so every
+    // client shows the same unavailable state instead of silently selecting a
+    // different local provider and presenting a bogus "Apply changes" action.
+    if (authoritativeInstanceId) {
+      return authoritativeInstanceId;
+    }
+    const projectDefaultEntry = providerInstanceEntries.find(
+      (entry) =>
+        entry.instanceId === activeProjectDefaultModelSelection?.instanceId &&
+        entry.enabled &&
+        entry.isAvailable,
+    );
+    if (projectDefaultEntry) {
+      return projectDefaultEntry.instanceId;
     }
     const compatibleEntries = providerInstanceEntries.filter(
       (entry) =>
@@ -920,7 +952,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => providerInstanceEntries.find((entry) => entry.instanceId === selectedInstanceId),
     [providerInstanceEntries, selectedInstanceId],
   );
-  const noProviderAvailable = selectedProviderEntry === undefined;
+  const noProviderAvailable =
+    selectedProviderEntry === undefined ||
+    !selectedProviderEntry.enabled ||
+    !selectedProviderEntry.isAvailable;
   // The driver kind follows the instance that will actually run the turn,
   // which can differ from the persisted selection when that selection is
   // disabled.
@@ -983,6 +1018,43 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
+  const settingsUpdateLabel = useMemo(() => {
+    if (!activeThread || !_isServerThread) return null;
+    const changes: string[] = [];
+    const currentSelection = activeThread.modelSelection;
+    if (currentSelection.instanceId !== selectedModelSelection.instanceId) {
+      changes.push(`provider to ${selectedProviderEntry?.displayName ?? selectedProvider}`);
+    }
+    if (
+      currentSelection.model !== selectedModelSelection.model ||
+      JSON.stringify(currentSelection.options ?? null) !==
+        JSON.stringify(selectedModelSelection.options ?? null)
+    ) {
+      const effort = selectedModelSelection.options?.find(
+        (option) => option.id === "effort" || option.id === "reasoningEffort",
+      )?.value;
+      changes.push(
+        typeof effort === "string"
+          ? `${selectedModelSelection.model} with ${effort} effort`
+          : selectedModelSelection.model,
+      );
+    }
+    if (activeThread.runtimeMode !== runtimeMode) {
+      changes.push(runtimeMode === "full-access" ? "Full access" : "Approval required");
+    }
+    if (activeThread.interactionMode !== interactionMode) {
+      changes.push(interactionMode === "plan" ? "Plan mode" : "Build mode");
+    }
+    return changes.length > 0 ? changes.join(" · ") : null;
+  }, [
+    _isServerThread,
+    activeThread,
+    interactionMode,
+    runtimeMode,
+    selectedModelSelection,
+    selectedProvider,
+    selectedProviderEntry?.displayName,
+  ]);
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
@@ -1023,10 +1095,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [providerStatuses, activeThreadModelSelection]);
   const activeThreadSupportsConfigurableAutoCompaction = useMemo(() => {
     if (!activeThreadModelSelection) return false;
-    return (
+    return providerSupportsConfigurableAutoCompaction(
       providerStatuses.find(
         (provider) => provider.instanceId === activeThreadModelSelection.instanceId,
-      )?.driver === "claudeAgent"
+      )?.driver,
     );
   }, [providerStatuses, activeThreadModelSelection]);
 
@@ -1234,7 +1306,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
 
-  const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
+  const composerFooterHasWideActions =
+    showPlanFollowUpPrompt || activePendingProgress !== null || settingsUpdateLabel !== null;
   const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
   const composerFooterActionLayoutKey = useMemo(() => {
     if (activePendingProgress) {
@@ -1288,56 +1361,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
     [composerDraftTarget, promptRef, scheduleComposerFocus, setComposerDraftPrompt],
   );
-  const accountSwitchDisabledReason = providerAccountSwitchDisabledReason({
-    isRunning: phase === "running",
-    isBusy: isSendBusy || isPreparingWorktree,
-    isConnecting,
-    hasPendingInteraction:
-      activePendingApproval !== null ||
-      pendingUserInputs.length > 0 ||
-      activePendingProgress !== null,
-    hasVoiceOperation: pushToTalkStatus !== null,
-  });
-  const selectProviderAccount = useCallback(
-    (instanceId: ProviderInstanceId) => {
-      if (accountSwitchDisabledReason !== null || instanceId === selectedInstanceId) return;
-      const model = getDefaultProviderInstanceModel(providerStatuses, instanceId);
-      if (!model) {
-        toastManager.add({
-          type: "warning",
-          title: "Account profile is not ready",
-          description: "This provider account did not report an available model.",
-        });
-        return;
-      }
-      onProviderModelSelect(instanceId, model);
-    },
-    [accountSwitchDisabledReason, onProviderModelSelect, providerStatuses, selectedInstanceId],
-  );
-  const prepareProviderLogin = useCallback(
-    (instanceId: ProviderInstanceId) => {
-      if (accountSwitchDisabledReason !== null || composerSendState.hasSendableContent) return;
-      const model = getDefaultProviderInstanceModel(providerStatuses, instanceId);
-      if (!model) {
-        toastManager.add({
-          type: "warning",
-          title: "Provider profile is not ready",
-          description: "This provider profile did not report an available model for /login.",
-        });
-        return;
-      }
-      onProviderModelSelect(instanceId, model);
-      setPromptFromTraits("/login ");
-    },
-    [
-      accountSwitchDisabledReason,
-      composerSendState.hasSendableContent,
-      onProviderModelSelect,
-      providerStatuses,
-      setPromptFromTraits,
-    ],
-  );
-
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -1376,6 +1399,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const sendWhileRunning = shouldSendComposerWhileProcessing({
     isProcessing: phase === "running",
     hasCurrentEditorText: currentEditorHasText,
+    hasPendingComposerContent: composerSendState.hasSendableContent,
   });
   const hasCurrentSendableContent = composerSendState.hasSendableContent || currentEditorHasText;
   const collapsedComposerPrimaryActionDisabled =
@@ -2166,7 +2190,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         // unique image into the overflow list for nothing.
         const existingDedupKeys = new Set(
           composerImagesRef.current.map(
-            (image) => `${image.mimeType} ${image.sizeBytes} ${image.name}`,
+            (image) => `${image.mimeType}\0${image.sizeBytes}\0${image.name}`,
           ),
         );
         const capacity = Math.max(
@@ -2177,7 +2201,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           (attachment) =>
             !existingIds.has(attachment.id) &&
             !existingDedupKeys.has(
-              `${attachment.mimeType} ${attachment.sizeBytes} ${attachment.name}`,
+              `${attachment.mimeType}\0${attachment.sizeBytes}\0${attachment.name}`,
             ),
         );
         // Anything past the attachment limit cannot be restored. The entry is
@@ -2269,7 +2293,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // the composer has been cleared the user can type something genuinely
     // new (or switch threads) while encoding continues, and that deserves its
     // own entry.
-    const snapshotKey = `${String(composerDraftTarget)} ${prompt} ${images
+    const snapshotKey = `${String(composerDraftTarget)}\0${prompt}\0${images
       .map((image) => image.id)
       .join(",")}`;
     if (stashInFlightRef.current.has(snapshotKey)) return;
@@ -2975,7 +2999,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   ? activePendingProgress.customAnswer ||
                     "Type your own answer, or leave this blank to use the selected option"
                   : prompt.trim() ||
-                    (noProviderAvailable ? "Enable a provider in Settings" : "Ask anything...")}
+                    (noProviderAvailable
+                      ? "Selected provider unavailable on this environment"
+                      : "Ask anything...")}
               </button>
               <button
                 type="button"
@@ -3202,7 +3228,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         : projectSelectionRequired
                           ? "Choose a project above to start a thread"
                           : noProviderAvailable
-                            ? "Enable a provider in Settings to send a message"
+                            ? "The selected provider is unavailable on this environment"
                             : phase === "disconnected"
                               ? "Ask for follow-up changes or attach images"
                               : "Ask anything, @tag files/folders, $use skills, or / for commands"
@@ -3271,7 +3297,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     className="shrink-0 gap-2 px-2 text-muted-foreground/70 sm:px-3"
                   >
                     <CircleAlertIcon className="size-4" />
-                    No provider available
+                    {activeThreadProviderDisplayName
+                      ? `${activeThreadProviderDisplayName} unavailable on this environment`
+                      : "No provider available on this environment"}
                   </Button>
                 ) : (
                   <ProviderModelPicker
@@ -3347,8 +3375,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   compact={isComposerPrimaryActionsCompact}
                   providers={providerStatuses}
                   activeProviderInstanceId={selectedInstanceId}
-                  providerAccountSwitchDisabledReason={accountSwitchDisabledReason}
-                  hasDraftContent={composerSendState.hasSendableContent}
+                  activeProviderAccountSwitch={activeProviderAccountSwitch}
                   activeContextWindow={activeContextWindow}
                   activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   activeThreadSupportsConfigurableAutoCompaction={
@@ -3374,11 +3401,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   pushToTalkStatus={pushToTalkStatus}
                   pushToTalkDisabled={pushToTalkDisabled}
                   pushToTalkDisabledReason={pushToTalkDisabledReason}
+                  pushToTalkAutoSend={settings.autoSendVoiceTranscription}
+                  settingsUpdateLabel={settingsUpdateLabel}
+                  isApplyingSettings={isApplyingSettings}
+                  isInterrupting={isInterrupting}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPushToTalkStart={onPushToTalkStart}
                   onPushToTalkStop={onPushToTalkStop}
-                  onSelectProviderAccount={selectProviderAccount}
-                  onPrepareProviderLogin={prepareProviderLogin}
+                  onApplySettings={() => {
+                    if (settingsUpdateLabel) onApplySettings(settingsUpdateLabel);
+                  }}
+                  onSwitchProviderAccount={onSwitchProviderAccount}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}
                   onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}

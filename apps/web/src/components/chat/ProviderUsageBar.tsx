@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   OrchestrationThreadActivity,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -120,7 +121,13 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
     // contain the former primary window, but presenting it would be misleading.
     if (durationMinutes !== null && durationMinutes >= 270 && durationMinutes <= 330) continue;
     windows.push({
-      key,
+      // Codex has moved the weekly quota between `primary` and `secondary`
+      // across app-server versions. Use the semantic window as the identity so
+      // the same quota cannot duplicate or appear to reset during an upgrade.
+      key:
+        durationMinutes !== null && durationMinutes >= 9_000 && durationMinutes <= 11_000
+          ? "weekly"
+          : key,
       label: durationLabel(durationMinutes, fallback),
       usedPercent: clampPercentage(usedPercent),
       resetAt: epochMilliseconds(value.resetsAt),
@@ -164,6 +171,7 @@ const CLAUDE_WINDOW_LABELS: Record<string, string> = {
   seven_day_opus: "Opus weekly",
   seven_day_sonnet: "Sonnet weekly",
   seven_day_fable: "Fable",
+  model_scoped: "Fable",
   fable: "Fable",
   fable_usage: "Fable",
   overage: "Overage",
@@ -178,7 +186,16 @@ function normalizeClaudeWindowKey(key: string): string {
   // Claude has used both names for the same short account-usage window. The
   // interactive /usage UI calls it "Current session", so use that user-facing
   // terminology while retaining compatibility with older typed events.
-  return normalized === "five_hour" ? "current_session" : normalized;
+  if (normalized === "five_hour") return "current_session";
+  if (
+    normalized === "seven_day_fable" ||
+    normalized === "model_scoped" ||
+    normalized === "fable" ||
+    normalized === "fable_usage"
+  ) {
+    return "fable";
+  }
+  return normalized;
 }
 
 function claudeWindowLabel(key: string): string {
@@ -204,6 +221,47 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
         usedPercent: clampPercentage(utilization),
         resetAt: epochMilliseconds(window.resets_at),
       });
+    }
+    const hasFableWindow = () => windows.some((window) => window.key === "fable");
+    const modelScoped = structuredRateLimits.model_scoped;
+    if (Array.isArray(modelScoped)) {
+      for (const rawWindow of modelScoped) {
+        const window = asRecord(rawWindow);
+        const displayName =
+          typeof window?.display_name === "string" ? window.display_name.trim() : "";
+        if (!window || !/fable/i.test(displayName) || hasFableWindow()) continue;
+        const utilization = finiteNumber(window.utilization);
+        if (utilization === null) continue;
+        windows.push({
+          key: "fable",
+          label: "Fable",
+          usedPercent: clampPercentage(utilization),
+          resetAt: epochMilliseconds(window.resets_at),
+        });
+      }
+    }
+    // Claude Code 2.1.220 also reports model-scoped limits through a generic
+    // `limits` array. Keep this as a fallback because the experimental usage
+    // response can expose one representation before the other.
+    const limits = structuredRateLimits.limits;
+    if (Array.isArray(limits) && !hasFableWindow()) {
+      for (const rawLimit of limits) {
+        const limit = asRecord(rawLimit);
+        const scope = asRecord(limit?.scope);
+        const model = asRecord(scope?.model);
+        const displayName =
+          typeof model?.display_name === "string" ? model.display_name.trim() : "";
+        if (!limit || !/fable/i.test(displayName)) continue;
+        const percent = finiteNumber(limit.percent);
+        if (percent === null) continue;
+        windows.push({
+          key: "fable",
+          label: "Fable",
+          usedPercent: clampPercentage(percent),
+          resetAt: epochMilliseconds(limit.resets_at),
+        });
+        break;
+      }
     }
     return windows;
   }
@@ -234,12 +292,17 @@ export function deriveProviderUsageSummaries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   persistedByAccountKey: Readonly<Record<string, PersistedProviderUsageEntry>> = {},
   now = Date.now(),
+  environmentId?: EnvironmentId,
 ): ProviderUsageSummary[] {
   const enabledProviders = providers.filter((provider) => provider.enabled);
-  const reportsByAccountKey = deriveProviderUsageReports(enabledProviders, activities);
+  const reportsByAccountKey = deriveProviderUsageReports(
+    enabledProviders,
+    activities,
+    environmentId,
+  );
 
   return enabledProviders.map((provider) => {
-    const accountKey = providerUsageAccountKey(provider);
+    const accountKey = providerUsageAccountKey(provider, environmentId);
     const currentReport = accountKey === null ? undefined : reportsByAccountKey[accountKey];
     const effectiveReports =
       currentReport === undefined
@@ -271,11 +334,12 @@ export function deriveProviderUsageSummaries(
 export function deriveProviderUsageReports(
   providers: ReadonlyArray<ServerProvider>,
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  environmentId?: EnvironmentId,
 ): Readonly<Record<string, PersistedProviderUsageEntry>> {
   const enabledProviders = providers.filter((provider) => provider.enabled);
   let reports: Readonly<Record<string, PersistedProviderUsageEntry>> = {};
   const record = (provider: ServerProvider, raw: unknown, reportedAt: string) => {
-    const accountKey = providerUsageAccountKey(provider);
+    const accountKey = providerUsageAccountKey(provider, environmentId);
     if (accountKey === null) return;
     const windows = usageWindowsForDriver(provider.driver, raw);
     if (windows.length === 0) return;
@@ -373,7 +437,7 @@ function usageValueClass(usedPercent: number): string {
 function usageDetail(window: ProviderUsageWindow): string {
   return window.usedPercent === null
     ? (window.detail ?? "Available")
-    : `${Math.round(100 - window.usedPercent)}% left`;
+    : `${Math.round(window.usedPercent)}% used`;
 }
 
 interface CompactProviderUsageMetric {
@@ -405,9 +469,48 @@ export function compactProviderUsageMetric(
   return null;
 }
 
+function providerUsageName(provider: ServerProvider): string {
+  if (provider.driver === "claudeAgent") return "Claude";
+  return provider.displayName?.trim() || String(provider.driver);
+}
+
+export function claudePopupWindows(
+  windows: ReadonlyArray<ProviderUsageWindow>,
+): ProviderUsageWindow[] {
+  const currentSession = windows.find((window) => window.key === "current_session");
+  const weekly = windows.find(
+    (window) => window.key === "seven_day" || window.label.trim().toLowerCase() === "weekly",
+  );
+  const fable = windows.find(
+    (window) => window.key === "fable" || window.label.trim().toLowerCase() === "fable",
+  );
+  return [
+    currentSession ?? {
+      key: "current_session",
+      label: "Current session",
+      usedPercent: null,
+      resetAt: null,
+      detail: "Not reported",
+    },
+    weekly ?? {
+      key: "seven_day",
+      label: "Weekly",
+      usedPercent: null,
+      resetAt: null,
+      detail: "Not reported",
+    },
+    fable ?? {
+      key: "fable",
+      label: "Fable",
+      usedPercent: null,
+      resetAt: null,
+      detail: "Not reported",
+    },
+  ];
+}
+
 export function ProviderUsageDetails({
   name,
-  driver,
   state,
   windows,
   reportedAt,
@@ -416,29 +519,43 @@ export function ProviderUsageDetails({
   refreshError = null,
 }: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
   name: string;
-  driver?: ProviderDriverKind;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   refreshError?: string | null;
 }) {
-  const hasUsage = state === "available" || state === "stale";
-  const currentSessionReported = windows.some(
-    (window) =>
-      window.key === "current_session" || window.label.trim().toLowerCase() === "current session",
-  );
-  const showClaudeCurrentSessionNotReported =
-    driver === "claudeAgent" && hasUsage && !currentSessionReported;
+  const hasUsage = windows.length > 0;
+  const visibleState = isRefreshing ? "loading" : state;
+  const statusLabel =
+    visibleState === "loading"
+      ? "Loading"
+      : visibleState === "stale"
+        ? "Stale"
+        : visibleState === "unavailable"
+          ? "Unavailable"
+          : visibleState === "unsupported"
+            ? "Unsupported"
+            : null;
   return (
-    <div className="w-72 max-w-[calc(100vw-1rem)]">
+    <div
+      className="w-72 max-w-[calc(100vw-1rem)]"
+      data-provider-usage-state={visibleState}
+      aria-busy={isRefreshing || undefined}
+    >
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold text-foreground text-sm leading-none">{name} usage</h3>
         <div className="flex items-center gap-1.5">
-          {state === "stale" ? (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800 text-xs dark:bg-amber-950/70 dark:text-amber-200">
-              Stale
+          {statusLabel ? (
+            <span
+              className={`rounded-full px-2 py-0.5 font-medium text-xs ${
+                visibleState === "stale"
+                  ? "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-200"
+                  : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {statusLabel}
             </span>
           ) : null}
-          {state === "stale" && onRefresh ? (
+          {onRefresh ? (
             <button
               type="button"
               onClick={onRefresh}
@@ -455,7 +572,9 @@ export function ProviderUsageDetails({
       <p className="mt-1 text-muted-foreground text-xs">
         {reportedAt
           ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
-          : "Account-level provider usage"}
+          : isRefreshing
+            ? "Waiting for provider usage"
+            : "Account-level provider usage"}
       </p>
       {refreshError ? (
         <p className="mt-2 text-red-700 text-xs dark:text-red-300" role="alert">
@@ -502,22 +621,67 @@ export function ProviderUsageDetails({
               </li>
             );
           })}
-          {showClaudeCurrentSessionNotReported ? (
-            <li className="space-y-1" data-usage-unreported="current_session">
-              <div className="flex items-start justify-between gap-3 text-xs">
-                <span className="font-medium text-foreground">Current session</span>
-                <span className="text-muted-foreground">Not reported by Claude</span>
-              </div>
-            </li>
-          ) : null}
         </ul>
       ) : (
         <p className="mt-3 text-muted-foreground text-xs">
-          {state === "unsupported"
-            ? "This provider does not expose account usage."
-            : "Usage has not been reported for this provider account yet."}
+          {isRefreshing
+            ? "Loading usage…"
+            : state === "unsupported"
+              ? "This provider does not expose account usage."
+              : "Usage has not been reported for this provider account yet."}
         </p>
       )}
+    </div>
+  );
+}
+
+export function ProviderUsageBadgeDetails(props: {
+  readonly summary: ProviderUsageSummary;
+  readonly onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+}) {
+  const { summary, onRefreshProvider } = props;
+  const { provider } = summary;
+  const name = providerUsageName(provider);
+  const windows =
+    provider.driver === "claudeAgent" ? claudePopupWindows(summary.windows) : summary.windows;
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const canRefresh = onRefreshProvider !== undefined;
+  useEffect(() => {
+    setRefreshError(null);
+  }, [summary.reportedAt]);
+  const refreshUsage = async () => {
+    if (!onRefreshProvider || !canRefresh || refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setIsRefreshing(true);
+    setRefreshError(null);
+    try {
+      await onRefreshProvider(provider);
+    } catch {
+      setRefreshError("Usage refresh failed. Try again shortly.");
+    } finally {
+      refreshInFlightRef.current = false;
+      setIsRefreshing(false);
+    }
+  };
+
+  return (
+    <div
+      data-provider-usage-card-count="1"
+      className="max-h-[min(36rem,calc(100vh-2rem))] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto"
+    >
+      <section data-provider-usage-card={name} data-provider-instance-id={provider.instanceId}>
+        <ProviderUsageDetails
+          name={name}
+          state={summary.state}
+          windows={[...windows]}
+          reportedAt={summary.reportedAt}
+          isRefreshing={isRefreshing}
+          refreshError={refreshError}
+          {...(canRefresh ? { onRefresh: () => void refreshUsage() } : {})}
+        />
+      </section>
     </div>
   );
 }
@@ -534,36 +698,24 @@ function ProviderUsageBadge({
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
-  const refreshInFlightRef = useRef(false);
-  const { provider, state, windows, reportedAt } = summary;
-  const name = provider.displayName?.trim() || provider.driver;
+  const { provider } = summary;
+  const name = providerUsageName(provider);
+  const usageDetailsLabel =
+    provider.driver === "claudeAgent" ? "Claude usage details" : `${name} account usage details`;
   const compactUsedPercent = compactMetric.window?.usedPercent ?? null;
-  useEffect(() => {
-    setRefreshError(null);
-  }, [reportedAt]);
-  const refreshUsage = async () => {
-    if (!onRefreshProvider || refreshInFlightRef.current) return;
-    refreshInFlightRef.current = true;
-    setIsRefreshing(true);
-    setRefreshError(null);
-    try {
-      await onRefreshProvider(provider);
-    } catch {
-      setRefreshError("Usage refresh failed. Try again shortly.");
-    } finally {
-      refreshInFlightRef.current = false;
-      setIsRefreshing(false);
-    }
-  };
+  const compactRoundedUsedPercent =
+    compactUsedPercent === null ? null : Math.round(compactUsedPercent);
+  const compactUsageLabel = `${name} ${compactMetric.label}`;
+  const compactStatus =
+    compactRoundedUsedPercent === null ? "not reported" : `${compactRoundedUsedPercent}% used`;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         openOnHover
         delay={150}
         closeDelay={150}
-        aria-label={`Show ${name} account usage details`}
+        aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatus}`}
+        title={`${compactUsageLabel}: ${compactStatus}`}
         data-provider-usage-compact-driver={provider.driver}
         className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
         onFocus={() => setOpen(true)}
@@ -575,7 +727,6 @@ function ProviderUsageBadge({
           className="size-4"
           iconClassName="size-3.5"
         />
-        <span className="text-muted-foreground">{compactMetric.label}</span>
         <span
           className={`font-medium tabular-nums ${
             compactUsedPercent === null
@@ -583,12 +734,12 @@ function ProviderUsageBadge({
               : usageValueClass(compactUsedPercent)
           }`}
         >
-          {compactUsedPercent === null ? "—" : `${Math.round(compactUsedPercent)}%`}
+          {compactRoundedUsedPercent === null ? "—" : `${compactRoundedUsedPercent}%`}
         </span>
-        {compactUsedPercent !== null ? (
+        {compactUsedPercent !== null && compactRoundedUsedPercent !== null ? (
           <span
             role="progressbar"
-            aria-label={`${name} ${compactMetric.label} used`}
+            aria-label={`${compactUsageLabel} used`}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(compactUsedPercent)}
@@ -605,20 +756,12 @@ function ProviderUsageBadge({
         align="start"
         side={detailsSide}
         sideOffset={8}
-        aria-label={`${name} account usage details`}
+        aria-label={usageDetailsLabel}
         className="border border-border/70 bg-popover shadow-xl"
       >
-        <ProviderUsageDetails
-          name={name}
-          driver={provider.driver}
-          state={state}
-          windows={windows}
-          reportedAt={reportedAt}
-          isRefreshing={isRefreshing}
-          refreshError={refreshError}
-          {...(state === "stale" && onRefreshProvider
-            ? { onRefresh: () => void refreshUsage() }
-            : {})}
+        <ProviderUsageBadgeDetails
+          summary={summary}
+          {...(onRefreshProvider ? { onRefreshProvider } : {})}
         />
       </PopoverPopup>
     </Popover>
@@ -626,6 +769,7 @@ function ProviderUsageBadge({
 }
 
 export function ProviderUsageBar(props: {
+  environmentId: EnvironmentId;
   providers: ReadonlyArray<ServerProvider>;
   activities: ReadonlyArray<OrchestrationThreadActivity>;
   detailsSide?: "top" | "bottom";
@@ -634,8 +778,8 @@ export function ProviderUsageBar(props: {
   const persistedByAccountKey = useProviderUsageStore((state) => state.byAccountKey);
   const recordUsage = useProviderUsageStore((state) => state.record);
   const reports = useMemo(
-    () => deriveProviderUsageReports(props.providers, props.activities),
-    [props.activities, props.providers],
+    () => deriveProviderUsageReports(props.providers, props.activities, props.environmentId),
+    [props.activities, props.environmentId, props.providers],
   );
   useEffect(() => {
     for (const report of Object.values(reports)) recordUsage(report);
@@ -644,6 +788,8 @@ export function ProviderUsageBar(props: {
     props.providers,
     props.activities,
     persistedByAccountKey,
+    Date.now(),
+    props.environmentId,
   );
   const compactEntries = summaries.flatMap((summary) => {
     const compactMetric = compactProviderUsageMetric(summary);

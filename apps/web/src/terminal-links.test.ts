@@ -196,6 +196,15 @@ describe("resolvePathLinkTarget", () => {
       resolvePathLinkTarget("C:/Users/julius/project/src/main.ts:12", "C:\\Users\\julius\\project"),
     ).toBe("C:/Users/julius/project/src/main.ts:12");
   });
+
+  it("recovers a Windows absolute path prefixed by a project label", () => {
+    expect(
+      resolvePathLinkTarget(
+        "GameProject/D:/GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+        String.raw`D:\GameProject`,
+      ),
+    ).toBe("D:/GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png");
+  });
 });
 
 describe("isTerminalLinkActivation", () => {

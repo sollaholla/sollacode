@@ -48,10 +48,8 @@ describe("composer push-to-talk action", () => {
       pushToTalkDisabled: true,
     });
 
-    expect(markup).toContain(
-      'aria-label="Mute microphone — release to transcribe and send (Cmd+D)"',
-    );
-    expect(markup).toContain('title="Mute microphone — release to transcribe and send (Cmd+D)"');
+    expect(markup).toContain('aria-label="Mute microphone — release to transcribe (Cmd+D)"');
+    expect(markup).toContain('title="Mute microphone — release to transcribe (Cmd+D)"');
     expect(markup).toContain('aria-pressed="true"');
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
@@ -67,20 +65,20 @@ describe("composer push-to-talk action", () => {
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
 
-  it("keeps the microphone visible and focusable beside Stop while the agent is working", () => {
+  it("keeps the microphone enabled beside Stop while the agent is working", () => {
     const markup = renderActions({
       isRunning: true,
-      pushToTalkDisabled: true,
-      pushToTalkDisabledReason: "Microphone unavailable while the agent is working",
+      pushToTalkDisabled: false,
+      pushToTalkDisabledReason: null,
     });
 
     const microphoneIndex = markup.indexOf(
-      'aria-label="Microphone unavailable while the agent is working (Cmd+D)"',
+      'aria-label="Unmute microphone — hold to record (Cmd+D)"',
     );
     const stopIndex = markup.indexOf('aria-label="Stop generation"');
     expect(microphoneIndex).toBeGreaterThan(-1);
     expect(stopIndex).toBeGreaterThan(microphoneIndex);
-    expect(markup).toContain('aria-disabled="true"');
+    expect(markup).toContain('aria-disabled="false"');
     expect(markup).not.toContain('disabled=""');
   });
 
@@ -108,22 +106,58 @@ describe("composer push-to-talk action", () => {
     expect(markup).not.toContain('aria-label="Send message"');
   });
 
+  it("shows an immediate Apply changes action when composer settings differ", () => {
+    const markup = renderActions({
+      settingsUpdateLabel: "GPT-5.6-Sol with high effort · Plan mode",
+      onApplySettings: vi.fn(),
+    });
+
+    expect(markup).toContain(
+      'aria-label="Apply conversation changes: GPT-5.6-Sol with high effort · Plan mode"',
+    );
+    expect(markup).toContain(">Apply changes</span>");
+  });
+
+  it("uses an icon-only Apply action while running so composer tools do not get squished", () => {
+    const markup = renderActions({
+      isRunning: true,
+      settingsUpdateLabel: "GPT-5.6-Sol with high effort · Plan mode",
+      onApplySettings: vi.fn(),
+    });
+
+    expect(markup).toContain(
+      'aria-label="Apply conversation changes: GPT-5.6-Sol with high effort · Plan mode"',
+    );
+    expect(markup).not.toContain(">Apply changes</span>");
+    expect(markup).not.toContain(">Apply</span>");
+    expect(markup).toContain("size-9 p-0 sm:size-8");
+  });
+
+  it("shows an interrupting state after Stop is pressed", () => {
+    const markup = renderActions({
+      isRunning: true,
+      promptHasText: false,
+      sendWhileRunning: false,
+      hasSendableContent: false,
+      isInterrupting: true,
+    });
+
+    expect(markup).toContain('aria-label="Stopping generation"');
+    expect(markup).toContain('disabled=""');
+  });
+
   it("uses the platform shortcut in every state-aware action label", () => {
     expect(formatPushToTalkActionLabel(null, "MacIntel")).toBe(
       "Unmute microphone — hold to record (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("recording", "MacIntel")).toBe(
+      "Mute microphone — release to transcribe (Cmd+D)",
+    );
+    expect(formatPushToTalkActionLabel("recording", "MacIntel", null, true)).toBe(
       "Mute microphone — release to transcribe and send (Cmd+D)",
     );
     expect(formatPushToTalkActionLabel("transcribing", "Win32")).toBe(
       "Transcribing voice message (Ctrl+D)",
     );
-    expect(
-      formatPushToTalkActionLabel(
-        null,
-        "MacIntel",
-        "Microphone unavailable while the agent is working",
-      ),
-    ).toBe("Microphone unavailable while the agent is working (Cmd+D)");
   });
 });

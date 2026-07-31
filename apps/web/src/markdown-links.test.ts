@@ -124,12 +124,42 @@ describe("resolveMarkdownFileLinkTarget", () => {
     ).toBe("D:/Programme/t3code/apps/web/src/components/ChatMarkdown.tsx:1");
   });
 
+  it("recovers project-prefixed absolute Windows image paths", () => {
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "GameProject/D:/GameProject/Temp/billboard_scene_after_dominant_forest.png",
+        String.raw`D:\GameProject`,
+      ),
+    ).toMatchObject({
+      filePath: "D:/GameProject/Temp/billboard_scene_after_dominant_forest.png",
+      targetPath: "D:/GameProject/Temp/billboard_scene_after_dominant_forest.png",
+      displayPath: "GameProject/Temp/billboard_scene_after_dominant_forest.png",
+      workspaceRelativePath: "Temp/billboard_scene_after_dominant_forest.png",
+      basename: "billboard_scene_after_dominant_forest.png",
+    });
+  });
+
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
   });
 });
 
 describe("resolveInlineCodeFileLinkMeta", () => {
+  it("recovers and links the exact project-prefixed Windows image shape", () => {
+    expect(
+      resolveInlineCodeFileLinkMeta(
+        "GameProject/D:/GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+        String.raw`D:\GameProject`,
+      ),
+    ).toMatchObject({
+      filePath: "D:/GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+      targetPath: "D:/GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+      displayPath: "GameProject/Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+      workspaceRelativePath: "Temp/live_billboard_move_sweep/move_sweep_mosaic.png",
+      basename: "move_sweep_mosaic.png",
+    });
+  });
+
   it("links relative paths with file extensions", () => {
     expect(
       resolveInlineCodeFileLinkMeta(".plans/worktree-management-v1.md", "/Users/julius/project"),

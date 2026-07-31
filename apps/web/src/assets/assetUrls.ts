@@ -9,6 +9,41 @@ import { usePreparedConnection } from "~/state/session";
 
 export { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 
+const DESKTOP_REMOTE_ASSET_PROXY_PATH = "/__solla/remote-asset";
+const DESKTOP_RENDERER_PROTOCOLS = new Set(["sollacode:", "t3code-dev:"]);
+
+export function resolveDisplayAssetUrl(
+  httpBaseUrl: string,
+  relativeUrl: string,
+  rendererHref: string | null = typeof window === "undefined" ? null : window.location.href,
+): string | null {
+  const assetUrl = resolveAssetUrl(httpBaseUrl, relativeUrl);
+  if (assetUrl === null || rendererHref === null) return assetUrl;
+
+  try {
+    const rendererUrl = new URL(rendererHref);
+    if (!DESKTOP_RENDERER_PROTOCOLS.has(rendererUrl.protocol)) return assetUrl;
+
+    const proxyUrl = new URL(DESKTOP_REMOTE_ASSET_PROXY_PATH, rendererUrl);
+    proxyUrl.searchParams.set("url", assetUrl);
+    return proxyUrl.toString();
+  } catch {
+    return assetUrl;
+  }
+}
+
+export function withAssetRevision(url: string, revision: string): string {
+  const normalizedRevision = revision.trim();
+  if (normalizedRevision.length === 0) return url;
+  try {
+    const revised = new URL(url);
+    revised.searchParams.set("solla_revision", normalizedRevision);
+    return revised.toString();
+  } catch {
+    return url;
+  }
+}
+
 export type AssetUrlState =
   | { readonly _tag: "Loading" }
   | { readonly _tag: "Failure" }
@@ -31,7 +66,10 @@ export function useAssetUrlState(
   if (preparedConnection._tag === "None" || result._tag !== "Success") {
     return { _tag: "Loading" };
   }
-  const url = resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl);
+  const url = resolveDisplayAssetUrl(
+    preparedConnection.value.httpBaseUrl,
+    result.value.relativeUrl,
+  );
   return url === null ? { _tag: "Failure" } : { _tag: "Success", url };
 }
 
@@ -60,7 +98,10 @@ export function useAssetUrls(
         ? resources.map(() => null)
         : results.map((result) =>
             AsyncResult.isSuccess(result)
-              ? resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl)
+              ? resolveDisplayAssetUrl(
+                  preparedConnection.value.httpBaseUrl,
+                  result.value.relativeUrl,
+                )
               : null,
           ),
     [preparedConnection, resources, results],

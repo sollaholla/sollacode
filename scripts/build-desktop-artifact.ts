@@ -142,6 +142,7 @@ interface BuildCliInput {
   readonly signed: Option.Option<boolean>;
   readonly verbose: Option.Option<boolean>;
   readonly wslPrebuild: Option.Option<string>;
+  readonly resourceMonitorPrebuild: Option.Option<string>;
 }
 
 function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Type | undefined {
@@ -574,6 +575,7 @@ interface ResolvedBuildOptions {
   readonly signed: boolean;
   readonly verbose: boolean;
   readonly wslPrebuild: string | undefined;
+  readonly resourceMonitorPrebuild: string | undefined;
 }
 
 interface StagePackageJson {
@@ -1008,6 +1010,12 @@ const BuildEnvConfig = Config.all({
   // into the staged node-pty so the WSL backend ships a ready binary and never
   // compiles on the user's machine.
   wslPrebuild: Config.string("T3CODE_DESKTOP_WSL_PREBUILD").pipe(Config.option),
+  // Cross-platform packaging can reuse a target-native monitor built by that
+  // platform's CI/toolchain instead of requiring (for example) MSVC link.exe
+  // on a macOS packaging host.
+  resourceMonitorPrebuild: Config.string("T3CODE_DESKTOP_RESOURCE_MONITOR_PREBUILD").pipe(
+    Config.option,
+  ),
 });
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
@@ -1054,6 +1062,9 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
 
   const wslPrebuild =
     Option.getOrUndefined(input.wslPrebuild) ?? Option.getOrUndefined(env.wslPrebuild);
+  const resourceMonitorPrebuild =
+    Option.getOrUndefined(input.resourceMonitorPrebuild) ??
+    Option.getOrUndefined(env.resourceMonitorPrebuild);
 
   return {
     platform,
@@ -1066,6 +1077,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     signed,
     verbose,
     wslPrebuild,
+    resourceMonitorPrebuild,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -1103,6 +1115,7 @@ const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input:
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
   readonly verbose: boolean;
+  readonly prebuildPath: string | undefined;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1111,43 +1124,58 @@ const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input:
   const rustTargets = resolveResourceMonitorRustTargets(input.platform, input.arch);
   const builtBinaries: string[] = [];
 
-  for (const rustTarget of rustTargets) {
-    const spawnCommand = yield* resolveSpawnCommand("cargo", [
-      "build",
-      "--locked",
-      "--release",
-      "--manifest-path",
-      manifestPath,
-      "--target",
-      rustTarget,
-    ]);
-    yield* runCommand(
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        cwd: input.repoRoot,
-        shell: spawnCommand.shell,
-      }),
-      {
-        label: `cargo build resource monitor (${rustTarget})`,
-        verbose: input.verbose,
-      },
-    );
-
-    const binaryPath = path.join(
-      input.repoRoot,
-      "native/resource-monitor/target",
-      rustTarget,
-      "release",
-      executableName,
-    );
-    if (!(yield* fs.exists(binaryPath))) {
+  if (input.prebuildPath !== undefined) {
+    if (!(yield* fs.exists(input.prebuildPath))) {
       return yield* new ResourceMonitorBuildOutputMissingError({
-        binaryPath,
-        rustTarget,
+        binaryPath: input.prebuildPath,
+        rustTarget: "prebuilt",
         platform: input.platform,
         arch: input.arch,
       });
     }
-    builtBinaries.push(binaryPath);
+    builtBinaries.push(input.prebuildPath);
+    yield* Effect.log(
+      `[desktop-artifact] Reusing resource-monitor prebuild: ${input.prebuildPath}`,
+    );
+  } else {
+    for (const rustTarget of rustTargets) {
+      const spawnCommand = yield* resolveSpawnCommand("cargo", [
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        manifestPath,
+        "--target",
+        rustTarget,
+      ]);
+      yield* runCommand(
+        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+          cwd: input.repoRoot,
+          shell: spawnCommand.shell,
+        }),
+        {
+          label: `cargo build resource monitor (${rustTarget})`,
+          verbose: input.verbose,
+        },
+      );
+
+      const binaryPath = path.join(
+        input.repoRoot,
+        "native/resource-monitor/target",
+        rustTarget,
+        "release",
+        executableName,
+      );
+      if (!(yield* fs.exists(binaryPath))) {
+        return yield* new ResourceMonitorBuildOutputMissingError({
+          binaryPath,
+          rustTarget,
+          platform: input.platform,
+          arch: input.arch,
+        });
+      }
+      builtBinaries.push(binaryPath);
+    }
   }
 
   const destinationDirectory = path.join(input.stageResourcesDir, "resource-monitor");
@@ -1713,6 +1741,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     platform: options.platform,
     arch: options.arch,
     verbose: options.verbose,
+    prebuildPath: options.resourceMonitorPrebuild,
   });
 
   yield* assertPlatformBuildResources(
@@ -1996,6 +2025,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   wslPrebuild: Flag.string("wsl-prebuild").pipe(
     Flag.withDescription(
       "Path to a prebuilt Linux node-pty (pty.node) for the target arch, staged for the WSL backend (env: T3CODE_DESKTOP_WSL_PREBUILD).",
+    ),
+    Flag.optional,
+  ),
+  resourceMonitorPrebuild: Flag.string("resource-monitor-prebuild").pipe(
+    Flag.withDescription(
+      "Path to a prebuilt target-native resource monitor (env: T3CODE_DESKTOP_RESOURCE_MONITOR_PREBUILD).",
     ),
     Flag.optional,
   ),

@@ -12,6 +12,6 @@ describe("ThreadSyncStatusPill", () => {
 
     expect(markup).toContain('role="status"');
     expect(markup).toContain(label);
-    expect(markup).not.toContain("animate-");
+    expect(markup).toContain("animate-spin");
   });
 });

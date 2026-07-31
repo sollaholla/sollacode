@@ -3,6 +3,8 @@ import {
   getAnchoredTurnMetrics,
   getRowBottom,
   resolveTimelineSendScrollPlan,
+  shouldReleaseTimelineLiveFollowForTouch,
+  shouldReleaseTimelineLiveFollowForWheel,
   shouldResumeTimelineLiveFollow,
 } from "./timelineScrollAnchoring";
 
@@ -68,6 +70,18 @@ describe("timeline scroll anchoring", () => {
         manualNavigationTowardEnd: true,
       }),
     ).toBe(false);
+  });
+
+  it("releases send-time live-follow only for an explicit wheel gesture toward older content", () => {
+    expect(shouldReleaseTimelineLiveFollowForWheel(-24)).toBe(true);
+    expect(shouldReleaseTimelineLiveFollowForWheel(24)).toBe(false);
+    expect(shouldReleaseTimelineLiveFollowForWheel(0)).toBe(false);
+  });
+
+  it("waits for a touch gesture toward older content before releasing live-follow", () => {
+    expect(shouldReleaseTimelineLiveFollowForTouch(null, 200)).toBe(false);
+    expect(shouldReleaseTimelineLiveFollowForTouch(200, 220)).toBe(true);
+    expect(shouldReleaseTimelineLiveFollowForTouch(220, 200)).toBe(false);
   });
 
   it("measures row bottoms from LegendList row position and size", () => {

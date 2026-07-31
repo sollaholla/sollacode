@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   downmixAudioChannels,
   isPushToTalkReleaseEvent,
   isPushToTalkShortcut,
+  raceWithTranscriptionCancellation,
+  resolveVisiblePushToTalkStatus,
   startRecorderWithCue,
+  withTranscriptionDeadline,
 } from "./pushToTalk";
 
 const event = (overrides: Partial<Parameters<typeof isPushToTalkShortcut>[0]> = {}) => ({
@@ -47,6 +50,20 @@ describe("downmixAudioChannels", () => {
     const right = new Float32Array([-1, 0.5]);
     expect([...downmixAudioChannels([left, right])]).toEqual([0, -0.25]);
     expect([...left]).toEqual([1, -1]);
+  });
+});
+
+describe("resolveVisiblePushToTalkStatus", () => {
+  it("drops a stale route-local transcription state after the background task settles", () => {
+    expect(resolveVisiblePushToTalkStatus("transcribing", null)).toBeNull();
+    expect(resolveVisiblePushToTalkStatus("loading", null)).toBeNull();
+  });
+
+  it("lets the background task replace a stale local recording state after the recorder stops", () => {
+    expect(resolveVisiblePushToTalkStatus("recording", "transcribing")).toBe("transcribing");
+    expect(resolveVisiblePushToTalkStatus("recording", "loading")).toBe("loading");
+    expect(resolveVisiblePushToTalkStatus(null, "loading")).toBe("loading");
+    expect(resolveVisiblePushToTalkStatus(null, "transcribing")).toBe("transcribing");
   });
 });
 
@@ -95,5 +112,54 @@ describe("startRecorderWithCue", () => {
       }),
     ).toThrow("permission or recorder startup failed");
     expect(cueCount).toBe(0);
+  });
+});
+
+describe("withTranscriptionDeadline", () => {
+  it("clears its deadline when transcription settles", async () => {
+    const onTimeout = vi.fn();
+    await expect(
+      withTranscriptionDeadline(Promise.resolve("transcript"), onTimeout, 10),
+    ).resolves.toBe("transcript");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onTimeout).not.toHaveBeenCalled();
+  });
+
+  it("rejects and runs worker cleanup when transcription stalls", async () => {
+    vi.useFakeTimers();
+    const onTimeout = vi.fn();
+    const transcription = withTranscriptionDeadline(
+      new Promise<string>(() => undefined),
+      onTimeout,
+      25,
+    );
+
+    const rejection = expect(transcription).rejects.toThrow("took too long");
+    await vi.advanceTimersByTimeAsync(25);
+    await rejection;
+    expect(onTimeout).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+});
+
+describe("raceWithTranscriptionCancellation", () => {
+  it("can cancel a pipeline before the worker request exists", async () => {
+    const controller = new AbortController();
+    const decoding = raceWithTranscriptionCancellation(
+      new Promise<string>(() => undefined),
+      controller.signal,
+    );
+
+    const rejection = expect(decoding).rejects.toThrow("cancelled while decoding");
+    controller.abort(new Error("cancelled while decoding"));
+    await rejection;
+  });
+
+  it("rejects immediately when cancellation already happened", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("already cancelled"));
+    await expect(
+      raceWithTranscriptionCancellation(Promise.resolve("ignored"), controller.signal),
+    ).rejects.toThrow("already cancelled");
   });
 });

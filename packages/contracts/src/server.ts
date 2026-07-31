@@ -562,6 +562,45 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
 
+export const ProviderAccountSwitchStatus = Schema.Literals([
+  "logging_out",
+  "starting_login",
+  "waiting_for_authentication",
+  "waiting_for_code",
+  "refreshing_account",
+  "succeeded",
+  "cancelled",
+  "failed",
+]);
+export type ProviderAccountSwitchStatus = typeof ProviderAccountSwitchStatus.Type;
+
+export const ProviderAccountSwitchState = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  status: ProviderAccountSwitchStatus,
+  startedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  authUrl: Schema.NullOr(Schema.String),
+  previousAccountLabel: Schema.NullOr(Schema.String),
+  currentAccountLabel: Schema.NullOr(Schema.String),
+  message: Schema.NullOr(Schema.String),
+});
+export type ProviderAccountSwitchState = typeof ProviderAccountSwitchState.Type;
+
+export class ProviderAccountSwitchError extends Schema.TaggedErrorClass<ProviderAccountSwitchError>()(
+  "ProviderAccountSwitchError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider account switch failed for ${this.instanceId}: ${this.reason}`;
+  }
+}
+
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),

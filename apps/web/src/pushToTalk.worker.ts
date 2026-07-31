@@ -1,6 +1,11 @@
 import { env, pipeline } from "@huggingface/transformers";
 import onnxWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { configurePackagedOnnxWasm } from "./pushToTalkOnnx";
+/* eslint-disable unicorn/require-post-message-target-origin -- DedicatedWorkerGlobalScope.postMessage has a transfer-list second argument, not a target origin. */
+import {
+  assembleTranscriptionText,
+  LONG_FORM_TRANSCRIPTION_OPTIONS,
+} from "./pushToTalkTranscription";
 
 const MODEL_ID = "onnx-community/whisper-tiny.en";
 const MODEL_REVISION = "2575352d61be1bf7225cf8f8b268a4678025fc58";
@@ -56,9 +61,8 @@ self.addEventListener(
     try {
       const transcriber = await getTranscriber(event.data.id);
       self.postMessage({ id: event.data.id, status: "transcribing" });
-      const result = await transcriber(event.data.audio);
-      const first = Array.isArray(result) ? result[0] : result;
-      self.postMessage({ id: event.data.id, text: first?.text?.trim() ?? "" });
+      const result = await transcriber(event.data.audio, LONG_FORM_TRANSCRIPTION_OPTIONS);
+      self.postMessage({ id: event.data.id, text: assembleTranscriptionText(result) });
     } catch (cause) {
       self.postMessage({
         id: event.data.id,

@@ -83,7 +83,7 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "          session: { total_cost_usd: 0, total_api_duration_ms: 0, total_duration_ms: 0, total_lines_added: 0, total_lines_removed: 0, model_usage: {} },",
           '          subscription_type: "pro",',
           "          rate_limits_available: true,",
-          '          rate_limits: { five_hour: { utilization: 21, resets_at: "2026-07-29T22:00:00.000Z" }, seven_day: { utilization: 43, resets_at: "2026-08-03T00:00:00.000Z" } },',
+          '          rate_limits: { five_hour: { utilization: 21, resets_at: "2026-07-29T22:00:00.000Z" }, seven_day: { utilization: 43, resets_at: "2026-08-03T00:00:00.000Z" }, model_scoped: [{ display_name: "Fable", utilization: 67, resets_at: "2026-08-04T00:00:00.000Z" }] },',
           "          behaviors: { day: { request_count: 0, session_count: 0, characteristics: [], contributors: [] }, week: { request_count: 0, session_count: 0, characteristics: [], contributors: [] } },",
           "        },",
           "      },",
@@ -146,6 +146,13 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
               utilization: 43,
               resets_at: "2026-08-03T00:00:00.000Z",
             },
+            model_scoped: [
+              {
+                display_name: "Fable",
+                utilization: 67,
+                resets_at: "2026-08-04T00:00:00.000Z",
+              },
+            ],
           },
         },
       });

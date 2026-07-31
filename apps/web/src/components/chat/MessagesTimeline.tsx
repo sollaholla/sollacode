@@ -1,11 +1,17 @@
 import {
+  EventId,
   type EnvironmentId,
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import {
   createContext,
   Fragment,
@@ -18,7 +24,6 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
@@ -85,6 +90,10 @@ import {
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
+import {
+  shouldReleaseTimelineLiveFollowForTouch,
+  shouldReleaseTimelineLiveFollowForWheel,
+} from "./timelineScrollAnchoring";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
@@ -103,7 +112,15 @@ import { cn } from "~/lib/utils";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
-import { useAssetUrlState } from "../../assets/assetUrls";
+import { useAssetUrlState, withAssetRevision } from "../../assets/assetUrls";
+import { useOpenInPreferredEditor } from "../../editorPreferences";
+import { readLocalApi } from "../../localApi";
+import { serverEnvironment } from "../../state/server";
+import { useEnvironment } from "../../state/environments";
+import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
+import { useRightPanelStore } from "../../rightPanelStore";
+import { stackedThreadToast, toastManager } from "../ui/toast";
+import { revealInFileExplorerLabel } from "../preview/fileExplorerLabel";
 
 import {
   buildInlineTerminalContextText,
@@ -145,6 +162,7 @@ interface TimelineRowSharedState {
   resumableAssistantMessageId: MessageId | null;
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
+  isResumeIncompleteTurnDisabled: boolean;
 }
 
 interface TimelineRowActivityState {
@@ -198,6 +216,7 @@ interface MessagesTimelineProps {
   resumableAssistantMessageId: MessageId | null;
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
+  isResumeIncompleteTurnDisabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +255,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   resumableAssistantMessageId,
   onResumeIncompleteTurn,
   isResumeIncompleteTurnBusy,
+  isResumeIncompleteTurnDisabled,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
@@ -380,39 +400,29 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const previousTouchYRef = useRef<number | null>(null);
   const handleWheelNavigation = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
-      onManualNavigation(event.deltaY > 0);
+      if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
+        onManualNavigation(false);
+      }
     },
     [onManualNavigation],
   );
-  const handleTouchStart = useCallback(
-    (event: ReactTouchEvent<HTMLDivElement>) => {
-      previousTouchYRef.current = event.touches[0]?.clientY ?? null;
-      onManualNavigation(false);
-    },
-    [onManualNavigation],
-  );
+  const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    previousTouchYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
   const handleTouchMove = useCallback(
     (event: ReactTouchEvent<HTMLDivElement>) => {
       const currentTouchY = event.touches[0]?.clientY ?? null;
       const previousTouchY = previousTouchYRef.current;
       previousTouchYRef.current = currentTouchY;
-      onManualNavigation(
-        previousTouchY !== null && currentTouchY !== null && currentTouchY < previousTouchY,
-      );
+      if (shouldReleaseTimelineLiveFollowForTouch(previousTouchY, currentTouchY)) {
+        onManualNavigation(false);
+      }
     },
     [onManualNavigation],
   );
   const handleTouchEnd = useCallback(() => {
     previousTouchYRef.current = null;
   }, []);
-  const handlePointerNavigation = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.pointerType !== "touch") {
-        onManualNavigation(false);
-      }
-    },
-    [onManualNavigation],
-  );
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
@@ -464,6 +474,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resumableAssistantMessageId,
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
+      isResumeIncompleteTurnDisabled,
     }),
     [
       timestampFormat,
@@ -483,6 +494,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resumableAssistantMessageId,
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
+      isResumeIncompleteTurnDisabled,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -567,7 +579,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
             onTouchCancel={handleTouchEnd}
-            onPointerDown={handlePointerNavigation}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
@@ -913,6 +924,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work" ? <WorkGroupSection groupedEntries={row.groupedEntries} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
+      {row.kind === "provider-transition" ? <ProviderTransitionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -922,6 +934,27 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+function ProviderTransitionTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "provider-transition" }>;
+}) {
+  return (
+    <div
+      className="flex items-center gap-3 py-2 text-muted-foreground"
+      role="status"
+      aria-label={row.detail ? `${row.label}. ${row.detail}` : row.label}
+    >
+      <span className="h-px min-w-4 flex-1 bg-border/70" aria-hidden="true" />
+      <span className="min-w-0 text-center">
+        <span className="block font-medium text-foreground/80 text-xs">{row.label}</span>
+        {row.detail ? <span className="mt-0.5 block text-[11px]">{row.detail}</span> : null}
+      </span>
+      <span className="h-px min-w-4 flex-1 bg-border/70" aria-hidden="true" />
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
@@ -1091,6 +1124,8 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={Boolean(row.message.streaming)}
+          assetRevision={row.message.id}
+          sourceMessageId={row.message.id}
           skills={ctx.skills}
           lowContextWarningAction={
             row.message.streaming
@@ -1116,12 +1151,19 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               aria-label={
                 ctx.isResumeIncompleteTurnBusy
                   ? "Resuming incomplete response"
-                  : "Resume incomplete response"
+                  : ctx.isResumeIncompleteTurnDisabled
+                    ? "Resume unavailable while the remote machine is disconnected"
+                    : "Resume incomplete response"
               }
               aria-busy={ctx.isResumeIncompleteTurnBusy}
-              disabled={ctx.isResumeIncompleteTurnBusy}
+              disabled={ctx.isResumeIncompleteTurnBusy || ctx.isResumeIncompleteTurnDisabled}
               onClick={ctx.onResumeIncompleteTurn}
-              className="h-8 gap-1.5 rounded-lg bg-card/80 text-foreground shadow-sm"
+              title={
+                ctx.isResumeIncompleteTurnDisabled
+                  ? "Reconnect the remote machine to resume this response."
+                  : undefined
+              }
+              className="h-8 gap-1.5 rounded-lg bg-card/80 text-foreground shadow-sm disabled:text-muted-foreground disabled:opacity-55"
             >
               {ctx.isResumeIncompleteTurnBusy ? (
                 <LoaderCircleIcon aria-hidden="true" className="size-3.5 animate-spin" />
@@ -2166,7 +2208,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         </div>
       </div>
       {workEntry.readImagePath ? (
-        <ToolReadImagePreview path={workEntry.readImagePath} workspaceRoot={workspaceRoot} />
+        <ToolReadImagePreview
+          path={workEntry.readImagePath}
+          revision={workEntry.id}
+          workspaceRoot={workspaceRoot}
+        />
       ) : null}
       {expanded && canExpand && expandedBody ? (
         <div
@@ -2185,6 +2231,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 
 function ToolReadImagePreview(props: {
   readonly path: string;
+  readonly revision: string;
   readonly workspaceRoot: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
@@ -2193,6 +2240,7 @@ function ToolReadImagePreview(props: {
   return (
     <ToolReadImagePreviewWithThread
       path={props.path}
+      revision={props.revision}
       workspaceRoot={props.workspaceRoot}
       threadRef={threadRef}
     />
@@ -2201,26 +2249,150 @@ function ToolReadImagePreview(props: {
 
 function ToolReadImagePreviewWithThread(props: {
   readonly path: string;
+  readonly revision: string;
   readonly workspaceRoot: string | undefined;
   readonly threadRef: ScopedThreadRef;
 }) {
   const ctx = use(TimelineRowCtx);
+  const serverConfig = useAtomValue(
+    serverEnvironment.configValueAtom(ctx.activeThreadEnvironmentId),
+  );
+  const openInPreferredEditor = useOpenInPreferredEditor(
+    ctx.activeThreadEnvironmentId,
+    serverConfig?.availableEditors ?? [],
+  );
+  const environment = useEnvironment(ctx.activeThreadEnvironmentId);
   const resource = useMemo(
     () => ({
       _tag: "workspace-file" as const,
       threadId: props.threadRef.threadId,
       path: props.path,
+      sourceActivityId: EventId.make(props.revision),
     }),
-    [props.path, props.threadRef.threadId],
+    [props.path, props.revision, props.threadRef.threadId],
   );
   const asset = useAssetUrlState(ctx.activeThreadEnvironmentId, resource);
+  const previewUrl = asset._tag === "Success" ? withAssetRevision(asset.url, props.revision) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const displayPath = formatWorkspaceRelativePath(props.path, props.workspaceRoot);
-  const failed = asset._tag === "Failure" || (asset._tag === "Success" && asset.url === failedUrl);
+  const workspaceRelativePath = useMemo(() => {
+    if (!props.workspaceRoot) return null;
+    const normalizedPath = props.path.replaceAll("\\", "/");
+    const normalizedRoot = props.workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
+    const pathForCompare = normalizedPath.toLowerCase();
+    const rootForCompare = normalizedRoot.toLowerCase();
+    return pathForCompare.startsWith(`${rootForCompare}/`)
+      ? normalizedPath.slice(normalizedRoot.length + 1)
+      : null;
+  }, [props.path, props.workspaceRoot]);
+  const failed = asset._tag === "Failure" || (previewUrl !== null && previewUrl === failedUrl);
+  const canRevealOnThisDevice =
+    typeof window !== "undefined" &&
+    window.desktopBridge !== undefined &&
+    (environment?.entry.target._tag === "PrimaryConnectionTarget" ||
+      (environment !== null && isDesktopLocalConnectionTarget(environment.entry.target)));
 
   useEffect(() => {
     setFailedUrl(null);
-  }, [props.path]);
+  }, [previewUrl]);
+
+  const handleOpenFile = useCallback(() => {
+    if (workspaceRelativePath) {
+      useRightPanelStore.getState().openFile(props.threadRef, workspaceRelativePath, undefined);
+      return;
+    }
+    void openInPreferredEditor(props.path).then((result) => {
+      if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    });
+  }, [openInPreferredEditor, props.path, props.threadRef, workspaceRelativePath]);
+
+  const handleRevealFile = useCallback(() => {
+    if (!canRevealOnThisDevice || !window.desktopBridge) return;
+    void window.desktopBridge.revealFile(props.path).catch((cause) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to locate file",
+          description: cause instanceof Error ? cause.message : "An error occurred.",
+        }),
+      );
+    });
+  }, [canRevealOnThisDevice, props.path]);
+
+  const handleCopyPath = useCallback((path: string, label: string) => {
+    void navigator.clipboard.writeText(path).then(
+      () =>
+        toastManager.add({
+          type: "success",
+          title: `${label} copied`,
+          description: path,
+        }),
+      (cause) =>
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Unable to copy ${label.toLowerCase()}`,
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        ),
+    );
+  }, []);
+
+  const handlePathContextMenu = useCallback(
+    async (event: MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const api = readLocalApi();
+      if (!api) return;
+      const clicked = await api.contextMenu.show(
+        [
+          ...(workspaceRelativePath ? ([{ id: "preview", label: "Open preview" }] as const) : []),
+          { id: "editor", label: "Open in editor" },
+          ...(canRevealOnThisDevice
+            ? ([
+                {
+                  id: "reveal",
+                  label: revealInFileExplorerLabel(navigator.platform),
+                },
+              ] as const)
+            : []),
+          ...(workspaceRelativePath
+            ? ([{ id: "copy-relative", label: "Copy relative path" }] as const)
+            : []),
+          { id: "copy-full", label: "Copy full path" },
+        ],
+        { x: event.clientX, y: event.clientY },
+      );
+      if (clicked === "preview" && workspaceRelativePath) {
+        useRightPanelStore.getState().openFile(props.threadRef, workspaceRelativePath, undefined);
+      } else if (clicked === "editor") {
+        void openInPreferredEditor(props.path);
+      } else if (clicked === "reveal") {
+        handleRevealFile();
+      } else if (clicked === "copy-relative" && workspaceRelativePath) {
+        handleCopyPath(workspaceRelativePath, "Relative path");
+      } else if (clicked === "copy-full") {
+        handleCopyPath(props.path, "Full path");
+      }
+    },
+    [
+      canRevealOnThisDevice,
+      handleCopyPath,
+      handleRevealFile,
+      openInPreferredEditor,
+      props.path,
+      props.threadRef,
+      workspaceRelativePath,
+    ],
+  );
 
   return (
     <div
@@ -2229,40 +2401,51 @@ function ToolReadImagePreviewWithThread(props: {
       onClick={stopRowToggle}
       onPointerDown={stopRowToggle}
     >
-      {failed ? (
-        <div className="flex min-h-20 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground">
-          Image preview unavailable. The file may be missing, too large, or not a valid supported
-          image.
-        </div>
-      ) : asset._tag === "Success" ? (
+      {!failed && asset._tag === "Success" && previewUrl !== null ? (
         <button
           type="button"
           className="block w-full cursor-zoom-in bg-black/10"
-          aria-label={`Expand ${displayPath}`}
-          onClick={() =>
+          aria-label={`Open image preview: ${displayPath}`}
+          onClick={(event) => {
+            event.stopPropagation();
             ctx.onImageExpand({
-              images: [{ src: asset.url, name: displayPath }],
+              images: [{ src: previewUrl, name: displayPath }],
               index: 0,
-            })
-          }
+            });
+          }}
+          onPointerDown={stopRowToggle}
         >
           <img
-            src={asset.url}
+            src={previewUrl}
             alt={displayPath}
             className="block max-h-80 w-full object-contain"
             loading="lazy"
             decoding="async"
-            onError={() => setFailedUrl(asset.url)}
+            onError={() => setFailedUrl(previewUrl)}
           />
         </button>
+      ) : failed ? (
+        <div className="flex min-h-20 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground">
+          Image preview unavailable. The file may be missing, too large, or not a valid supported
+          image.
+        </div>
       ) : (
         <div className="flex min-h-20 items-center justify-center text-muted-foreground">
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading image preview" />
         </div>
       )}
-      <div className="truncate border-t border-border/45 px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground/65">
+      <a
+        href={props.path}
+        className="block truncate border-t border-border/45 px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground/65 transition-colors hover:bg-accent/20 hover:text-foreground hover:underline"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          handleOpenFile();
+        }}
+        onContextMenu={handlePathContextMenu}
+      >
         {displayPath}
-      </div>
+      </a>
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
 
 import type {
   ChatMessage,
@@ -728,7 +729,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     requestKind,
     title: title ?? activity.summary,
   });
-  if (detail) {
+  if (detail && !readImagePath) {
     entry.detail = detail;
   }
   if (commandPreview.command) {
@@ -737,11 +738,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (commandPreview.rawCommand) {
     entry.rawCommand = commandPreview.rawCommand;
   }
-  if (changedFiles.length > 0) {
+  if (changedFiles.length > 0 && !readImagePath) {
     entry.changedFiles = changedFiles;
   }
   if (title) {
-    entry.toolTitle = title;
+    entry.toolTitle =
+      readImagePath && normalizeCompactToolLabel(title).toLowerCase() === "tool call"
+        ? "Read image"
+        : title;
   }
   if (itemType === "mcp_tool_call") {
     const data = asRecord(payload?.data);
@@ -819,19 +823,21 @@ function mergeDerivedWorkLogEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): DerivedWorkLogEntry {
-  const changedFiles = mergeChangedFiles(previous.changedFiles, next.changedFiles);
-  const detail = next.detail ?? previous.detail;
+  const readImagePath = next.readImagePath ?? previous.readImagePath;
+  const changedFiles = readImagePath
+    ? []
+    : mergeChangedFiles(previous.changedFiles, next.changedFiles);
+  const detail = readImagePath ? undefined : (next.detail ?? previous.detail);
   const command = next.command ?? previous.command;
   const rawCommand = next.rawCommand ?? previous.rawCommand;
   const toolTitle = next.toolTitle ?? previous.toolTitle;
   const itemType = next.itemType ?? previous.itemType;
   const requestKind = next.requestKind ?? previous.requestKind;
-  const readImagePath = next.readImagePath ?? previous.readImagePath;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
-  return {
+  const merged = {
     ...previous,
     ...next,
     ...(detail ? { detail } : {}),
@@ -847,6 +853,11 @@ function mergeDerivedWorkLogEntries(
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
   };
+  if (readImagePath) {
+    delete merged.detail;
+    delete merged.changedFiles;
+  }
+  return merged;
 }
 
 function mergeChangedFiles(
@@ -1116,7 +1127,33 @@ function structuredReadPath(record: Record<string, unknown> | null): string | nu
   for (const key of READ_PATH_KEYS) {
     const value = asTrimmedString(record[key]);
     if (value && isInlineRasterImagePath(value)) {
-      return value;
+      return normalizeEmbeddedWindowsAbsolutePath(value);
+    }
+  }
+  return null;
+}
+
+function readPathFromInvocationDetail(detail: string | null): string | null {
+  if (!detail) return null;
+  const match = /^\s*Read\s*:\s*(\{[\s\S]*\})\s*$/iu.exec(detail);
+  if (!match?.[1]) return null;
+  try {
+    return structuredReadPath(asRecord(JSON.parse(match[1]) as unknown));
+  } catch {
+    return null;
+  }
+}
+
+function readImagePathFromText(value: string | null): string | null {
+  if (!value) return null;
+  for (const line of value.split(/\r?\n/u)) {
+    const candidate = line
+      .trim()
+      .replace(/^(?:image\s+view|view\s+image|read\s+image|read\s+file)\s*:?\s*/iu, "")
+      .replace(/^["'`]|["'`]$/gu, "")
+      .trim();
+    if (candidate && isInlineRasterImagePath(candidate)) {
+      return normalizeEmbeddedWindowsAbsolutePath(candidate);
     }
   }
   return null;
@@ -1138,6 +1175,10 @@ function extractReadImagePath(
   const payloadInput = asRecord(payload?.input);
   const kind = asTrimmedString(data?.kind)?.toLowerCase();
   const normalizedTitle = metadata.title.toLowerCase();
+  const detail = asTrimmedString(payload?.detail);
+  const detailReadPath = readPathFromInvocationDetail(detail);
+  const titleImagePath = readImagePathFromText(metadata.title);
+  const detailImagePath = readImagePathFromText(detail);
   const isReadCall =
     metadata.requestKind === "file-read" ||
     metadata.itemType === "image_view" ||
@@ -1145,7 +1186,11 @@ function extractReadImagePath(
     kind === "view" ||
     normalizedTitle === "read" ||
     normalizedTitle.includes("read file") ||
-    normalizedTitle.includes("view image");
+    normalizedTitle.includes("view image") ||
+    normalizedTitle.includes("image view") ||
+    titleImagePath !== null ||
+    detailImagePath !== null ||
+    detailReadPath !== null;
   if (!isReadCall) return null;
 
   return (
@@ -1154,7 +1199,10 @@ function extractReadImagePath(
     structuredReadPath(itemArguments) ??
     structuredReadPath(item) ??
     structuredReadPath(payloadInput) ??
-    structuredReadPath(data)
+    structuredReadPath(data) ??
+    titleImagePath ??
+    detailImagePath ??
+    detailReadPath
   );
 }
 

@@ -619,9 +619,26 @@ type ClaudeCapabilitiesProbe = {
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   readonly accountUsage?: {
     readonly rate_limits_available: boolean;
-    readonly rate_limits: SDKControlGetUsageResponse["rate_limits"];
+    readonly rate_limits: ClaudeUsageRateLimits;
   };
 };
+
+type ClaudeUsageRateLimitWindow = NonNullable<
+  NonNullable<SDKControlGetUsageResponse["rate_limits"]>["seven_day"]
+>;
+
+type ClaudeUsageRateLimits =
+  | null
+  | (NonNullable<SDKControlGetUsageResponse["rate_limits"]> & {
+      readonly seven_day_fable?: ClaudeUsageRateLimitWindow | null;
+      readonly model_scoped?: ReadonlyArray<
+        ClaudeUsageRateLimitWindow & {
+          readonly display_name?: string | null;
+        }
+      > | null;
+      readonly fable?: ClaudeUsageRateLimitWindow | null;
+      readonly fable_usage?: ClaudeUsageRateLimitWindow | null;
+    });
 
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
@@ -757,7 +774,10 @@ const probeClaudeCapabilities = (
           ? {
               accountUsage: {
                 rate_limits_available: usage.rate_limits_available,
-                rate_limits: usage.rate_limits,
+                // The experimental usage endpoint may add quota windows before
+                // the bundled SDK declaration is updated. Preserve those raw
+                // fields so the web client can render the Fable quota.
+                rate_limits: usage.rate_limits as ClaudeUsageRateLimits,
               },
             }
           : {}),

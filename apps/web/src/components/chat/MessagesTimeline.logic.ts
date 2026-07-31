@@ -187,7 +187,22 @@ export type MessagesTimelineRow =
       createdAt: string;
       proposedPlan: ProposedPlan;
     }
+  | {
+      kind: "provider-transition";
+      id: string;
+      createdAt: string;
+      label: string;
+      detail: string | null;
+    }
   | { kind: "working"; id: string; createdAt: string | null };
+
+function isProviderTransitionWorkEntry(entry: WorkLogEntry): boolean {
+  return (
+    entry.sourceActivityKind === "provider.handoff.completed" ||
+    entry.sourceActivityKind === "provider.failover.completed" ||
+    entry.sourceActivityKind === "thread.settings.applied"
+  );
+}
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -377,7 +392,9 @@ function deriveTurnFolds(input: {
       entry.kind === "message" && entry.message.role === "assistant"
         ? (entry.message.turnId ?? null)
         : entry.kind === "work"
-          ? (entry.entry.turnId ?? null)
+          ? isProviderTransitionWorkEntry(entry.entry)
+            ? null
+            : (entry.entry.turnId ?? null)
           : null;
     if (!turnId) {
       continue;
@@ -531,6 +548,16 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
+      if (isProviderTransitionWorkEntry(timelineEntry.entry)) {
+        nextRows.push({
+          kind: "provider-transition",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          label: timelineEntry.entry.label,
+          detail: timelineEntry.entry.detail ?? null,
+        });
+        continue;
+      }
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
@@ -538,6 +565,7 @@ export function deriveMessagesTimelineRows(input: {
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          isProviderTransitionWorkEntry(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {
@@ -624,7 +652,7 @@ export function deriveMessagesTimelineRows(input: {
       showAssistantCopyButton: showAssistantMeta,
       assistantCopyStreaming: timelineEntry.message.streaming || assistantTurnStillInProgress,
       assistantTurnDiffSummary:
-        timelineEntry.message.role === "assistant"
+        timelineEntry.message.role === "assistant" && !assistantTurnStillInProgress
           ? input.turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
           : undefined,
       revertTurnCount:
@@ -683,6 +711,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "work":
       return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);
+
+    case "provider-transition": {
+      const bp = b as typeof a;
+      return a.createdAt === bp.createdAt && a.label === bp.label && a.detail === bp.detail;
+    }
 
     case "work-toggle": {
       const bw = b as typeof a;

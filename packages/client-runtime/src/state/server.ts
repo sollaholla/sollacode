@@ -325,6 +325,47 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId }) => environmentId,
       },
     }),
+    startProviderAccountSwitch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:start-provider-account-switch",
+      tag: WS_METHODS.serverStartProviderAccountSwitch,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}`,
+      },
+    }),
+    getProviderAccountSwitch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:get-provider-account-switch",
+      tag: WS_METHODS.serverGetProviderAccountSwitch,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) =>
+          `${environmentId}:${input.instanceId}:${input.switchId ?? "active"}`,
+      },
+    }),
+    openProviderAccountSwitchAuthLink: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:open-provider-account-switch-auth-link",
+      tag: WS_METHODS.serverOpenProviderAccountSwitchAuthLink,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}:${input.switchId}`,
+      },
+    }),
+    submitProviderAccountSwitchCode: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:submit-provider-account-switch-code",
+      tag: WS_METHODS.serverSubmitProviderAccountSwitchCode,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}:${input.switchId}`,
+      },
+    }),
+    cancelProviderAccountSwitch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:cancel-provider-account-switch",
+      tag: WS_METHODS.serverCancelProviderAccountSwitch,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}:${input.switchId}`,
+      },
+    }),
     updateProvider: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:update-provider",
       tag: WS_METHODS.serverUpdateProvider,

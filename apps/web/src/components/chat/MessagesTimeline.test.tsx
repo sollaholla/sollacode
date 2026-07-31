@@ -117,6 +117,7 @@ vi.mock("@pierre/diffs/react", () => {
 });
 
 vi.mock("../../assets/assetUrls", () => ({
+  withAssetRevision: (url: string, revision: string) => `${url}?solla_revision=${revision}`,
   useAssetUrlState: () => ({
     _tag: "Success" as const,
     url: "https://environment.example/api/assets/signed/reference.png",
@@ -198,6 +199,7 @@ function buildProps() {
     resumableAssistantMessageId: null,
     onResumeIncompleteTurn: () => {},
     isResumeIncompleteTurnBusy: false,
+    isResumeIncompleteTurnDisabled: false,
   };
 }
 
@@ -357,6 +359,23 @@ describe("MessagesTimeline", () => {
     expect(pendingMarkup).toContain('aria-busy="true"');
     expect(pendingMarkup).toContain("disabled");
     expect(pendingMarkup).toContain("Resuming…");
+
+    const disconnectedMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={timelineEntries}
+        resumableAssistantMessageId={assistantMessageId}
+        isResumeIncompleteTurnDisabled
+      />,
+    );
+    expect(disconnectedMarkup).toContain(
+      'aria-label="Resume unavailable while the remote machine is disconnected"',
+    );
+    expect(disconnectedMarkup).toContain(
+      'title="Reconnect the remote machine to resume this response."',
+    );
+    expect(disconnectedMarkup).toContain("disabled");
+    expect(disconnectedMarkup).toContain(">Resume</button>");
   });
 
   it("does not render Resume on a non-eligible assistant message", () => {
@@ -536,7 +555,7 @@ describe("MessagesTimeline", () => {
     expect(optedOutMarkup).not.toContain('data-maintain-scroll-at-end="enabled"');
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
-    expect(followingMarkup).toContain('data-manual-pointer-handler="true"');
+    expect(followingMarkup).toContain('data-manual-pointer-handler="false"');
   });
 
   it("does not add synthetic end space for a sent attachment message", () => {
@@ -745,8 +764,13 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Image read preview: workspace/art/reference.png"');
-    expect(markup).toContain('src="https://environment.example/api/assets/signed/reference.png"');
+    expect(markup).toContain('aria-label="Open image preview: workspace/art/reference.png"');
+    expect(markup).toContain("<button");
+    expect(markup).toContain('href="/workspace/art/reference.png"');
+    expect(markup).toContain("hover:underline");
+    expect(markup).toContain(
+      'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-image-read"',
+    );
     expect(markup).toContain("workspace/art/reference.png");
   });
 
