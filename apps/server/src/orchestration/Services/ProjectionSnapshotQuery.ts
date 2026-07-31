@@ -9,8 +9,10 @@
 import type {
   CheckpointRef,
   OrchestrationCheckpointSummary,
+  OrchestrationMessage,
   OrchestrationProject,
   OrchestrationProjectShell,
+  OrchestrationProposedPlan,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
@@ -49,6 +51,12 @@ export interface ProjectionFullThreadDiffContext {
   readonly worktreePath: string | null;
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
+}
+
+export interface ProjectionThreadIngestionContext {
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly proposedPlans: ReadonlyArray<OrchestrationProposedPlan>;
+  readonly taskTitle: string | null;
 }
 
 /**
@@ -151,6 +159,16 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /**
+   * Read only the bounded message/plan state needed while ingesting provider
+   * events. This deliberately excludes activities and checkpoints, whose
+   * payload history can be hundreds of megabytes on long-running threads.
+   */
+  readonly getThreadIngestionContext: (
+    threadId: ThreadId,
+    taskId?: string,
+  ) => Effect.Effect<Option.Option<ProjectionThreadIngestionContext>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id.
