@@ -911,4 +911,46 @@ describe("provider usage summaries", () => {
       window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
     });
   });
+
+  it("computes Claude compact usage as max(max(Fable, Current session), Weekly)", () => {
+    const provider = makeProvider("claudeAgent");
+    const summary = {
+      provider,
+      state: "available" as const,
+      reportedAt: null,
+      windows: [
+        { key: "current_session", label: "Current session", usedPercent: 74, resetAt: null },
+        { key: "seven_day", label: "Weekly", usedPercent: 81, resetAt: null },
+        { key: "fable", label: "Fable", usedPercent: 86, resetAt: null },
+        { key: "overage", label: "Overage", usedPercent: 100, resetAt: null },
+      ],
+    };
+
+    expect(compactProviderUsageMetric(summary)).toEqual({
+      label: "Fable",
+      window: expect.objectContaining({ key: "fable", usedPercent: 86 }),
+    });
+    expect(
+      compactProviderUsageMetric({
+        ...summary,
+        windows: summary.windows.map((window) =>
+          window.key === "current_session" ? { ...window, usedPercent: 92 } : window,
+        ),
+      }),
+    ).toEqual({
+      label: "Current session",
+      window: expect.objectContaining({ key: "current_session", usedPercent: 92 }),
+    });
+    expect(
+      compactProviderUsageMetric({
+        ...summary,
+        windows: summary.windows.map((window) =>
+          window.key === "seven_day" ? { ...window, usedPercent: 95 } : window,
+        ),
+      }),
+    ).toEqual({
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 95 }),
+    });
+  });
 });
