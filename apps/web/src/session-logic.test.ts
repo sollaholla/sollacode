@@ -1503,6 +1503,51 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.readImagePath)).toEqual([undefined, undefined]);
   });
 
+  it("does not infer image previews from shell commands that merely mention raster paths", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "png-shell-command-complete",
+        kind: "tool.completed",
+        summary: "Command run",
+        payload: {
+          itemType: "command_execution",
+          title: "Bash",
+          detail: "rm -f export/Textures/T_Troffer_*.png",
+          data: {
+            kind: "execute",
+            rawInput: {
+              command: "rm -f export/Textures/T_Troffer_*.png",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      itemType: "command_execution",
+      toolTitle: "Bash",
+    });
+    expect(entry?.readImagePath).toBeUndefined();
+  });
+
+  it("does not infer image previews from untyped tool text that happens to be an image path", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "generic-tool-image-text",
+        kind: "tool.completed",
+        summary: "Tool call",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          detail: "/tmp/incidental-output.png",
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBeUndefined();
+    expect(entry?.detail).toBe("/tmp/incidental-output.png");
+  });
+
   it("does not use command stdout as the detail when Cursor omits the command input", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

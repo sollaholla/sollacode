@@ -1189,17 +1189,18 @@ function extractReadImagePath(
   const detailReadPath = readPathFromInvocationDetail(detail);
   const titleImagePath = readImagePathFromText(metadata.title);
   const detailImagePath = readImagePathFromText(detail);
+  const hasExplicitReadTitle =
+    normalizedTitle === "read" ||
+    normalizedTitle.includes("read file") ||
+    normalizedTitle.includes("read image") ||
+    normalizedTitle.includes("view image") ||
+    normalizedTitle.includes("image view");
   const isReadCall =
     metadata.requestKind === "file-read" ||
     metadata.itemType === "image_view" ||
     kind === "read" ||
     kind === "view" ||
-    normalizedTitle === "read" ||
-    normalizedTitle.includes("read file") ||
-    normalizedTitle.includes("view image") ||
-    normalizedTitle.includes("image view") ||
-    titleImagePath !== null ||
-    detailImagePath !== null ||
+    hasExplicitReadTitle ||
     detailReadPath !== null;
   if (!isReadCall) return null;
 
