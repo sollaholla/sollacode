@@ -5,6 +5,16 @@ export interface TimelineThreadScrollMemory {
   readonly followEnd: boolean;
 }
 
+export function resolveTimelineScrollSnapshotFollowEnd({
+  isAtEnd,
+  scrollMode,
+}: {
+  readonly isAtEnd: boolean | undefined;
+  readonly scrollMode: TimelineScrollMode;
+}): boolean {
+  return isAtEnd === true || scrollMode === "following-end";
+}
+
 export function rememberTimelineThreadScroll(
   memories: Map<string, TimelineThreadScrollMemory>,
   threadKey: string,
