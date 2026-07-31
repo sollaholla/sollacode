@@ -95,6 +95,11 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  startClaudeTokenOptimizerProxy,
+  type ClaudeTokenOptimizerProxy,
+  type ClaudeTokenOptimizerState,
+} from "./ClaudeTokenOptimizerProxy.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
@@ -187,6 +192,8 @@ interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  readonly tokenOptimizerProxy: ClaudeTokenOptimizerProxy | undefined;
+  readonly tokenOptimizerState: ClaudeTokenOptimizerState;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -3180,6 +3187,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    const tokenOptimizerProxy = context.tokenOptimizerProxy;
+    if (tokenOptimizerProxy) {
+      yield* Effect.tryPromise({
+        try: () => tokenOptimizerProxy.close(),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            detail: "Failed to close the Token Optimizer proxy.",
+            cause,
+          }),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("claude.token-optimizer.close-failed", {
+            threadId: context.session.threadId,
+            cause,
+          }),
+        ),
+      );
+    }
+
     sessions.delete(context.session.threadId);
   });
 
@@ -3264,6 +3292,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const claudeTasks = new Map<string, ClaudeTaskState>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
+      const tokenOptimizerState: ClaudeTokenOptimizerState = {
+        enabled: input.tokenOptimizerEnabled === true,
+        activeTurnId: undefined,
+      };
 
       /**
        * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
@@ -3596,6 +3628,84 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(autoCompactWindow !== undefined ? { autoCompactEnabled: true, autoCompactWindow } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      const tokenOptimizerProxy =
+        input.tokenOptimizerEnabled === true
+          ? yield* Effect.tryPromise({
+              try: () =>
+                startClaudeTokenOptimizerProxy({
+                  threadId,
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  upstream: claudeEnvironment.ANTHROPIC_BASE_URL,
+                  state: tokenOptimizerState,
+                  onError: (cause) =>
+                    runPromise(
+                      Effect.logWarning("claude.token-optimizer.telemetry-failed", {
+                        threadId,
+                        cause,
+                      }),
+                    ),
+                  onApplied: async (optimized) => {
+                    const context = await runPromise(Ref.get(contextRef));
+                    if (!context || context.stopped) return;
+                    const saved = optimized.estimatedTokensSaved;
+                    const pageLabel = `${optimized.pageCount} ${optimized.pageCount === 1 ? "page" : "pages"}`;
+                    const summary =
+                      saved !== undefined && saved > 0
+                        ? `Optimized ${pageLabel} · saved ~${saved.toLocaleString()} tokens`
+                        : `Optimized ${pageLabel}`;
+                    const stamp = await runPromise(makeEventStamp());
+                    await runPromise(
+                      offerRuntimeEvent({
+                        type: "runtime.warning",
+                        eventId: stamp.eventId,
+                        provider: PROVIDER,
+                        createdAt: stamp.createdAt,
+                        threadId: context.session.threadId,
+                        ...(optimized.turnId ? { turnId: optimized.turnId } : {}),
+                        payload: {
+                          message: summary,
+                          detail: {
+                            kind: "token-optimizer.applied",
+                            model: optimized.model,
+                            compressedChars: optimized.compressedChars,
+                            pageCount: optimized.pageCount,
+                            estimatedTextTokens: optimized.estimatedTextTokens,
+                            estimatedImageTokens: optimized.estimatedImageTokens,
+                            estimatedNativeTokens: optimized.estimatedNativeTokens,
+                            estimatedTokensSaved: optimized.estimatedTokensSaved,
+                            attachments: optimized.attachments,
+                          },
+                        },
+                        providerRefs: nativeProviderRefs(context),
+                      }),
+                    );
+                  },
+                }),
+              catch: (cause) =>
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId,
+                  detail: "Failed to start the Token Optimizer proxy.",
+                  cause,
+                }),
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning("claude.token-optimizer.start-failed", {
+                  threadId,
+                  cause,
+                }),
+              ),
+              // The feature must fail open: Claude continues directly if the
+              // transport cannot bind or initialize.
+              Effect.orElseSucceed(() => undefined),
+            )
+          : undefined;
+      const queryEnvironment = tokenOptimizerProxy
+        ? {
+            ...claudeEnvironment,
+            ANTHROPIC_BASE_URL: tokenOptimizerProxy.baseUrl,
+          }
+        : claudeEnvironment;
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -3618,7 +3728,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
-        env: claudeEnvironment,
+        env: queryEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         ...(mcpSession
@@ -3699,6 +3809,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         session,
         promptQueue,
         query: queryRuntime,
+        tokenOptimizerProxy,
+        tokenOptimizerState,
         streamFiber: undefined,
         startedAt,
         basePermissionMode: permissionMode,
@@ -3797,6 +3909,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
+    context.tokenOptimizerState.enabled = input.tokenOptimizerEnabled === true;
     const modelSelection =
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
@@ -3860,6 +3973,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const turnId = steeringTurnState?.turnId ?? TurnId.make(yield* randomUUIDv4);
+    context.tokenOptimizerState.activeTurnId = turnId;
     if (steeringTurnState === null) {
       const turnState: ClaudeTurnState = {
         turnId,

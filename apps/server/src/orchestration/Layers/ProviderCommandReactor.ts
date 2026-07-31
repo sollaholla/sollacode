@@ -513,7 +513,8 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
-    const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
+    const { autoCompactionThresholdPercentage, claudeTokenOptimizerEnabled } =
+      yield* serverSettingsService.getSettings;
 
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
@@ -527,6 +528,7 @@ const make = Effect.gen(function* () {
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         autoCompactionThresholdPercentage,
+        tokenOptimizerEnabled: claudeTokenOptimizerEnabled,
         runtimeMode: desiredRuntimeMode,
       });
 
@@ -752,7 +754,8 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
-    const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
+    const { autoCompactionThresholdPercentage, claudeTokenOptimizerEnabled } =
+      yield* serverSettingsService.getSettings;
 
     return {
       threadId: input.threadId,
@@ -761,6 +764,7 @@ const make = Effect.gen(function* () {
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       autoCompactionThresholdPercentage,
+      tokenOptimizerEnabled: claudeTokenOptimizerEnabled,
     };
   });
 

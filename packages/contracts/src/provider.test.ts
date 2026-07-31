@@ -67,6 +67,7 @@ describe("ProviderSessionStartInput", () => {
         ],
       },
       runtimeMode: "full-access",
+      tokenOptimizerEnabled: true,
     });
     expect(parsed.provider).toBe("claudeAgent");
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
@@ -75,6 +76,7 @@ describe("ProviderSessionStartInput", () => {
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("max");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
     expect(parsed.runtimeMode).toBe("full-access");
+    expect(parsed.tokenOptimizerEnabled).toBe(true);
   });
 
   it("accepts cursor provider", () => {
@@ -115,6 +117,15 @@ describe("ProviderSessionStartInput", () => {
 });
 
 describe("ProviderSendTurnInput", () => {
+  it("accepts the host Token Optimizer state", () => {
+    expect(
+      decodeProviderSendTurnInput({
+        threadId: "thread-1",
+        tokenOptimizerEnabled: true,
+      }).tokenOptimizerEnabled,
+    ).toBe(true);
+  });
+
   it("validates the auto-compaction threshold at the provider boundary", () => {
     expect(
       decodeProviderSendTurnInput({

@@ -34,6 +34,15 @@ describe("ClientSettings startup resume prompt", () => {
   });
 });
 
+describe("ServerSettings Token Optimizer", () => {
+  it("defaults off and accepts an explicit beta opt-in", () => {
+    expect(decodeServerSettings({}).claudeTokenOptimizerEnabled).toBe(false);
+    expect(
+      decodeServerSettingsPatch({ claudeTokenOptimizerEnabled: true }).claudeTokenOptimizerEnabled,
+    ).toBe(true);
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);
