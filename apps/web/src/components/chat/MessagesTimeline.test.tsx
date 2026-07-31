@@ -558,6 +558,10 @@ describe("MessagesTimeline", () => {
 
     expect(followingMarkup).toContain('data-maintain-scroll-at-end="enabled"');
     expect(optedOutMarkup).not.toContain('data-maintain-scroll-at-end="enabled"');
+    expect(followingMarkup).toContain('data-maintain-visible-content-position="false"');
+    expect(optedOutMarkup).toContain('data-maintain-visible-content-position="object"');
+    expect(optedOutMarkup).toContain('data-maintain-visible-content-position-data="true"');
+    expect(optedOutMarkup).toContain('data-maintain-visible-content-position-size="true"');
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
     expect(followingMarkup).toContain('data-manual-pointer-handler="false"');
@@ -593,9 +597,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-chat-timeline-bottom-inset="0"');
     expect(markup).toContain("[overflow-anchor:none]");
     expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
-    expect(markup).toContain('data-maintain-visible-content-position="object"');
-    expect(markup).toContain('data-maintain-visible-content-position-data="true"');
-    expect(markup).toContain('data-maintain-visible-content-position-size="true"');
+    expect(markup).toContain('data-maintain-visible-content-position="false"');
   });
 
   it("renders collapse controls for long user messages", () => {

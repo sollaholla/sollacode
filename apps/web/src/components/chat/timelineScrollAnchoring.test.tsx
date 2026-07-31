@@ -5,6 +5,7 @@ import {
   resolveTimelineSendScrollPlan,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldReleaseTimelineLiveFollowForWheel,
+  shouldMaintainTimelineVisibleContentPosition,
   shouldResumeTimelineLiveFollow,
 } from "./timelineScrollAnchoring";
 
@@ -82,6 +83,11 @@ describe("timeline scroll anchoring", () => {
     expect(shouldReleaseTimelineLiveFollowForTouch(null, 200)).toBe(false);
     expect(shouldReleaseTimelineLiveFollowForTouch(200, 220)).toBe(true);
     expect(shouldReleaseTimelineLiveFollowForTouch(220, 200)).toBe(false);
+  });
+
+  it("does not let visible-row restoration compete with live end-following", () => {
+    expect(shouldMaintainTimelineVisibleContentPosition({ followEnd: true })).toBe(false);
+    expect(shouldMaintainTimelineVisibleContentPosition({ followEnd: false })).toBe(true);
   });
 
   it("measures row bottoms from LegendList row position and size", () => {

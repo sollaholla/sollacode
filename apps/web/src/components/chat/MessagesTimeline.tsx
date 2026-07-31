@@ -91,6 +91,7 @@ import {
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
 import {
+  shouldMaintainTimelineVisibleContentPosition,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldReleaseTimelineLiveFollowForWheel,
 } from "./timelineScrollAnchoring";
@@ -569,10 +570,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   }
                 : false
             }
-            maintainVisibleContentPosition={{
-              data: true,
-              size: true,
-            }}
+            maintainVisibleContentPosition={
+              shouldMaintainTimelineVisibleContentPosition({ followEnd })
+                ? {
+                    data: true,
+                    size: true,
+                  }
+                : false
+            }
             onScroll={handleScroll}
             onWheel={handleWheelNavigation}
             onTouchStart={handleTouchStart}
