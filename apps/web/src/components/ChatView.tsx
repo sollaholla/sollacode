@@ -202,6 +202,7 @@ import { buildDraftThreadRouteParams } from "../threadRoutes";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
+  useComposerDraftModelState,
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
@@ -1483,6 +1484,7 @@ function ChatViewContent(props: ChatViewProps) {
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
+  const composerDraftModelState = useComposerDraftModelState(composerDraftTarget);
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
@@ -2365,6 +2367,45 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProviderByThreadId ?? threadProvider,
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
+  // Prefer an instance-id match so a custom provider instance surfaces its
+  // own model and usage instead of collapsing into the default driver bucket.
+  const selectedProviderInstanceId =
+    providerStatuses.find((status) => status.instanceId === selectedProviderByThreadId)
+      ?.instanceId ?? null;
+  const activeProviderInstanceId =
+    selectedProviderInstanceId ??
+    activeThread?.session?.providerInstanceId ??
+    activeThread?.modelSelection.instanceId ??
+    activeProject?.defaultModelSelection?.instanceId ??
+    null;
+  const providerUsageModelSelection = useMemo<ModelSelection | null>(() => {
+    const instanceId =
+      activeProviderInstanceId ??
+      settings.textGenerationModelSelection?.instanceId ??
+      defaultInstanceIdForDriver(selectedProvider);
+    const candidates = [
+      composerDraftModelState.modelSelectionByProvider[instanceId],
+      activeThread?.modelSelection,
+      activeProject?.defaultModelSelection,
+      settings.textGenerationModelSelection,
+    ];
+    const candidate = candidates.find((selection) => selection?.instanceId === instanceId) ?? null;
+    const model = resolveAppModelSelectionForInstance(
+      instanceId,
+      settings,
+      providerStatuses,
+      candidate?.model ?? null,
+    );
+    return model ? { instanceId, model } : null;
+  }, [
+    activeProject?.defaultModelSelection,
+    activeProviderInstanceId,
+    activeThread?.modelSelection,
+    composerDraftModelState.modelSelectionByProvider,
+    providerStatuses,
+    selectedProvider,
+    settings,
+  ]);
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const contextCompactionActivityCount = useMemo(
@@ -2836,19 +2877,6 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const availableEditors = useAtomValue(primaryServerAvailableEditorsAtom);
-  // Prefer an instance-id match so a custom Codex instance (e.g.
-  // `codex_personal`) surfaces its own status/message in the banner rather
-  // than the default Codex's. Falls back to first-match-by-kind when no
-  // saved instance id is available or the instance no longer exists.
-  const selectedProviderInstanceId =
-    providerStatuses.find((status) => status.instanceId === selectedProviderByThreadId)
-      ?.instanceId ?? null;
-  const activeProviderInstanceId =
-    selectedProviderInstanceId ??
-    activeThread?.session?.providerInstanceId ??
-    activeThread?.modelSelection.instanceId ??
-    activeProject?.defaultModelSelection?.instanceId ??
-    null;
   const activeProviderStatus = useMemo(() => {
     if (activeProviderInstanceId) {
       return (
@@ -6649,6 +6677,7 @@ function ChatViewContent(props: ChatViewProps) {
                   environmentId={environmentId}
                   providers={providerStatuses}
                   activities={activeThread.activities}
+                  selectedModelSelection={providerUsageModelSelection}
                   detailsSide={providerUsageDetailsSide(true)}
                   onRefreshProvider={refreshProviderUsage}
                 />
@@ -6759,6 +6788,7 @@ function ChatViewContent(props: ChatViewProps) {
                       environmentId={environmentId}
                       providers={providerStatuses}
                       activities={activeThread.activities}
+                      selectedModelSelection={providerUsageModelSelection}
                       detailsSide={providerUsageDetailsSide(false)}
                       onRefreshProvider={refreshProviderUsage}
                     />

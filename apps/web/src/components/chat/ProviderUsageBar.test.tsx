@@ -859,6 +859,10 @@ describe("provider usage summaries", () => {
         environmentId={localEnvironmentId}
         providers={providers}
         activities={activities}
+        selectedModelSelection={{
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-fable-5",
+        }}
       />,
     );
 
@@ -912,7 +916,7 @@ describe("provider usage summaries", () => {
     });
   });
 
-  it("computes Claude compact usage as max(max(Fable, Current session), Weekly)", () => {
+  it("uses max(Fable, Current session) only while Fable is selected", () => {
     const provider = makeProvider("claudeAgent");
     const summary = {
       provider,
@@ -927,16 +931,31 @@ describe("provider usage summaries", () => {
     };
 
     expect(compactProviderUsageMetric(summary)).toEqual({
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
+    });
+    expect(
+      compactProviderUsageMetric(summary, {
+        instanceId: provider.instanceId,
+        model: "claude-fable-5",
+      }),
+    ).toEqual({
       label: "Fable",
       window: expect.objectContaining({ key: "fable", usedPercent: 86 }),
     });
     expect(
-      compactProviderUsageMetric({
-        ...summary,
-        windows: summary.windows.map((window) =>
-          window.key === "current_session" ? { ...window, usedPercent: 92 } : window,
-        ),
-      }),
+      compactProviderUsageMetric(
+        {
+          ...summary,
+          windows: summary.windows.map((window) =>
+            window.key === "current_session" ? { ...window, usedPercent: 92 } : window,
+          ),
+        },
+        {
+          instanceId: provider.instanceId,
+          model: "claude-fable-5",
+        },
+      ),
     ).toEqual({
       label: "Current session",
       window: expect.objectContaining({ key: "current_session", usedPercent: 92 }),
@@ -951,6 +970,32 @@ describe("provider usage summaries", () => {
     ).toEqual({
       label: "Weekly",
       window: expect.objectContaining({ key: "seven_day", usedPercent: 95 }),
+    });
+    expect(
+      compactProviderUsageMetric(
+        {
+          ...summary,
+          windows: summary.windows.map((window) =>
+            window.key === "seven_day" ? { ...window, usedPercent: 95 } : window,
+          ),
+        },
+        {
+          instanceId: provider.instanceId,
+          model: "claude-fable-5",
+        },
+      ),
+    ).toEqual({
+      label: "Fable",
+      window: expect.objectContaining({ key: "fable", usedPercent: 86 }),
+    });
+    expect(
+      compactProviderUsageMetric(summary, {
+        instanceId: ProviderInstanceId.make("another-claude-account"),
+        model: "claude-fable-5",
+      }),
+    ).toEqual({
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
     });
   });
 });

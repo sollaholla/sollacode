@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ModelSelection,
   OrchestrationThreadActivity,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -458,6 +459,7 @@ function maxReportedUsageWindow(
 
 export function compactProviderUsageMetric(
   summary: ProviderUsageSummary,
+  selectedModelSelection: ModelSelection | null = null,
 ): CompactProviderUsageMetric | null {
   if (summary.provider.driver !== "claudeAgent" && summary.provider.driver !== "codex") {
     return null;
@@ -465,10 +467,12 @@ export function compactProviderUsageMetric(
 
   if (summary.provider.driver === "claudeAgent") {
     const [currentSession, weekly, fable] = claudePopupWindows(summary.windows);
-    const highestClaudeWindow = maxReportedUsageWindow(
-      maxReportedUsageWindow(fable ?? null, currentSession ?? null),
-      weekly ?? null,
-    );
+    const fableSelected =
+      selectedModelSelection?.instanceId === summary.provider.instanceId &&
+      selectedModelSelection.model.trim().toLowerCase() === "claude-fable-5";
+    const highestClaudeWindow = fableSelected
+      ? maxReportedUsageWindow(fable ?? null, currentSession ?? null)
+      : maxReportedUsageWindow(currentSession ?? null, weekly ?? null);
     return {
       label: highestClaudeWindow?.label ?? "Current session",
       window: highestClaudeWindow,
@@ -797,6 +801,7 @@ export function ProviderUsageBar(props: {
   environmentId: EnvironmentId;
   providers: ReadonlyArray<ServerProvider>;
   activities: ReadonlyArray<OrchestrationThreadActivity>;
+  selectedModelSelection?: ModelSelection | null;
   detailsSide?: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
 }) {
@@ -817,7 +822,7 @@ export function ProviderUsageBar(props: {
     props.environmentId,
   );
   const compactEntries = summaries.flatMap((summary) => {
-    const compactMetric = compactProviderUsageMetric(summary);
+    const compactMetric = compactProviderUsageMetric(summary, props.selectedModelSelection ?? null);
     return compactMetric ? [{ summary, compactMetric }] : [];
   });
   if (compactEntries.length === 0) return null;
