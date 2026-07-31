@@ -51,6 +51,21 @@ export function shouldReleaseTimelineLiveFollowForTouch(
   );
 }
 
+/**
+ * LegendList's visible-content anchoring and end-following are competing
+ * position owners. While following the live edge, preserving the previously
+ * visible row can restore a removed/folded row near the start of a long
+ * thread. Only preserve visible content after the user explicitly leaves the
+ * live edge.
+ */
+export function shouldMaintainTimelineVisibleContentPosition({
+  followEnd,
+}: {
+  readonly followEnd: boolean;
+}): boolean {
+  return !followEnd;
+}
+
 export interface TimelineListMeasurementState {
   readonly data: readonly unknown[];
   readonly scroll: number;

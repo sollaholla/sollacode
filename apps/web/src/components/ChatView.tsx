@@ -4108,7 +4108,15 @@ function ChatViewContent(props: ChatViewProps) {
         cancelAnimationFrame(secondFrame);
       }
     };
-  }, [activeThread?.id, timelineEntries, timelineRealContentOverflowsViewport]);
+  }, [
+    activeLatestTurn?.completedAt,
+    activeLatestTurn?.state,
+    activeLatestTurn?.turnId,
+    activeThread?.id,
+    isWorking,
+    timelineEntries,
+    timelineRealContentOverflowsViewport,
+  ]);
 
   useEffect(() => {
     setPullRequestDialogState(null);
