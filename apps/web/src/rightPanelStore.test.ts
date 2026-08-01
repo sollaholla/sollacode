@@ -221,7 +221,7 @@ describe("rightPanelStore", () => {
     useRightPanelStore.getState().openFile(refB, "conductor.json");
     useRightPanelStore.getState().reconcileFileSurfaces(refB, false);
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
-      isOpen: false,
+      isOpen: true,
       activeSurfaceId: null,
       surfaces: [],
     });
@@ -353,12 +353,14 @@ describe("rightPanelStore", () => {
     });
   });
 
-  it("closing the final terminal pane removes its surface and closes the panel", () => {
+  it("closing the final terminal pane removes its surface but keeps the panel open", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
     useRightPanelStore.getState().closeTerminal(refA, "terminal:term-1", "term-1");
 
+    // The agents & tasks section lives in this column and outlives every tab,
+    // so emptying the tabs must not take the column with it.
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      isOpen: false,
+      isOpen: true,
       activeSurfaceId: null,
       surfaces: [],
     });
@@ -374,12 +376,12 @@ describe("rightPanelStore", () => {
     );
   });
 
-  it("closing the final surface closes the panel", () => {
+  it("closing the final surface keeps the panel open", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
     useRightPanelStore.getState().closeSurface(refA, "terminal:term-1");
 
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      isOpen: false,
+      isOpen: true,
       activeSurfaceId: null,
       surfaces: [],
     });
@@ -421,14 +423,14 @@ describe("rightPanelStore", () => {
     });
   });
 
-  it("closing all surfaces closes the panel", () => {
+  it("closing all surfaces keeps the panel open", () => {
     useRightPanelStore.getState().openBrowser(refA, "tab-a");
     useRightPanelStore.getState().openFile(refA, "src/index.ts");
 
     useRightPanelStore.getState().closeAllSurfaces(refA);
 
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      isOpen: false,
+      isOpen: true,
       activeSurfaceId: null,
       surfaces: [],
     });

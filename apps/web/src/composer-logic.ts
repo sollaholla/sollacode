@@ -18,6 +18,31 @@ export function shouldSubmitComposerOnEnter(input: {
   return !input.isMobileViewport && !input.shiftKey;
 }
 
+export function isEnabledComposerSubmitButton(
+  button: Pick<HTMLButtonElement, "disabled"> | null,
+): button is HTMLButtonElement {
+  return button !== null && !button.disabled;
+}
+
+/**
+ * The single guard both composer submit paths must honour. The send button
+ * reads it through its `disabled` attribute; the Enter key must consult it
+ * directly, because while a turn is running the primary action is Stop and no
+ * submit button exists whose disabled state could be inspected instead.
+ *
+ * Voice transcription counts as blocking for its whole lifetime: it writes the
+ * transcript into the draft asynchronously, so submitting mid-transcription
+ * sends a half-written message — and mid-turn that lands inside the agent's
+ * own output.
+ */
+export function isComposerSubmitBlocked(input: {
+  noProviderAvailable: boolean;
+  isSendDisabled: boolean;
+  pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
+}): boolean {
+  return input.noProviderAvailable || input.isSendDisabled || input.pushToTalkStatus !== null;
+}
+
 const isInlineTokenSegment = (
   segment:
     | { type: "text"; text: string }

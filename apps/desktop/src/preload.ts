@@ -125,8 +125,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL, muted),
   captureRemoteControlFrame: (input) =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL, input),
-  sendRemoteControlInput: (input) =>
-    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL, input),
+  listRemoteControlCaptureSources: () =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL, {}),
+  sendRemoteControlInput: (payload) =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL, payload),
   resetRemoteControlInput: () =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_RESET_INPUT_CHANNEL, {}),
   startFileDrag: (path) => ipcRenderer.invoke(IpcChannels.START_FILE_DRAG_CHANNEL, path),

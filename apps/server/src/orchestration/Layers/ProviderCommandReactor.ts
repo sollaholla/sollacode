@@ -11,6 +11,7 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
+  type ProviderInteractionMode,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import * as Cache from "effect/Cache";
@@ -57,6 +58,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.forked"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -72,7 +74,7 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
 
 function modelSelectionStatusDetail(
   selection: ModelSelection,
-  interactionMode: "default" | "plan",
+  interactionMode: ProviderInteractionMode,
   runtimeMode: RuntimeMode,
 ): string {
   const effort = selection.options?.find(
@@ -81,7 +83,7 @@ function modelSelectionStatusDetail(
   return [
     selection.model,
     typeof effort === "string" ? `${effort} effort` : null,
-    interactionMode === "plan" ? "Plan" : "Build",
+    interactionMode === "plan" ? "Plan" : interactionMode === "agent" ? "Agent" : "Build",
     runtimeMode === "full-access" ? "Full access" : "Approval required",
   ]
     .filter((part): part is string => part !== null)
@@ -974,7 +976,8 @@ const make = Effect.gen(function* () {
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
         : {}),
-      interactionMode: event.payload.interactionMode,
+      // Agent mode is a client-side turn loop; the provider runs as in default.
+      interactionMode: providerInteractionMode(event.payload.interactionMode),
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
@@ -1284,6 +1287,29 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const processThreadForked = Effect.fn("processThreadForked")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.forked" }>,
+  ) {
+    if (!providerService.forkSessionBinding) {
+      yield* Effect.logWarning("provider service does not support conversation forking", {
+        threadId: event.payload.threadId,
+        sourceThreadId: event.payload.sourceThreadId,
+      });
+      return;
+    }
+    const forked = yield* providerService.forkSessionBinding({
+      sourceThreadId: event.payload.sourceThreadId,
+      targetThreadId: event.payload.threadId,
+      runtimeMode: event.payload.runtimeMode,
+    });
+    if (!forked) {
+      yield* Effect.logWarning("thread fork has no forkable persisted provider session", {
+        threadId: event.payload.threadId,
+        sourceThreadId: event.payload.sourceThreadId,
+      });
+    }
+  });
+
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (
     event: ProviderIntentEvent,
   ) {
@@ -1296,6 +1322,9 @@ const make = Effect.gen(function* () {
       eventType: event.type,
     });
     switch (event.type) {
+      case "thread.forked":
+        yield* processThreadForked(event);
+        return;
       case "thread.runtime-mode-set": {
         const thread = yield* resolveThread(event.payload.threadId);
         if (!thread?.session || thread.session.status === "stopped") {
@@ -1346,6 +1375,7 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.forked" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
@@ -1368,3 +1398,11 @@ const make = Effect.gen(function* () {
 });
 
 export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+
+/**
+ * Collapses the client-only "agent" mode onto the provider-visible set. Agent
+ * mode changes how the app drives turns, not how the provider behaves.
+ */
+function providerInteractionMode(mode: ProviderInteractionMode): "default" | "plan" {
+  return mode === "plan" ? "plan" : "default";
+}

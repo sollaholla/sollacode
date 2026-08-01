@@ -36,3 +36,7 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# Local scratch: screen(1) capture and Playwright screenshot output.
+screenlog.*
+output/

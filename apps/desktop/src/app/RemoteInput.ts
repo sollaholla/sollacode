@@ -45,12 +45,24 @@ function writeReply(value) {
 }
 
 function displayPoint(input) {
-  var display = $.CGMainDisplayID();
-  var width = Number($.CGDisplayPixelsWide(display));
-  var height = Number($.CGDisplayPixelsHigh(display));
+  // Coordinates arrive normalized across the whole virtual desktop, and
+  // CGEventPost addresses that same global space, so scale by the union of all
+  // displays rather than the main one — otherwise secondary monitors are
+  // unreachable.
+  var bounds = $.NSScreen.screens.js.reduce(function (acc, screen) {
+    var frame = screen.frame;
+    return {
+      minX: Math.min(acc.minX, frame.origin.x),
+      minY: Math.min(acc.minY, frame.origin.y),
+      maxX: Math.max(acc.maxX, frame.origin.x + frame.size.width),
+      maxY: Math.max(acc.maxY, frame.origin.y + frame.size.height)
+    };
+  }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+  var width = Math.max(1, bounds.maxX - bounds.minX);
+  var height = Math.max(1, bounds.maxY - bounds.minY);
   lastPoint = $.CGPointMake(
-    Math.round(Math.max(0, Math.min(1, input.x)) * Math.max(0, width - 1)),
-    Math.round(Math.max(0, Math.min(1, input.y)) * Math.max(0, height - 1))
+    Math.round(bounds.minX + Math.max(0, Math.min(1, input.x)) * (width - 1)),
+    Math.round(bounds.minY + Math.max(0, Math.min(1, input.y)) * (height - 1))
   );
   return lastPoint;
 }
@@ -179,6 +191,9 @@ public static class SollaRemoteInput {
   private const uint INPUT_KEYBOARD = 1;
   private const uint MOUSEEVENTF_MOVE = 0x0001;
   private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+  // Without VIRTUALDESK, absolute coordinates address the primary monitor only,
+  // so input aimed at any secondary display lands on the primary one.
+  private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
   private const uint KEYEVENTF_KEYUP = 0x0002;
 
   [StructLayout(LayoutKind.Sequential)]
@@ -234,7 +249,7 @@ public static class SollaRemoteInput {
           dx = (int)Math.Round(Math.Max(0, Math.Min(1, normalizedX)) * 65535),
           dy = (int)Math.Round(Math.Max(0, Math.Min(1, normalizedY)) * 65535),
           mouseData = unchecked((uint)data),
-          flags = flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+          flags = flags | MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
           time = 0,
           extraInfo = UIntPtr.Zero
         }
@@ -449,7 +464,7 @@ export class RemoteInputController {
     this.platform = platform;
   }
 
-  send(input: DesktopRemoteControlInput): Promise<void> {
+  send(input: DesktopRemoteControlInput["input"]): Promise<void> {
     return this.sendCommand({ kind: "input", input });
   }
 
@@ -520,7 +535,7 @@ export class RemoteInputController {
 
   private sendCommand(
     command:
-      | { readonly kind: "input"; readonly input: DesktopRemoteControlInput }
+      | { readonly kind: "input"; readonly input: DesktopRemoteControlInput["input"] }
       | { readonly kind: "reset" },
   ): Promise<void> {
     const child = this.ensureChild();

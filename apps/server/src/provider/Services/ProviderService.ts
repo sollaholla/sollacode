@@ -106,6 +106,17 @@ export interface ProviderServiceShape {
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Persist an independent provider-native continuation for a forked thread.
+   * Optional for test and third-party service implementations predating
+   * conversation forking.
+   */
+  readonly forkSessionBinding?: (input: {
+    readonly sourceThreadId: ThreadId;
+    readonly targetThreadId: ThreadId;
+    readonly runtimeMode: ProviderSession["runtimeMode"];
+  }) => Effect.Effect<boolean, ProviderServiceError>;
+
+  /**
    * Canonical provider runtime event stream.
    *
    * Fan-out is owned by ProviderService (not by a standalone event-bus service).

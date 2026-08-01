@@ -4,8 +4,11 @@ import type {
   ProviderDriverKind,
   ProviderInstanceId,
   ServerProvider,
+  ServerProviderModel,
   ThreadId,
 } from "@t3tools/contracts";
+
+import { contextRecoveryReminder } from "../provider/contextRecovery.ts";
 
 export const PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS = 32_000;
 export const PROVIDER_HANDOFF_MAX_MESSAGES = 24;
@@ -145,6 +148,136 @@ export function detectProviderUsageLimitExhaustion(
   }
 }
 
+const CLAUDE_DRIVER = "claudeAgent";
+const QUOTA_EXHAUSTED_PERCENT = 100;
+
+/**
+ * Claude meters these model families against their own quota window, so one
+ * family can be rejected while the rest of the account still has headroom.
+ * Ordered longest-first so `claude-opus-4-5` cannot match a shorter family.
+ */
+const CLAUDE_MODEL_FAMILIES = ["sonnet", "haiku", "fable", "opus"] as const;
+type ClaudeModelFamily = (typeof CLAUDE_MODEL_FAMILIES)[number];
+
+function claudeModelFamily(slug: string): ClaudeModelFamily | null {
+  const normalized = slug.toLowerCase();
+  return CLAUDE_MODEL_FAMILIES.find((family) => normalized.includes(family)) ?? null;
+}
+
+function epochMilliseconds(value: unknown): number | null {
+  const numeric = finiteNumber(value);
+  if (numeric !== undefined) {
+    // The usage endpoint reports seconds; typed rate-limit events report ms.
+    return numeric > 1e11 ? numeric : numeric * 1_000;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * A window that already reset is stale rather than exhausted. Provider
+ * snapshots are refreshed by health probes, so a cached 100% reading must not
+ * permanently exclude a model whose quota has since rolled over.
+ */
+function isWindowExhausted(window: UnknownRecord, nowEpochMs: number | null): boolean {
+  const usedPercent = finiteNumber(window.utilization) ?? finiteNumber(window.percent);
+  if (usedPercent === undefined || usedPercent < QUOTA_EXHAUSTED_PERCENT) {
+    return false;
+  }
+  const resetAt = epochMilliseconds(window.resets_at ?? window.resetsAt);
+  return !(resetAt !== null && nowEpochMs !== null && resetAt <= nowEpochMs);
+}
+
+function displayNameOf(record: UnknownRecord | undefined): string {
+  const scopedModel = asRecord(asRecord(record?.scope)?.model);
+  const value = scopedModel?.display_name ?? record?.display_name;
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+/**
+ * Reads the model-scoped quota for one family out of the raw Claude usage
+ * snapshot. Claude Code has exposed these limits under several shapes across
+ * versions (named `rate_limits` keys, a `model_scoped` array, and a generic
+ * `limits` array), so every known representation is consulted.
+ */
+function isClaudeModelFamilyExhausted(input: {
+  readonly accountUsage: unknown;
+  readonly family: ClaudeModelFamily;
+  readonly nowEpochMs: number | null;
+}): boolean {
+  const rateLimits = asRecord(asRecord(input.accountUsage)?.rate_limits);
+  if (!rateLimits) {
+    return false;
+  }
+
+  for (const [key, value] of Object.entries(rateLimits)) {
+    const window = asRecord(value);
+    if (!window || !key.toLowerCase().includes(input.family)) continue;
+    if (isWindowExhausted(window, input.nowEpochMs)) return true;
+  }
+
+  for (const key of ["model_scoped", "limits"] as const) {
+    const entries = rateLimits[key];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const window = asRecord(entry);
+      if (!window || !displayNameOf(window).includes(input.family)) continue;
+      if (isWindowExhausted(window, input.nowEpochMs)) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Fable is metered against the plan's extra-usage credit pool, so a depleted
+ * pool rejects the turn ("out of usage credits") even when no Fable-scoped
+ * window reports 100%. Only the positive signal is used: an absent or disabled
+ * pool says nothing about the model's availability.
+ */
+function isClaudeExtraUsageDepleted(accountUsage: unknown, nowEpochMs: number | null): boolean {
+  const extraUsage = asRecord(asRecord(asRecord(accountUsage)?.rate_limits)?.extra_usage);
+  if (!extraUsage || extraUsage.is_enabled !== true) {
+    return false;
+  }
+  if (isWindowExhausted(extraUsage, nowEpochMs)) {
+    return true;
+  }
+  const monthlyLimit = finiteNumber(extraUsage.monthly_limit);
+  const usedCredits = finiteNumber(extraUsage.used_credits);
+  return (
+    monthlyLimit !== undefined &&
+    monthlyLimit > 0 &&
+    usedCredits !== undefined &&
+    usedCredits >= monthlyLimit
+  );
+}
+
+/**
+ * Failing over to Claude's first-listed model is wrong when that specific
+ * model's quota is already spent: the replacement turn is rejected on arrival
+ * and the thread stalls with no provider left to try. Screening the account
+ * usage snapshot lets selection skip to the next-highest usable Claude model.
+ */
+export function isClaudeModelExhausted(input: {
+  readonly accountUsage: unknown;
+  readonly modelSlug: string;
+  readonly nowEpochMs?: number | null;
+}): boolean {
+  const nowEpochMs = input.nowEpochMs ?? null;
+  const family = claudeModelFamily(input.modelSlug);
+  if (family === null) {
+    return false;
+  }
+  if (isClaudeModelFamilyExhausted({ accountUsage: input.accountUsage, family, nowEpochMs })) {
+    return true;
+  }
+  return family === "fable" && isClaudeExtraUsageDepleted(input.accountUsage, nowEpochMs);
+}
+
 function isEligibleTarget(provider: ServerProvider): boolean {
   return (
     provider.availability !== "unavailable" &&
@@ -157,8 +290,34 @@ function isEligibleTarget(provider: ServerProvider): boolean {
   );
 }
 
-function targetFromProvider(provider: ServerProvider): ProviderFailoverTarget | null {
-  const model = provider.models.find((entry) => entry.isDefault === true) ?? provider.models[0];
+/**
+ * Registry order is capability order (highest first), so the preferred default
+ * is used when it still has quota and otherwise the next-highest usable model
+ * takes over. Returns null when every model of this provider is spent.
+ */
+function failoverModel(
+  provider: ServerProvider,
+  nowEpochMs: number | null,
+): ServerProviderModel | null {
+  const usable =
+    String(provider.driver) === CLAUDE_DRIVER
+      ? provider.models.filter(
+          (entry) =>
+            !isClaudeModelExhausted({
+              accountUsage: provider.accountUsage,
+              modelSlug: entry.slug,
+              nowEpochMs,
+            }),
+        )
+      : provider.models;
+  return usable.find((entry) => entry.isDefault === true) ?? usable[0] ?? null;
+}
+
+function targetFromProvider(
+  provider: ServerProvider,
+  nowEpochMs: number | null,
+): ProviderFailoverTarget | null {
+  const model = failoverModel(provider, nowEpochMs);
   if (!model) {
     return null;
   }
@@ -190,13 +349,15 @@ function targetFromProvider(provider: ServerProvider): ProviderFailoverTarget | 
 /**
  * Provider registry order is the stable tie-breaker. A different driver is
  * preferred so a second instance backed by the same exhausted subscription
- * does not preempt an independently billed provider.
+ * does not preempt an independently billed provider. A candidate whose every
+ * model is out of quota is passed over rather than ending the search.
  */
 export function selectProviderFailoverTarget(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly currentInstanceId: ProviderInstanceId;
   readonly currentDriver: ProviderDriverKind;
   readonly excludedInstanceIds?: ReadonlySet<string>;
+  readonly nowEpochMs?: number | null;
 }): ProviderFailoverTarget | null {
   const candidates = input.providers.filter(
     (provider) =>
@@ -204,9 +365,17 @@ export function selectProviderFailoverTarget(input: {
       !input.excludedInstanceIds?.has(String(provider.instanceId)) &&
       isEligibleTarget(provider),
   );
-  const provider =
-    candidates.find((candidate) => candidate.driver !== input.currentDriver) ?? candidates[0];
-  return provider ? targetFromProvider(provider) : null;
+  const ordered = [
+    ...candidates.filter((candidate) => candidate.driver !== input.currentDriver),
+    ...candidates.filter((candidate) => candidate.driver === input.currentDriver),
+  ];
+  for (const provider of ordered) {
+    const target = targetFromProvider(provider, input.nowEpochMs ?? null);
+    if (target) {
+      return target;
+    }
+  }
+  return null;
 }
 
 function boundedMessageText(text: string): { readonly text: string; readonly truncated: boolean } {
@@ -270,8 +439,11 @@ export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput):
     JSON.stringify({
       version: 1,
       kind: "t3.provider-handoff",
-      instruction:
-        "Continue this T3 thread from the bounded persisted context digest. Do not repeat completed work. State any missing context you need.",
+      // The digest is bounded, so the incoming provider is otherwise free to
+      // assume it is the whole record and answer straight from it. Naming the
+      // query tool here is what turns "state any missing context you need"
+      // into something it can act on without going back to the user.
+      instruction: `Continue this T3 thread from the bounded persisted context digest. Do not repeat completed work. ${contextRecoveryReminder("provider-handoff")}`,
       thread: {
         id: boundedMetadata(String(input.threadId)),
         title: boundedMetadata(input.threadTitle),
@@ -327,7 +499,7 @@ export function buildProviderHandoffSummary(input: ProviderHandoffSummaryInput):
   return JSON.stringify({
     version: 1,
     kind: "t3.provider-handoff",
-    instruction: "Continue this T3 thread. The bounded context digest was omitted for size.",
+    instruction: `Continue this T3 thread. The bounded context digest was omitted for size. ${contextRecoveryReminder("provider-handoff")}`,
     handoff: {
       reason: "usage_limit",
       from: boundedMetadata(String(input.from.instanceId)).slice(0, 64),

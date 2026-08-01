@@ -566,7 +566,12 @@ export function ProviderUsageDetails({
             : null;
   return (
     <div
-      className="w-72 max-w-[calc(100vw-1rem)]"
+      // Fills whichever container it is placed in rather than carrying its own
+      // fixed width. The popover wrapper is `w-80`, so a `w-72` here left 32px
+      // of dead space down the right-hand side on top of the viewport padding,
+      // making the card look badly misaligned. In settings it was likewise
+      // narrower than the section holding it.
+      className="w-full"
       data-provider-usage-state={visibleState}
       aria-busy={isRefreshing || undefined}
     >

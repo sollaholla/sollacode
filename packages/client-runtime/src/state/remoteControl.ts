@@ -67,6 +67,18 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.frame.sessionId]),
       },
     }),
+    // Serial, not "latest": a video container is continuous, so a cancelled or
+    // reordered chunk corrupts every chunk after it. Frames can be dropped
+    // freely; chunks cannot.
+    publishVideoChunk: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:remote-control:host-publish-video-chunk",
+      tag: WS_METHODS.remoteControlHostPublishVideoChunk,
+      scheduler: hostScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.chunk.sessionId]),
+      },
+    }),
     endByHost: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:host-end",
       tag: WS_METHODS.remoteControlHostEnd,

@@ -48,6 +48,12 @@ interface RightPanelTabsProps {
   diffAvailable: boolean;
   filesAvailable: boolean;
   children: ReactNode;
+  /**
+   * Rendered below the surface content, splitting this column vertically.
+   * Used for the agents & tasks panel so it shares the right panel's width
+   * instead of overlaying the conversation.
+   */
+  footer?: ReactNode;
 }
 
 const SURFACE_DISABLED_REASONS = {
@@ -493,6 +499,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           props.children
         )}
       </div>
+      {props.footer}
     </PreviewPanelShell>
   );
 }

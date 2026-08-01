@@ -73,7 +73,9 @@ const OPENCODE_RESUME_VERSION = 1 as const;
  * rather than an error. Re-adopting the session id IS the resume mechanism —
  * OpenCode scopes a conversation's history by session id.
  */
-function parseOpenCodeResume(raw: unknown): { readonly sessionId: string } | undefined {
+function parseOpenCodeResume(
+  raw: unknown,
+): { readonly sessionId: string; readonly fork: boolean } | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return undefined;
   }
@@ -84,7 +86,7 @@ function parseOpenCodeResume(raw: unknown): { readonly sessionId: string } | und
   if (typeof record.sessionId !== "string" || record.sessionId.trim().length === 0) {
     return undefined;
   }
-  return { sessionId: record.sessionId.trim() };
+  return { sessionId: record.sessionId.trim(), fork: record.fork === true };
 }
 
 /**
@@ -1230,7 +1232,8 @@ export function makeOpenCodeAdapter(
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
         const directory = input.cwd ?? serverConfig.cwd;
-        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
+        const resumeState = parseOpenCodeResume(input.resumeCursor);
+        const resumeSessionId = resumeState?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
           yield* stopOpenCodeContext(existing);
@@ -1291,6 +1294,7 @@ export function makeOpenCodeAdapter(
                 // requested cwd; on a cwd change it is forked below instead.
                 const reusable =
                   adopted &&
+                  resumeState?.fork !== true &&
                   (!adopted.directory || (yield* sameDirectory(adopted.directory, directory)))
                     ? adopted
                     : undefined;
@@ -1308,13 +1312,14 @@ export function makeOpenCodeAdapter(
                   return { openCodeSession: reusable, created: false };
                 }
 
-                // The session lives under a different cwd (e.g. the thread
-                // moved into a git worktree). Fork it into the requested
-                // directory instead of minting an empty one — the fork carries
-                // the full history, so the follow-up keeps its context (#3604).
+                // Explicit conversation forks and sessions moved into a
+                // different cwd both need a new upstream session carrying the
+                // original history.
                 if (adopted) {
                   yield* Effect.logInfo(
-                    `OpenCode session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
+                    resumeState?.fork === true
+                      ? `Forking OpenCode session '${adopted.id}' into a new independent conversation.`
+                      : `OpenCode session '${adopted.id}' was created under a different working directory; forking into '${directory}' to preserve conversation history.`,
                   );
                   const forkedSession = yield* runOpenCodeSdk("session.fork", () =>
                     client.session.fork({ sessionID: adopted.id, directory }),

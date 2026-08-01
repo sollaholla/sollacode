@@ -482,6 +482,22 @@ export const make = Effect.gen(function* () {
         menuTemplate.push({ type: "separator" });
       }
 
+      // Quoting only makes sense for a transcript selection, so it is offered
+      // whenever text is selected outside an editable field — inside the
+      // composer the selection is already the user's own draft.
+      if (params.selectionText.trim().length > 0 && !params.isEditable) {
+        menuTemplate.push(
+          {
+            label: "Quote",
+            click: () => {
+              if (window.isDestroyed()) return;
+              window.webContents.send(MENU_ACTION_CHANNEL, "quote-selection");
+            },
+          },
+          { type: "separator" },
+        );
+      }
+
       menuTemplate.push(
         { role: "cut", enabled: params.editFlags.canCut },
         { role: "copy", enabled: params.editFlags.canCopy },

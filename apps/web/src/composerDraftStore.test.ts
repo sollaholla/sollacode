@@ -1635,6 +1635,17 @@ describe("composerDraftStore runtime and interaction settings", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.interactionMode).toBe("plan");
   });
 
+  it("stores every interaction mode the contract defines, not just plan and default", () => {
+    const store = useComposerDraftStore.getState();
+
+    // Regression: this validator was a hand-written `=== "plan" || === "default"`
+    // whitelist that was never updated when "agent" was added, so selecting
+    // Agent was rejected here and the UI fell straight back to Build.
+    store.setInteractionMode(threadRef, "agent");
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.interactionMode).toBe("agent");
+  });
+
   it("removes empty settings-only drafts when overrides are cleared", () => {
     const store = useComposerDraftStore.getState();
 

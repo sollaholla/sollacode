@@ -4,6 +4,7 @@ import {
   composerTransferHtml,
   discardComposerTransfer,
   hasTransferableComposerContent,
+  planComposerPaste,
   readComposerTransferFromClipboard,
   stageComposerTransfer,
   writeComposerTransferToClipboard,
@@ -78,6 +79,45 @@ describe("composer transfer clipboard", () => {
     ).toBeNull();
   });
 
+  it("restores attachments when the OS keeps only the plain-text clipboard representation", async () => {
+    const image = new File(["image"], "reference.png", {
+      type: "image/png",
+      lastModified: 30,
+    });
+    const staged = stageComposerTransfer("move this with the image", [image]);
+
+    const resolved = readComposerTransferFromClipboard(
+      clipboardData({ "text/plain": "move this with the image" }),
+    );
+
+    expect(resolved?.prompt).toBe("move this with the image");
+    expect(resolved?.files.map((file) => file.name)).toEqual(["reference.png"]);
+    expect(await resolved?.files[0]?.text()).toBe("image");
+    discardComposerTransfer(staged.token);
+  });
+
+  it("restores attachment-only drafts from a stripped clipboard representation", () => {
+    const image = new File(["image"], "attachment-only.png", { type: "image/png" });
+    const staged = stageComposerTransfer("", [image]);
+
+    const resolved = readComposerTransferFromClipboard(clipboardData({ "text/plain": "" }));
+
+    expect(resolved?.prompt).toBe("");
+    expect(resolved?.files.map((file) => file.name)).toEqual(["attachment-only.png"]);
+    discardComposerTransfer(staged.token);
+  });
+
+  it("does not restore staged attachments when the pasted plain text differs", () => {
+    const staged = stageComposerTransfer("original draft", [
+      new File(["image"], "original.png", { type: "image/png" }),
+    ]);
+
+    expect(
+      readComposerTransferFromClipboard(clipboardData({ "text/plain": "different text" })),
+    ).toBeNull();
+    discardComposerTransfer(staged.token);
+  });
+
   it("writes plain text, HTML marker, and the internal token in the button gesture", async () => {
     const values: Record<string, string> = {};
     let copyListener: ((event: ClipboardEvent) => void) | null = null;
@@ -107,5 +147,116 @@ describe("composer transfer clipboard", () => {
     expect(values["application/x-solla-composer-transfer"]).toBe(staged.token);
 
     discardComposerTransfer(staged.token);
+  });
+});
+
+describe("writeComposerTransferToClipboard image bytes", () => {
+  it("writes real PNG bytes alongside the text so a stripped clipboard still carries the image", async () => {
+    // The bug this covers: cut put only text/html on the clipboard, so pasting
+    // into another thread produced text and silently lost every attachment.
+    const written: Array<Record<string, Blob>> = [];
+    const originalClipboard = globalThis.navigator?.clipboard;
+    const originalItem = globalThis.ClipboardItem;
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: {
+        write: (items: Array<{ readonly parts: Record<string, Blob> }>) => {
+          for (const item of items) written.push(item.parts);
+          return Promise.resolve();
+        },
+      },
+    });
+    (globalThis as { ClipboardItem?: unknown }).ClipboardItem = class {
+      readonly parts: Record<string, Blob>;
+      constructor(parts: Record<string, Blob>) {
+        this.parts = parts;
+      }
+    };
+
+    try {
+      const png = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+      const staged = stageComposerTransfer("look at this", [png]);
+      const ok = await writeComposerTransferToClipboard(staged, [png]);
+
+      expect(ok).toBe(true);
+      expect(written).toHaveLength(1);
+      expect(Object.keys(written[0] ?? {}).toSorted()).toEqual([
+        "image/png",
+        "text/html",
+        "text/plain",
+      ]);
+      discardComposerTransfer(staged.token);
+    } finally {
+      if (originalClipboard === undefined) {
+        Reflect.deleteProperty(globalThis.navigator, "clipboard");
+      } else {
+        Object.defineProperty(globalThis.navigator, "clipboard", {
+          configurable: true,
+          value: originalClipboard,
+        });
+      }
+      (globalThis as { ClipboardItem?: unknown }).ClipboardItem = originalItem;
+    }
+  });
+
+  it("leaves text-only drafts on the synchronous copy path", async () => {
+    // No image means no reason to reach for the async API, which some remote
+    // clients reject outright.
+    const staged = stageComposerTransfer("just words", []);
+    const result = await writeComposerTransferToClipboard(staged, []);
+    expect(typeof result).toBe("boolean");
+    discardComposerTransfer(staged.token);
+  });
+});
+
+describe("planComposerPaste", () => {
+  const png = () => new File([new Uint8Array([1])], "a.png", { type: "image/png" });
+
+  it("inserts both the text and the image when a cut lands as raw clipboard data", () => {
+    // The regression: preventing the default paste to attach the image also
+    // suppressed the browser's text insertion, delivering half the draft.
+    const plan = planComposerPaste({
+      transfer: null,
+      clipboardText: "look at this",
+      clipboardFiles: [png()],
+    });
+    expect(plan.handled).toBe(true);
+    expect(plan.prompt).toBe("look at this");
+    expect(plan.files).toHaveLength(1);
+  });
+
+  it("prefers the staged transfer and ignores duplicate clipboard bytes", () => {
+    // Both routes describe the same cut; taking both would double the image.
+    const plan = planComposerPaste({
+      transfer: { prompt: "staged", files: [png(), png()] },
+      clipboardText: "staged",
+      clipboardFiles: [png()],
+    });
+    expect(plan.prompt).toBe("staged");
+    expect(plan.files).toHaveLength(2);
+  });
+
+  it("leaves an ordinary text paste to the browser", () => {
+    const plan = planComposerPaste({
+      transfer: null,
+      clipboardText: "just words",
+      clipboardFiles: [],
+    });
+    expect(plan.handled).toBe(false);
+    expect(plan.files).toHaveLength(0);
+  });
+
+  it("attaches an image that arrives with no text", () => {
+    const plan = planComposerPaste({ transfer: null, clipboardText: "", clipboardFiles: [png()] });
+    expect(plan.handled).toBe(true);
+    expect(plan.prompt).toBeNull();
+    expect(plan.files).toHaveLength(1);
+  });
+
+  it("ignores non-image files so document pastes fall through", () => {
+    const pdf = new File([new Uint8Array([1])], "a.pdf", { type: "application/pdf" });
+    expect(
+      planComposerPaste({ transfer: null, clipboardText: "", clipboardFiles: [pdf] }).handled,
+    ).toBe(false);
   });
 });

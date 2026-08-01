@@ -5,6 +5,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveStartupResumableThreads,
   isStartupResumableThread,
+  pruneStartupResumeSelection,
+  shouldAutoCloseStartupResume,
 } from "./StartupResumeCoordinator.logic";
 
 const NOW = "2026-07-30T20:00:00.000Z";
@@ -95,5 +97,54 @@ describe("startup resumable threads", () => {
       ThreadId.make("newer"),
       ThreadId.make("older"),
     ]);
+  });
+});
+
+describe("shouldAutoCloseStartupResume", () => {
+  it("closes an open dialog once no candidates remain", () => {
+    // The prompt is asking about nothing: the threads were resumed elsewhere,
+    // their environment dropped, or they left the store.
+    expect(shouldAutoCloseStartupResume({ open: true, busy: false, candidateCount: 0 })).toBe(true);
+  });
+
+  it("stays open while candidates remain", () => {
+    expect(shouldAutoCloseStartupResume({ open: true, busy: false, candidateCount: 1 })).toBe(
+      false,
+    );
+  });
+
+  it("never closes while resuming", () => {
+    // `resumeSelected` drains the candidate list as its own resumes land;
+    // closing there would race its completion and skip the settings write.
+    expect(shouldAutoCloseStartupResume({ open: true, busy: true, candidateCount: 0 })).toBe(false);
+  });
+
+  it("does nothing when the dialog is already closed", () => {
+    expect(shouldAutoCloseStartupResume({ open: false, busy: false, candidateCount: 0 })).toBe(
+      false,
+    );
+  });
+});
+
+describe("pruneStartupResumeSelection", () => {
+  it("drops keys whose candidates disappeared", () => {
+    // The stale key is what left the footer reading "Resume (1)" over an empty
+    // list, with the button enabled but silently doing nothing.
+    const pruned = pruneStartupResumeSelection(new Set(["env:a", "env:b"]), ["env:b"]);
+    expect([...pruned]).toEqual(["env:b"]);
+  });
+
+  it("keeps every key that is still offered", () => {
+    const pruned = pruneStartupResumeSelection(new Set(["env:a", "env:b"]), ["env:a", "env:b"]);
+    expect(pruned.size).toBe(2);
+  });
+
+  it("empties the selection when every candidate is gone", () => {
+    expect(pruneStartupResumeSelection(new Set(["env:a"]), []).size).toBe(0);
+  });
+
+  it("does not invent selections for newly offered candidates", () => {
+    const pruned = pruneStartupResumeSelection(new Set(["env:a"]), ["env:a", "env:c"]);
+    expect([...pruned]).toEqual(["env:a"]);
   });
 });

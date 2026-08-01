@@ -103,6 +103,115 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("copies conversation history and remaps attachment ownership when forking", async () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const forkedAt = "2026-01-01T00:00:02.000Z";
+    const attachmentId = "thread-source-11111111-2222-4333-8444-555555555555";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-source",
+          occurredAt: createdAt,
+          commandId: "cmd-create-source",
+          payload: {
+            threadId: "thread-source",
+            projectId: "project-1",
+            title: "Source",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const afterMessage = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-source",
+          occurredAt: createdAt,
+          commandId: "cmd-source-message",
+          payload: {
+            threadId: "thread-source",
+            messageId: "message-source",
+            role: "user",
+            text: "Keep this context",
+            attachments: [
+              {
+                type: "image",
+                id: attachmentId,
+                name: "reference.png",
+                mimeType: "image/png",
+                sizeBytes: 123,
+              },
+            ],
+            turnId: null,
+            streaming: false,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const forked = await Effect.runPromise(
+      projectEvent(
+        afterMessage,
+        makeEvent({
+          sequence: 3,
+          type: "thread.forked",
+          aggregateKind: "thread",
+          aggregateId: "thread-fork",
+          occurredAt: forkedAt,
+          commandId: "cmd-fork",
+          payload: {
+            threadId: "thread-fork",
+            sourceThreadId: "thread-source",
+            projectId: "project-1",
+            title: "Fork",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: forkedAt,
+            updatedAt: forkedAt,
+          },
+        }),
+      ),
+    );
+
+    const source = forked.threads.find((thread) => thread.id === "thread-source");
+    const target = forked.threads.find((thread) => thread.id === "thread-fork");
+    expect(source?.messages[0]?.id).toBe("message-source");
+    expect(target?.messages[0]).toMatchObject({
+      id: "thread-fork:fork:message-source",
+      text: "Keep this context",
+      streaming: false,
+    });
+    expect(target?.messages[0]?.attachments?.[0]?.id).toBe(
+      "thread-fork-11111111-2222-4333-8444-555555555555",
+    );
+    expect(target?.session).toBeNull();
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = "2026-01-01T00:00:00.000Z";
     const model = createEmptyReadModel(now);

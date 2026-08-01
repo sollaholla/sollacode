@@ -168,9 +168,11 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
   const cancelTask = useBackgroundTaskStore((state) => state.cancelTask);
   const removeTask = useBackgroundTaskStore((state) => state.removeTask);
   const clearFinished = useBackgroundTaskStore((state) => state.clearFinished);
+  const panelOpen = useBackgroundTaskStore((state) => state.panelOpen);
+  const setPanelOpen = useBackgroundTaskStore((state) => state.setPanelOpen);
 
   return (
-    <Popover>
+    <Popover onOpenChange={setPanelOpen} open={panelOpen}>
       <SidebarMenu>
         <SidebarMenuItem>
           <PopoverTrigger
@@ -191,8 +193,19 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
           </PopoverTrigger>
         </SidebarMenuItem>
       </SidebarMenu>
-      <PopoverContent align="start" className="w-80 p-0" side="right">
-        <div className="flex items-center justify-between border-b px-3 py-2">
+      {/*
+       * Bounded by the positioner's available height rather than a fixed
+       * max-height: anchored at the sidebar button near the bottom of the
+       * window, a fixed 20rem list simply ran off the screen. The header stays
+       * put and the list takes whatever room is left.
+       */}
+      <PopoverContent
+        align="start"
+        className="max-h-(--available-height) w-80 flex-col p-0"
+        side="right"
+        viewportClassName="flex min-h-0 flex-col p-0"
+      >
+        <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
           <PopoverTitle className="text-sm">Background tasks</PopoverTitle>
           {tasks.some((task) => !isBackgroundTaskActive(task.status)) ? (
             <Button className="h-7 px-2 text-xs" onClick={clearFinished} variant="ghost">
@@ -200,7 +213,7 @@ export const BackgroundTasksIndicator = memo(function BackgroundTasksIndicator()
             </Button>
           ) : null}
         </div>
-        <div className="max-h-80 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {tasks.length === 0 ? (
             <p className="px-2 py-5 text-center text-xs text-muted-foreground">
               No background tasks yet.

@@ -31,7 +31,11 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { deriveStartupResumableThreads } from "./StartupResumeCoordinator.logic";
+import {
+  deriveStartupResumableThreads,
+  pruneStartupResumeSelection,
+  shouldAutoCloseStartupResume,
+} from "./StartupResumeCoordinator.logic";
 
 const STARTUP_RESUME_PROMPT_SESSION_KEY = "t3code:startup-resume-prompt:v1";
 
@@ -119,6 +123,22 @@ export function StartupResumeCoordinator() {
     setOpen(true);
   }, [candidates, settingsHydrated, shellsBootstrapped, showOnStartup]);
 
+  const candidateKeys = useMemo(
+    () => candidates.map((thread) => threadKey(thread.environmentId, thread.id)),
+    [candidates],
+  );
+
+  // Keep the footer count honest when only some candidates drain away. Selection
+  // is seeded once on open, so without this the stale keys keep the Resume
+  // button enabled over rows that are no longer listed.
+  useEffect(() => {
+    if (!open || busy) return;
+    setSelectedKeys((current) => {
+      const pruned = pruneStartupResumeSelection(current, candidateKeys);
+      return pruned.size === current.size ? current : pruned;
+    });
+  }, [busy, candidateKeys, open]);
+
   const persistShowOnStartupChoice = () => {
     if (keepShowingOnStartup !== showOnStartup) {
       updateClientSettings({ showResumeThreadsOnStartup: keepShowingOnStartup });
@@ -130,6 +150,16 @@ export function StartupResumeCoordinator() {
     persistShowOnStartupChoice();
     setOpen(false);
   };
+
+  // Close once there is nothing left to resume — the threads were resumed
+  // elsewhere, their environment dropped, or they left the store. Routed through
+  // `dismiss` so the "Show on startup" choice is still persisted, and gated on
+  // `busy` so it cannot race `resumeSelected`, which drains the list itself.
+  useEffect(() => {
+    if (!shouldAutoCloseStartupResume({ open, busy, candidateCount: candidates.length })) return;
+    persistShowOnStartupChoice();
+    setOpen(false);
+  }, [busy, candidates.length, open, keepShowingOnStartup, showOnStartup]);
 
   const resumeSelected = async () => {
     if (busy) return;

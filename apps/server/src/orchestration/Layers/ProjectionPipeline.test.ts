@@ -751,6 +751,124 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-fork-")))(
+  "OrchestrationProjectionPipeline attachment fork",
+  (it) => {
+    it.effect("copies attachment files into independent fork ownership", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const { attachmentsDir } = yield* ServerConfig;
+        const now = "2026-01-01T00:00:00.000Z";
+        const sourceThreadId = ThreadId.make("thread-fork-source");
+        const targetThreadId = ThreadId.make("thread-fork-target");
+        const sourceAttachmentId = "thread-fork-source-00000000-0000-4000-8000-000000000001";
+        const targetAttachmentId = "thread-fork-target-00000000-0000-4000-8000-000000000001";
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-attachment-fork-1"),
+          aggregateKind: "thread",
+          aggregateId: sourceThreadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-attachment-fork-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-attachment-fork-1"),
+          metadata: {},
+          payload: {
+            threadId: sourceThreadId,
+            projectId: ProjectId.make("project-attachment-fork"),
+            title: "Source",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-attachment-fork-2"),
+          aggregateKind: "thread",
+          aggregateId: sourceThreadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-attachment-fork-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-attachment-fork-2"),
+          metadata: {},
+          payload: {
+            threadId: sourceThreadId,
+            messageId: MessageId.make("message-attachment-fork"),
+            role: "user",
+            text: "Reference",
+            attachments: [
+              {
+                type: "image",
+                id: sourceAttachmentId,
+                name: "reference.png",
+                mimeType: "image/png",
+                sizeBytes: 7,
+              },
+            ],
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+        const sourcePath = path.join(attachmentsDir, `${sourceAttachmentId}.png`);
+        const targetPath = path.join(attachmentsDir, `${targetAttachmentId}.png`);
+        yield* fileSystem.writeFileString(sourcePath, "payload");
+
+        yield* appendAndProject({
+          type: "thread.forked",
+          eventId: EventId.make("evt-attachment-fork-3"),
+          aggregateKind: "thread",
+          aggregateId: targetThreadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-attachment-fork-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-attachment-fork-3"),
+          metadata: {},
+          payload: {
+            threadId: targetThreadId,
+            sourceThreadId,
+            projectId: ProjectId.make("project-attachment-fork"),
+            title: "Fork",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        assert.isTrue(yield* exists(sourcePath));
+        assert.isTrue(yield* exists(targetPath));
+        assert.equal(yield* fileSystem.readFileString(targetPath), "payload");
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {

@@ -689,7 +689,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("configures the SDK auto-compaction window from the selected hard limit", () => {
+  it.effect("configures the SDK auto-compaction window from the usable context budget", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -701,14 +701,14 @@ describe("ClaudeAdapterLive", () => {
           "claude-sonnet-4-6",
           [{ id: "contextWindow", value: "1m" }],
         ),
-        autoCompactionThresholdPercentage: 50,
+        autoCompactionThresholdPercentage: 80,
         runtimeMode: "full-access",
       });
 
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
         autoCompactEnabled: true,
-        autoCompactWindow: 500_000,
+        autoCompactWindow: 640_000,
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1772,6 +1772,61 @@ describe("ClaudeAdapterLive", () => {
       if (completed?.type === "turn.completed") {
         assert.equal(completed.payload.state, "failed");
         assert.equal(completed.payload.errorMessage, "Claude runtime stream failed.");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("reports a diagnostic when the stream ends mid-turn without failing", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      // A clean end-of-iteration while a turn is live: the runtime went away
+      // without raising. Previously this settled as "interrupted" and wrote
+      // nothing at all — and because ingestion maps every non-failed
+      // completion to session status "ready", the projection then recorded the
+      // abandoned turn as "completed".
+      harness.query.finish();
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const expected = "Claude runtime stream ended before the turn finished.";
+
+      const runtimeError = runtimeEvents.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type === "runtime.error") {
+        assert.equal(runtimeError.payload.message, expected);
+      }
+
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        // "failed" is load-bearing: any other state projects to "completed".
+        assert.equal(completed.payload.state, "failed");
+        assert.equal(completed.payload.errorMessage, expected);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3270,6 +3325,33 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("requests a native Claude fork for fork-marked resume state", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const durableSessionId = "550e8400-e29b-41d4-a716-446655440000";
+
+      yield* adapter.startSession({
+        threadId: ThreadId.make("thread-claude-fork"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: {
+          threadId: "thread-source",
+          resume: durableSessionId,
+          forkSession: true,
+        },
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, durableSessionId);
+      assert.equal(createInput?.options.forkSession, true);
+      assert.equal(createInput?.options.sessionId, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("preserves durable resume ids across Claude resume hooks", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3501,7 +3583,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("applies an updated auto-compaction threshold before the next turn", () => {
+  it.effect("applies the displayed auto-compaction threshold before the next turn", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -3531,7 +3613,7 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(harness.query.applyFlagSettingsCalls, [
         {
           autoCompactEnabled: true,
-          autoCompactWindow: 750_000,
+          autoCompactWindow: 600_000,
         },
       ]);
     }).pipe(

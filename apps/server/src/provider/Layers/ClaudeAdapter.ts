@@ -73,6 +73,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { prepareModelCompatibleImage } from "../../modelImageCompatibility.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { type ContextRecoveryReason, withContextRecoveryReminder } from "../contextRecovery.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
@@ -106,6 +107,7 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+const CLAUDE_USABLE_CONTEXT_WINDOW_PERCENTAGE = 80;
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -132,6 +134,7 @@ interface ClaudeResumeState {
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly turnCount?: number;
+  readonly forkSession?: boolean;
 }
 
 interface ClaudeTurnState {
@@ -211,6 +214,7 @@ interface ClaudeSessionContext {
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
+  autoCompactionBaseWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
   lastAssistantUuid: string | undefined;
@@ -221,6 +225,13 @@ interface ClaudeSessionContext {
         readonly maxRetries: number;
       }
     | undefined;
+  /**
+   * Set when the runtime drops earlier turns from the context window, and
+   * consumed by the next outgoing prompt. Held on the session rather than
+   * emitted immediately because a compaction boundary arrives between turns,
+   * where there is no prompt to attach it to.
+   */
+  pendingContextRecovery: ContextRecoveryReason | undefined;
   stopped: boolean;
 }
 
@@ -411,6 +422,15 @@ export function resolveAutoCompactionTokenThreshold(input: {
   return Math.floor((input.maxTokens * input.thresholdPercentage) / 100);
 }
 
+export function resolveClaudeUsableContextWindow(
+  maxTokens: number | undefined,
+): number | undefined {
+  return resolveAutoCompactionTokenThreshold({
+    maxTokens,
+    thresholdPercentage: CLAUDE_USABLE_CONTEXT_WINDOW_PERCENTAGE,
+  });
+}
+
 function finiteNonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.round(value)
@@ -528,10 +548,11 @@ function normalizeClaudeActiveTokenUsage(
 function normalizeClaudeContextUsageApiSnapshot(
   value: SDKControlGetContextUsageResponse,
   totalProcessedTokens?: number,
+  contextWindow = value.maxTokens,
 ): ThreadTokenUsageSnapshot | undefined {
   return makeClaudeTokenUsageSnapshot({
     activeTokens: value.totalTokens,
-    contextWindow: value.maxTokens,
+    contextWindow,
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
     compactsAutomatically: value.isAutoCompactEnabled,
   });
@@ -579,11 +600,10 @@ function normalizeClaudeTaskProgressTokenUsage(
   }
 
   const usage = value as Record<string, unknown>;
+  const displayContextWindow = context.autoCompactionBaseWindow ?? context.lastKnownContextWindow;
   const snapshot = makeClaudeTokenUsageSnapshot({
     activeTokens,
-    ...(context.lastKnownContextWindow !== undefined
-      ? { contextWindow: context.lastKnownContextWindow }
-      : {}),
+    ...(displayContextWindow !== undefined ? { contextWindow: displayContextWindow } : {}),
     totalProcessedTokens: Math.max(
       totalTokens,
       context.lastKnownTotalProcessedTokens ?? totalTokens,
@@ -620,6 +640,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
     sessionId?: unknown;
     resumeSessionAt?: unknown;
     turnCount?: unknown;
+    forkSession?: unknown;
   };
 
   const threadIdCandidate = typeof cursor.threadId === "string" ? cursor.threadId : undefined;
@@ -645,6 +666,7 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
     ...(turnCountValue !== undefined && Number.isInteger(turnCountValue) && turnCountValue >= 0
       ? { turnCount: turnCountValue }
       : {}),
+    ...(cursor.forkSession === true ? { forkSession: true } : {}),
   };
 }
 
@@ -939,6 +961,7 @@ const CLAUDE_SETTING_SOURCES = [
 function buildPromptText(
   input: ProviderSendTurnInput,
   boundInstanceId: ProviderInstanceId,
+  contextRecovery?: ContextRecoveryReason,
 ): string {
   const rawEffort =
     input.modelSelection?.instanceId === boundInstanceId
@@ -949,7 +972,12 @@ function buildPromptText(
   const caps = getClaudeModelCapabilities(claudeModel);
 
   const promptEffort = resolvePromptInjectedEffort(caps, rawEffort);
-  return applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+  // The reminder goes inside the effort prefix so that prefix stays the first
+  // thing in the prompt, where the runtime looks for it.
+  return applyClaudePromptEffortPrefix(
+    withContextRecoveryReminder(input.input?.trim() ?? "", contextRecovery),
+    promptEffort,
+  );
 }
 
 function buildUserMessage(input: {
@@ -986,9 +1014,10 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly boundInstanceId: ProviderInstanceId;
+    readonly contextRecovery?: ContextRecoveryReason | undefined;
   },
 ) {
-  const text = buildPromptText(input, dependencies.boundInstanceId);
+  const text = buildPromptText(input, dependencies.boundInstanceId, dependencies.contextRecovery);
   const sdkContent: Array<Record<string, unknown>> = [];
 
   if (text.length > 0) {
@@ -1857,8 +1886,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return undefined;
     }
 
-    context.lastKnownContextWindow = usage.maxTokens;
-    return normalizeClaudeContextUsageApiSnapshot(usage, totalProcessedTokens);
+    context.lastKnownContextWindow = usage.rawMaxTokens;
+    context.autoCompactionBaseWindow ??= usage.maxTokens;
+    return normalizeClaudeContextUsageApiSnapshot(
+      usage,
+      totalProcessedTokens,
+      context.autoCompactionBaseWindow,
+    );
   });
 
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
@@ -1955,7 +1989,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context.lastKnownContextWindow = resultContextWindow;
     }
 
-    const maxTokens = resultContextWindow ?? context.lastKnownContextWindow;
+    const maxTokens =
+      context.autoCompactionBaseWindow ?? resultContextWindow ?? context.lastKnownContextWindow;
     const accumulatedTotalProcessedTokens = claudeTotalProcessedTokens(result?.usage);
     if (accumulatedTotalProcessedTokens !== undefined) {
       context.lastKnownTotalProcessedTokens = accumulatedTotalProcessedTokens;
@@ -2151,7 +2186,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const snapshot = normalizeClaudeActiveTokenUsage(
         event.usage,
-        context.lastKnownContextWindow,
+        context.autoCompactionBaseWindow ?? context.lastKnownContextWindow,
         context.lastKnownTotalProcessedTokens,
       );
       yield* emitThreadTokenUsage(context, snapshot, {
@@ -2696,11 +2731,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "compact_boundary":
+        // Everything before this point is now a summary as far as the model is
+        // concerned. Arm the reminder so the next prompt tells it the full
+        // transcript is still queryable.
+        context.pendingContextRecovery = "compaction";
         yield* emitThreadTokenUsage(
           context,
           compactBoundaryTokenUsageSnapshot(
             message as unknown as Record<string, unknown>,
-            context.lastKnownContextWindow,
+            context.autoCompactionBaseWindow ?? context.lastKnownContextWindow,
             context.lastKnownTotalProcessedTokens,
           ),
           {
@@ -3108,7 +3147,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* completeTurn(context, "failed", message);
       }
     } else if (context.turnState) {
-      yield* completeTurn(context, "interrupted", "Claude runtime stream ended.");
+      // The iterable returned rather than threw, so nothing raised an error —
+      // yet a turn was still live, which means the runtime went away mid-turn
+      // (process exit, dropped connection, killed pipe).
+      //
+      // This must settle as "failed", not "interrupted". Ingestion maps every
+      // non-failed completion to session status "ready", and the projection
+      // then settles the turn as "completed" — so an abandoned turn used to
+      // record itself as a successful one, with no error event anywhere. That
+      // is indistinguishable from the model simply finishing, which is exactly
+      // how a dropped connection came to look like a finished turn.
+      const message = "Claude runtime stream ended before the turn finished.";
+      yield* emitRuntimeError(context, message);
+      yield* completeTurn(context, "failed", message);
     }
 
     yield* stopSessionInternal(context, {
@@ -3608,8 +3659,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const descriptors = getProviderOptionDescriptors({ caps });
       const apiModelId = modelSelection ? resolveClaudeApiModelId(modelSelection) : undefined;
       const initialContextWindow = selectedClaudeContextWindow(modelSelection);
+      const autoCompactionBaseWindow = resolveClaudeUsableContextWindow(initialContextWindow);
       const autoCompactWindow = resolveAutoCompactionTokenThreshold({
-        maxTokens: initialContextWindow,
+        maxTokens: autoCompactionBaseWindow,
         thresholdPercentage: input.autoCompactionThresholdPercentage,
       });
       const rawEffort = getModelSelectionStringOptionValue(modelSelection, "effort");
@@ -3738,6 +3790,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           : {}),
         ...(Object.keys(settings).length > 0 ? { settings } : {}),
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+        ...(existingResumeSessionId && resumeState?.forkSession === true
+          ? { forkSession: true }
+          : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
@@ -3836,11 +3891,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         claudeTasks,
         turnState: undefined,
         lastKnownContextWindow: initialContextWindow,
+        autoCompactionBaseWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         lastOverloadRetry: undefined,
+        pendingContextRecovery: undefined,
         stopped: false,
       };
       yield* Ref.set(contextRef, context);
@@ -3954,8 +4011,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     }
 
+    const selectedAutoCompactionBaseWindow = resolveClaudeUsableContextWindow(
+      selectedClaudeContextWindow(modelSelection),
+    );
+    if (selectedAutoCompactionBaseWindow !== undefined) {
+      context.autoCompactionBaseWindow = selectedAutoCompactionBaseWindow;
+    }
     const autoCompactWindow = resolveAutoCompactionTokenThreshold({
-      maxTokens: selectedClaudeContextWindow(modelSelection) ?? context.lastKnownContextWindow,
+      maxTokens:
+        context.autoCompactionBaseWindow ??
+        context.lastKnownTokenUsage?.maxTokens ??
+        context.lastKnownContextWindow,
       thresholdPercentage: input.autoCompactionThresholdPercentage,
     });
     if (autoCompactWindow !== undefined) {
@@ -4021,10 +4087,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    // Consumed rather than read: the reminder belongs on the first prompt after
+    // the loss of context, not on every prompt thereafter.
+    const contextRecovery = context.pendingContextRecovery;
+    context.pendingContextRecovery = undefined;
+
     const message = yield* buildUserMessageEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       boundInstanceId,
+      ...(contextRecovery !== undefined ? { contextRecovery } : {}),
     });
 
     yield* Queue.offer(context.promptQueue, {

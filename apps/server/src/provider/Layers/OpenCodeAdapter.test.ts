@@ -552,6 +552,31 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("forks a same-directory session when the cursor explicitly requests a fork", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-explicit-fork");
+      runtimeMock.state.sessionDirectoryById.set("ses_source", process.cwd());
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: "ses_source", fork: true },
+      });
+
+      NodeAssert.deepEqual(runtimeMock.state.sessionGetIds, ["ses_source"]);
+      NodeAssert.equal(runtimeMock.state.forkCalls.length, 1);
+      NodeAssert.equal(runtimeMock.state.forkCalls[0]?.sessionID, "ses_source");
+      NodeAssert.deepEqual(session.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "ses_source_fork",
+      });
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("fails sendTurn for missing sessions through the typed error channel", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

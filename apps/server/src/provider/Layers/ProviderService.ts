@@ -57,6 +57,24 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
+function forkResumeCursor(provider: ProviderDriverKind, value: unknown): unknown | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const cursor = value as Record<string, unknown>;
+  switch (provider) {
+    case "claudeAgent":
+      return { ...cursor, forkSession: true };
+    case "codex":
+    case "opencode":
+    case "cursor":
+    case "grok":
+      return { ...cursor, fork: true };
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Hook for tests that want to override the canonical event logger pulled
  * from `ProviderEventLoggers`. Production wiring leaves this undefined and
@@ -1014,6 +1032,37 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const forkSessionBinding: NonNullable<ProviderServiceMethod<"forkSessionBinding">> = Effect.fn(
+    "ProviderService.forkSessionBinding",
+  )(function* (input) {
+    const sourceBinding = yield* directory.getBinding(input.sourceThreadId);
+    if (Option.isNone(sourceBinding)) {
+      return false;
+    }
+    const resumeCursor = forkResumeCursor(
+      sourceBinding.value.provider,
+      sourceBinding.value.resumeCursor,
+    );
+    if (resumeCursor === undefined) {
+      return false;
+    }
+    yield* directory.upsert({
+      threadId: input.targetThreadId,
+      provider: sourceBinding.value.provider,
+      ...(sourceBinding.value.providerInstanceId !== undefined
+        ? { providerInstanceId: sourceBinding.value.providerInstanceId }
+        : {}),
+      ...(sourceBinding.value.adapterKey !== undefined
+        ? { adapterKey: sourceBinding.value.adapterKey }
+        : {}),
+      status: "stopped",
+      resumeCursor,
+      runtimePayload: sourceBinding.value.runtimePayload ?? null,
+      runtimeMode: input.runtimeMode,
+    });
+    return true;
+  });
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -1085,6 +1134,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    forkSessionBinding,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

@@ -19,6 +19,7 @@ describe("background task store", () => {
   it("tracks export progress and completion output", () => {
     resetBackgroundTasksForTests();
     const id = useBackgroundTaskStore.getState().startThreadExport(threadRef, "Test thread");
+    expect(useBackgroundTaskStore.getState().panelOpen).toBe(true);
     useBackgroundTaskStore.getState().updateTask(id, { status: "writing", progress: 80 });
     useBackgroundTaskStore.getState().updateTask(id, {
       status: "completed",

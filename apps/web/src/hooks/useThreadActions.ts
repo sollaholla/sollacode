@@ -20,6 +20,7 @@ import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { readLocalApi } from "../localApi";
+import { newThreadId } from "../lib/utils";
 import {
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
@@ -103,6 +104,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const deleteThreadMutation = useAtomCommand(threadEnvironment.delete, {
+    reportFailure: false,
+  });
+  const forkThreadMutation = useAtomCommand(threadEnvironment.fork, {
     reportFailure: false,
   });
   const settleThreadMutation = useAtomCommand(threadEnvironment.settle, {
@@ -212,6 +216,39 @@ export function useThreadActions() {
       return result;
     },
     [unarchiveThreadMutation],
+  );
+
+  const forkThread = useCallback(
+    async (target: ScopedThreadRef) => {
+      const resolved = resolveThreadTarget(target);
+      if (!resolved) {
+        return AsyncResult.failure(
+          Cause.fail(new Error("The conversation is unavailable and could not be forked.")),
+        );
+      }
+
+      const forkedThreadId = newThreadId();
+      const result = await forkThreadMutation({
+        environmentId: target.environmentId,
+        input: {
+          threadId: forkedThreadId,
+          sourceThreadId: target.threadId,
+          title: `${resolved.thread.title} (fork)`,
+        },
+      });
+      if (result._tag === "Failure") {
+        return result;
+      }
+
+      const navigationResult = await settlePromise(() =>
+        router.navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(scopeThreadRef(target.environmentId, forkedThreadId)),
+        }),
+      );
+      return navigationResult._tag === "Failure" ? navigationResult : result;
+    },
+    [forkThreadMutation, resolveThreadTarget, router],
   );
 
   const deleteThread = useCallback(
@@ -559,6 +596,7 @@ export function useThreadActions() {
     () => ({
       archiveThread,
       unarchiveThread,
+      forkThread,
       deleteThread,
       confirmAndDeleteThread,
       settleThread,
@@ -570,6 +608,7 @@ export function useThreadActions() {
       archiveThread,
       confirmAndDeleteThread,
       deleteThread,
+      forkThread,
       settleThread,
       snoozeThread,
       unarchiveThread,

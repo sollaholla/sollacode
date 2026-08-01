@@ -644,12 +644,20 @@ function RenderedMarkdownSurface({
   );
 }
 
+/**
+ * Collapsed by default.
+ *
+ * The right panel is a split, and the explorer took a large share of it before
+ * the user had asked for any file — leaving little room for the file actually
+ * being viewed. An explicit stored preference still wins, so opening it once
+ * keeps it open; only the unset default changed.
+ */
 function initialExplorerOpen(): boolean {
   try {
-    return getLocalStorageItem(FILE_EXPLORER_STORAGE_KEY, Schema.Boolean) ?? true;
+    return getLocalStorageItem(FILE_EXPLORER_STORAGE_KEY, Schema.Boolean) ?? false;
   } catch (error) {
     console.error(error);
-    return true;
+    return false;
   }
 }
 

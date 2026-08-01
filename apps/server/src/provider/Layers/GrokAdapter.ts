@@ -172,11 +172,11 @@ const resolveSessionCallbackTurnId = (
   return ctx ? resolveCallbackTurnId(ctx) : undefined;
 };
 
-function parseGrokResume(raw: unknown): { sessionId: string } | undefined {
+function parseGrokResume(raw: unknown): { sessionId: string; fork: boolean } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== GROK_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return { sessionId: raw.sessionId.trim(), fork: raw.fork === true };
 }
 
 function selectPermissionOptionId(
@@ -562,7 +562,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
 
-          const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
+          const resumeState = parseGrokResume(input.resumeCursor);
+          const resumeSessionId = resumeState?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -575,7 +576,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
-            ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(resumeSessionId && resumeState.fork
+              ? { forkSessionId: resumeSessionId }
+              : resumeSessionId
+                ? { resumeSessionId }
+                : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
               ? {

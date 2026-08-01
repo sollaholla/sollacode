@@ -170,11 +170,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseCursorResume(raw: unknown): { sessionId: string } | undefined {
+function parseCursorResume(raw: unknown): { sessionId: string; fork: boolean } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== CURSOR_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return { sessionId: raw.sessionId.trim(), fork: raw.fork === true };
 }
 
 function normalizeModeSearchText(mode: AcpSessionMode): string {
@@ -512,7 +512,8 @@ export function makeCursorAdapter(
           );
           let ctx!: CursorSessionContext;
 
-          const resumeSessionId = parseCursorResume(input.resumeCursor)?.sessionId;
+          const resumeState = parseCursorResume(input.resumeCursor);
+          const resumeSessionId = resumeState?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -537,7 +538,11 @@ export function makeCursorAdapter(
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
-            ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(resumeSessionId && resumeState.fork
+              ? { forkSessionId: resumeSessionId }
+              : resumeSessionId
+                ? { resumeSessionId }
+                : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
               ? {

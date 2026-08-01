@@ -1,9 +1,12 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  EventId,
+  MessageId,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -105,12 +108,40 @@ interface ProjectorDefinition {
 interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
+  readonly forkedAttachments: Array<{
+    readonly source: ChatAttachment;
+    readonly target: ChatAttachment;
+  }>;
 }
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
     Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
 );
+
+const forkedProjectionMessageId = (threadId: ThreadId, messageId: string) =>
+  MessageId.make(`${threadId}:fork:${messageId}`);
+const forkedProjectionTurnId = (threadId: ThreadId, turnId: string) =>
+  TurnId.make(`${threadId}:fork:${turnId}`);
+const forkedProjectionActivityId = (threadId: ThreadId, activityId: string) =>
+  EventId.make(`${threadId}:fork:${activityId}`);
+
+function forkedProjectionAttachment(
+  threadId: ThreadId,
+  attachment: ChatAttachment,
+): ChatAttachment {
+  const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  const uuidSuffix = attachment.id.match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  )?.[1];
+  if (!threadSegment || !uuidSuffix) {
+    return attachment;
+  }
+  return {
+    ...attachment,
+    id: `${threadSegment}-${uuidSuffix}` as typeof attachment.id,
+  };
+}
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   if (typeof payload !== "object" || payload === null) {
@@ -291,6 +322,26 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     .readDirectory(attachmentsRootDir, { recursive: false })
     .pipe(Effect.orElseSucceed(() => [] as Array<string>));
 
+  const copyForkedAttachment = Effect.fn("copyForkedAttachment")(function* (input: {
+    readonly source: ChatAttachment;
+    readonly target: ChatAttachment;
+  }) {
+    if (input.source.id === input.target.id) {
+      return;
+    }
+    const sourcePath = path.join(attachmentsRootDir, attachmentRelativePath(input.source));
+    const targetPath = path.join(attachmentsRootDir, attachmentRelativePath(input.target));
+    yield* fileSystem.copyFile(sourcePath, targetPath).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("failed to copy attachment into forked conversation", {
+          sourceAttachmentId: input.source.id,
+          targetAttachmentId: input.target.id,
+          cause,
+        }),
+      ),
+    );
+  });
+
   const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
     function* (threadSegment: string, entry: string) {
       const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
@@ -381,6 +432,10 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
       (entry) => pruneThreadAttachmentEntry(threadSegment, keptThreadRelativePaths, entry),
       { concurrency: 1 },
     );
+  });
+
+  yield* Effect.forEach(sideEffects.forkedAttachments, copyForkedAttachment, {
+    concurrency: 1,
   });
 
   yield* Effect.forEach(sideEffects.deletedThreadIds, deleteThreadAttachments, {
@@ -654,6 +709,43 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             deletedAt: null,
           });
           return;
+
+        case "thread.forked": {
+          const source = yield* projectionThreadRepository.getById({
+            threadId: event.payload.sourceThreadId,
+          });
+          if (Option.isNone(source)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...source.value,
+            threadId: event.payload.threadId,
+            projectId: event.payload.projectId,
+            title: event.payload.title,
+            modelSelection: event.payload.modelSelection,
+            runtimeMode: event.payload.runtimeMode,
+            interactionMode: event.payload.interactionMode,
+            branch: event.payload.branch,
+            worktreePath: event.payload.worktreePath,
+            latestTurnId:
+              source.value.latestTurnId === null
+                ? null
+                : forkedProjectionTurnId(event.payload.threadId, source.value.latestTurnId),
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.updatedAt,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            pendingApprovalCount: 0,
+            pendingUserInputCount: 0,
+            hasActionableProposedPlan: 0,
+            deletedAt: null,
+          });
+          yield* refreshThreadShellSummaryForEvent(event.payload.threadId);
+          return;
+        }
 
         case "thread.archived": {
           const existingRow = yield* projectionThreadRepository.getById({
@@ -999,6 +1091,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadMessagesProjection",
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
+        case "thread.forked": {
+          const sourceRows = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.sourceThreadId,
+          });
+          yield* Effect.forEach(
+            sourceRows,
+            (message) => {
+              const attachments = message.attachments?.map((attachment) => {
+                const target = forkedProjectionAttachment(event.payload.threadId, attachment);
+                attachmentSideEffects.forkedAttachments.push({ source: attachment, target });
+                return target;
+              });
+              return projectionThreadMessageRepository.upsert({
+                ...message,
+                messageId: forkedProjectionMessageId(event.payload.threadId, message.messageId),
+                threadId: event.payload.threadId,
+                turnId:
+                  message.turnId === null
+                    ? null
+                    : forkedProjectionTurnId(event.payload.threadId, message.turnId),
+                isStreaming: false,
+                ...(attachments !== undefined ? { attachments } : {}),
+              });
+            },
+            { concurrency: 1 },
+          );
+          return;
+        }
+
         case "thread.message-sent": {
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
@@ -1083,6 +1204,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadProposedPlansProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        case "thread.forked": {
+          const sourceRows = yield* projectionThreadProposedPlanRepository.listByThreadId({
+            threadId: event.payload.sourceThreadId,
+          });
+          yield* Effect.forEach(
+            sourceRows,
+            (plan) =>
+              projectionThreadProposedPlanRepository.upsert({
+                ...plan,
+                threadId: event.payload.threadId,
+                turnId:
+                  plan.turnId === null
+                    ? null
+                    : forkedProjectionTurnId(event.payload.threadId, plan.turnId),
+              }),
+            { concurrency: 1 },
+          );
+          return;
+        }
+
         case "thread.proposed-plan-upserted":
           yield* projectionThreadProposedPlanRepository.upsert({
             planId: event.payload.proposedPlan.id,
@@ -1134,6 +1275,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadActivitiesProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        case "thread.forked": {
+          const sourceRows = yield* projectionThreadActivityRepository.listByThreadId({
+            threadId: event.payload.sourceThreadId,
+          });
+          yield* Effect.forEach(
+            sourceRows,
+            (activity) =>
+              projectionThreadActivityRepository.upsert({
+                ...activity,
+                activityId: forkedProjectionActivityId(event.payload.threadId, activity.activityId),
+                threadId: event.payload.threadId,
+                turnId:
+                  activity.turnId === null
+                    ? null
+                    : forkedProjectionTurnId(event.payload.threadId, activity.turnId),
+              }),
+            { concurrency: 1 },
+          );
+          return;
+        }
+
         case "thread.activity-appended":
           yield* projectionThreadActivityRepository.upsert({
             activityId: event.payload.activity.id,
@@ -1204,6 +1366,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
+        case "thread.forked": {
+          const sourceRows = yield* projectionTurnRepository.listByThreadId({
+            threadId: event.payload.sourceThreadId,
+          });
+          yield* Effect.forEach(
+            sourceRows.filter((turn) => turn.turnId !== null),
+            (turn) => {
+              if (turn.turnId === null) return Effect.void;
+              return projectionTurnRepository.upsertByTurnId({
+                ...turn,
+                threadId: event.payload.threadId,
+                turnId: forkedProjectionTurnId(event.payload.threadId, turn.turnId),
+                pendingMessageId:
+                  turn.pendingMessageId === null
+                    ? null
+                    : forkedProjectionMessageId(event.payload.threadId, turn.pendingMessageId),
+                assistantMessageId:
+                  turn.assistantMessageId === null
+                    ? null
+                    : forkedProjectionMessageId(event.payload.threadId, turn.assistantMessageId),
+                state:
+                  turn.state === "running" || turn.state === "pending" ? "incomplete" : turn.state,
+              });
+            },
+            { concurrency: 1 },
+          );
+          return;
+        }
+
         case "thread.turn-start-requested": {
           yield* projectionTurnRepository.replacePendingTurnStart({
             threadId: event.payload.threadId,
@@ -1708,6 +1899,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const attachmentSideEffects: AttachmentSideEffects = {
         deletedThreadIds: new Set<string>(),
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        forkedAttachments: [],
       };
 
       yield* sql.withTransaction(

@@ -39,6 +39,8 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  isComposerSubmitBlocked,
+  isEnabledComposerSubmitButton,
   replaceTextRange,
   shouldSubmitComposerOnEnter,
 } from "../../composer-logic";
@@ -110,6 +112,7 @@ import {
 import {
   discardComposerTransfer,
   hasTransferableComposerContent,
+  planComposerPaste,
   readComposerTransferFromClipboard,
   stageComposerTransfer,
   writeComposerTransferToClipboard,
@@ -184,10 +187,8 @@ import { Select, SelectItem, SelectPopup, SelectValue } from "../ui/select";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
-  BotIcon,
   CircleAlertIcon,
   ListTodoIcon,
-  PencilRulerIcon,
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
@@ -222,6 +223,8 @@ import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
+import { buildQuotedPrompt, useComposerQuoteStore } from "../../composerQuote";
+import { interactionModeConfig, interactionModeOptions } from "./interactionModes";
 
 const runtimeModeConfig: Record<
   RuntimeMode,
@@ -250,6 +253,7 @@ const runtimeModeConfig: Record<
 };
 
 const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
+
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="popover-popup"]',
   '[data-slot="menu-popup"]',
@@ -297,49 +301,72 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showPlanToggle: boolean;
   planSidebarLabel: string;
   planSidebarOpen: boolean;
-  onToggleInteractionMode: () => void;
+  onInteractionModeChange: (mode: ProviderInteractionMode) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   onTogglePlanSidebar: () => void;
 }) {
   const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
   const RuntimeModeIcon = runtimeModeOption.icon;
-  const interactionModeTooltip =
-    props.interactionMode === "plan"
-      ? "Plan mode — click to return to normal build mode"
-      : "Default mode — click to enter plan mode";
+  const interactionModeOption = interactionModeConfig[props.interactionMode];
+  const InteractionModeIcon = interactionModeOption.icon;
   const planSidebarTooltip = props.planSidebarOpen
     ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
     : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`;
 
+  // A picker rather than a cycling button: with more than two modes, clicking
+  // to advance one step makes the current mode hard to predict and impossible
+  // to jump between directly.
   const interactionModeToggle = props.showInteractionModeToggle ? (
     <>
       <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
       <Tooltip>
-        <TooltipTrigger
-          render={
-            <ComposerControl
-              className={cn(
-                "shrink-0 whitespace-nowrap",
-                props.interactionMode === "plan"
-                  ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300"
-                  : "text-muted-foreground/70 hover:text-foreground/80",
-              )}
-              type="button"
-              onClick={props.onToggleInteractionMode}
-              aria-label={interactionModeTooltip}
-            />
-          }
+        <Select
+          value={props.interactionMode}
+          onValueChange={(value) => props.onInteractionModeChange(value!)}
         >
-          {props.interactionMode === "plan" ? (
-            <ComposerControlIcon icon={PencilRulerIcon} className="text-current opacity-100" />
-          ) : (
-            <ComposerControlIcon icon={BotIcon} opticalSize="large" />
-          )}
-          <span className="sr-only sm:not-sr-only">
-            {props.interactionMode === "plan" ? "Plan" : "Build"}
-          </span>
-        </TooltipTrigger>
-        <TooltipPopup side="top">{interactionModeTooltip}</TooltipPopup>
+          <TooltipTrigger
+            render={
+              <ComposerSelectControl
+                className={cn(
+                  "font-medium",
+                  props.interactionMode !== "default" &&
+                    "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300",
+                )}
+                aria-label="Interaction mode"
+              />
+            }
+          >
+            <ComposerControlIcon
+              icon={InteractionModeIcon}
+              className={
+                props.interactionMode !== "default" ? "text-current opacity-100" : undefined
+              }
+            />
+            <SelectValue>{interactionModeOption.label}</SelectValue>
+          </TooltipTrigger>
+          <SelectPopup alignItemWithTrigger={false}>
+            {interactionModeOptions.map((mode) => {
+              const option = interactionModeConfig[mode];
+              const OptionIcon = option.icon;
+              return (
+                <SelectItem key={mode} value={mode} hideIndicator className="min-w-64 py-2">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="grid min-w-0 flex-1 gap-0.5">
+                      <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
+                        <OptionIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                        {option.label}
+                      </span>
+                      <span className="text-muted-foreground text-xs leading-4">
+                        {option.description}
+                      </span>
+                    </div>
+                  </div>
+                </SelectItem>
+              );
+            })}
+          </SelectPopup>
+        </Select>
+        <TooltipPopup side="top">{interactionModeOption.description}</TooltipPopup>
       </Tooltip>
     </>
   ) : null;
@@ -677,6 +704,7 @@ export interface ChatComposerProps {
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
+  setInteractionMode: (mode: ProviderInteractionMode) => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
   togglePlanSidebar: () => void;
@@ -764,6 +792,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onProviderModelSelect,
     getModelDisabledReason,
     toggleInteractionMode,
+    setInteractionMode,
     handleRuntimeModeChange,
     handleInteractionModeChange,
     togglePlanSidebar,
@@ -1051,7 +1080,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       changes.push(runtimeMode === "full-access" ? "Full access" : "Approval required");
     }
     if (activeThread.interactionMode !== interactionMode) {
-      changes.push(interactionMode === "plan" ? "Plan mode" : "Build mode");
+      // Read from the shared config so a new mode cannot silently render as
+      // "Build mode", which is how Agent was mislabelled here.
+      changes.push(`${interactionModeConfig[interactionMode].label} mode`);
     }
     return changes.length > 0 ? changes.join(" · ") : null;
   }, [
@@ -2032,7 +2063,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
-      if (noProviderAvailable || isSendDisabled) {
+      if (isComposerSubmitBlocked({ noProviderAvailable, isSendDisabled, pushToTalkStatus })) {
         event?.preventDefault();
         return;
       }
@@ -2057,9 +2088,31 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       noProviderAvailable,
       onSend,
       promptRef,
+      pushToTalkStatus,
       setComposerDraftPrompt,
     ],
   );
+
+  // Applies a "Quote" from the transcript context menu. Subscribing rather than
+  // polling means only the mounted composer for the active thread consumes it,
+  // and the store clears on read so a remount cannot duplicate the quote.
+  const pendingQuote = useComposerQuoteStore((state) => state.pending);
+  useEffect(() => {
+    if (pendingQuote === null) return;
+    const selection = useComposerQuoteStore.getState().takeQuote();
+    if (selection === null) return;
+    const current = composerEditorRef.current?.readSnapshot().value ?? promptRef.current;
+    const { prompt } = buildQuotedPrompt({ prompt: current, selection });
+    if (prompt === current) return;
+    promptRef.current = prompt;
+    setComposerDraftPrompt(composerDraftTarget, prompt);
+    // Let the draft render reach the editor before moving the caret, otherwise
+    // focus lands on the stale value. The quote always ends with a blank line,
+    // so the end of the prompt is exactly where the reply should start.
+    window.requestAnimationFrame(() => {
+      composerEditorRef.current?.focusAtEnd();
+    });
+  }, [composerDraftTarget, pendingQuote, promptRef, setComposerDraftPrompt]);
 
   useEffect(() => {
     if (!isMobileViewport) return;
@@ -2123,7 +2176,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       key === "Enter" &&
       shouldSubmitComposerOnEnter({ isMobileViewport, shiftKey: event.shiftKey })
     ) {
-      submitComposer();
+      // Enter must honour the same guard as the send button rather than infer
+      // permission from the rendered submit button. While a turn is running the
+      // primary action is Stop, so no submit button exists to read a disabled
+      // state from — and a transcription still writing into the draft would
+      // otherwise be submitted half-finished into the middle of the turn.
+      if (isComposerSubmitBlocked({ noProviderAvailable, isSendDisabled, pushToTalkStatus })) {
+        return true;
+      }
+      const composerForm = composerFormRef.current;
+      const submitButton =
+        composerForm?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
+      if (composerForm && isEnabledComposerSubmitButton(submitButton)) {
+        composerForm.requestSubmit(submitButton);
+      }
       return true;
     }
     return false;
@@ -2564,7 +2630,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
     setIsCuttingComposerContents(true);
     try {
-      const copied = await writeComposerTransferToClipboard(transfer);
+      const copied = await writeComposerTransferToClipboard(
+        transfer,
+        cutImages.map((image) => image.file),
+      );
       if (!copied) {
         discardComposerTransfer(transfer.token);
         toastManager.add({
@@ -2613,32 +2682,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Callbacks: paste / drag
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
-    const transfer = readComposerTransferFromClipboard(event.clipboardData);
-    if (transfer) {
-      event.preventDefault();
-      if (transfer.prompt.length > 0) {
-        const snapshot = composerEditorRef.current?.readSnapshot();
-        if (snapshot && snapshot.value !== promptRef.current) {
-          promptRef.current = snapshot.value;
-        }
-        applyPromptReplacement(
-          snapshot?.expandedCursor ?? promptRef.current.length,
-          snapshot?.expandedCursor ?? promptRef.current.length,
-          transfer.prompt,
-        );
-      }
-      if (transfer.files.length > 0) {
-        addComposerImages([...transfer.files]);
-      }
-      return;
-    }
-
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) return;
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (imageFiles.length === 0) return;
+    const plan = planComposerPaste({
+      transfer: readComposerTransferFromClipboard(event.clipboardData),
+      clipboardText: event.clipboardData.getData("text/plain"),
+      clipboardFiles: Array.from(event.clipboardData.files),
+    });
+    if (!plan.handled) return;
     event.preventDefault();
-    addComposerImages(imageFiles);
+
+    if (plan.prompt !== null) {
+      // Preventing the default paste also suppresses the browser's own text
+      // insertion, so text arriving beside an image has to be inserted here.
+      const snapshot = composerEditorRef.current?.readSnapshot();
+      if (snapshot && snapshot.value !== promptRef.current) {
+        promptRef.current = snapshot.value;
+      }
+      const cursor = snapshot?.expandedCursor ?? promptRef.current.length;
+      applyPromptReplacement(cursor, cursor, plan.prompt);
+    }
+    if (plan.files.length > 0) {
+      addComposerImages([...plan.files]);
+    }
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -3061,6 +3125,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       }
                       isPreparingWorktree={false}
                       hasSendableContent={false}
+                      pushToTalkStatus={pushToTalkStatus}
                       preserveComposerFocusOnPointerDown
                       onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                       onInterrupt={handleInterruptPrimaryAction}
@@ -3366,6 +3431,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                     isPreparingWorktree={false}
                     hasSendableContent={false}
+                    pushToTalkStatus={pushToTalkStatus}
                     preserveComposerFocusOnPointerDown
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
@@ -3446,7 +3512,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
-                    onToggleInteractionMode={toggleInteractionMode}
+                    onInteractionModeChange={setInteractionMode}
                     onTogglePlanSidebar={togglePlanSidebar}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
@@ -3465,7 +3531,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showPlanToggle={showPlanSidebarToggle}
                       planSidebarLabel={planSidebarLabel}
                       planSidebarOpen={planSidebarOpen}
-                      onToggleInteractionMode={toggleInteractionMode}
+                      onInteractionModeChange={setInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
                       onTogglePlanSidebar={togglePlanSidebar}
                     />

@@ -986,8 +986,35 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 export const DesktopRemoteControlCaptureInputSchema = Schema.Struct({
   maxWidth: Schema.Int.check(Schema.isBetween({ minimum: 640, maximum: 1_920 })),
   jpegQuality: Schema.Int.check(Schema.isBetween({ minimum: 20, maximum: 90 })),
+  // Platform display id to capture. Falls back to the primary display when
+  // absent or when the requested monitor has been disconnected.
+  displayId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
 });
 export type DesktopRemoteControlCaptureInput = typeof DesktopRemoteControlCaptureInputSchema.Type;
+
+export const DesktopRemoteControlDisplaySchema = Schema.Struct({
+  id: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128)),
+  label: Schema.String.check(Schema.isNonEmpty()),
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  isPrimary: Schema.Boolean,
+});
+export type DesktopRemoteControlDisplay = typeof DesktopRemoteControlDisplaySchema.Type;
+
+export const DesktopRemoteControlCaptureSourceSchema = Schema.Struct({
+  displayId: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128)),
+  // Chromium desktop-capture source id, fed to getUserMedia as
+  // `chromeMediaSourceId` to open a live MediaStream for that monitor.
+  sourceId: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(256)),
+});
+export type DesktopRemoteControlCaptureSource = typeof DesktopRemoteControlCaptureSourceSchema.Type;
+
+export const DesktopRemoteControlCaptureSourcesSchema = Schema.Struct({
+  displays: Schema.Array(DesktopRemoteControlDisplaySchema),
+  sources: Schema.Array(DesktopRemoteControlCaptureSourceSchema),
+});
+export type DesktopRemoteControlCaptureSources =
+  typeof DesktopRemoteControlCaptureSourcesSchema.Type;
 
 export const DesktopRemoteControlFrameSchema = Schema.Struct({
   capturedAt: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
@@ -995,10 +1022,18 @@ export const DesktopRemoteControlFrameSchema = Schema.Struct({
   width: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_840 })),
   height: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_160 })),
   data: Schema.String.check(Schema.isNonEmpty()),
+  displayId: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128)),
+  displays: Schema.Array(DesktopRemoteControlDisplaySchema),
 });
 export type DesktopRemoteControlFrame = typeof DesktopRemoteControlFrameSchema.Type;
 
-export const DesktopRemoteControlInputSchema = RemoteControlInput;
+export const DesktopRemoteControlInputSchema = Schema.Struct({
+  input: RemoteControlInput,
+  // Capture source id the normalized coordinates are relative to. Without it a
+  // pointer aimed at a secondary monitor is applied to the primary one, because
+  // absolute mouse coordinates are per-desktop, not per-display.
+  displayId: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+});
 export type DesktopRemoteControlInput = typeof DesktopRemoteControlInputSchema.Type;
 
 export interface DesktopBridge {
@@ -1067,7 +1102,8 @@ export interface DesktopBridge {
   captureRemoteControlFrame: (
     input: DesktopRemoteControlCaptureInput,
   ) => Promise<DesktopRemoteControlFrame>;
-  sendRemoteControlInput: (input: DesktopRemoteControlInput) => Promise<void>;
+  listRemoteControlCaptureSources: () => Promise<DesktopRemoteControlCaptureSources>;
+  sendRemoteControlInput: (payload: DesktopRemoteControlInput) => Promise<void>;
   resetRemoteControlInput: () => Promise<void>;
   startFileDrag: (path: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
