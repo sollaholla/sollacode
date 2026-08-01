@@ -48,7 +48,7 @@ import {
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
-import { createDebouncedStorage, createMemoryStorage } from "./lib/storage";
+import { createDebouncedStorage } from "./lib/storage";
 import { getDefaultServerModel } from "./providerModels";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import { ReviewCommentContextSchema, type ReviewCommentContext } from "./reviewCommentContext";
@@ -72,8 +72,24 @@ export type DraftId = typeof DraftId.Type;
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
+/**
+ * Reading the `localStorage` property itself can throw `SecurityError` when
+ * storage is blocked by policy or the page is a sandboxed iframe, and Node
+ * ≥22 defines a methodless `localStorage` global unless `--localstorage-file`
+ * is valid — so the read is guarded and the result is passed through
+ * `createDebouncedStorage`, whose `resolveStorage` shape-check falls back to
+ * memory storage for anything non-conforming.
+ */
+function readGuardedLocalStorage(): Storage | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 const composerDebouncedStorage = createDebouncedStorage(
-  typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
+  readGuardedLocalStorage(),
   COMPOSER_PERSIST_DEBOUNCE_MS,
 );
 
