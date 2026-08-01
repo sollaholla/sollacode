@@ -36,6 +36,8 @@ export type BackgroundTask = ThreadExportBackgroundTask | VoiceTranscriptionBack
 
 interface BackgroundTaskStore {
   readonly tasks: readonly BackgroundTask[];
+  readonly panelOpen: boolean;
+  setPanelOpen: (open: boolean) => void;
   startThreadExport: (threadRef: ScopedThreadRef, title: string) => string;
   startVoiceTranscription: () => string;
   updateTask: (
@@ -62,10 +64,13 @@ export function canCancelBackgroundTask(status: BackgroundTaskStatus): boolean {
 
 export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
   tasks: [],
+  panelOpen: false,
+  setPanelOpen: (panelOpen) => set({ panelOpen }),
   startThreadExport: (threadRef, title) => {
     const now = new Date().toISOString();
     const id = `thread-export-${Date.now()}-${nextTaskId++}`;
     set((state) => ({
+      panelOpen: true,
       tasks: [
         ...state.tasks,
         {
@@ -151,5 +156,5 @@ export function finishVoiceTranscriptionBackgroundTask(id: string): void {
 
 export function resetBackgroundTasksForTests(): void {
   nextTaskId = 1;
-  useBackgroundTaskStore.setState({ tasks: [] });
+  useBackgroundTaskStore.setState({ tasks: [], panelOpen: false });
 }

@@ -3,6 +3,7 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  RemoteControlDisplay,
   RemoteControlHost,
   RemoteControlHostStreamEvent,
   RemoteControlSession,
@@ -13,6 +14,15 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { remoteControlEnvironment } from "~/state/remoteControl";
+import {
+  encodeBlobToBase64,
+  openDisplayStream,
+  REMOTE_CONTROL_TIMESLICE_MS,
+  REMOTE_CONTROL_VIDEO_BITS_PER_SECOND,
+  selectRemoteControlMimeType,
+  stopStream,
+  supportsRemoteControlVideo,
+} from "./remoteControlEncoder";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
   isRemoteControlDeviceRemembered,
@@ -94,6 +104,10 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     label: "remote control approval",
     reportFailure: false,
   });
+  const publishVideoChunk = useAtomCommand(remoteControlEnvironment.publishVideoChunk, {
+    label: "remote control video chunk",
+    reportFailure: false,
+  });
   const publishFrame = useAtomCommand(remoteControlEnvironment.publishFrame, {
     label: "remote control screen frame",
     reportFailure: false,
@@ -107,9 +121,16 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   const [isResponding, setIsResponding] = useState(false);
   const [rememberDevice, setRememberDevice] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [imageFallback, setImageFallback] = useState(false);
   const autoApprovalRequestIdRef = useRef<string | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const selectedDisplayIdRef = useRef<string | undefined>(undefined);
+  const activeDisplayIdRef = useRef<string | undefined>(undefined);
+  const displaysRef = useRef<ReadonlyArray<RemoteControlDisplay>>([]);
+  // Set by the encoder effect so an incoming selection can restart capture
+  // without this component re-rendering the whole session.
+  const displaySelectionListenerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const event: RemoteControlHostStreamEvent | null = hostEvents.data;
@@ -117,24 +138,43 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     if (event.type === "input") {
       const current = activeRef.current;
       if (!current || current.session.sessionId !== event.sessionId) return;
-      void bridge.sendRemoteControlInput(event.input).catch((cause: unknown) => {
-        const message =
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "Solla Code could not apply input from the controlling device.";
-        setCaptureError(message);
-        setActive((value) => (value?.session.sessionId === event.sessionId ? null : value));
-        void bridge.resetRemoteControlInput();
-        void endByHost({
-          environmentId,
-          input: {
-            clientId,
-            connectionId: event.connectionId,
-            sessionId: event.sessionId,
-            failureReason: message,
-          },
+      // Display selection retargets our own capture loop; it is never handed to
+      // the OS input controller, which has no notion of it.
+      if (event.input.type === "select-display") {
+        selectedDisplayIdRef.current = event.input.displayId;
+        displaySelectionListenerRef.current?.();
+        return;
+      }
+      // The controller cannot decode our video; drop to JPEG for this session.
+      if (event.input.type === "request-image-fallback") {
+        setImageFallback(true);
+        return;
+      }
+      void bridge
+        .sendRemoteControlInput({
+          input: event.input,
+          ...(activeDisplayIdRef.current !== undefined
+            ? { displayId: activeDisplayIdRef.current }
+            : {}),
+        })
+        .catch((cause: unknown) => {
+          const message =
+            cause instanceof Error && cause.message.trim()
+              ? cause.message
+              : "Solla Code could not apply input from the controlling device.";
+          setCaptureError(message);
+          setActive((value) => (value?.session.sessionId === event.sessionId ? null : value));
+          void bridge.resetRemoteControlInput();
+          void endByHost({
+            environmentId,
+            input: {
+              clientId,
+              connectionId: event.connectionId,
+              sessionId: event.sessionId,
+              failureReason: message,
+            },
+          });
         });
-      });
       return;
     }
     if (event.type === "access-requested") {
@@ -197,10 +237,152 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     }
   }, [bridge, clientId, endByHost, environmentId, hostEvents.data, respond]);
 
+  // Video path: a live MediaStream encoded by the platform codec. Falls back to
+  // the JPEG loop below when this runtime cannot encode video, or when the
+  // encoder fails to start.
   useEffect(() => {
-    if (!active) return;
+    if (!active || imageFallback || !supportsRemoteControlVideo()) return;
     let cancelled = false;
     let sequence = 0;
+    let stream: MediaStream | null = null;
+    let recorder: MediaRecorder | null = null;
+    let restartTimer: number | null = null;
+    const mimeType = selectRemoteControlMimeType();
+    if (!mimeType) return;
+
+    const publishChunk = async (blob: Blob, isInit: boolean, displayId: string | undefined) => {
+      if (cancelled || blob.size === 0) return;
+      const data = await encodeBlobToBase64(blob);
+      if (cancelled) return;
+      const outcome = await publishVideoChunk({
+        environmentId,
+        input: {
+          clientId,
+          connectionId: active.connectionId,
+          chunk: {
+            sessionId: active.session.sessionId,
+            sequence: sequence++,
+            capturedAt: new Date().toISOString(),
+            mimeType,
+            isInit,
+            data,
+            ...(displayId !== undefined ? { displayId } : {}),
+            ...(displaysRef.current.length > 0 ? { displays: displaysRef.current } : {}),
+          },
+        },
+      });
+      if (outcome._tag === "Failure") throw commandError(outcome);
+    };
+
+    const startRecorder = async () => {
+      const catalog = await bridge.listRemoteControlCaptureSources();
+      if (cancelled) return;
+      displaysRef.current = catalog.displays;
+      const requested = selectedDisplayIdRef.current;
+      const match =
+        catalog.sources.find((candidate) => candidate.displayId === requested) ??
+        catalog.sources.find(
+          (candidate) =>
+            candidate.displayId === catalog.displays.find((display) => display.isPrimary)?.id,
+        ) ??
+        catalog.sources[0];
+      if (!match) throw new Error("No capturable display was found on this computer.");
+      activeDisplayIdRef.current = match.displayId;
+
+      stream = await openDisplayStream(match.sourceId);
+      if (cancelled) {
+        stopStream(stream);
+        return;
+      }
+      recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: REMOTE_CONTROL_VIDEO_BITS_PER_SECOND,
+      });
+      // MediaRecorder emits the container header in its first blob, so that one
+      // is the init segment the broker retains for late-joining controllers.
+      let isFirstBlob = true;
+      recorder.addEventListener("dataavailable", (event) => {
+        const isInit = isFirstBlob;
+        isFirstBlob = false;
+        void publishChunk(event.data, isInit, activeDisplayIdRef.current).catch(handleFailure);
+      });
+      recorder.addEventListener("error", () =>
+        handleFailure(new Error("The screen encoder stopped unexpectedly.")),
+      );
+      recorder.start(REMOTE_CONTROL_TIMESLICE_MS);
+    };
+
+    // Switching monitors means a new stream, which means a new container: stop
+    // the old recorder and start a fresh one whose first blob re-inits decoding.
+    const applyDisplaySelection = () => {
+      if (cancelled || selectedDisplayIdRef.current === activeDisplayIdRef.current) return;
+      if (restartTimer !== null) return;
+      restartTimer = window.setTimeout(() => {
+        restartTimer = null;
+        if (cancelled) return;
+        recorder?.stop();
+        recorder = null;
+        stopStream(stream);
+        stream = null;
+        void startRecorder().catch(handleFailure);
+      }, 0);
+    };
+
+    const handleFailure = (cause: unknown) => {
+      if (cancelled) return;
+      cancelled = true;
+      const message =
+        cause instanceof Error && cause.message.trim()
+          ? cause.message
+          : "Solla Code could not encode this screen.";
+      setCaptureError(message);
+      setActive((current) =>
+        current?.session.sessionId === active.session.sessionId ? null : current,
+      );
+      void endByHost({
+        environmentId,
+        input: {
+          clientId,
+          connectionId: active.connectionId,
+          sessionId: active.session.sessionId,
+          failureReason: message,
+        },
+      });
+    };
+
+    displaySelectionListenerRef.current = applyDisplaySelection;
+    void startRecorder().catch(handleFailure);
+
+    return () => {
+      cancelled = true;
+      displaySelectionListenerRef.current = null;
+      if (restartTimer !== null) window.clearTimeout(restartTimer);
+      try {
+        recorder?.stop();
+      } catch {
+        // A recorder already stopped by an error path throws; nothing to undo.
+      }
+      stopStream(stream);
+    };
+  }, [active, bridge, clientId, endByHost, environmentId, imageFallback, publishVideoChunk]);
+
+  useEffect(() => {
+    // Only the fallback path runs the JPEG loop; the video encoder owns capture
+    // whenever this runtime supports it.
+    if (!active || (supportsRemoteControlVideo() && !imageFallback)) return;
+    let cancelled = false;
+    let sequence = 0;
+
+    // The previous loop captured, awaited the publish round trip, then slept a
+    // fixed 180ms — so the frame period was capture + network + 180ms, capping
+    // the stream near 3-4fps regardless of how fast the machine or link was.
+    // Now publishing overlaps the next capture and the pace is set by measured
+    // work, so the stream runs as fast as the slower of the two stages allows.
+    const TARGET_FRAME_INTERVAL_MS = 1_000 / 30;
+    // One outstanding publish keeps capture busy while the previous frame is in
+    // flight without letting a slow link build an unbounded backlog of stale
+    // frames — on a congested link, dropping to the newest frame beats queueing.
+    let inFlight: Promise<void> | null = null;
 
     const run = async () => {
       try {
@@ -208,26 +390,49 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
           if (cancelled || activeRef.current?.session.sessionId !== active.session.sessionId) {
             return;
           }
+          const startedAt = performance.now();
           const captured = await bridge.captureRemoteControlFrame({
             maxWidth: 1_280,
             jpegQuality: 58,
+            ...(selectedDisplayIdRef.current !== undefined
+              ? { displayId: selectedDisplayIdRef.current }
+              : {}),
           });
           if (cancelled) return;
-          const outcome = await publishFrame({
+          // Input mapping keys off this, so the fallback path has to keep it
+          // current too — otherwise pointer coordinates are never remapped.
+          activeDisplayIdRef.current = captured.displayId;
+          displaysRef.current = captured.displays;
+
+          // Settle the previous publish before starting another so at most one
+          // frame is ever in flight.
+          if (inFlight) {
+            await inFlight;
+            if (cancelled) return;
+          }
+          const frameSequence = sequence;
+          sequence += 1;
+          inFlight = publishFrame({
             environmentId,
             input: {
               clientId,
               connectionId: active.connectionId,
               frame: {
                 sessionId: active.session.sessionId,
-                sequence,
+                sequence: frameSequence,
                 ...captured,
               },
             },
+          }).then((outcome) => {
+            if (outcome._tag === "Failure") throw commandError(outcome);
           });
-          if (outcome._tag === "Failure") throw commandError(outcome);
-          sequence += 1;
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 180));
+
+          const elapsed = performance.now() - startedAt;
+          // Yield to the event loop even when already behind, so input events
+          // and session updates are not starved by a saturated capture loop.
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, Math.max(0, TARGET_FRAME_INTERVAL_MS - elapsed)),
+          );
         }
       } catch (cause) {
         if (cancelled) return;
@@ -256,7 +461,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       cancelled = true;
       void bridge.resetRemoteControlInput();
     };
-  }, [active, bridge, clientId, endByHost, environmentId, publishFrame]);
+  }, [active, bridge, clientId, endByHost, environmentId, imageFallback, publishFrame]);
 
   const answerRequest = async (
     decision: "approve" | "decline",

@@ -1412,6 +1412,9 @@ const make = Effect.gen(function* () {
         currentInstanceId: sourceInstanceId,
         currentDriver: event.provider,
         excludedInstanceIds: exhaustedInstances,
+        nowEpochMs: Number.isFinite(Date.parse(event.createdAt))
+          ? Date.parse(event.createdAt)
+          : null,
       });
       if (!target) {
         yield* appendProviderFailoverActivity({

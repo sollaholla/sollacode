@@ -119,6 +119,7 @@ import {
   RemoteControlHost,
   RemoteControlHostEndInput,
   RemoteControlHostPublishFrameInput,
+  RemoteControlHostPublishVideoChunkInput,
   RemoteControlHostRespondInput,
   RemoteControlHostStreamEvent,
   RemoteControlRequestAccessInput,
@@ -226,6 +227,7 @@ export const WS_METHODS = {
   remoteControlHostConnect: "remoteControl.hostConnect",
   remoteControlHostRespond: "remoteControl.hostRespond",
   remoteControlHostPublishFrame: "remoteControl.hostPublishFrame",
+  remoteControlHostPublishVideoChunk: "remoteControl.hostPublishVideoChunk",
   remoteControlHostEnd: "remoteControl.hostEnd",
   remoteControlRequestAccess: "remoteControl.requestAccess",
   remoteControlWatch: "remoteControl.watch",
@@ -724,6 +726,14 @@ export const WsRemoteControlHostPublishFrameRpc = Rpc.make(
   },
 );
 
+export const WsRemoteControlHostPublishVideoChunkRpc = Rpc.make(
+  WS_METHODS.remoteControlHostPublishVideoChunk,
+  {
+    payload: RemoteControlHostPublishVideoChunkInput,
+    error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsRemoteControlHostEndRpc = Rpc.make(WS_METHODS.remoteControlHostEnd, {
   payload: RemoteControlHostEndInput,
   success: RemoteControlSession,
@@ -940,6 +950,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlHostConnectRpc,
   WsRemoteControlHostRespondRpc,
   WsRemoteControlHostPublishFrameRpc,
+  WsRemoteControlHostPublishVideoChunkRpc,
   WsRemoteControlHostEndRpc,
   WsRemoteControlRequestAccessRpc,
   WsRemoteControlWatchRpc,

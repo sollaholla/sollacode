@@ -65,6 +65,16 @@ describe("composer push-to-talk action", () => {
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
 
+  it("keeps Send disabled while a voice message is transcribing", () => {
+    const markup = renderActions({
+      pushToTalkStatus: "transcribing",
+      pushToTalkDisabled: true,
+    });
+
+    expect(markup).toContain('aria-label="Transcribing voice message (Cmd+D)"');
+    expect(markup.match(/disabled=""/g)).toHaveLength(1);
+  });
+
   it("keeps the microphone enabled beside Stop while the agent is working", () => {
     const markup = renderActions({
       isRunning: true,

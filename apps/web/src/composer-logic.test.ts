@@ -5,6 +5,8 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  isComposerSubmitBlocked,
+  isEnabledComposerSubmitButton,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
@@ -23,6 +25,36 @@ describe("shouldSubmitComposerOnEnter", () => {
 
   it("inserts a newline for Shift+Enter", () => {
     expect(shouldSubmitComposerOnEnter({ isMobileViewport: false, shiftKey: true })).toBe(false);
+  });
+});
+
+describe("isEnabledComposerSubmitButton", () => {
+  it("only permits Enter submission through an enabled rendered submit action", () => {
+    expect(isEnabledComposerSubmitButton(null)).toBe(false);
+    expect(isEnabledComposerSubmitButton({ disabled: true })).toBe(false);
+    expect(isEnabledComposerSubmitButton({ disabled: false })).toBe(true);
+  });
+});
+
+describe("isComposerSubmitBlocked", () => {
+  const ready = {
+    noProviderAvailable: false,
+    isSendDisabled: false,
+    pushToTalkStatus: null,
+  } as const;
+
+  it("permits submission only when nothing is pending", () => {
+    expect(isComposerSubmitBlocked(ready)).toBe(false);
+    expect(isComposerSubmitBlocked({ ...ready, noProviderAvailable: true })).toBe(true);
+    expect(isComposerSubmitBlocked({ ...ready, isSendDisabled: true })).toBe(true);
+  });
+
+  it("blocks submission through every voice transcription phase", () => {
+    // Enter during transcription previously submitted a half-written draft,
+    // landing it in the middle of a running turn's output.
+    for (const pushToTalkStatus of ["recording", "loading", "transcribing"] as const) {
+      expect(isComposerSubmitBlocked({ ...ready, pushToTalkStatus })).toBe(true);
+    }
   });
 });
 

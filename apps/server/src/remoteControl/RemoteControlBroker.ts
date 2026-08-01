@@ -13,6 +13,8 @@ import {
   type RemoteControlHost,
   type RemoteControlHostEndInput,
   type RemoteControlHostPublishFrameInput,
+  type RemoteControlHostPublishVideoChunkInput,
+  type RemoteControlVideoChunk,
   type RemoteControlHostRespondInput,
   type RemoteControlHostStreamEvent,
   type RemoteControlRequestAccessInput,
@@ -49,6 +51,10 @@ interface RemoteControlSessionRecord {
   readonly lastFrameSequence: number;
   readonly lastFramePublishedAt: number;
   readonly lastInputSequence: number;
+  readonly lastChunkSequence: number;
+  // Retained so a controller that subscribes mid-stream can be handed the
+  // container header it needs before any media chunk makes sense.
+  readonly videoInitChunk: RemoteControlVideoChunk | null;
 }
 
 interface RemoteControlBrokerState {
@@ -118,6 +124,10 @@ export class RemoteControlBroker extends Context.Service<
     ) => Effect.Effect<RemoteControlSession, RemoteControlBrokerError>;
     readonly publishFrame: (
       input: RemoteControlHostPublishFrameInput,
+      hostSessionId: AuthSessionId,
+    ) => Effect.Effect<void, RemoteControlBrokerError>;
+    readonly publishVideoChunk: (
+      input: RemoteControlHostPublishVideoChunkInput,
       hostSessionId: AuthSessionId,
     ) => Effect.Effect<void, RemoteControlBrokerError>;
     readonly endByHost: (
@@ -322,6 +332,8 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
       lastFrameSequence: -1,
       lastFramePublishedAt: 0,
       lastInputSequence: -1,
+      lastChunkSequence: -1,
+      videoInitChunk: null,
     };
     const registered = yield* SynchronizedRef.modify(state, (current) => {
       if (current.host?.connectionId !== host.connectionId || current.host.queue !== host.queue) {
@@ -482,6 +494,79 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     }
   });
 
+  /**
+   * Deliberately has no time-based drop, unlike `publishFrame`. JPEG frames are
+   * independent, so discarding one only costs an update; video chunks are a
+   * continuous container, so dropping one corrupts every chunk after it. Pacing
+   * is the encoder's job here — the broker only enforces ordering.
+   */
+  const publishVideoChunk: RemoteControlBroker["Service"]["publishVideoChunk"] = Effect.fn(
+    "RemoteControlBroker.publishVideoChunk",
+  )(function* (input, hostSessionId) {
+    const result = yield* SynchronizedRef.modify(
+      state,
+      (current): readonly [RemoteControlFramePublishResult, RemoteControlBrokerState] => {
+        const host = current.host;
+        const record = current.sessions.get(input.chunk.sessionId);
+        if (!record) return [{ _tag: "NotFound" }, current];
+        if (
+          !host ||
+          host.sessionId !== hostSessionId ||
+          host.host.clientId !== input.clientId ||
+          host.connectionId !== input.connectionId ||
+          record.hostConnectionId !== input.connectionId
+        ) {
+          return [{ _tag: "Denied" }, current];
+        }
+        if (
+          record.session.status !== "approved" ||
+          !record.session.grantedCapabilities.includes("screen")
+        ) {
+          return [{ _tag: "Invalid", session: record.session }, current];
+        }
+        if (input.chunk.sequence <= record.lastChunkSequence) {
+          return [{ _tag: "Dropped" }, current];
+        }
+        const updatedRecord: RemoteControlSessionRecord = {
+          ...record,
+          lastChunkSequence: input.chunk.sequence,
+          // A fresh init segment supersedes the old one: the host restarts its
+          // recorder when the captured monitor changes.
+          ...(input.chunk.isInit ? { videoInitChunk: input.chunk } : {}),
+        };
+        const sessions = new Map(current.sessions);
+        sessions.set(input.chunk.sessionId, updatedRecord);
+        return [
+          { _tag: "Published", record: updatedRecord },
+          { ...current, sessions },
+        ];
+      },
+    );
+    switch (result._tag) {
+      case "NotFound":
+        return yield* new RemoteControlSessionNotFoundError({
+          sessionId: input.chunk.sessionId,
+        });
+      case "Denied":
+        return yield* new RemoteControlSessionAccessDeniedError({
+          sessionId: input.chunk.sessionId,
+        });
+      case "Invalid":
+        return yield* new RemoteControlInvalidTransitionError({
+          sessionId: input.chunk.sessionId,
+          status: result.session.status,
+        });
+      case "Dropped":
+        return;
+      case "Published":
+        yield* PubSub.publish(result.record.frames, {
+          type: "video-chunk",
+          chunk: input.chunk,
+        });
+        return;
+    }
+  });
+
   const endByHost: RemoteControlBroker["Service"]["endByHost"] = Effect.fn(
     "RemoteControlBroker.endByHost",
   )(function* (input, hostSessionId) {
@@ -549,8 +634,14 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const sendInput: RemoteControlBroker["Service"]["sendInput"] = Effect.fn(
     "RemoteControlBroker.sendInput",
   )(function* (input, controllerSessionId) {
+    // Retargeting capture is a screen concern, not an input one, so a
+    // view-only grant can still switch monitors without gaining pointer rights.
     const requiredCapability: RemoteControlCapability =
-      input.input.type === "key" ? "keyboard" : "pointer";
+      input.input.type === "key"
+        ? "keyboard"
+        : input.input.type === "select-display" || input.input.type === "request-image-fallback"
+          ? "screen"
+          : "pointer";
     const result = yield* SynchronizedRef.modify(
       state,
       (current): readonly [RemoteControlInputResult, RemoteControlBrokerState] => {
@@ -640,11 +731,16 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           Effect.gen(function* () {
             const changes = yield* PubSub.subscribe(initialRecord.changes);
             const frames = yield* PubSub.subscribe(initialRecord.frames);
+            // Replay the retained init segment so a controller joining an
+            // already-running video stream can decode what follows.
+            const preamble: ReadonlyArray<RemoteControlControllerStreamEvent> = [
+              { type: "session-updated" as const, session: initialRecord.session },
+              ...(initialRecord.videoInitChunk
+                ? [{ type: "video-chunk" as const, chunk: initialRecord.videoInitChunk }]
+                : []),
+            ];
             return Stream.concat(
-              Stream.make({
-                type: "session-updated" as const,
-                session: initialRecord.session,
-              }),
+              Stream.fromIterable(preamble),
               Stream.merge(Stream.fromSubscription(changes), Stream.fromSubscription(frames)),
             );
           }),
@@ -713,6 +809,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     requestAccess,
     respondToRequest,
     publishFrame,
+    publishVideoChunk,
     endByHost,
     watch,
     sendInput,

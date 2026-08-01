@@ -51,6 +51,12 @@ export interface ThreadRightPanelState {
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  /**
+   * Opens the panel without adding a surface. The agents & tasks section lives
+   * in this column and outlives every tab, so it needs a way in that does not
+   * fabricate a browser or terminal to hold the door.
+   */
+  setOpen: (ref: ScopedThreadRef, open: boolean) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
@@ -249,6 +255,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface(current, singletonSurface(kind));
           }),
         })),
+      setOpen: (ref, open) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            current.isOpen === open ? current : { ...current, isOpen: open },
+          ),
+        })),
       openBrowser: (ref, tabId) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
@@ -340,7 +352,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
               return {
                 ...current,
-                isOpen: surfaces.length > 0 && current.isOpen,
+                isOpen: current.isOpen,
                 surfaces,
                 activeSurfaceId:
                   current.activeSurfaceId === surfaceId
@@ -380,12 +392,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             if (index < 0) return current;
             const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
             if (current.activeSurfaceId !== surfaceId) {
-              return { ...current, isOpen: surfaces.length > 0 && current.isOpen, surfaces };
+              return { ...current, isOpen: current.isOpen, surfaces };
             }
             const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
             return {
               ...current,
-              isOpen: surfaces.length > 0 && current.isOpen,
+              isOpen: current.isOpen,
               surfaces,
               activeSurfaceId: fallback?.id ?? null,
             };
@@ -423,9 +435,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
       closeAllSurfaces: (ref) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            // Deliberately keeps isOpen: the agents & tasks section lives in
+            // this column and persists across every tab closing, so emptying
+            // the tabs must not take the column with it.
             current.surfaces.length === 0
               ? current
-              : { ...current, isOpen: false, surfaces: [], activeSurfaceId: null },
+              : { ...current, surfaces: [], activeSurfaceId: null },
           ),
         })),
       reconcileBrowserSurfaces: (ref, tabIds) =>
@@ -470,7 +485,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
             return {
               ...current,
-              isOpen: surfaces.length > 0 ? current.isOpen : false,
+              isOpen: current.isOpen,
               surfaces,
               activeSurfaceId: activeStillExists
                 ? current.activeSurfaceId

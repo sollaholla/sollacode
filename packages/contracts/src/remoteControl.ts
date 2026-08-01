@@ -88,6 +88,22 @@ export const RemoteControlHostRespondInput = Schema.Struct({
 });
 export type RemoteControlHostRespondInput = typeof RemoteControlHostRespondInput.Type;
 
+export const REMOTE_CONTROL_MAX_DISPLAYS = 16;
+
+/**
+ * One capturable monitor on the host. `id` is the platform display id as a
+ * string so it survives JSON transport; the controller echoes it back in a
+ * `select-display` input to switch the captured screen.
+ */
+export const RemoteControlDisplay = Schema.Struct({
+  id: RemoteControlOpaqueId,
+  label: TrimmedNonEmptyString,
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  isPrimary: Schema.Boolean,
+});
+export type RemoteControlDisplay = typeof RemoteControlDisplay.Type;
+
 export const RemoteControlFrame = Schema.Struct({
   sessionId: RemoteControlSessionId,
   sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -99,6 +115,14 @@ export const RemoteControlFrame = Schema.Struct({
     Schema.isMinLength(1),
     Schema.isMaxLength(REMOTE_CONTROL_FRAME_MAX_BASE64_LENGTH),
   ),
+  // Which monitor this frame shows, and everything else on offer. Carrying the
+  // roster on the frame keeps display discovery on the existing stream instead
+  // of adding a second round trip, and it stays correct when monitors are
+  // hot-plugged mid-session. Both are optional so older hosts still validate.
+  displayId: Schema.optional(RemoteControlOpaqueId),
+  displays: Schema.optional(
+    Schema.Array(RemoteControlDisplay).check(Schema.isMaxLength(REMOTE_CONTROL_MAX_DISPLAYS)),
+  ),
 });
 export type RemoteControlFrame = typeof RemoteControlFrame.Type;
 
@@ -108,6 +132,44 @@ export const RemoteControlHostPublishFrameInput = Schema.Struct({
   frame: RemoteControlFrame,
 });
 export type RemoteControlHostPublishFrameInput = typeof RemoteControlHostPublishFrameInput.Type;
+
+export const REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH = 4_000_000;
+
+/**
+ * A slice of an encoded video stream (WebM/VP8-VP9 or MP4/H.264 depending on
+ * what the host's MediaRecorder offers).
+ *
+ * Unlike a JPEG frame, a chunk is not independently decodable: the container is
+ * continuous, so chunks must arrive in order and must never be dropped, and a
+ * controller cannot decode anything until it has the init segment. `isInit`
+ * marks that segment, which the broker retains and replays to any controller
+ * that starts watching mid-stream.
+ */
+export const RemoteControlVideoChunk = Schema.Struct({
+  sessionId: RemoteControlSessionId,
+  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  capturedAt: TrimmedNonEmptyString,
+  // Full MediaRecorder type including codecs, e.g. `video/webm;codecs=vp8`.
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  isInit: Schema.Boolean,
+  data: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH),
+  ),
+  displayId: Schema.optional(RemoteControlOpaqueId),
+  displays: Schema.optional(
+    Schema.Array(RemoteControlDisplay).check(Schema.isMaxLength(REMOTE_CONTROL_MAX_DISPLAYS)),
+  ),
+});
+export type RemoteControlVideoChunk = typeof RemoteControlVideoChunk.Type;
+
+export const RemoteControlHostPublishVideoChunkInput = Schema.Struct({
+  clientId: RemoteControlClientId,
+  connectionId: RemoteControlConnectionId,
+  chunk: RemoteControlVideoChunk,
+});
+export type RemoteControlHostPublishVideoChunkInput =
+  typeof RemoteControlHostPublishVideoChunkInput.Type;
 
 export const RemoteControlHostEndInput = Schema.Struct({
   clientId: RemoteControlClientId,
@@ -151,6 +213,19 @@ export const RemoteControlInput = Schema.Union([
     ),
     key: Schema.String.check(Schema.isMaxLength(REMOTE_CONTROL_KEY_VALUE_MAX_LENGTH)),
     repeat: Schema.Boolean,
+  }),
+  // Routed over the existing input channel, but it never reaches the OS input
+  // controller — the host consumes it to retarget capture. It is gated on the
+  // `screen` capability rather than `pointer`, so a view-only session can still
+  // choose which monitor it is watching.
+  Schema.Struct({
+    type: Schema.Literal("select-display"),
+    displayId: RemoteControlOpaqueId,
+  }),
+  // Sent when the controller cannot decode the host's video stream. The host
+  // stops encoding and reverts to JPEG frames, which every client can render.
+  Schema.Struct({
+    type: Schema.Literal("request-image-fallback"),
   }),
 ]);
 export type RemoteControlInput = typeof RemoteControlInput.Type;
@@ -196,6 +271,10 @@ export const RemoteControlControllerStreamEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("frame"),
     frame: RemoteControlFrame,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("video-chunk"),
+    chunk: RemoteControlVideoChunk,
   }),
 ]);
 export type RemoteControlControllerStreamEvent = typeof RemoteControlControllerStreamEvent.Type;

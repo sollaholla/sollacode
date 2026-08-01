@@ -1017,7 +1017,7 @@ export default function SidebarV2() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
+  const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, forkThread, deleteThread } =
     useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -2036,6 +2036,7 @@ export default function SidebarV2() {
                         },
                   ]
                 : []),
+              { id: "fork", label: "Fork conversation" },
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
               { id: "export-json", label: "Export conversation as JSON" },
@@ -2088,6 +2089,20 @@ export default function SidebarV2() {
           case "rename":
             startThreadRename(threadRef, thread.title);
             return;
+          case "fork": {
+            const result = await forkThread(threadRef);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to fork conversation",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
           case "mark-unread":
             markThreadUnread(threadKey, thread.latestTurn?.completedAt);
             return;
@@ -2132,6 +2147,7 @@ export default function SidebarV2() {
       attemptUnsnooze,
       confirmThreadDelete,
       deleteThread,
+      forkThread,
       handleMultiSelectContextMenu,
       markThreadUnread,
       serverConfigs,

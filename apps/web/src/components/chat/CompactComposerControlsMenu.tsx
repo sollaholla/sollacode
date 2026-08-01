@@ -1,4 +1,5 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { interactionModeConfig, interactionModeOptions } from "./interactionModes";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon, ListTodoIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -20,7 +21,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
-  onToggleInteractionMode: () => void;
+  onInteractionModeChange: (mode: ProviderInteractionMode) => void;
   onTogglePlanSidebar: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -51,12 +52,17 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuRadioGroup
               value={props.interactionMode}
               onValueChange={(value) => {
+                // Apply the chosen mode. This previously called a toggle, which
+                // silently picked the wrong mode as soon as a third existed.
                 if (!value || value === props.interactionMode) return;
-                props.onToggleInteractionMode();
+                props.onInteractionModeChange(value as ProviderInteractionMode);
               }}
             >
-              <MenuRadioItem value="default">Chat</MenuRadioItem>
-              <MenuRadioItem value="plan">Plan</MenuRadioItem>
+              {interactionModeOptions.map((mode) => (
+                <MenuRadioItem key={mode} value={mode}>
+                  {interactionModeConfig[mode].label}
+                </MenuRadioItem>
+              ))}
             </MenuRadioGroup>
             <MenuDivider />
           </>

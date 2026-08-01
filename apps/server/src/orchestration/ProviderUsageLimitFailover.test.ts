@@ -21,11 +21,14 @@ function provider(input: {
   readonly instanceId: string;
   readonly driver: string;
   readonly model?: string;
+  readonly models?: ReadonlyArray<string>;
+  readonly accountUsage?: unknown;
   readonly enabled?: boolean;
   readonly installed?: boolean;
   readonly status?: ServerProvider["status"];
   readonly authStatus?: ServerProvider["auth"]["status"];
 }): ServerProvider {
+  const slugs = input.models ?? (input.model === undefined ? [] : [input.model]);
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
     driver: ProviderDriverKind.make(input.driver),
@@ -35,21 +38,42 @@ function provider(input: {
     status: input.status ?? "ready",
     auth: { status: input.authStatus ?? "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
-    models:
-      input.model === undefined
-        ? []
-        : [
-            {
-              slug: input.model,
-              name: input.model,
-              isCustom: false,
-              isDefault: true,
-              capabilities: null,
-            },
-          ],
+    ...(input.accountUsage === undefined ? {} : { accountUsage: input.accountUsage }),
+    models: slugs.map((slug, index) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      // Mirrors the registry: only a single-model fixture declares a default,
+      // so multi-model Claude fixtures fall through to capability order.
+      ...(slugs.length === 1 && index === 0 ? { isDefault: true } : {}),
+      capabilities: null,
+    })),
     slashCommands: [],
     skills: [],
   };
+}
+
+const CLAUDE_MODELS = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"];
+
+function claudeFailoverModel(input: {
+  readonly accountUsage: unknown;
+  readonly nowEpochMs?: number;
+}): string | null {
+  const target = selectProviderFailoverTarget({
+    providers: [
+      provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+      provider({
+        instanceId: "claude",
+        driver: "claudeAgent",
+        models: CLAUDE_MODELS,
+        accountUsage: input.accountUsage,
+      }),
+    ],
+    currentInstanceId: ProviderInstanceId.make("codex"),
+    currentDriver: ProviderDriverKind.make("codex"),
+    ...(input.nowEpochMs === undefined ? {} : { nowEpochMs: input.nowEpochMs }),
+  });
+  return target?.modelSelection.model ?? null;
 }
 
 function message(index: number, text: string): OrchestrationMessage {
@@ -152,6 +176,122 @@ describe("selectProviderFailoverTarget", () => {
     ).toMatchObject({
       instanceId: ProviderInstanceId.make("codex_work"),
       driver: ProviderDriverKind.make("codex"),
+    });
+  });
+});
+
+describe("selectProviderFailoverTarget with Claude model quotas", () => {
+  it("keeps the highest Claude model when no model-scoped quota is spent", () => {
+    expect(claudeFailoverModel({ accountUsage: undefined })).toBe("claude-fable-5");
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            seven_day: { utilization: 41, resets_at: "2026-01-08T00:00:00.000Z" },
+            seven_day_fable: { utilization: 99.4, resets_at: "2026-01-08T00:00:00.000Z" },
+          },
+        },
+      }),
+    ).toBe("claude-fable-5");
+  });
+
+  it("skips Fable for the next-highest Claude model when the Fable window is spent", () => {
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            seven_day: { utilization: 60, resets_at: "2026-01-08T00:00:00.000Z" },
+            seven_day_fable: { utilization: 100, resets_at: "2026-01-08T00:00:00.000Z" },
+          },
+        },
+        nowEpochMs: Date.parse("2026-01-02T00:00:00.000Z"),
+      }),
+    ).toBe("claude-opus-5");
+  });
+
+  it("reads the model-scoped and generic limit shapes Claude Code also reports", () => {
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            model_scoped: [{ display_name: "Fable 5", utilization: 100, resets_at: null }],
+          },
+        },
+      }),
+    ).toBe("claude-opus-5");
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            limits: [{ scope: { model: { display_name: "Fable 5" } }, percent: 100 }],
+          },
+        },
+      }),
+    ).toBe("claude-opus-5");
+  });
+
+  it("skips Fable when the extra-usage credit pool is depleted", () => {
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            extra_usage: { is_enabled: true, monthly_limit: 50, used_credits: 50 },
+          },
+        },
+      }),
+    ).toBe("claude-opus-5");
+    expect(
+      claudeFailoverModel({
+        accountUsage: {
+          rate_limits: {
+            extra_usage: { is_enabled: true, monthly_limit: 50, used_credits: 12 },
+          },
+        },
+      }),
+    ).toBe("claude-fable-5");
+  });
+
+  it("advances past every spent Claude family and treats reset windows as usable", () => {
+    const accountUsage = {
+      rate_limits: {
+        seven_day_fable: { utilization: 100, resets_at: "2026-01-08T00:00:00.000Z" },
+        seven_day_opus: { utilization: 100, resets_at: "2026-01-08T00:00:00.000Z" },
+      },
+    };
+    expect(
+      claudeFailoverModel({
+        accountUsage,
+        nowEpochMs: Date.parse("2026-01-02T00:00:00.000Z"),
+      }),
+    ).toBe("claude-sonnet-5");
+    // A cached snapshot whose windows already rolled over is stale, not spent.
+    expect(
+      claudeFailoverModel({
+        accountUsage,
+        nowEpochMs: Date.parse("2026-01-09T00:00:00.000Z"),
+      }),
+    ).toBe("claude-fable-5");
+  });
+
+  it("passes over a Claude instance with no usable model instead of ending the search", () => {
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+        provider({
+          instanceId: "claude",
+          driver: "claudeAgent",
+          models: ["claude-fable-5"],
+          accountUsage: { rate_limits: { seven_day_fable: { utilization: 100, resets_at: null } } },
+        }),
+        provider({ instanceId: "grok", driver: "grok", model: "grok-code" }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("codex"),
+      currentDriver: ProviderDriverKind.make("codex"),
+    });
+
+    expect(target).toMatchObject({
+      instanceId: ProviderInstanceId.make("grok"),
+      modelSelection: { model: "grok-code" },
     });
   });
 });

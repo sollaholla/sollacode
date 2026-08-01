@@ -3,9 +3,11 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  RemoteControlDisplay,
   RemoteControlInput,
   RemoteControlPointerButton,
   RemoteControlSession,
+  RemoteControlVideoChunk,
 } from "@t3tools/contracts";
 import { MonitorIcon, ShieldCheckIcon } from "lucide-react";
 import {
@@ -41,6 +43,12 @@ import {
   remotePointerButton,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
+import {
+  createRemoteControlVideoSink,
+  describeUnsupportedCodec,
+  formatVideoStats,
+  type RemoteControlVideoSink,
+} from "./remoteControlPlayer";
 
 function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]): string {
   const cause = squashAtomCommandFailure(result);
@@ -60,12 +68,26 @@ export function RemoteControlViewerDialog(props: {
   const clientId = `controller-${generatedId}`;
   const [session, setSession] = useState<RemoteControlSession | null>(null);
   const [frameData, setFrameData] = useState<string | null>(null);
+  const [displays, setDisplays] = useState<ReadonlyArray<RemoteControlDisplay>>([]);
+  const [activeDisplayId, setActiveDisplayId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
   const [inputCaptured, setInputCaptured] = useState(false);
   const inputCapturedRef = useRef(false);
   const requestStartedRef = useRef(false);
   const frameImageRef = useRef<HTMLImageElement>(null);
+  const frameVideoRef = useRef<HTMLVideoElement>(null);
+  const [videoMimeType, setVideoMimeType] = useState<string | null>(null);
+  const videoSinkRef = useRef<RemoteControlVideoSink | null>(null);
+  const videoMimeTypeRef = useRef<string | null>(null);
+  const pendingChunksRef = useRef<RemoteControlVideoChunk[]>([]);
+  // Set once video is confirmed undecodable here, which permanently hands the
+  // session back to the JPEG frames the host also understands.
+  const [videoUnavailable, setVideoUnavailable] = useState<string | null>(null);
+  const videoUnavailableRef = useRef<string | null>(null);
+  videoUnavailableRef.current = videoUnavailable;
+  const decodedRef = useRef(false);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
@@ -101,6 +123,7 @@ export function RemoteControlViewerDialog(props: {
     requestStartedRef.current = true;
     setError(null);
     setFrameData(null);
+    setNoticeDismissed(false);
 
     void (async () => {
       const result = await requestAccess({
@@ -118,11 +141,102 @@ export function RemoteControlViewerDialog(props: {
     })();
   }, [clientId, environmentId, open, requestAccess]);
 
+  /**
+   * Buffers chunks until the <video> element exists, then hands them to the
+   * sink. The codec is only known from the first chunk, so the element cannot
+   * be rendered any earlier — and a chunk that arrives in between must not be
+   * lost, or decoding starts mid-container and never recovers.
+   */
+  const appendVideoChunk = useCallback((chunk: RemoteControlVideoChunk) => {
+    if (videoUnavailableRef.current) return;
+    // A fresh init segment supersedes any earlier container (monitor switch).
+    if (chunk.isInit && videoMimeTypeRef.current !== chunk.mimeType) {
+      videoSinkRef.current?.dispose();
+      videoSinkRef.current = null;
+      videoMimeTypeRef.current = chunk.mimeType;
+      pendingChunksRef.current = [chunk];
+      setVideoMimeType(chunk.mimeType);
+      return;
+    }
+    if (videoSinkRef.current) {
+      videoSinkRef.current.append(chunk);
+      return;
+    }
+    // Still waiting on the element; keep only what is decodable from the last
+    // init segment so the backlog cannot grow without bound.
+    if (pendingChunksRef.current.length > 0) pendingChunksRef.current.push(chunk);
+  }, []);
+
+  // Attaches the sink once the element for this codec has mounted.
+  useEffect(() => {
+    if (!videoMimeType || videoSinkRef.current) return;
+    const unsupported = describeUnsupportedCodec(videoMimeType);
+    if (unsupported) {
+      setVideoUnavailable(unsupported);
+      return;
+    }
+    const video = frameVideoRef.current;
+    if (!video) return;
+    const sink = createRemoteControlVideoSink(videoMimeType, video, (detail) => {
+      // Only a failure before anything decoded is fatal; a mid-stream hiccup
+      // resynchronises on the next init segment.
+      if (!decodedRef.current) setVideoUnavailable(detail);
+    });
+    if (!sink) {
+      setVideoUnavailable(`This client could not start video playback (${videoMimeType}).`);
+      return;
+    }
+    videoSinkRef.current = sink;
+    video.src = sink.url;
+    for (const pending of pendingChunksRef.current) sink.append(pending);
+    pendingChunksRef.current = [];
+  }, [videoMimeType]);
+
+  /**
+   * Watchdog. Chunks can arrive and append cleanly yet still decode to nothing,
+   * which renders as an unexplained black rectangle. If no frame has decoded a
+   * few seconds in, say so and fall back to JPEG rather than sit on black.
+   */
+  useEffect(() => {
+    if (!videoMimeType || videoUnavailable) return;
+    const timer = window.setTimeout(() => {
+      const video = frameVideoRef.current;
+      if (video && video.videoWidth > 0) {
+        decodedRef.current = true;
+        return;
+      }
+      const stats = videoSinkRef.current?.stats();
+      setVideoUnavailable(
+        `No video decoded from the host after 5s (${videoMimeType}). Falling back to image frames.` +
+          (stats ? ` [${formatVideoStats(stats)}]` : " [no video sink was created]"),
+      );
+    }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [videoMimeType, videoUnavailable]);
+
+  useEffect(
+    () => () => {
+      videoSinkRef.current?.dispose();
+      videoSinkRef.current = null;
+    },
+    [],
+  );
+
   useEffect(() => {
     const event = watch.data;
     if (!event) return;
+    if (event.type === "video-chunk") {
+      if (event.chunk.displays) setDisplays(event.chunk.displays);
+      if (event.chunk.displayId) setActiveDisplayId(event.chunk.displayId);
+      appendVideoChunk(event.chunk);
+      return;
+    }
     if (event.type === "frame") {
       setFrameData(`data:${event.frame.mimeType};base64,${event.frame.data}`);
+      if (event.frame.displays) setDisplays(event.frame.displays);
+      // Track what the host is actually sending rather than what we asked for,
+      // so the picker self-corrects if a requested monitor was unavailable.
+      if (event.frame.displayId) setActiveDisplayId(event.frame.displayId);
       return;
     }
     setSession(event.session);
@@ -190,6 +304,23 @@ export function RemoteControlViewerDialog(props: {
     },
     [drainInputQueue],
   );
+
+  const remoteSurfaceRect = useCallback(
+    () =>
+      frameVideoRef.current?.getBoundingClientRect() ??
+      frameImageRef.current?.getBoundingClientRect() ??
+      null,
+    [],
+  );
+
+  // Tell the host to stop encoding video once this client has given up on it,
+  // otherwise it keeps sending chunks nobody can render and the view stays black.
+  useEffect(() => {
+    if (!videoUnavailable) return;
+    videoSinkRef.current?.dispose();
+    videoSinkRef.current = null;
+    enqueueInput({ type: "request-image-fallback" });
+  }, [enqueueInput, videoUnavailable]);
 
   const releasePressedInputs = useCallback(() => {
     for (const [code, key] of pressedKeysRef.current) {
@@ -299,9 +430,7 @@ export function RemoteControlViewerDialog(props: {
     const point = normalizedRemotePoint({
       clientX: event.clientX,
       clientY: event.clientY,
-      rect:
-        frameImageRef.current?.getBoundingClientRect() ??
-        event.currentTarget.getBoundingClientRect(),
+      rect: remoteSurfaceRect() ?? event.currentTarget.getBoundingClientRect(),
     });
     lastPointerPointRef.current = point;
     enqueueInput({
@@ -327,9 +456,7 @@ export function RemoteControlViewerDialog(props: {
     const point = normalizedRemotePoint({
       clientX: event.clientX,
       clientY: event.clientY,
-      rect:
-        frameImageRef.current?.getBoundingClientRect() ??
-        event.currentTarget.getBoundingClientRect(),
+      rect: remoteSurfaceRect() ?? event.currentTarget.getBoundingClientRect(),
     });
     enqueueInput({
       type: "wheel",
@@ -402,9 +529,35 @@ export function RemoteControlViewerDialog(props: {
                   : "Remote viewing session"}
             </DialogDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={() => void close()}>
-            {isApproved ? "Stop and close" : "Close"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {isApproved && displays.length > 1 ? (
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="sr-only">Monitor</span>
+                <select
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                  value={activeDisplayId ?? ""}
+                  aria-label="Monitor to view"
+                  onChange={(event) => {
+                    const displayId = event.target.value;
+                    if (!displayId || displayId === activeDisplayId) return;
+                    // Optimistic so the picker feels immediate; the next frame's
+                    // displayId reconciles it against what the host really sent.
+                    setActiveDisplayId(displayId);
+                    enqueueInput({ type: "select-display", displayId });
+                  }}
+                >
+                  {displays.map((display) => (
+                    <option key={display.id} value={display.id}>
+                      {display.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <Button size="sm" variant="outline" onClick={() => void close()}>
+              {isApproved ? "Stop and close" : "Close"}
+            </Button>
+          </div>
         </DialogHeader>
         <DialogPanel className="flex h-[calc(100%-7rem)] min-h-0 items-center justify-center p-3">
           {error ? (
@@ -427,7 +580,15 @@ export function RemoteControlViewerDialog(props: {
                 </p>
               </div>
             </div>
-          ) : frameData && isApproved ? (
+          ) : videoUnavailable && !frameData && isApproved ? (
+            <div className="max-w-md space-y-4 text-center">
+              <Spinner className="mx-auto size-8" />
+              <div>
+                <p className="font-medium">Switching to image frames</p>
+                <p className="mt-1 text-sm text-muted-foreground">{videoUnavailable}</p>
+              </div>
+            </div>
+          ) : (frameData || (videoMimeType && !videoUnavailable)) && isApproved ? (
             <div
               role="application"
               aria-label={`Remote desktop control for ${environmentLabel}`}
@@ -486,13 +647,24 @@ export function RemoteControlViewerDialog(props: {
               }}
               onWheel={sendWheel}
             >
-              <img
-                ref={frameImageRef}
-                src={frameData}
-                alt={`Live desktop view from ${environmentLabel}`}
-                draggable={false}
-                className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
-              />
+              {videoMimeType && !videoUnavailable ? (
+                <video
+                  ref={frameVideoRef}
+                  aria-label={`Live desktop view from ${environmentLabel}`}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
+                />
+              ) : (
+                <img
+                  ref={frameImageRef}
+                  src={frameData ?? undefined}
+                  alt={`Live desktop view from ${environmentLabel}`}
+                  draggable={false}
+                  className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
+                />
+              )}
               <div className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                 <span
                   className={`size-1.5 rounded-full ${
@@ -508,6 +680,24 @@ export function RemoteControlViewerDialog(props: {
               {inputError ? (
                 <div className="absolute inset-x-3 top-3 rounded-lg border border-destructive/35 bg-background/95 px-3 py-2 text-sm text-destructive shadow-lg">
                   {inputError}
+                </div>
+              ) : videoUnavailable && !noticeDismissed ? (
+                <div className="absolute inset-x-3 top-3 flex items-start gap-3 rounded-lg border border-amber-500/35 bg-background/95 px-3 py-2 text-sm text-amber-600 shadow-lg dark:text-amber-400">
+                  <span className="min-w-0 flex-1 break-words">{videoUnavailable}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-xs font-medium text-amber-600/80 hover:bg-amber-500/10 hover:text-amber-600 dark:text-amber-400/80 dark:hover:text-amber-400"
+                    aria-label="Dismiss video notice"
+                    onClick={(event) => {
+                      // The surface below owns pointer input; a dismissal must
+                      // not also register as a click on the remote desktop.
+                      event.stopPropagation();
+                      setNoticeDismissed(true);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    Dismiss
+                  </button>
                 </div>
               ) : null}
             </div>

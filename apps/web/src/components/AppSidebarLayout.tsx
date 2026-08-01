@@ -14,6 +14,7 @@ import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { cn, isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
+import { readDocumentSelection, useComposerQuoteStore } from "../composerQuote";
 import { useEnvironmentIdentificationMode, useSidebarV2Enabled } from "../hooks/useSettings";
 import ThreadSidebar from "./Sidebar";
 import ThreadSidebarV2 from "./SidebarV2";
@@ -171,6 +172,13 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     }
 
     const unsubscribe = onMenuAction((action) => {
+      if (action === "quote-selection") {
+        // Read the selection here rather than shipping it through the menu
+        // channel: activating a native menu item leaves the DOM selection
+        // intact, and this keeps the action payload a plain string.
+        useComposerQuoteStore.getState().requestQuote(readDocumentSelection());
+        return;
+      }
       if (action === "open-settings") {
         const isSettingsRoute = /^\/settings(\/|$)/.test(pathname);
         if (!isSettingsRoute) {

@@ -277,6 +277,23 @@ it.effect("rejects controller input that the host approved as view-only", () =>
         )
         .pipe(Effect.flip);
       expect(denied).toBeInstanceOf(RemoteControlCapabilityDeniedError);
+
+      // Switching monitors is a screen concern, so this same view-only grant
+      // must allow it without conferring any pointer rights.
+      yield* broker.sendInput(
+        {
+          sessionId: waiting.sessionId,
+          sequence: 1,
+          input: { type: "select-display", displayId: "display-2" },
+        },
+        controllerSessionId,
+      );
+      yield* Effect.yieldNow;
+      const forwarded = hostEvents.filter((event) => event.type === "input");
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0]).toMatchObject({
+        input: { type: "select-display", displayId: "display-2" },
+      });
     }),
   ),
 );
@@ -329,6 +346,81 @@ it.effect("reports host input failures to the controlling client", () =>
 
       expect(failed.status).toBe("failed");
       expect(failed.failureReason).toBe("Windows rejected remote pointer input.");
+    }),
+  ),
+);
+
+it.effect("streams video chunks in order and replays the init segment to late watchers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const waiting = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find((event) => event.type === "access-requested");
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+      yield* broker.respondToRequest(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "approve",
+          grantedCapabilities: ["screen"],
+        },
+        hostSessionId,
+      );
+
+      const chunk = (sequence: number, isInit: boolean, data: string) => ({
+        clientId: interactiveHost.clientId,
+        connectionId: connected.connectionId,
+        chunk: {
+          sessionId: waiting.sessionId,
+          sequence,
+          capturedAt: "2026-01-01T00:00:00.000Z",
+          mimeType: "video/webm;codecs=vp8",
+          isInit,
+          data,
+        },
+      });
+
+      // Publish the header before anyone is watching.
+      yield* broker.publishVideoChunk(chunk(0, true, "aW5pdA=="), hostSessionId);
+
+      const events: string[] = [];
+      const stream = yield* broker.watch({ sessionId: waiting.sessionId }, controllerSessionId);
+      yield* Stream.runForEach(stream, (event) =>
+        Effect.sync(() => {
+          if (event.type === "video-chunk") events.push(event.chunk.data);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      // A controller joining now cannot decode anything without the header, so
+      // the broker must replay it before any media chunk.
+      expect(events).toEqual(["aW5pdA=="]);
+
+      // Back-to-back chunks must all survive: unlike JPEG frames there is no
+      // time-based drop, because a missing chunk corrupts everything after it.
+      yield* broker.publishVideoChunk(chunk(1, false, "b25l"), hostSessionId);
+      yield* broker.publishVideoChunk(chunk(2, false, "dHdv"), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(events).toEqual(["aW5pdA==", "b25l", "dHdv"]);
+
+      // Out-of-order or replayed sequences are still rejected.
+      yield* broker.publishVideoChunk(chunk(1, false, "c3RhbGU="), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(events).toEqual(["aW5pdA==", "b25l", "dHdv"]);
     }),
   ),
 );

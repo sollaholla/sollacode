@@ -298,6 +298,73 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("forks a conversation into a distinct thread with copied settings", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-fork-create"),
+        projectId: asProjectId("project-fork"),
+        title: "Fork Project",
+        workspaceRoot: "/tmp/project-fork",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-source-create"),
+        threadId: ThreadId.make("thread-source"),
+        projectId: asProjectId("project-fork"),
+        title: "Source thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "plan",
+        runtimeMode: "full-access",
+        branch: "main",
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("cmd-thread-fork"),
+        threadId: ThreadId.make("thread-fork"),
+        sourceThreadId: ThreadId.make("thread-source"),
+        title: "Independent fork",
+        createdAt,
+      }),
+    );
+
+    const snapshot = await system.readModel();
+    const fork = snapshot.threads.find((thread) => thread.id === "thread-fork");
+    expect(fork).toMatchObject({
+      id: "thread-fork",
+      projectId: "project-fork",
+      title: "Independent fork",
+      interactionMode: "plan",
+      runtimeMode: "full-access",
+      branch: "main",
+      session: null,
+    });
+    expect(snapshot.threads.find((thread) => thread.id === "thread-source")?.title).toBe(
+      "Source thread",
+    );
+
+    await system.dispose();
+  });
+
   it("archives and unarchives threads through orchestration commands", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

@@ -1991,6 +1991,14 @@ const makeWsRpcLayer = (
             authorizeDesktopHostEffect(remoteControlBroker.publishFrame(input, currentSessionId)),
             { "rpc.aggregate": "remote-control" },
           ),
+        [WS_METHODS.remoteControlHostPublishVideoChunk]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostPublishVideoChunk,
+            authorizeDesktopHostEffect(
+              remoteControlBroker.publishVideoChunk(input, currentSessionId),
+            ),
+            { "rpc.aggregate": "remote-control" },
+          ),
         [WS_METHODS.remoteControlHostEnd]: (input) =>
           observeRpcEffect(
             WS_METHODS.remoteControlHostEnd,

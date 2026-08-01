@@ -302,7 +302,10 @@ const program = Effect.gen(function* () {
         request.clientCapabilities?._meta?.parameterizedModelPicker === true;
       return {
         protocolVersion: 1,
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { fork: {} },
+        },
       };
     }),
   );
@@ -312,6 +315,15 @@ const program = Effect.gen(function* () {
   yield* agent.handleCreateSession(() =>
     Effect.succeed({
       sessionId,
+      modes: modeState(),
+      models: modelState(),
+      configOptions: configOptions(),
+    }),
+  );
+
+  yield* agent.handleForkSession(() =>
+    Effect.succeed({
+      sessionId: "mock-session-fork-1",
       modes: modeState(),
       models: modelState(),
       configOptions: configOptions(),

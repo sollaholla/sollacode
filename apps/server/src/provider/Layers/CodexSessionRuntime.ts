@@ -66,6 +66,7 @@ export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | un
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
+  fork: Schema.optional(Schema.Boolean),
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
@@ -261,6 +262,10 @@ function readResumeCursorThreadId(
   return isCodexResumeCursorSchema(resumeCursor) ? resumeCursor.threadId : undefined;
 }
 
+function readResumeCursorFork(resumeCursor: ProviderSession["resumeCursor"]): boolean {
+  return isCodexResumeCursorSchema(resumeCursor) && resumeCursor.fork === true;
+}
+
 function runtimeModeToThreadConfig(input: RuntimeMode): {
   readonly approvalPolicy: EffectCodexSchema.V2ThreadStartParams__AskForApproval;
   readonly sandbox: EffectCodexSchema.V2ThreadStartParams__SandboxMode;
@@ -346,7 +351,9 @@ function buildCodexCollaborationMode(input: {
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
   const reasoningEffort = input.effort ?? "medium";
   return {
-    mode: input.interactionMode,
+    // Codex only knows its own two modes; "agent" is a client-side turn loop
+    // that should otherwise run exactly like the default mode.
+    mode: input.interactionMode === "plan" ? "plan" : "default",
     settings: {
       model,
       reasoning_effort: reasoningEffort,
@@ -443,9 +450,10 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 
 type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
-  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"];
+  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"]
+  | CodexRpc.ClientRequestResponsesByMethod["thread/fork"];
 
-type CodexThreadOpenMethod = "thread/start" | "thread/resume";
+type CodexThreadOpenMethod = "thread/start" | "thread/resume" | "thread/fork";
 
 interface CodexThreadOpenClient {
   readonly request: <M extends CodexThreadOpenMethod>(
@@ -462,6 +470,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly forkThread: boolean;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -473,6 +482,15 @@ export const openCodexThread = (input: {
 
   if (resumeThreadId === undefined) {
     return input.client.request("thread/start", startParams);
+  }
+
+  if (input.forkThread) {
+    const { ephemeral, ...forkOverrides } = startParams;
+    return input.client.request("thread/fork", {
+      threadId: resumeThreadId,
+      ...forkOverrides,
+      ...(typeof ephemeral === "boolean" ? { ephemeral } : {}),
+    });
   }
 
   return input.client
@@ -1227,6 +1245,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        forkThread: readResumeCursorFork(options.resumeCursor),
       });
 
       const providerThreadId = opened.thread.id;

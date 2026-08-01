@@ -9,6 +9,7 @@ export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
 export const SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL =
   "desktop:set-push-to-talk-system-audio-muted";
 export const REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL = "desktop:remote-control-capture-frame";
+export const REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL = "desktop:remote-control-capture-sources";
 export const REMOTE_CONTROL_SEND_INPUT_CHANNEL = "desktop:remote-control-send-input";
 export const REMOTE_CONTROL_RESET_INPUT_CHANNEL = "desktop:remote-control-reset-input";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";

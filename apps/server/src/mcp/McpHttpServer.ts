@@ -13,6 +13,9 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { ThreadHistoryToolkitHandlersLive } from "./toolkits/history/handlers.ts";
+import * as ThreadHistoryQuery from "./toolkits/history/ThreadHistoryQuery.ts";
+import { ThreadHistoryToolkit } from "./toolkits/history/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -216,10 +219,18 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
+export const ThreadHistoryToolkitRegistrationLive = McpServer.toolkit(ThreadHistoryToolkit).pipe(
+  Layer.provide(ThreadHistoryToolkitHandlersLive),
+  Layer.provide(ThreadHistoryQuery.layer),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "Solla Code",
   version: packageJson.version,
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  ThreadHistoryToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));

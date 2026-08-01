@@ -1,13 +1,17 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
+  EventId,
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
   OrchestrationThread,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   MessageSentPayloadSchema,
@@ -17,6 +21,7 @@ import {
   ThreadActivityAppendedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
+  ThreadForkedPayload,
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
@@ -35,6 +40,21 @@ import {
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
+
+const forkedMessageId = (threadId: ThreadId, messageId: string) =>
+  MessageId.make(`${threadId}:fork:${messageId}`);
+const forkedTurnId = (threadId: ThreadId, turnId: string) =>
+  TurnId.make(`${threadId}:fork:${turnId}`);
+const forkedActivityId = (threadId: ThreadId, activityId: string) =>
+  EventId.make(`${threadId}:fork:${activityId}`);
+
+function forkedAttachmentId(threadId: ThreadId, attachmentId: string): string {
+  const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  const uuidSuffix = attachmentId.match(
+    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  )?.[1];
+  return threadSegment && uuidSuffix ? `${threadSegment}-${uuidSuffix}` : attachmentId;
+}
 
 function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error") {
   if (status === "error") return "error" as const;
@@ -298,6 +318,94 @@ export function projectEvent(
             messages: [],
             activities: [],
             checkpoints: [],
+            session: null,
+          },
+          event.type,
+          "thread",
+        );
+        const existing = nextBase.threads.find((entry) => entry.id === thread.id);
+        return {
+          ...nextBase,
+          threads: existing
+            ? nextBase.threads.map((entry) => (entry.id === thread.id ? thread : entry))
+            : [...nextBase.threads, thread],
+        };
+      });
+
+    case "thread.forked":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadForkedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const source = nextBase.threads.find((entry) => entry.id === payload.sourceThreadId);
+        if (!source) {
+          return nextBase;
+        }
+        const mapTurnId = (turnId: TurnId | null) =>
+          turnId === null ? null : forkedTurnId(payload.threadId, turnId);
+        const mapMessageId = (messageId: MessageId | null) =>
+          messageId === null ? null : forkedMessageId(payload.threadId, messageId);
+        const thread: OrchestrationThread = yield* decodeForEvent(
+          OrchestrationThread,
+          {
+            id: payload.threadId,
+            projectId: payload.projectId,
+            title: payload.title,
+            modelSelection: payload.modelSelection,
+            runtimeMode: payload.runtimeMode,
+            interactionMode: payload.interactionMode,
+            branch: payload.branch,
+            worktreePath: payload.worktreePath,
+            latestTurn:
+              source.latestTurn === null
+                ? null
+                : {
+                    ...source.latestTurn,
+                    turnId: forkedTurnId(payload.threadId, source.latestTurn.turnId),
+                    assistantMessageId: mapMessageId(source.latestTurn.assistantMessageId),
+                  },
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            deletedAt: null,
+            messages: source.messages.map((message) => ({
+              ...message,
+              id: forkedMessageId(payload.threadId, message.id),
+              turnId: mapTurnId(message.turnId),
+              streaming: false,
+              ...(message.attachments !== undefined
+                ? {
+                    attachments: message.attachments.map((attachment) => ({
+                      ...attachment,
+                      id: forkedAttachmentId(
+                        payload.threadId,
+                        attachment.id,
+                      ) as typeof attachment.id,
+                    })),
+                  }
+                : {}),
+            })),
+            proposedPlans: source.proposedPlans.map((plan) => ({
+              ...plan,
+              turnId: mapTurnId(plan.turnId),
+            })),
+            activities: source.activities.map((activity) => ({
+              ...activity,
+              id: forkedActivityId(payload.threadId, activity.id),
+              turnId: mapTurnId(activity.turnId),
+            })),
+            checkpoints: source.checkpoints.map((checkpoint) => ({
+              ...checkpoint,
+              turnId: forkedTurnId(payload.threadId, checkpoint.turnId),
+              assistantMessageId: mapMessageId(checkpoint.assistantMessageId),
+            })),
             session: null,
           },
           event.type,

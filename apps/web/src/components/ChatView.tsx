@@ -80,6 +80,7 @@ import {
 } from "../pushToTalkTranscription";
 import {
   finishVoiceTranscriptionBackgroundTask,
+  isBackgroundTaskActive,
   startVoiceTranscriptionBackgroundTask,
   useBackgroundTaskStore,
 } from "../backgroundTasks";
@@ -112,6 +113,16 @@ import {
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
+import {
+  AGENT_CONTINUE_PROMPT,
+  buildAgentAnswers,
+  isAgentMode,
+  shouldContinueAgentLoop,
+} from "../agentMode";
+import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest";
+import { deriveProviderTasks, resolveProviderTaskPanelPlacement } from "../providerTasks";
+import { ProviderTaskChip } from "./ProviderTaskChip";
+import { ProviderTaskPanel } from "./ProviderTaskPanel";
 import { useUiStateStore } from "../uiStateStore";
 import {
   buildPlanImplementationThreadTitle,
@@ -1540,9 +1551,13 @@ function ChatViewContent(props: ChatViewProps) {
   const [pushToTalkStatus, setPushToTalkStatus] = useState<
     "recording" | "loading" | "transcribing" | null
   >(null);
+  // Every transcription phase must read as busy, not just the two the worker
+  // reports progress for. The composer gates submission on this value, so a
+  // phase that resolved to `null` here let Enter land a message mid-turn.
   const backgroundPushToTalkStatus = useBackgroundTaskStore((store) => {
     const task = store.tasks.find((candidate) => candidate.kind === "voice-transcription");
-    return task?.status === "loading" || task?.status === "transcribing" ? task.status : null;
+    if (!task || !isBackgroundTaskActive(task.status)) return null;
+    return task.status === "loading" ? "loading" : "transcribing";
   });
   const visiblePushToTalkStatus = resolveVisiblePushToTalkStatus(
     pushToTalkStatus,
@@ -2465,6 +2480,44 @@ function ChatViewContent(props: ChatViewProps) {
     () => derivePendingUserInputs(threadActivities),
     [threadActivities],
   );
+  // Staleness is a function of elapsed time, not of new events — without a
+  // ticking clock a task whose runtime died would keep reporting "Running"
+  // until some unrelated activity happened to arrive.
+  const [providerTaskNowMs, setProviderTaskNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setProviderTaskNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const providerTasks = useMemo(
+    () => deriveProviderTasks(threadActivities, { nowMs: providerTaskNowMs }),
+    [providerTaskNowMs, threadActivities],
+  );
+  const providerTaskPanelPlacement = resolveProviderTaskPanelPlacement({
+    hasTasks: providerTasks.length > 0,
+    rightPanelOpen,
+    useSheetLayout: shouldUsePlanSidebarSheet,
+  });
+  // Flashed after the chip is clicked so the panel is findable in a column that
+  // may already hold several tabs.
+  const [providerTasksHighlighted, setProviderTasksHighlighted] = useState(false);
+  useEffect(() => {
+    if (!providerTasksHighlighted) return;
+    const timer = setTimeout(() => setProviderTasksHighlighted(false), 2200);
+    return () => clearTimeout(timer);
+  }, [providerTasksHighlighted]);
+  const setRightPanelOpen = useRightPanelStore((state) => state.setOpen);
+  const openProviderTasks = useCallback(() => {
+    if (activeThreadRef) setRightPanelOpen(activeThreadRef, true);
+    setProviderTasksHighlighted(true);
+  }, [activeThreadRef, setRightPanelOpen]);
+  const providerTaskPanel =
+    providerTaskPanelPlacement === "hidden" ? null : (
+      <ProviderTaskPanel
+        placement={providerTaskPanelPlacement}
+        tasks={providerTasks}
+        highlighted={providerTasksHighlighted}
+      />
+    );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -5459,6 +5512,70 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  /**
+   * Agent mode turn loop.
+   *
+   * Each completed turn is nudged exactly once — keyed on the turn id — so a
+   * re-render, a reconnect, or a late activity update cannot fire a second
+   * turn for work that was already continued. The loop is unbounded by design;
+   * it ends when the model emits the stop token, when a turn does not complete
+   * cleanly, or when the user stops it.
+   */
+  const agentLoopNudgedTurnIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const turnId = activeLatestTurn?.turnId ?? null;
+    if (turnId === null) return;
+    if (agentLoopNudgedTurnIdRef.current === turnId) return;
+
+    const lastAssistantText = displayServerMessages
+      .toReversed()
+      .find((message) => message.role === "assistant" && !message.streaming)?.text;
+    if (
+      !shouldContinueAgentLoop({
+        interactionMode,
+        turnState: activeLatestTurn?.state ?? null,
+        assistantText: lastAssistantText ?? "",
+        isStreaming: !latestTurnSettled,
+        hasPendingUserInput: pendingUserInputs.length > 0,
+        isConnected: activeEnvironmentConnectionPhase === "connected",
+      })
+    ) {
+      return;
+    }
+    if (sendInFlightRef.current || isSendBusy) return;
+
+    agentLoopNudgedTurnIdRef.current = turnId;
+    void sendAutomatedConversationTurn(AGENT_CONTINUE_PROMPT, {
+      preserveExactText: true,
+    }).catch((error: unknown) => {
+      // A send that failed because the link dropped is not a reason to end the
+      // loop — clearing the marker lets the very same turn be nudged again once
+      // the supervisor reconnects. Any other failure needs the user, so it stops
+      // here rather than hiding behind more turns.
+      if (activeEnvironmentConnectionPhase !== "connected") {
+        agentLoopNudgedTurnIdRef.current = null;
+        return;
+      }
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Agent mode stopped",
+          description: error instanceof Error ? error.message : "The next turn could not start.",
+        }),
+      );
+    });
+  }, [
+    activeEnvironmentConnectionPhase,
+    activeLatestTurn?.state,
+    activeLatestTurn?.turnId,
+    displayServerMessages,
+    interactionMode,
+    isSendBusy,
+    latestTurnSettled,
+    pendingUserInputs.length,
+    sendAutomatedConversationTurn,
+  ]);
+
   const onApplyComposerSettings = useCallback(
     (description: string) => {
       if (isApplyingComposerSettings) return;
@@ -6077,6 +6194,38 @@ function ChatViewContent(props: ChatViewProps) {
     setActivePendingUserInputQuestionIndex(Math.max(activePendingProgress.questionIndex - 1, 0));
   }, [activePendingProgress, setActivePendingUserInputQuestionIndex]);
 
+  // Agent mode answers questions on the user's behalf — an unanswered prompt
+  // would otherwise park the loop indefinitely, which is the one thing the mode
+  // exists to avoid. Keyed by requestId so a request is only ever answered once,
+  // and skipped while offline because the response cannot be delivered.
+  const agentAnsweredRequestIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isAgentMode(interactionMode)) return;
+    if (!activePendingUserInput) {
+      agentAnsweredRequestIdRef.current = null;
+      return;
+    }
+    if (activeEnvironmentConnectionPhase !== "connected") return;
+    const requestId = String(activePendingUserInput.requestId);
+    if (agentAnsweredRequestIdRef.current === requestId) return;
+    if (respondingUserInputRequestIds.includes(activePendingUserInput.requestId)) return;
+
+    agentAnsweredRequestIdRef.current = requestId;
+    void onRespondToUserInput(
+      activePendingUserInput.requestId,
+      buildAgentAnswers(activePendingUserInput.questions),
+    ).catch(() => {
+      // A failed submit is retried once the link is back, same as the nudge.
+      agentAnsweredRequestIdRef.current = null;
+    });
+  }, [
+    activeEnvironmentConnectionPhase,
+    activePendingUserInput,
+    interactionMode,
+    onRespondToUserInput,
+    respondingUserInputRequestIds,
+  ]);
+
   const onSubmitPlanFollowUp = useCallback(
     async ({
       text,
@@ -6491,6 +6640,53 @@ function ChatViewContent(props: ChatViewProps) {
       settings,
     ],
   );
+  // Assisted "Initialize Git" is raised from the chat header, which cannot send
+  // a turn itself. It queues the prompt plus the provider the user picked; this
+  // applies that provider, then sends once the composer reports it as active.
+  // Two passes are required — the send reads the composer's live context, which
+  // still holds the previous selection during the render that changes it.
+  const gitInitRequest = useGitInitRequestStore((state) => state.request);
+  const clearGitInitRequest = useGitInitRequestStore((state) => state.clearRequest);
+  useEffect(() => {
+    if (gitInitRequest === null) return;
+    if (!activeThread || !isServerThread) return;
+
+    const sendCtx = composerRef.current?.getSendContext();
+    if (
+      !isGitInitRequestReady({
+        request: gitInitRequest,
+        activeInstanceId: sendCtx?.selectedModelSelection?.instanceId ?? null,
+        activeModel: sendCtx?.selectedModelSelection?.model ?? null,
+      })
+    ) {
+      onProviderModelSelect(gitInitRequest.instanceId, gitInitRequest.model);
+      return;
+    }
+    if (sendInFlightRef.current || isSendBusy) return;
+
+    const prompt = gitInitRequest.prompt;
+    clearGitInitRequest();
+    void sendAutomatedConversationTurn(prompt, { preserveExactText: true }).catch(
+      (error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start repository setup",
+            description: error instanceof Error ? error.message : "The turn could not be started.",
+          }),
+        );
+      },
+    );
+  }, [
+    activeThread,
+    clearGitInitRequest,
+    gitInitRequest,
+    isSendBusy,
+    isServerThread,
+    onProviderModelSelect,
+    sendAutomatedConversationTurn,
+  ]);
+
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -6964,6 +7160,7 @@ function ChatViewContent(props: ChatViewProps) {
                               )}
                             </button>
                           ) : null}
+                          <ProviderTaskChip tasks={providerTasks} onOpen={openProviderTasks} />
                           <ChatComposer
                             composerRef={composerRef}
                             composerDraftTarget={composerDraftTarget}
@@ -7046,6 +7243,7 @@ function ChatViewContent(props: ChatViewProps) {
                             onProviderModelSelect={onProviderModelSelect}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
+                            setInteractionMode={handleInteractionModeChange}
                             handleRuntimeModeChange={handleRuntimeModeChange}
                             handleInteractionModeChange={handleInteractionModeChange}
                             togglePlanSidebar={togglePlanSidebar}
@@ -7214,6 +7412,8 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
+      {providerTaskPanelPlacement === "fullscreen" ? providerTaskPanel : null}
+
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
@@ -7236,6 +7436,7 @@ function ChatViewContent(props: ChatViewProps) {
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
+          footer={providerTaskPanelPlacement === "split" ? providerTaskPanel : null}
         >
           {rightPanelContent}
         </RightPanelTabs>

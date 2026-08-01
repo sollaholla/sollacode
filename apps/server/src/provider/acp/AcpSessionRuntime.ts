@@ -61,6 +61,7 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly forkSessionId?: string;
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
   readonly clientCapabilities?: EffectAcpSchema.InitializeRequest["clientCapabilities"];
@@ -555,8 +556,22 @@ export const make = (
       let sessionSetupResult:
         | EffectAcpSchema.LoadSessionResponse
         | EffectAcpSchema.NewSessionResponse
-        | EffectAcpSchema.ResumeSessionResponse;
-      if (options.resumeSessionId) {
+        | EffectAcpSchema.ResumeSessionResponse
+        | EffectAcpSchema.ForkSessionResponse;
+      if (options.forkSessionId) {
+        const forkPayload = {
+          sessionId: options.forkSessionId,
+          cwd: options.cwd,
+          mcpServers: options.mcpServers ?? [],
+        } satisfies EffectAcpSchema.ForkSessionRequest;
+        const forked = yield* runLoggedRequest(
+          "session/fork",
+          forkPayload,
+          acp.agent.forkSession(forkPayload),
+        );
+        sessionId = forked.sessionId;
+        sessionSetupResult = forked;
+      } else if (options.resumeSessionId) {
         const loadPayload = {
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
