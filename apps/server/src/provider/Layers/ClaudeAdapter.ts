@@ -99,6 +99,7 @@ import {
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
+  shouldReportTokenOptimizerSummary,
   startClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerState,
@@ -3693,6 +3694,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(autoCompactWindow !== undefined ? { autoCompactEnabled: true, autoCompactWindow } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      // Session-scoped: the optimizer reports cumulative totals on every
+      // upstream request, so without this the same line lands in the work log
+      // after every tool call.
+      let lastTokenOptimizerSummary: string | undefined;
       const tokenOptimizerProxy =
         input.tokenOptimizerEnabled === true
           ? yield* Effect.tryPromise({
@@ -3718,6 +3723,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                       saved !== undefined && saved > 0
                         ? `Optimized ${pageLabel} · saved ~${saved.toLocaleString()} tokens`
                         : `Optimized ${pageLabel}`;
+                    if (!shouldReportTokenOptimizerSummary(lastTokenOptimizerSummary, summary)) {
+                      return;
+                    }
+                    lastTokenOptimizerSummary = summary;
                     const stamp = await runPromise(makeEventStamp());
                     await runPromise(
                       offerRuntimeEvent({
