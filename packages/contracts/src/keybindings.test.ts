@@ -185,14 +185,21 @@ const shortcut = {
 
 it.effect("drops resolved rules with commands this build does not know", () =>
   Effect.gen(function* () {
+    // The known command deliberately sits *after* the unknown one: the point is
+    // that an unrecognised command drops just itself rather than aborting the
+    // rest of the config.
+    //
+    // Upstream uses `filePicker.toggle` here, which this fork does not carry —
+    // it arrives with the ⌘P file picker. Swapped for a command this build
+    // actually registers so the assertion tests the decoder, not the registry.
     const parsed = yield* decode(ResolvedKeybindingsConfig, [
       { command: "terminal.toggle", shortcut },
       { command: "someFuture.toggle", shortcut },
-      { command: "filePicker.toggle", shortcut },
+      { command: "commandPalette.toggle", shortcut },
     ]);
     assert.deepEqual(
       parsed.map((rule) => rule.command),
-      ["terminal.toggle", "filePicker.toggle"],
+      ["terminal.toggle", "commandPalette.toggle"],
     );
   }),
 );
