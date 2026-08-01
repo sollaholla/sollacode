@@ -43,6 +43,21 @@ export interface ClaudeTokenOptimizerProxy {
   readonly close: () => Promise<void>;
 }
 
+/**
+ * Whether an optimizer result is worth putting in the work log.
+ *
+ * The optimizer runs on every upstream request, and its totals are cumulative
+ * for the session — so an unchanged result repeats the identical
+ * "Optimized N pages · saved ~X tokens" line after every tool call, burying the
+ * actual work. Reporting only on change keeps the signal and drops the repeats.
+ */
+export function shouldReportTokenOptimizerSummary(
+  lastReported: string | undefined,
+  next: string,
+): boolean {
+  return lastReported !== next;
+}
+
 function normalizeUpstream(value: string | undefined): string | undefined {
   const normalized = value?.trim().replace(/\/+$/u, "");
   return normalized && normalized.length > 0 ? normalized : undefined;

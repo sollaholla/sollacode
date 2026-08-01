@@ -8,6 +8,7 @@ import { ThreadId, TurnId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  shouldReportTokenOptimizerSummary,
   startClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerApplied,
   type ClaudeTokenOptimizerProxy,
@@ -221,5 +222,27 @@ describe("ClaudeTokenOptimizerProxy", () => {
     });
     expect(appliedCount).toBe(0);
     expect(NodeFS.readdirSync(attachmentsDir)).toEqual([]);
+  });
+});
+
+describe("shouldReportTokenOptimizerSummary", () => {
+  it("reports the first result", () => {
+    expect(shouldReportTokenOptimizerSummary(undefined, "Optimized 97 pages")).toBe(true);
+  });
+
+  it("suppresses an unchanged repeat", () => {
+    // The optimizer runs per upstream request and its totals are cumulative, so
+    // this identical line otherwise lands after every single tool call.
+    const summary = "Optimized 97 pages · saved ~55,081.5 tokens";
+    expect(shouldReportTokenOptimizerSummary(summary, summary)).toBe(false);
+  });
+
+  it("reports again once the totals move", () => {
+    expect(
+      shouldReportTokenOptimizerSummary(
+        "Optimized 97 pages · saved ~55,081.5 tokens",
+        "Optimized 98 pages · saved ~56,000 tokens",
+      ),
+    ).toBe(true);
   });
 });
