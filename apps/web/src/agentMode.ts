@@ -14,10 +14,11 @@ export const AGENT_STOP_TOKEN = "AGENT_STOP";
 
 export const AGENT_CONTINUE_PROMPT =
   "The user wants you to continue working autonomously without input returned to them. " +
-  "Continue iterating until you've reached a hard blocker or completed all relevant tasks " +
-  `then end your message with \`${AGENT_STOP_TOKEN}\` to stop this agent loop and return ` +
-  "input to the user. You should only do this if you absolutely CAN NOT continue, remember " +
-  "the user wants you to work autonomously.";
+  "First judge honestly: is the requested work finished, or are you blocked on something " +
+  "only the user can provide? If either is true, summarize what you did and end your " +
+  `message with \`${AGENT_STOP_TOKEN}\` to stop this agent loop — finishing is the right ` +
+  "reason to stop, not a failure to continue. Otherwise keep working on the next concrete " +
+  "step, and do not stop to ask questions you can resolve yourself.";
 
 /**
  * True when the assistant signed off.

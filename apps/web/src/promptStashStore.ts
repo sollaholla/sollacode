@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import { create } from "zustand";
 
 import { PersistedComposerImageAttachment } from "./composerDraftStore";
-import { createMemoryStorage, type StateStorage } from "./lib/storage";
+import { createMemoryStorage, isStateStorage, type StateStorage } from "./lib/storage";
 
 export const PROMPT_STASH_STORAGE_KEY = "t3code:prompt-stash:v2";
 /**
@@ -124,13 +124,19 @@ export function partitionStashAttachments(
  * access has to be guarded, not just the get/set calls on it. Otherwise
  * importing this module would crash the app at load.
  *
+ * Existence alone is not enough either: Node ≥22 defines a `localStorage`
+ * global that has no working methods unless `--localstorage-file` points at
+ * a valid path, so the shape is validated before the global is trusted.
+ * A present-but-nonfunctional storage falls back to memory instead of
+ * turning every stash write into a reported failure.
+ *
  * `durable` is false for the in-memory fallback: writes there "succeed" but
  * vanish on reload, and callers clear the composer on the strength of a
  * successful stash, so they must be told the difference.
  */
 function resolveBaseStorage(): { storage: StateStorage; durable: boolean } {
   try {
-    if (typeof localStorage !== "undefined") {
+    if (typeof localStorage !== "undefined" && isStateStorage(localStorage)) {
       return { storage: localStorage, durable: true };
     }
   } catch {

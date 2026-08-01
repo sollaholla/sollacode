@@ -33,6 +33,26 @@ export const PROVIDER_TASK_STALE_AFTER_MS = 30 * 60 * 1000;
  */
 export const PROVIDER_TASK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long finished work stays listed after its last event.
+ *
+ * Completed and stopped tasks have answered their question, so they leave
+ * after a glanceable window — before this, every finished build of a long
+ * session sat in the panel for a day and the list ran into the hundreds.
+ * Failures hold on longer, because a failure the user has not noticed yet is
+ * the one finished state that still needs them.
+ */
+export const PROVIDER_TASK_COMPLETED_RETENTION_MS = 10 * 60 * 1000;
+export const PROVIDER_TASK_FAILED_RETENTION_MS = 60 * 60 * 1000;
+
+/**
+ * Even inside the retention window, only this many finished rows stay. A
+ * parallel burst finishing at once would otherwise flood the pager with
+ * near-identical rows; the newest few carry all the signal, and anything the
+ * user needed longer is in the transcript.
+ */
+export const PROVIDER_TASK_FINISHED_MAX_COUNT = 20;
+
 export const PROVIDER_TASK_PAGE_SIZE = 10;
 
 /**
@@ -88,10 +108,11 @@ function isFinished(status: ProviderTaskStatus): boolean {
  * events are independent, and dropping progress for a missed start would hide
  * exactly the long-running work this panel exists to show.
  *
- * The result is a *status* view, not a log: finished work older than a day is
- * dropped, and silent "running" work is downgraded to `stale`. Without both,
- * the panel accumulates every task since the thread began and reports long-dead
- * processes as live.
+ * The result is a *status* view, not a log: finished work ages out within
+ * minutes (an hour for failures), a hard cap keeps bursts from flooding the
+ * list, and silent "running" work is downgraded to `stale`. Without these,
+ * the panel accumulates every task since the thread began and reports
+ * long-dead processes as live.
  */
 export function deriveProviderTasks(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
@@ -148,6 +169,11 @@ export function deriveProviderTasks(
     // saw it end — and a ghost never will.
     if (ageMs > PROVIDER_TASK_MAX_AGE_MS) continue;
     if (isFinished(task.status)) {
+      const retentionMs =
+        task.status === "failed"
+          ? PROVIDER_TASK_FAILED_RETENTION_MS
+          : PROVIDER_TASK_COMPLETED_RETENTION_MS;
+      if (ageMs > retentionMs) continue;
       aged.push(task);
       continue;
     }
@@ -159,9 +185,17 @@ export function deriveProviderTasks(
   // next most actionable thing. Ties break on most-recently-updated.
   const rank = (task: ProviderTask) =>
     task.status === "running" ? 0 : task.status === "stale" ? 1 : 2;
-  return aged.toSorted((left, right) => {
+  const sorted = aged.toSorted((left, right) => {
     const byRank = rank(left) - rank(right);
     return byRank === 0 ? right.updatedAt.localeCompare(left.updatedAt) : byRank;
+  });
+  // Finished rows sort newest-first within their rank, so keeping the first N
+  // finished entries keeps the newest ones. Live work is never capped.
+  let finishedKept = 0;
+  return sorted.filter((task) => {
+    if (!isFinished(task.status)) return true;
+    finishedKept += 1;
+    return finishedKept <= PROVIDER_TASK_FINISHED_MAX_COUNT;
   });
 }
 

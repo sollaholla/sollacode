@@ -3,6 +3,7 @@ import { describe, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 import {
+  PROVIDER_TASK_FINISHED_MAX_COUNT,
   PROVIDER_TASK_PAGE_SIZE,
   countActiveProviderTasks,
   deriveProviderTasks,
@@ -24,24 +25,29 @@ function activity(
 
 describe("deriveProviderTasks", () => {
   it("folds start, progress and completion into one row", () => {
-    const tasks = deriveProviderTasks([
-      activity("task.started", "2026-08-01T10:00:00Z", {
-        taskId: "a1",
-        taskType: "local_agent",
-        detail: "Explore interaction modes",
-      }),
-      activity("task.progress", "2026-08-01T10:00:05Z", {
-        taskId: "a1",
-        title: "Running grep",
-        lastToolName: "Bash",
-        usage: { tool_uses: 4 },
-      }),
-      activity("task.completed", "2026-08-01T10:00:09Z", {
-        taskId: "a1",
-        status: "completed",
-        summary: "Found 3 files",
-      }),
-    ]);
+    const tasks = deriveProviderTasks(
+      [
+        activity("task.started", "2026-08-01T10:00:00Z", {
+          taskId: "a1",
+          taskType: "local_agent",
+          detail: "Explore interaction modes",
+        }),
+        activity("task.progress", "2026-08-01T10:00:05Z", {
+          taskId: "a1",
+          title: "Running grep",
+          lastToolName: "Bash",
+          usage: { tool_uses: 4 },
+        }),
+        activity("task.completed", "2026-08-01T10:00:09Z", {
+          taskId: "a1",
+          status: "completed",
+          summary: "Found 3 files",
+        }),
+      ],
+      // Pinned clock: with real retention, a completed row would age out of a
+      // test that happened to run at the wrong time of day.
+      { nowMs: Date.parse("2026-08-01T10:00:10Z") },
+    );
 
     NodeAssert.equal(tasks.length, 1);
     NodeAssert.deepEqual(
@@ -79,10 +85,13 @@ describe("deriveProviderTasks", () => {
   });
 
   it("preserves a failed status rather than overwriting it", () => {
-    const tasks = deriveProviderTasks([
-      activity("task.started", "2026-08-01T10:00:00Z", { taskId: "a1", detail: "Work" }),
-      activity("task.completed", "2026-08-01T10:00:01Z", { taskId: "a1", status: "failed" }),
-    ]);
+    const tasks = deriveProviderTasks(
+      [
+        activity("task.started", "2026-08-01T10:00:00Z", { taskId: "a1", detail: "Work" }),
+        activity("task.completed", "2026-08-01T10:00:01Z", { taskId: "a1", status: "failed" }),
+      ],
+      { nowMs: Date.parse("2026-08-01T10:00:02Z") },
+    );
     NodeAssert.equal(tasks[0]?.status, "failed");
     NodeAssert.equal(countActiveProviderTasks(tasks), 0);
   });
@@ -264,26 +273,67 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(tasks[0]?.status, "running");
   });
 
-  it("drops finished tasks older than a day but keeps recent ones", () => {
+  it("completed work leaves in minutes while failures hold on longer", () => {
     const nowMs = Date.parse("2026-08-02T12:00:00Z");
     const tasks = deriveProviderTasks(
       [
-        activity("task.started", "2026-07-30T09:00:00Z", { taskId: "ancient", detail: "Old" }),
-        activity("task.completed", "2026-07-30T09:01:00Z", {
-          taskId: "ancient",
+        activity("task.started", "2026-08-02T11:30:00Z", { taskId: "old-done", detail: "Old" }),
+        activity("task.completed", "2026-08-02T11:40:00Z", {
+          taskId: "old-done",
           status: "completed",
         }),
-        activity("task.started", "2026-08-02T11:00:00Z", { taskId: "recent", detail: "New" }),
-        activity("task.completed", "2026-08-02T11:01:00Z", {
-          taskId: "recent",
+        activity("task.started", "2026-08-02T11:50:00Z", { taskId: "fresh", detail: "New" }),
+        activity("task.completed", "2026-08-02T11:55:00Z", {
+          taskId: "fresh",
           status: "completed",
+        }),
+        activity("task.started", "2026-08-02T11:00:00Z", { taskId: "broke", detail: "Boom" }),
+        activity("task.completed", "2026-08-02T11:20:00Z", {
+          taskId: "broke",
+          status: "failed",
+        }),
+        activity("task.started", "2026-08-02T10:00:00Z", { taskId: "old-broke", detail: "Boom" }),
+        activity("task.completed", "2026-08-02T10:45:00Z", {
+          taskId: "old-broke",
+          status: "failed",
         }),
       ],
       { nowMs },
     );
+    // Twenty minutes past completion is history; five is not. A forty-minute
+    // failure survives where a completion would not, and seventy-five minutes
+    // is too old even for a failure.
     NodeAssert.deepEqual(
       tasks.map((task) => task.taskId),
-      ["recent"],
+      ["fresh", "broke"],
+    );
+  });
+
+  it("caps finished rows so a burst cannot flood the pager", () => {
+    const nowMs = Date.parse("2026-08-01T12:06:00Z");
+    const burst = Array.from({ length: 25 }, (_, index) =>
+      activity("task.completed", `2026-08-01T12:05:${String(index).padStart(2, "0")}Z`, {
+        taskId: `t${index}`,
+        status: "completed",
+      }),
+    );
+    const tasks = deriveProviderTasks(
+      [
+        activity("task.progress", "2026-08-01T12:05:59Z", { taskId: "live", title: "Live" }),
+        ...burst,
+      ],
+      { nowMs },
+    );
+    NodeAssert.equal(tasks.length, 1 + PROVIDER_TASK_FINISHED_MAX_COUNT);
+    // Live work is never capped, and the newest finished rows are the ones kept.
+    NodeAssert.equal(tasks[0]?.taskId, "live");
+    NodeAssert.equal(
+      tasks.some((task) => task.taskId === "t24"),
+      true,
+    );
+    NodeAssert.equal(
+      tasks.some((task) => task.taskId === "t4"),
+      false,
     );
   });
 

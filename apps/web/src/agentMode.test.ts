@@ -116,6 +116,15 @@ describe("AGENT_CONTINUE_PROMPT", () => {
     expect(AGENT_CONTINUE_PROMPT).toContain(AGENT_STOP_TOKEN);
     expect(AGENT_CONTINUE_PROMPT).toContain("autonomously");
   });
+
+  it("offers finishing as a legitimate exit, not only being blocked", () => {
+    // The earlier wording told the model to stop only if it "absolutely CAN
+    // NOT continue", which contradicted the completion exit offered in the
+    // same sentence — a diligent model can always find more polish, so it
+    // would never sign off at all.
+    expect(AGENT_CONTINUE_PROMPT.toLowerCase()).toContain("finish");
+    expect(AGENT_CONTINUE_PROMPT).not.toContain("absolutely CAN NOT");
+  });
 });
 
 describe("shouldContinueAgentLoop offline handling", () => {
