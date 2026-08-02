@@ -17,11 +17,13 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildPlanRefreshPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  sanitizePlanRefreshSteps,
 } from "./TextGenerationUtils.ts";
 import {
   applyGrokAcpModelSelection,
@@ -52,7 +54,8 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generatePlanRefresh";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -250,10 +253,31 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generatePlanRefresh: TextGeneration.TextGeneration["Service"]["generatePlanRefresh"] =
+    Effect.fn("GrokTextGeneration.generatePlanRefresh")(function* (input) {
+      const { prompt, outputSchema } = buildPlanRefreshPrompt({
+        transcript: input.transcript,
+        currentSteps: input.currentSteps,
+      });
+
+      const generated = yield* runGrokJson({
+        operation: "generatePlanRefresh",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        steps: sanitizePlanRefreshSteps(generated.steps),
+      };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generatePlanRefresh,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

@@ -23,12 +23,14 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildPlanRefreshPrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  sanitizePlanRefreshSteps,
 } from "./TextGenerationUtils.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 
@@ -39,6 +41,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generatePrContent",
   "generateBranchName",
   "generateThreadTitle",
+  "generatePlanRefresh",
 ]);
 
 type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
@@ -253,7 +256,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generatePlanRefresh";
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -614,10 +618,31 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generatePlanRefresh: TextGeneration.TextGeneration["Service"]["generatePlanRefresh"] =
+    Effect.fn("OpenCodeTextGeneration.generatePlanRefresh")(function* (input) {
+      const { prompt, outputSchema } = buildPlanRefreshPrompt({
+        transcript: input.transcript,
+        currentSteps: input.currentSteps,
+      });
+
+      const generated = yield* runOpenCodeJson({
+        operation: "generatePlanRefresh",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        steps: sanitizePlanRefreshSteps(generated.steps),
+      };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generatePlanRefresh,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

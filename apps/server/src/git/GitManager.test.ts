@@ -292,6 +292,10 @@ function createTextGeneration(
       Effect.succeed({
         title: "Update workflow",
       }),
+    generatePlanRefresh: () =>
+      Effect.succeed({
+        steps: [],
+      }),
     ...overrides,
   };
 
@@ -335,6 +339,17 @@ function createTextGeneration(
           (cause) =>
             new TextGenerationError({
               operation: "generateThreadTitle",
+              detail: "fake text generation failed",
+              ...(cause !== undefined ? { cause } : {}),
+            }),
+        ),
+      ),
+    generatePlanRefresh: (input) =>
+      implementation.generatePlanRefresh(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation: "generatePlanRefresh",
               detail: "fake text generation failed",
               ...(cause !== undefined ? { cause } : {}),
             }),

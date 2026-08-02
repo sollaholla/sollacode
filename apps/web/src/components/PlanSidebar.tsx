@@ -15,6 +15,7 @@ import {
   ChevronRightIcon,
   EllipsisIcon,
   LoaderIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import type { ActivePlanState } from "../session-logic";
@@ -29,6 +30,7 @@ import {
 } from "../proposedPlan";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { projectEnvironment } from "~/state/projects";
+import { threadEnvironment } from "../state/threads";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -80,6 +82,8 @@ const PlanSidebar = memo(function PlanSidebar({
 }: PlanSidebarProps) {
   const [proposedPlanExpanded, setProposedPlanExpanded] = useState(false);
   const [isSavingToWorkspace, setIsSavingToWorkspace] = useState(false);
+  const [isRefreshingPlan, setIsRefreshingPlan] = useState(false);
+  const refreshPlan = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
   const writeProjectFile = useAtomCommand(projectEnvironment.writeFile, {
     reportFailure: false,
   });
@@ -88,6 +92,24 @@ const PlanSidebar = memo(function PlanSidebar({
   const planMarkdown = activeProposedPlan?.planMarkdown ?? null;
   const displayedPlanMarkdown = planMarkdown ? stripDisplayedPlanMarkdown(planMarkdown) : null;
   const planTitle = planMarkdown ? proposedPlanTitle(planMarkdown) : null;
+
+  /**
+   * Hand the refresh to the server and return.
+   *
+   * Nothing is sent to the chat and no turn is started: the server re-reads the
+   * conversation, rewrites the task list, and the panel picks the result up
+   * through the same plan activity a provider would emit. The local busy flag
+   * only debounces the button — the work itself is reported in the
+   * background-tasks list.
+   */
+  const handleRefreshPlan = useCallback(() => {
+    if (!threadRef || isRefreshingPlan) return;
+    setIsRefreshingPlan(true);
+    void refreshPlan({
+      environmentId,
+      input: { threadId: threadRef.threadId },
+    }).finally(() => setIsRefreshingPlan(false));
+  }, [environmentId, isRefreshingPlan, refreshPlan, threadRef]);
 
   const handleCopyPlan = useCallback(() => {
     if (!planMarkdown) return;
@@ -161,6 +183,19 @@ const PlanSidebar = memo(function PlanSidebar({
           ) : null}
         </div>
         <div className="flex items-center gap-1">
+          {threadRef ? (
+            <Button
+              size="icon-xs"
+              variant="ghost"
+              className="text-muted-foreground/50 hover:text-foreground/70"
+              onClick={handleRefreshPlan}
+              disabled={isRefreshingPlan}
+              aria-label="Refresh tasks from the conversation"
+              title="Refresh tasks from the conversation"
+            >
+              <RefreshCwIcon className={cn("size-3.5", isRefreshingPlan && "animate-spin")} />
+            </Button>
+          ) : null}
           {planMarkdown ? (
             <Menu>
               <MenuTrigger

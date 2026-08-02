@@ -16,11 +16,13 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildPlanRefreshPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  sanitizePlanRefreshSteps,
 } from "./TextGenerationUtils.ts";
 import {
   applyCursorAcpModelSelection,
@@ -54,7 +56,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generatePlanRefresh";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -258,10 +261,31 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generatePlanRefresh: TextGeneration.TextGeneration["Service"]["generatePlanRefresh"] =
+    Effect.fn("CursorTextGeneration.generatePlanRefresh")(function* (input) {
+      const { prompt, outputSchema } = buildPlanRefreshPrompt({
+        transcript: input.transcript,
+        currentSteps: input.currentSteps,
+      });
+
+      const generated = yield* runCursorJson({
+        operation: "generatePlanRefresh",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        steps: sanitizePlanRefreshSteps(generated.steps),
+      };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generatePlanRefresh,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

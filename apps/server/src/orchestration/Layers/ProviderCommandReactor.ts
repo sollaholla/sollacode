@@ -13,11 +13,14 @@ import {
   type RuntimeMode,
   type TurnId,
   type ProviderInteractionMode,
+  RuntimeTaskId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { buildPlanRefreshTranscript, derivePlanRefreshCurrentSteps } from "../planRefresh.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -51,6 +54,7 @@ import {
   buildProviderHandoffTurnInput,
   deriveProviderHandoffContinuity,
 } from "../ProviderUsageLimitFailover.ts";
+const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -64,7 +68,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.plan-refresh-requested";
   }
 >;
 
@@ -1261,6 +1266,140 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Re-derive the plan's task list from the conversation.
+   *
+   * Runs entirely outside the turn stream: nothing is sent to the provider
+   * session and no message is added to the thread, so this is safe to trigger
+   * while a turn is in flight. Progress is reported through the same
+   * `task.started` / `task.completed` activities the background-tasks panel
+   * already renders, so a refresh is visible while it runs and a failure is
+   * visible rather than silent.
+   */
+  const processPlanRefreshRequested = Effect.fn("processPlanRefreshRequested")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.plan-refresh-requested" }>,
+  ) {
+    const threadId = event.payload.threadId;
+    const thread = yield* resolveThread(threadId);
+    if (!thread) return;
+
+    const taskId = RuntimeTaskId.make(`plan-refresh:${event.eventId}`);
+    const startedAt = event.payload.createdAt;
+
+    const appendActivity = (input: {
+      readonly kind: string;
+      readonly tone: "info" | "error";
+      readonly summary: string;
+      readonly payload: Readonly<Record<string, unknown>>;
+      readonly createdAt: string;
+    }) =>
+      Effect.gen(function* () {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: yield* serverCommandId(`plan-refresh-${input.kind}`),
+          threadId,
+          activity: {
+            id: EventId.make(`${event.eventId}:${input.kind}`),
+            tone: input.tone,
+            kind: input.kind,
+            summary: input.summary,
+            payload: input.payload,
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        });
+      });
+
+    yield* appendActivity({
+      kind: "task.started",
+      tone: "info",
+      summary: "Refreshing plan",
+      payload: {
+        taskId,
+        taskType: "plan-refresh",
+        detail: "Re-reading the conversation to update the task list",
+      },
+      createdAt: startedAt,
+    });
+
+    yield* Effect.gen(function* () {
+      const { textGenerationModelSelection: modelSelection } =
+        yield* serverSettingsService.getSettings;
+
+      const currentSteps = derivePlanRefreshCurrentSteps(thread.activities);
+      const transcript = buildPlanRefreshTranscript(thread.messages);
+      if (transcript.trim().length === 0) {
+        // Nothing to read yet — refreshing would only invent work.
+        yield* appendActivity({
+          kind: "task.completed",
+          tone: "info",
+          summary: "Plan refresh skipped",
+          payload: { taskId, status: "completed", summary: "No conversation to read yet" },
+          createdAt: yield* nowIso,
+        });
+        return;
+      }
+
+      const project = yield* resolveProject(thread.projectId);
+      const generated = yield* textGeneration.generatePlanRefresh({
+        cwd:
+          resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }) ??
+          process.cwd(),
+        transcript,
+        currentSteps,
+        modelSelection,
+      });
+
+      const completedAt = yield* nowIso;
+      if (generated.steps.length > 0) {
+        // Written as the same activity a provider emits, so the plan panel picks
+        // it up through the existing derivation with no special-casing.
+        yield* appendActivity({
+          kind: "turn.plan.updated",
+          tone: "info",
+          summary: "Plan updated",
+          payload: {
+            plan: generated.steps.map((entry) => ({ step: entry.step, status: entry.status })),
+            explanation: "Refreshed from the conversation.",
+          },
+          createdAt: completedAt,
+        });
+      }
+
+      yield* appendActivity({
+        kind: "task.completed",
+        tone: "info",
+        summary: "Plan refreshed",
+        payload: {
+          taskId,
+          status: "completed",
+          summary:
+            generated.steps.length > 0
+              ? `Updated ${generated.steps.length} step${generated.steps.length === 1 ? "" : "s"}`
+              : "No changes",
+        },
+        createdAt: completedAt,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* Effect.logWarning("provider command reactor failed to refresh plan", {
+            threadId,
+            cause: Cause.pretty(cause),
+          });
+          yield* appendActivity({
+            kind: "task.completed",
+            tone: "error",
+            summary: "Plan refresh failed",
+            payload: { taskId, status: "failed", summary: "Could not refresh the plan" },
+            createdAt: yield* nowIso,
+          }).pipe(Effect.ignoreCause({ log: true }));
+        }),
+      ),
+    );
+  });
+
   const processSessionStopRequested = Effect.fn("processSessionStopRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
   ) {
@@ -1358,6 +1497,9 @@ const make = Effect.gen(function* () {
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
+      case "thread.plan-refresh-requested":
+        yield* processPlanRefreshRequested(event);
+        return;
     }
   });
 
@@ -1385,7 +1527,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
+        event.type === "thread.session-stop-requested" ||
+        event.type === "thread.plan-refresh-requested"
       ) {
         return yield* worker.enqueue(event);
       }
