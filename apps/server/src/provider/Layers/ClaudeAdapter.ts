@@ -3733,30 +3733,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                       return;
                     }
                     lastTokenOptimizerSummary = summary;
-                    const stamp = await runPromise(makeEventStamp());
+                    // Background-only: the per-turn "Optimized …" line overwhelmed the
+                    // visible work log, so keep it out of runtime events entirely.
                     await runPromise(
-                      offerRuntimeEvent({
-                        type: "runtime.warning",
-                        eventId: stamp.eventId,
-                        provider: PROVIDER,
-                        createdAt: stamp.createdAt,
+                      Effect.logInfo("claude.token-optimizer.applied", {
                         threadId: context.session.threadId,
                         ...(optimized.turnId ? { turnId: optimized.turnId } : {}),
-                        payload: {
-                          message: summary,
-                          detail: {
-                            kind: "token-optimizer.applied",
-                            model: optimized.model,
-                            compressedChars: optimized.compressedChars,
-                            pageCount: optimized.pageCount,
-                            estimatedTextTokens: optimized.estimatedTextTokens,
-                            estimatedImageTokens: optimized.estimatedImageTokens,
-                            estimatedNativeTokens: optimized.estimatedNativeTokens,
-                            estimatedTokensSaved: optimized.estimatedTokensSaved,
-                            attachments: optimized.attachments,
-                          },
-                        },
-                        providerRefs: nativeProviderRefs(context),
+                        summary,
+                        model: optimized.model,
+                        compressedChars: optimized.compressedChars,
+                        pageCount: optimized.pageCount,
+                        estimatedTextTokens: optimized.estimatedTextTokens,
+                        estimatedImageTokens: optimized.estimatedImageTokens,
+                        estimatedNativeTokens: optimized.estimatedNativeTokens,
+                        estimatedTokensSaved: optimized.estimatedTokensSaved,
+                        attachmentCount: optimized.attachments.length,
                       }),
                     );
                   },
