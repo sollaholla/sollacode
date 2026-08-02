@@ -117,6 +117,7 @@ import {
   AGENT_CONTINUE_PROMPT,
   buildAgentAnswers,
   isAgentMode,
+  selectAgentLoopAssistantText,
   shouldContinueAgentLoop,
 } from "../agentMode";
 import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest";
@@ -2495,6 +2496,7 @@ function ChatViewContent(props: ChatViewProps) {
   const providerTaskPanelPlacement = resolveProviderTaskPanelPlacement({
     hasTasks: providerTasks.length > 0,
     rightPanelOpen,
+    useSheetLayout: shouldUsePlanSidebarSheet,
   });
   // Flashed after the chip is clicked so the panel is findable in a column that
   // may already hold several tabs.
@@ -2511,7 +2513,11 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThreadRef, setRightPanelOpen]);
   const providerTaskPanel =
     providerTaskPanelPlacement === "hidden" ? null : (
-      <ProviderTaskPanel tasks={providerTasks} highlighted={providerTasksHighlighted} />
+      <ProviderTaskPanel
+        placement={providerTaskPanelPlacement}
+        tasks={providerTasks}
+        highlighted={providerTasksHighlighted}
+      />
     );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
@@ -5522,14 +5528,18 @@ function ChatViewContent(props: ChatViewProps) {
     if (turnId === null) return;
     if (agentLoopNudgedTurnIdRef.current === turnId) return;
 
-    const lastAssistantText = displayServerMessages
-      .toReversed()
-      .find((message) => message.role === "assistant" && !message.streaming)?.text;
+    // Newest assistant message only — never an older settled one. A `null`
+    // here is the finalize race (turn settled, message flag not yet), and the
+    // effect re-runs when the message store updates, so waiting is safe while
+    // guessing would nudge past a stop token and be un-undoable (the nudge is
+    // keyed on this turn id the moment it is sent).
+    const loopAssistantText = selectAgentLoopAssistantText(displayServerMessages);
+    if (loopAssistantText === null) return;
     if (
       !shouldContinueAgentLoop({
         interactionMode,
         turnState: activeLatestTurn?.state ?? null,
-        assistantText: lastAssistantText ?? "",
+        assistantText: loopAssistantText,
         isStreaming: !latestTurnSettled,
         hasPendingUserInput: pendingUserInputs.length > 0,
         isConnected: activeEnvironmentConnectionPhase === "connected",
@@ -7407,6 +7417,8 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
+      {providerTaskPanelPlacement === "fullscreen" ? providerTaskPanel : null}
+
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
@@ -7457,7 +7469,6 @@ function ChatViewContent(props: ChatViewProps) {
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
-            footer={providerTaskPanelPlacement === "split" ? providerTaskPanel : null}
           >
             {rightPanelContent}
           </RightPanelTabs>

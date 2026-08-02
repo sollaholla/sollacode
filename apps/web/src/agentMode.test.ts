@@ -7,6 +7,7 @@ import {
   agentAnswerForQuestion,
   buildAgentAnswers,
   containsAgentStopToken,
+  selectAgentLoopAssistantText,
   selectRecommendedOption,
   shouldContinueAgentLoop,
   stripAgentStopToken,
@@ -188,5 +189,39 @@ describe("buildAgentAnswers", () => {
       { id: "q2", options: [{ label: "No marker here" }] },
     ]);
     expect(Object.keys(answers).toSorted()).toEqual(["q1", "q2"]);
+  });
+});
+
+describe("selectAgentLoopAssistantText", () => {
+  it("returns null while the newest assistant message is still flagged streaming", () => {
+    // The finalize race: turn state settles a tick before the message flag.
+    // Reading anything here would inspect the previous turn's text.
+    const text = selectAgentLoopAssistantText([
+      { role: "assistant", streaming: false, text: `done ${AGENT_STOP_TOKEN}` },
+      { role: "user", text: "continue" },
+      { role: "assistant", streaming: true, text: "partial" },
+    ]);
+    expect(text).toBeNull();
+  });
+
+  it("never falls back past the newest assistant message to an older one", () => {
+    // Older message has no stop token; newest one does. Falling back would
+    // continue a loop the model explicitly ended.
+    const text = selectAgentLoopAssistantText([
+      { role: "assistant", streaming: false, text: "keep going" },
+      { role: "assistant", streaming: false, text: `all done ${AGENT_STOP_TOKEN}` },
+    ]);
+    expect(text).toBe(`all done ${AGENT_STOP_TOKEN}`);
+    expect(containsAgentStopToken(text ?? "")).toBe(true);
+  });
+
+  it("reads empty when the conversation has no assistant message", () => {
+    // Empty text is refused by shouldContinueAgentLoop, so this stays safe.
+    expect(selectAgentLoopAssistantText([{ role: "user", text: "hi" }])).toBe("");
+    expect(selectAgentLoopAssistantText([])).toBe("");
+  });
+
+  it("treats a settled newest assistant message as readable even with missing text", () => {
+    expect(selectAgentLoopAssistantText([{ role: "assistant", streaming: false }])).toBe("");
   });
 });
