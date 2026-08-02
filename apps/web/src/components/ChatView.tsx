@@ -5186,6 +5186,14 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
+    // A user-initiated send is what starts the agent loop — not selecting the
+    // mode. The nudge budget resets here too, so each thing the user asks for
+    // gets a full allowance rather than inheriting the last one's.
+    if (interactionMode === "agent") {
+      agentLoopArmedRef.current = true;
+      agentLoopConsecutiveNudgesRef.current = 0;
+      agentLoopPreviousTextRef.current = null;
+    }
     if (isDraftHeroState && activeThreadKey) {
       let resolveDockStarted: (() => void) | undefined;
       const dockStarted = new Promise<void>((resolve) => {
@@ -5570,6 +5578,29 @@ function ChatViewContent(props: ChatViewProps) {
    * cleanly, or when the user stops it.
    */
   const agentLoopNudgedTurnIdRef = useRef<string | null>(null);
+  /**
+   * The loop only runs once the user has sent something in agent mode.
+   *
+   * Selecting "Agent" must not start it: the previous turn is already
+   * `completed`, so without this the mode picker behaved as a send button and
+   * fired a turn the moment it was clicked.
+   */
+  const agentLoopArmedRef = useRef(false);
+  const agentLoopConsecutiveNudgesRef = useRef(0);
+  const agentLoopLastNudgeAtRef = useRef<number | null>(null);
+  const agentLoopPreviousTextRef = useRef<string | null>(null);
+
+  // Leaving agent mode disarms and resets the counters, so re-entering later
+  // starts from a clean slate rather than resuming a half-spent budget.
+  useEffect(() => {
+    if (interactionMode !== "agent") {
+      agentLoopArmedRef.current = false;
+      agentLoopConsecutiveNudgesRef.current = 0;
+      agentLoopLastNudgeAtRef.current = null;
+      agentLoopPreviousTextRef.current = null;
+    }
+  }, [interactionMode]);
+
   useEffect(() => {
     const turnId = activeLatestTurn?.turnId ?? null;
     if (turnId === null) return;
@@ -5590,6 +5621,16 @@ function ChatViewContent(props: ChatViewProps) {
         isStreaming: !latestTurnSettled,
         hasPendingUserInput: pendingUserInputs.length > 0,
         isConnected: activeEnvironmentConnectionPhase === "connected",
+        armed: agentLoopArmedRef.current,
+        consecutiveNudges: agentLoopConsecutiveNudgesRef.current,
+        nowMs: Date.now(),
+        lastNudgeAtMs: agentLoopLastNudgeAtRef.current,
+        previousAssistantText: agentLoopPreviousTextRef.current,
+        // A session that is not running cannot take a turn. Nudging a stopped
+        // or errored one only manufactures more failures to nudge.
+        isSessionReady:
+          activeThread?.session == null ||
+          (activeThread.session.status !== "stopped" && activeThread.session.status !== "error"),
       })
     ) {
       return;
@@ -5597,6 +5638,9 @@ function ChatViewContent(props: ChatViewProps) {
     if (sendInFlightRef.current || isSendBusy) return;
 
     agentLoopNudgedTurnIdRef.current = turnId;
+    agentLoopConsecutiveNudgesRef.current += 1;
+    agentLoopLastNudgeAtRef.current = Date.now();
+    agentLoopPreviousTextRef.current = loopAssistantText;
     void sendAutomatedConversationTurn(AGENT_CONTINUE_PROMPT, {
       preserveExactText: true,
     }).catch((error: unknown) => {

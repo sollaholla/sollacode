@@ -2,11 +2,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   AGENT_CONTINUE_PROMPT,
+  AGENT_LOOP_MAX_CONSECUTIVE_NUDGES,
+  AGENT_LOOP_MIN_NUDGE_INTERVAL_MS,
   AGENT_FALLBACK_ANSWER,
   AGENT_STOP_TOKEN,
   agentAnswerForQuestion,
   buildAgentAnswers,
   containsAgentStopToken,
+  isAgentLoopBlockingReply,
   selectAgentLoopAssistantText,
   selectRecommendedOption,
   shouldContinueAgentLoop,
@@ -154,6 +157,128 @@ describe("shouldContinueAgentLoop offline handling", () => {
     for (const turnState of ["incomplete", "interrupted", "failed", "running", null]) {
       expect(shouldContinueAgentLoop({ ...connected, turnState })).toBe(false);
     }
+  });
+});
+
+describe("agent loop runaway guards", () => {
+  const base = {
+    interactionMode: "agent" as const,
+    turnState: "completed",
+    assistantText: "made progress",
+    isStreaming: false,
+    hasPendingUserInput: false,
+    isConnected: true,
+    armed: true,
+  };
+
+  it("does not run merely because agent mode was selected", () => {
+    // The previous turn is already "completed", so without arming, choosing
+    // "Agent" satisfied every other guard and fired a turn immediately — the
+    // mode picker behaved as a send button.
+    expect(shouldContinueAgentLoop({ ...base, armed: false })).toBe(false);
+  });
+
+  it("runs once the user has actually sent something", () => {
+    expect(shouldContinueAgentLoop({ ...base, armed: true })).toBe(true);
+  });
+
+  it("stops on a provider failure that retrying cannot fix", () => {
+    // These arrive as ordinary assistant text with a completed turn, so every
+    // structural guard passes and the loop retries at full speed. This is what
+    // filled a thread with hundreds of identical nudges after a logout.
+    for (const reply of [
+      "Not logged in · Please run /login",
+      "Session expired, please sign in again",
+      "Unauthorized",
+      "Invalid API key",
+      "Your credit balance is too low",
+      "Rate limit exceeded",
+    ]) {
+      expect(shouldContinueAgentLoop({ ...base, assistantText: reply })).toBe(false);
+    }
+  });
+
+  it("refuses to nudge faster than a real turn could complete", () => {
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        nowMs: 10_000,
+        lastNudgeAtMs: 10_000 - (AGENT_LOOP_MIN_NUDGE_INTERVAL_MS - 1),
+      }),
+    ).toBe(false);
+  });
+
+  it("allows the next nudge once enough time has passed", () => {
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        nowMs: 100_000,
+        lastNudgeAtMs: 100_000 - AGENT_LOOP_MIN_NUDGE_INTERVAL_MS,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops after the consecutive-nudge budget is spent", () => {
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        consecutiveNudges: AGENT_LOOP_MAX_CONSECUTIVE_NUDGES,
+      }),
+    ).toBe(false);
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        consecutiveNudges: AGENT_LOOP_MAX_CONSECUTIVE_NUDGES - 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("stops when a turn produced byte-identical output to the last one", () => {
+    // Real work never repeats itself exactly; this is a wedged provider.
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        assistantText: "same thing",
+        previousAssistantText: "same thing",
+      }),
+    ).toBe(false);
+  });
+
+  it("continues when the reply changed", () => {
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        assistantText: "next step done",
+        previousAssistantText: "first step done",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not nudge a session that is stopped or errored", () => {
+    expect(shouldContinueAgentLoop({ ...base, isSessionReady: false })).toBe(false);
+  });
+});
+
+describe("isAgentLoopBlockingReply", () => {
+  it("recognises terse provider failures", () => {
+    expect(isAgentLoopBlockingReply("Not logged in · Please run /login")).toBe(true);
+    expect(isAgentLoopBlockingReply("Unauthorized")).toBe(true);
+  });
+
+  it("does not fire on work that merely mentions authentication", () => {
+    // The guard must not end a healthy loop for talking about the wrong
+    // subject. "Refactored the rate limiter tests" contains "rate limit".
+    expect(isAgentLoopBlockingReply("Refactored the rate limiter tests")).toBe(false);
+    expect(isAgentLoopBlockingReply("I added a login form to the settings page")).toBe(false);
+  });
+
+  it("ignores a long summary that quotes an error inside it", () => {
+    // A real work summary is long; an error message is one terse line. Without
+    // the length bound, an agent reporting that it fixed a logout bug would
+    // stop its own loop.
+    const summary = `Fixed the logout path. Previously the client showed "Not logged in" ${"and kept retrying forever, ".repeat(10)}which is now handled.`;
+    expect(summary.length).toBeGreaterThan(200);
+    expect(isAgentLoopBlockingReply(summary)).toBe(false);
   });
 });
 
