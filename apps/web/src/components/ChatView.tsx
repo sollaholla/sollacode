@@ -122,6 +122,7 @@ import {
 } from "../agentMode";
 import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest";
 import { deriveProviderTasks, resolveProviderTaskPanelPlacement } from "../providerTasks";
+import { deriveDeliveredMessageIds } from "../messageDelivery";
 import { ProviderTaskChip } from "./ProviderTaskChip";
 import { ProviderTaskPanel } from "./ProviderTaskPanel";
 import { useUiStateStore } from "../uiStateStore";
@@ -2473,6 +2474,10 @@ function ChatViewContent(props: ChatViewProps) {
     readonly reject: (error: Error) => void;
   } | null>(null);
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const deliveredMessageIds = useMemo(
+    () => deriveDeliveredMessageIds(threadActivities),
+    [threadActivities],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2852,6 +2857,23 @@ function ChatViewContent(props: ChatViewProps) {
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries],
   );
+  // Rows the server has not echoed back yet, so the delivery indicator can say
+  // "sending" rather than claiming a message it has not stored was sent.
+  const pendingMessageIds = useMemo(() => {
+    const serverIds = new Set(displayServerMessages.map((message) => message.id));
+    return new Set(
+      optimisticUserMessages
+        .filter((message) => !serverIds.has(message.id))
+        .map((message) => message.id),
+    );
+  }, [displayServerMessages, optimisticUserMessages]);
+  const newestUserMessageId = useMemo(() => {
+    for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
+      const message = timelineMessages[index];
+      if (message?.role === "user") return message.id;
+    }
+    return null;
+  }, [timelineMessages]);
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
     activeThreadKey !== null && dockedDraftHeroThreadKey === activeThreadKey;
@@ -6969,6 +6991,9 @@ function ChatViewContent(props: ChatViewProps) {
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 key={routeThreadKey}
+                deliveredMessageIds={deliveredMessageIds}
+                pendingMessageIds={pendingMessageIds}
+                newestUserMessageId={newestUserMessageId}
                 isWorking={isWorking}
                 workingStatusLabel={
                   activeProviderOverloadRetrying

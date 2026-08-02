@@ -591,6 +591,26 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "message.delivered": {
+      // Recorded as an activity purely so the client can mark the message read.
+      // Clients skip this kind when rendering the work log — it is a delivery
+      // receipt, not something the user asked to watch happen.
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: {
+            messageId: event.payload.messageId,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "thread.state.changed": {
       if (event.payload.state !== "compacted") {
         return [];

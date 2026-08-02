@@ -99,6 +99,12 @@ import {
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
+  type MessageDeliveryState,
+  messageDeliveryLabel,
+  messageDeliveryState,
+  shouldShowDeliveryIndicator,
+} from "../../messageDelivery";
+import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
@@ -153,6 +159,12 @@ interface TimelineRowSharedState {
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** Message ids the provider has confirmed pulling into its agent loop. */
+  deliveredMessageIds: ReadonlySet<string>;
+  /** Only this message shows an unconfirmed indicator; see shouldShowDeliveryIndicator. */
+  newestUserMessageId: MessageId | null;
+  /** Optimistic rows the server has not echoed back yet. */
+  pendingMessageIds: ReadonlySet<string>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -181,6 +193,8 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+// Stable identity: a fresh Set here would rebuild the row context every render.
+const EMPTY_DELIVERED_MESSAGE_IDS: ReadonlySet<string> = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -208,6 +222,9 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  deliveredMessageIds?: ReadonlySet<string>;
+  newestUserMessageId?: MessageId | null;
+  pendingMessageIds?: ReadonlySet<string>;
   followEnd?: boolean;
   initialScrollAtEnd?: boolean;
   initialScrollOffset?: number | null;
@@ -253,6 +270,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
+  deliveredMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
+  newestUserMessageId = null,
+  pendingMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
   followEnd = true,
   initialScrollAtEnd = true,
   initialScrollOffset = null,
@@ -550,6 +570,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resolvedTheme,
       workspaceRoot,
       skills,
+      deliveredMessageIds,
+      newestUserMessageId,
+      pendingMessageIds,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -570,6 +593,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       resolvedTheme,
       workspaceRoot,
       skills,
+      deliveredMessageIds,
+      newestUserMessageId,
+      pendingMessageIds,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -1071,6 +1097,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const isDelivered = ctx.deliveredMessageIds.has(row.message.id);
+  const deliveryState = messageDeliveryState({
+    // Still only the client's own echo — the server has not stored it yet, so it
+    // cannot claim to have been sent. On a dropped link this can persist.
+    isOptimistic: ctx.pendingMessageIds.has(row.message.id),
+    isDelivered,
+  });
+  const showDeliveryIndicator = shouldShowDeliveryIndicator({
+    isDelivered,
+    isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
+  });
 
   return (
     <div className="group flex flex-col items-end gap-1">
@@ -1139,8 +1176,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           </div>
         ) : null}
       </div>
-      <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-        <div className="flex shrink-0 items-center gap-2">
+      <div className="flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-xs tabular-nums">
+        <div className="flex shrink-0 items-center gap-2 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
           <Tooltip>
             <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
               {formatShortTimestamp(row.message.createdAt, ctx.timestampFormat)}
@@ -1156,8 +1193,55 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             )}
           </div>
         </div>
+        {showDeliveryIndicator ? <MessageDeliveryIndicator state={deliveryState} /> : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * WhatsApp-style delivery state for a user message.
+ *
+ * One check means the orchestrator stored it; two mean the provider actually
+ * pulled it into its agent loop. The gap between them is the steering window —
+ * a message sent mid-turn waits in the prompt queue, and until now there was no
+ * way to tell a steer that had landed from one the CLI had not reached.
+ *
+ * Unlike the timestamp and copy button beside it, this is not gated on hover:
+ * an indicator you have to go looking for cannot answer "did that land?".
+ */
+function MessageDeliveryIndicator({
+  state,
+}: {
+  state: Exclude<MessageDeliveryState, "pending"> | "pending";
+}) {
+  const label = messageDeliveryLabel(state);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            className="flex shrink-0 items-center text-muted-foreground/60"
+            aria-label={label}
+            role="img"
+          />
+        }
+      >
+        {state === "pending" ? (
+          <LoaderCircleIcon className="size-3 animate-spin" aria-hidden />
+        ) : state === "read" ? (
+          // Overlapped pair, second check tucked left — the WhatsApp shape.
+          <span className="flex items-center">
+            <CheckIcon className="size-3" aria-hidden />
+            <CheckIcon className="-ms-1.5 size-3" aria-hidden />
+          </span>
+        ) : (
+          <CheckIcon className="size-3" aria-hidden />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup>{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
