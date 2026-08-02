@@ -211,6 +211,62 @@ export interface ThreadTitlePromptInput {
   policy?: TextGenerationPolicy | undefined;
 }
 
+export interface PlanRefreshPromptInput {
+  transcript: string;
+  currentSteps: ReadonlyArray<{ step: string; status: string }>;
+  policy?: TextGenerationPolicy | undefined;
+}
+
+/**
+ * Re-derive a plan's task list from the conversation.
+ *
+ * The current list is included so the model *corrects* it rather than inventing
+ * a fresh one — the point of a refresh is that finished work stops claiming to
+ * be in progress, not that the plan is replaced with something unrecognisable.
+ */
+export function buildPlanRefreshPrompt(input: PlanRefreshPromptInput) {
+  const currentList =
+    input.currentSteps.length > 0
+      ? input.currentSteps.map((entry) => `- [${entry.status}] ${entry.step}`).join("\n")
+      : "(the plan is currently empty)";
+
+  const prompt = [
+    "You maintain the task list for a coding conversation.",
+    "",
+    "Below is the current task list, followed by the recent conversation.",
+    "Update the list so it reflects what has actually happened.",
+    "",
+    "Current task list:",
+    currentList,
+    "",
+    "Recent conversation:",
+    input.transcript,
+    "",
+    "Rules:",
+    "- Mark a step completed only when the conversation shows it finished.",
+    "- At most one step should be inProgress; use it for what is being worked on now.",
+    "- Keep existing wording where the step still applies, so the list stays recognisable.",
+    "- Add steps for newly agreed work, and drop steps that were explicitly abandoned.",
+    "- Preserve the original ordering unless the conversation clearly reordered the work.",
+    "- Keep each step short and concrete.",
+    "",
+    "Return a JSON object with key: steps, an array of objects with keys step (string)",
+    'and status (one of "pending", "inProgress", "completed").',
+    ...(input.policy?.threadTitleInstructions ? ["", input.policy.threadTitleInstructions] : []),
+  ].join("\n");
+
+  const outputSchema = Schema.Struct({
+    steps: Schema.Array(
+      Schema.Struct({
+        step: Schema.String,
+        status: Schema.Literals(["pending", "inProgress", "completed"]),
+      }),
+    ),
+  });
+
+  return { prompt, outputSchema };
+}
+
 export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
   const prompt = buildPromptFromMessage({
     instruction: "You write concise thread titles for coding conversations.",

@@ -24,12 +24,14 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildPlanRefreshPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  sanitizePlanRefreshSteps,
   toJsonSchemaObject,
 } from "./TextGenerationUtils.ts";
 import {
@@ -85,7 +87,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generatePlanRefresh",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -115,7 +118,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generatePlanRefresh";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -358,10 +362,31 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
+  const generatePlanRefresh: TextGeneration.TextGeneration["Service"]["generatePlanRefresh"] =
+    Effect.fn("ClaudeTextGeneration.generatePlanRefresh")(function* (input) {
+      const { prompt, outputSchema } = buildPlanRefreshPrompt({
+        transcript: input.transcript,
+        currentSteps: input.currentSteps,
+      });
+
+      const generated = yield* runClaudeJson({
+        operation: "generatePlanRefresh",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+
+      return {
+        steps: sanitizePlanRefreshSteps(generated.steps),
+      };
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generatePlanRefresh,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

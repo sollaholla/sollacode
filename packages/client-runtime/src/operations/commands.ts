@@ -49,6 +49,7 @@ export type RespondToThreadApprovalInput = CommandInput<"thread.approval.respond
 export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.respond">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
+export type RefreshThreadPlanInput = CommandInput<"thread.plan.refresh">;
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<
@@ -307,6 +308,24 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.stop",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+/**
+ * Ask the server to re-derive the thread's task list from the conversation.
+ *
+ * Sends no message and starts no turn — the plan panel updates on its own when
+ * the refresh lands, so this is safe to trigger mid-turn.
+ */
+export const refreshThreadPlan: (input: RefreshThreadPlanInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.refreshThreadPlan",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.plan.refresh",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

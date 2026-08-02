@@ -1423,6 +1423,7 @@ function ChatViewContent(props: ChatViewProps) {
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
+  const refreshThreadPlanCommand = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -5112,7 +5113,18 @@ function ChatViewContent(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
+      if (standaloneSlashCommand === "refresh-plan") {
+        // Acts exactly like pressing the refresh button: no message is sent and
+        // the turn is untouched. Must be handled before the mode change below,
+        // which would otherwise be given a value that is not an interaction
+        // mode at all.
+        const threadId = activeThread?.id;
+        if (threadId) {
+          void refreshThreadPlanCommand({ environmentId, input: { threadId } });
+        }
+      } else {
+        handleInteractionModeChange(standaloneSlashCommand);
+      }
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();

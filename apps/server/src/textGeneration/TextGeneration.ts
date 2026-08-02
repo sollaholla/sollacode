@@ -71,6 +71,29 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export type PlanRefreshStepStatus = "pending" | "inProgress" | "completed";
+
+export interface PlanRefreshStep {
+  step: string;
+  status: PlanRefreshStepStatus;
+}
+
+export interface PlanRefreshGenerationInput {
+  cwd: string;
+  /**
+   * Recent conversation, oldest first, already trimmed by the caller. A long
+   * thread must not be pasted wholesale into the prompt.
+   */
+  transcript: string;
+  /** The list as it stands, so the model corrects rather than reinvents it. */
+  currentSteps: ReadonlyArray<PlanRefreshStep>;
+  modelSelection: ModelSelection;
+}
+
+export interface PlanRefreshGenerationResult {
+  steps: ReadonlyArray<PlanRefreshStep>;
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -78,6 +101,7 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  generatePlanRefresh(input: PlanRefreshGenerationInput): Promise<PlanRefreshGenerationResult>;
 }
 
 /**
@@ -113,6 +137,13 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+    /**
+     * Re-derive the plan's task list from the conversation so far.
+     */
+    readonly generatePlanRefresh: (
+      input: PlanRefreshGenerationInput,
+    ) => Effect.Effect<PlanRefreshGenerationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -123,7 +154,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generatePlanRefresh";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -162,6 +194,10 @@ export const makeTextGenerationFromRegistry = (
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+      ),
+    generatePlanRefresh: (input) =>
+      resolveInstance(registry, "generatePlanRefresh", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generatePlanRefresh(input)),
       ),
   });
 

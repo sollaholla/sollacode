@@ -875,9 +875,27 @@ function applyClaudeTaskToolResult(
   if (!taskId) {
     return false;
   }
-  const task = tasks.get(taskId);
+  let task = tasks.get(taskId);
   if (!task) {
-    return false;
+    // The map is per-session and is only filled by TaskCreate/TaskList, so after
+    // an app restart every TaskUpdate on a task created in an earlier session
+    // referred to something we had never seen. Dropping those left the plan
+    // panel frozen on its last snapshot while the model went on completing
+    // work. Adopt the task instead, using whatever the tool result or input
+    // gives us to name it.
+    const resultTask = readClaudeTaskFromResult(result);
+    const subject = readString(resultTask?.subject) ?? readString(tool.input.subject);
+    if (!subject) {
+      return false;
+    }
+    task = {
+      id: taskId,
+      subject,
+      status: normalizeClaudeTaskStatus(resultTask?.status),
+      blockedBy: new Set(readStringArray(resultTask?.blockedBy)),
+    };
+    tasks.set(taskId, task);
+    changed = true;
   }
   const subject = readString(tool.input.subject);
   if (subject && task.subject !== subject) {

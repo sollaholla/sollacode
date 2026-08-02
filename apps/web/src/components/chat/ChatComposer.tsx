@@ -221,6 +221,8 @@ import { providerSupportsConfigurableAutoCompaction } from "./ContextWindowMeter
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 import { buildQuotedPrompt, useComposerQuoteStore } from "../../composerQuote";
@@ -803,6 +805,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
   const updateEnvironmentSettings = useUpdateEnvironmentSettings(environmentId);
+  const refreshThreadPlanCommand = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
   const onAutoCompactionThresholdChange = useCallback(
     (value: UnifiedSettings["autoCompactionThresholdPercentage"]) => {
       updateEnvironmentSettings({ autoCompactionThresholdPercentage: value });
@@ -1272,6 +1275,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "default",
           label: "/default",
           description: "Switch this thread back to normal build mode",
+        },
+        {
+          id: "slash:refresh-plan",
+          type: "slash-command",
+          command: "refresh-plan",
+          label: "/refresh-plan",
+          description: "Re-read the conversation and update the task list",
         },
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
       const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
@@ -1900,6 +1910,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (applied) {
             setComposerHighlightedItemId(null);
             setIsComposerModelPickerOpen(true);
+          }
+          return;
+        }
+        if (item.command === "refresh-plan") {
+          // Performs the action directly — no message is sent and the turn is
+          // untouched. Handled before the mode-change fall-through below, which
+          // would otherwise read any unknown command as "default" and quietly
+          // switch the thread out of its current mode.
+          const threadId = activeThread?.id;
+          if (threadId) {
+            void refreshThreadPlanCommand({ environmentId, input: { threadId } });
+          }
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
           }
           return;
         }

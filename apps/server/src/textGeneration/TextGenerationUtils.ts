@@ -63,6 +63,46 @@ export function sanitizeThreadTitle(raw: string): string {
   return `${normalized.slice(0, 47).trimEnd()}...`;
 }
 
+const PLAN_REFRESH_MAX_STEPS = 40;
+const PLAN_REFRESH_MAX_STEP_CHARS = 200;
+
+/**
+ * Normalizes a generated task list before it replaces the visible plan.
+ *
+ * The model is asked for a bounded, well-formed list, but the plan panel is
+ * user-facing state and a bad generation should degrade rather than corrupt it:
+ * blank steps are dropped, runaway text is truncated, and the count is capped.
+ * More than one `inProgress` is collapsed to the first, since the panel's whole
+ * reading is "this is the thing being worked on now".
+ */
+export function sanitizePlanRefreshSteps(
+  raw: ReadonlyArray<{ step: string; status: "pending" | "inProgress" | "completed" }>,
+): ReadonlyArray<{ step: string; status: "pending" | "inProgress" | "completed" }> {
+  const steps: Array<{ step: string; status: "pending" | "inProgress" | "completed" }> = [];
+  let seenInProgress = false;
+
+  for (const entry of raw) {
+    const text = entry.step.replace(/\s+/g, " ").trim();
+    if (text.length === 0) continue;
+
+    const step =
+      text.length <= PLAN_REFRESH_MAX_STEP_CHARS
+        ? text
+        : `${text.slice(0, PLAN_REFRESH_MAX_STEP_CHARS - 3).trimEnd()}...`;
+
+    let status = entry.status;
+    if (status === "inProgress") {
+      if (seenInProgress) status = "pending";
+      else seenInProgress = true;
+    }
+
+    steps.push({ step, status });
+    if (steps.length >= PLAN_REFRESH_MAX_STEPS) break;
+  }
+
+  return steps;
+}
+
 /** CLI name to human-readable label, e.g. "codex" → "Codex CLI (`codex`)" */
 function cliLabel(cliName: string): string {
   const capitalized = cliName.charAt(0).toUpperCase() + cliName.slice(1);
