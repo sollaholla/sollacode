@@ -95,21 +95,47 @@ describe("shouldShowDeliveryIndicator", () => {
   it("hides older messages that were never tracked", () => {
     // Everything predating the feature has no receipt. Rendering a single check
     // there would claim "sent but never read", which is worse than silence.
-    expect(shouldShowDeliveryIndicator({ isDelivered: false, isNewestUserMessage: false })).toBe(
-      false,
-    );
+    expect(
+      shouldShowDeliveryIndicator({
+        isDelivered: false,
+        isNewestUserMessage: false,
+        threadReportsDelivery: true,
+      }),
+    ).toBe(false);
   });
 
   it("shows the newest message while it could still be in flight", () => {
-    expect(shouldShowDeliveryIndicator({ isDelivered: false, isNewestUserMessage: true })).toBe(
-      true,
-    );
+    expect(
+      shouldShowDeliveryIndicator({
+        isDelivered: false,
+        isNewestUserMessage: true,
+        threadReportsDelivery: true,
+      }),
+    ).toBe(true);
   });
 
   it("always shows a confirmed receipt, however old", () => {
-    expect(shouldShowDeliveryIndicator({ isDelivered: true, isNewestUserMessage: false })).toBe(
-      true,
-    );
+    expect(
+      shouldShowDeliveryIndicator({
+        isDelivered: true,
+        isNewestUserMessage: false,
+        threadReportsDelivery: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("shows nothing at all against a server that never reports delivery", () => {
+    // The remote-host case: the receipt is emitted by whichever server runs the
+    // provider session, so an older server on the far end emits none. Without
+    // this the newest message sits on a single check reading "waiting for the
+    // CLI" forever, describing a stall that is not happening.
+    expect(
+      shouldShowDeliveryIndicator({
+        isDelivered: false,
+        isNewestUserMessage: true,
+        threadReportsDelivery: false,
+      }),
+    ).toBe(false);
   });
 });
 

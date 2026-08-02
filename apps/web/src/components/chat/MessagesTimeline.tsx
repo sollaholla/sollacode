@@ -103,6 +103,7 @@ import {
   messageDeliveryLabel,
   messageDeliveryState,
   shouldShowDeliveryIndicator,
+  threadReportsDelivery,
 } from "../../messageDelivery";
 import {
   deriveDisplayedUserMessageState,
@@ -1107,6 +1108,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const showDeliveryIndicator = shouldShowDeliveryIndicator({
     isDelivered,
     isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
+    threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
   });
 
   return (
