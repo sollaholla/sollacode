@@ -2495,7 +2495,6 @@ function ChatViewContent(props: ChatViewProps) {
   const providerTaskPanelPlacement = resolveProviderTaskPanelPlacement({
     hasTasks: providerTasks.length > 0,
     rightPanelOpen,
-    useSheetLayout: shouldUsePlanSidebarSheet,
   });
   // Flashed after the chip is clicked so the panel is findable in a column that
   // may already hold several tabs.
@@ -2512,11 +2511,7 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThreadRef, setRightPanelOpen]);
   const providerTaskPanel =
     providerTaskPanelPlacement === "hidden" ? null : (
-      <ProviderTaskPanel
-        placement={providerTaskPanelPlacement}
-        tasks={providerTasks}
-        highlighted={providerTasksHighlighted}
-      />
+      <ProviderTaskPanel tasks={providerTasks} highlighted={providerTasksHighlighted} />
     );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
@@ -7412,8 +7407,6 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
-      {providerTaskPanelPlacement === "fullscreen" ? providerTaskPanel : null}
-
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
@@ -7464,6 +7457,7 @@ function ChatViewContent(props: ChatViewProps) {
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
+            footer={providerTaskPanelPlacement === "split" ? providerTaskPanel : null}
           >
             {rightPanelContent}
           </RightPanelTabs>

@@ -130,50 +130,25 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(shouldShowProviderTaskPanel(tasks), false);
   });
 
-  it("shares the inline right panel column on desktop", () => {
+  it("shares the right panel (column or sheet) whenever it is open", () => {
     NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: true,
-        rightPanelOpen: true,
-        useSheetLayout: false,
-      }),
+      resolveProviderTaskPanelPlacement({ hasTasks: true, rightPanelOpen: true }),
       "split",
-    );
-  });
-
-  it("takes the whole screen on mobile rather than covering part of it", () => {
-    NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: true,
-        rightPanelOpen: true,
-        useSheetLayout: true,
-      }),
-      "fullscreen",
     );
   });
 
   it("never renders while the right panel is collapsed", () => {
     // Bound to the right panel so it can never overlay the conversation —
     // collapsing that panel is the user's existing "give me my screen back".
-    for (const useSheetLayout of [false, true]) {
-      NodeAssert.equal(
-        resolveProviderTaskPanelPlacement({
-          hasTasks: true,
-          rightPanelOpen: false,
-          useSheetLayout,
-        }),
-        "hidden",
-      );
-    }
+    NodeAssert.equal(
+      resolveProviderTaskPanelPlacement({ hasTasks: true, rightPanelOpen: false }),
+      "hidden",
+    );
   });
 
   it("hides the panel only when there is nothing to show", () => {
     NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: false,
-        rightPanelOpen: true,
-        useSheetLayout: false,
-      }),
+      resolveProviderTaskPanelPlacement({ hasTasks: false, rightPanelOpen: true }),
       "hidden",
     );
   });

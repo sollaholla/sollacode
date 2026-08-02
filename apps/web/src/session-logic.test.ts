@@ -691,8 +691,8 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("derives Token Optimizer metrics and generated-page references", () => {
-    const [entry] = deriveWorkLogEntries([
+  it("keeps Token Optimizer summaries out of the visible work log", () => {
+    const entries = deriveWorkLogEntries([
       makeActivity({
         id: "optimizer",
         kind: "token-optimizer.applied",
@@ -715,20 +715,7 @@ describe("deriveWorkLogEntries", () => {
       }),
     ]);
 
-    expect(entry).toMatchObject({
-      label: "Optimized 2 pages · saved ~1,200 tokens",
-      sourceActivityKind: "token-optimizer.applied",
-      tokenOptimizer: {
-        model: "claude-fable-5",
-        compressedChars: 42_000,
-        pageCount: 2,
-        estimatedTokensSaved: 4_200,
-        attachments: [
-          { id: "thread-1-page-1", name: "token-optimizer-page-1.png" },
-          { id: "thread-1-page-2", name: "token-optimizer-page-2.png" },
-        ],
-      },
-    });
+    expect(entries).toEqual([]);
   });
 
   it("hides provider usage refresh success activities while keeping other activity rows", () => {
