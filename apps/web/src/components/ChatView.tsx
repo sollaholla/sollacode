@@ -121,7 +121,12 @@ import {
   shouldContinueAgentLoop,
 } from "../agentMode";
 import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest";
-import { deriveProviderTasks, resolveProviderTaskPanelPlacement } from "../providerTasks";
+import {
+  applyProviderTaskDismissals,
+  deriveProviderTasks,
+  resolveProviderTaskPanelPlacement,
+} from "../providerTasks";
+import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
 import { deriveDeliveredMessageIds } from "../messageDelivery";
 import { ProviderTaskChip } from "./ProviderTaskChip";
 import { ProviderTaskPanel } from "./ProviderTaskPanel";
@@ -2495,9 +2500,17 @@ function ChatViewContent(props: ChatViewProps) {
     const timer = setInterval(() => setProviderTaskNowMs(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
+  // Filtered here rather than inside the panel so the composer chip's count and
+  // the panel agree — dismissing a task has to remove it from both, or the chip
+  // keeps advertising work the user just hid.
+  const providerTaskDismissals = useProviderTaskDismissalStore((state) => state.dismissals);
   const providerTasks = useMemo(
-    () => deriveProviderTasks(threadActivities, { nowMs: providerTaskNowMs }),
-    [providerTaskNowMs, threadActivities],
+    () =>
+      applyProviderTaskDismissals(
+        deriveProviderTasks(threadActivities, { nowMs: providerTaskNowMs }),
+        providerTaskDismissals,
+      ),
+    [providerTaskDismissals, providerTaskNowMs, threadActivities],
   );
   const providerTaskPanelPlacement = resolveProviderTaskPanelPlacement({
     hasTasks: providerTasks.length > 0,

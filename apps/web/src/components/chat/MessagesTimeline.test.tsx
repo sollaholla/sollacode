@@ -545,12 +545,12 @@ describe("MessagesTimeline", () => {
 
     // The collapsed target stays narrow, but an open preview keeps its full
     // 20rem width plus the 2rem offset from the minimap rail interactive.
-    expect(resolveTimelineMinimapInteractiveWidth(0, false)).toBe(0);
-    expect(resolveTimelineMinimapInteractiveWidth(14, false)).toBe(14);
-    expect(resolveTimelineMinimapInteractiveWidth(40, false)).toBe(40);
-    expect(resolveTimelineMinimapInteractiveWidth(0, true)).toBe("22rem");
-    expect(resolveTimelineMinimapInteractiveWidth(14, true)).toBe("22rem");
-    expect(resolveTimelineMinimapInteractiveWidth(40, true)).toBe("22rem");
+    // The hit area never grows. It used to widen to 22rem while a preview was
+    // open, which put a block over the conversation that swallowed clicks and
+    // kept the preview open until the pointer left all of it.
+    expect(resolveTimelineMinimapInteractiveWidth(0)).toBe(0);
+    expect(resolveTimelineMinimapInteractiveWidth(14)).toBe(14);
+    expect(resolveTimelineMinimapInteractiveWidth(40)).toBe(40);
   });
 
   it("disables LegendList live-follow after the user opts out during streaming", () => {
