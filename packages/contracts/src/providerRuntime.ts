@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import {
   EventId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProviderItemId,
   PositiveInt,
@@ -191,6 +192,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "config.warning",
   "deprecation.notice",
   "files.persisted",
+  "message.delivered",
   "runtime.warning",
   "runtime.error",
 ]);
@@ -241,6 +243,7 @@ const ModelReroutedType = Schema.Literal("model.rerouted");
 const ConfigWarningType = Schema.Literal("config.warning");
 const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
+const MessageDeliveredType = Schema.Literal("message.delivered");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
@@ -465,6 +468,21 @@ const TaskStartedPayload = Schema.Struct({
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
+
+/**
+ * The provider pulled a queued user message into its agent loop.
+ *
+ * This is the "read" half of the delivery indicator, and it is deliberately a
+ * positive signal rather than something the client infers. A message sent while
+ * a turn is running is a steer: it waits in the prompt queue, and the turn keeps
+ * emitting output from work that predates it. Treating that output as proof of
+ * delivery would light the second checkmark before the provider had seen the
+ * message at all — exactly the question the indicator exists to answer.
+ */
+const MessageDeliveredPayload = Schema.Struct({
+  messageId: MessageId,
+});
+export type MessageDeliveredPayload = typeof MessageDeliveredPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
@@ -828,6 +846,13 @@ const ProviderRuntimeTaskStartedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTaskStartedEvent = typeof ProviderRuntimeTaskStartedEvent.Type;
 
+const ProviderRuntimeMessageDeliveredEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: MessageDeliveredType,
+  payload: MessageDeliveredPayload,
+});
+export type ProviderRuntimeMessageDeliveredEvent = typeof ProviderRuntimeMessageDeliveredEvent.Type;
+
 const ProviderRuntimeTaskProgressEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskProgressType,
@@ -996,6 +1021,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskCompletedEvent,
+  ProviderRuntimeMessageDeliveredEvent,
   ProviderRuntimeHookStartedEvent,
   ProviderRuntimeHookProgressEvent,
   ProviderRuntimeHookCompletedEvent,

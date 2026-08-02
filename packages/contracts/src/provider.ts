@@ -4,6 +4,7 @@ import {
   ApprovalRequestId,
   EventId,
   IsoDateTime,
+  MessageId,
   ProviderItemId,
   ThreadId,
   TurnId,
@@ -69,6 +70,15 @@ export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * The message this turn was started from, when the caller knows it.
+   *
+   * Carried purely so the adapter can report back when the provider actually
+   * consumes the prompt. Optional because the id is not required to run a turn,
+   * and older callers omit it — a missing id costs the delivery indicator, not
+   * the turn.
+   */
+  messageId: Schema.optional(MessageId),
   input: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),

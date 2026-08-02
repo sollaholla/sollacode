@@ -13,6 +13,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { MESSAGE_DELIVERED_ACTIVITY_KIND } from "./messageDelivery";
 import { normalizeEmbeddedWindowsAbsolutePath } from "@t3tools/shared/path";
 
 import type {
@@ -657,6 +658,10 @@ export function deriveWorkLogEntries(
     if (activity.kind === "context-window.updated") continue;
     // Optimizer summaries are background-only telemetry now; skip persisted ones too.
     if (activity.kind === "token-optimizer.applied") continue;
+    // A delivery receipt drives the message checkmarks, nothing else. Rendered
+    // here it would add a line per message — the same noise that got the
+    // optimizer summary pulled out of the log.
+    if (activity.kind === MESSAGE_DELIVERED_ACTIVITY_KIND) continue;
     if (activity.kind === "provider.usage.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;

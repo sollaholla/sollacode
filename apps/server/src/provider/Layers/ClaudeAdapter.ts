@@ -28,6 +28,7 @@ import {
   type CanonicalRequestType,
   type ClaudeSettings,
   EventId,
+  type MessageId,
   type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -125,6 +126,11 @@ type PromptQueueItem =
   | {
       readonly type: "message";
       readonly message: SDKUserMessage;
+      /**
+       * Set when the caller knew which message this prompt came from, so the
+       * moment the SDK pulls it off the queue can be reported as delivered.
+       */
+      readonly messageId?: MessageId;
     }
   | {
       readonly type: "terminate";
@@ -3350,6 +3356,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
       const prompt = Stream.fromQueue(promptQueue).pipe(
         Stream.filter((item) => item.type === "message"),
+        // The SDK pulls from this iterable, so an item leaving here is the
+        // moment the prompt actually enters the agent loop — the only honest
+        // basis for "read". While a turn is running the pull can lag the send
+        // by many seconds, and that gap is exactly what the UI reports.
+        Stream.tap((item) => {
+          const messageId = item.messageId;
+          if (messageId === undefined) return Effect.void;
+          return Effect.gen(function* () {
+            const stamp = yield* makeEventStamp();
+            yield* offerRuntimeEvent({
+              type: "message.delivered",
+              eventId: stamp.eventId,
+              provider: PROVIDER,
+              createdAt: stamp.createdAt,
+              threadId,
+              payload: { messageId },
+              providerRefs: {},
+            });
+          });
+        }),
         Stream.map((item) => item.message),
         Stream.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause) ? Stream.empty : Stream.failCause(cause),
@@ -4108,6 +4134,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     yield* Queue.offer(context.promptQueue, {
       type: "message",
       message,
+      ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
     }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
 
     return {
