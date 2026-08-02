@@ -104,15 +104,22 @@ export function resolveTimelineMinimapHitStripWidth(viewportWidth: number): numb
 }
 
 /**
- * Once the preview is open, keep the full preview and the space leading to it
- * interactive. The collapsed strip remains gutter-capped so it cannot block
- * selecting message text.
+ * The minimap's hit area, which never grows.
+ *
+ * This used to widen to {@link TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH} while
+ * a preview was open, so the pointer could travel into the card and select its
+ * text. The cost was severe and outweighed the benefit: the hover region became
+ * a 22rem block sitting over the conversation, so it swallowed clicks meant for
+ * the transcript, and `onMouseLeave` — the only thing that closes the preview —
+ * could not fire until the pointer left that entire block. Moving off the tick
+ * row left the card up, covering the chat, until the pointer travelled far
+ * enough right to escape.
+ *
+ * The preview is now non-interactive instead, so leaving the strip closes it
+ * immediately and nothing overlays the conversation.
  */
-export function resolveTimelineMinimapInteractiveWidth(
-  collapsedWidth: number,
-  expanded: boolean,
-): number | string {
-  return expanded ? TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH : collapsedWidth;
+export function resolveTimelineMinimapInteractiveWidth(collapsedWidth: number): number {
+  return collapsedWidth;
 }
 
 function computeElapsedMs(startIso: string, endIso: string): number | null {

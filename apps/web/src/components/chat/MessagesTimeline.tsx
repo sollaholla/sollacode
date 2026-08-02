@@ -806,10 +806,6 @@ function resolveTimelineRowHeight(state: TimelinePositionState, rowIndex: number
   return typeof height === "number" && Number.isFinite(height) ? height : null;
 }
 
-function timelineMinimapEventTargetsPreview(target: EventTarget): boolean {
-  return target instanceof Element && target.closest("[data-minimap-preview]") !== null;
-}
-
 function TimelineMinimap({
   bottomInset,
   hasPersistentGutter,
@@ -903,9 +899,6 @@ function TimelineMinimap({
           )}
           onBlur={() => setActiveIndex(null)}
           onClick={(event) => {
-            if (timelineMinimapEventTargetsPreview(event.target)) {
-              return;
-            }
             const nextIndex = resolveActiveIndexFromPointer(event);
             const nextItem = nextIndex === null ? null : (items[nextIndex] ?? null);
             if (nextItem) {
@@ -937,14 +930,11 @@ function TimelineMinimap({
           onMouseLeave={() => setActiveIndex(null)}
           onMouseMove={updateActiveIndexFromPointer}
           onMouseDown={(event) => {
-            if (timelineMinimapEventTargetsPreview(event.target)) {
-              return;
-            }
             event.preventDefault();
           }}
           style={{
             height: resolveTimelineMinimapHeightStyle(items.length),
-            width: resolveTimelineMinimapInteractiveWidth(hitStripWidth, activeItem !== null),
+            width: resolveTimelineMinimapInteractiveWidth(hitStripWidth),
           }}
           type="button"
         >
@@ -982,9 +972,14 @@ function TimelineMinimap({
           })}
           {activeItem ? (
             <span
-              className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"
+              // Non-interactive on purpose. While this accepted pointer events
+              // the strip had to widen to reach it, which put a 22rem block over
+              // the conversation that ate clicks and held the preview open until
+              // the pointer left the whole block. Ignoring the pointer means the
+              // card closes the moment you leave the tick row, and never blocks
+              // anything underneath.
+              className="pointer-events-none absolute left-8 w-80"
               data-minimap-preview
-              onMouseMove={(event) => event.stopPropagation()}
               style={{
                 top: `${activeTopPercent}%`,
                 transform: `translateY(${activeTooltipTranslate})`,

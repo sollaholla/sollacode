@@ -6,12 +6,15 @@ import {
   CircleX,
   LoaderCircle,
   MinusCircle,
+  X,
 } from "lucide-react";
 import { useState } from "react";
 
 import {
   PROVIDER_TASK_PAGE_SIZE,
   countActiveProviderTasks,
+  dismissableProviderTaskIds,
+  hasDismissableProviderTasks,
   isProviderTaskActive,
   pageProviderTasks,
   providerTaskStatusLabel,
@@ -19,6 +22,7 @@ import {
   type ProviderTask,
   type ProviderTaskPanelPlacement,
 } from "../providerTasks";
+import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 
@@ -59,6 +63,8 @@ export function ProviderTaskPanel(props: {
   readonly highlighted: boolean;
 }) {
   const activeCount = countActiveProviderTasks(props.tasks);
+  const dismissTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
+  const canClear = hasDismissableProviderTasks(props.tasks);
   const isFullscreen = props.placement === "fullscreen";
   const [requestedPage, setRequestedPage] = useState(0);
   // Clamped inside the helper, so the list ageing out from under a held page
@@ -101,13 +107,24 @@ export function ProviderTaskPanel(props: {
             {activeCount > 0 ? `Agents & tasks · ${activeCount} running` : "Agents & tasks"}
           </h2>
         </div>
-        {/*
-         * No dismiss control by design. Background work runs whether or not
-         * this is looked at, and a hide button would let live work be pushed
-         * out of sight. Collapsing the right panel is the way to reclaim the
-         * space, and the composer chip brings it back.
-         */}
-        <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{total}</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/*
+           * Clears finished, failed, stopped and stale rows — never running
+           * ones. A bulk control gets used without reading the list, so it must
+           * not be able to hide work that is still going.
+           */}
+          {canClear ? (
+            <button
+              type="button"
+              onClick={() => dismissTasks(dismissableProviderTaskIds(props.tasks))}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="Dismiss finished, failed and stale tasks. Running work is kept."
+            >
+              Clear
+            </button>
+          ) : null}
+          <span className="text-[11px] text-muted-foreground tabular-nums">{total}</span>
+        </div>
       </header>
 
       <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
@@ -127,6 +144,25 @@ export function ProviderTaskPanel(props: {
                   </p>
                 ) : null}
               </div>
+              {/*
+               * Hides the row; it does not stop the work, and is labelled that
+               * way rather than "Cancel" because there is no cancel channel for
+               * provider-side tasks and a button claiming otherwise would lie.
+               * Safe on a live task: anything that reports again comes back.
+               */}
+              <button
+                type="button"
+                onClick={() => dismissTasks([task.taskId])}
+                aria-label={`Dismiss ${task.title}`}
+                title={
+                  task.status === "running"
+                    ? "Hide this row. It does not stop the task — if it is still alive it will reappear when it next reports."
+                    : "Hide this row."
+                }
+                className="-me-0.5 -mt-0.5 shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+              >
+                <X aria-hidden className="size-3.5" />
+              </button>
             </div>
           </li>
         ))}

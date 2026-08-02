@@ -208,6 +208,75 @@ export function isProviderTaskActive(task: ProviderTask): boolean {
   return task.status === "running";
 }
 
+/**
+ * Tasks the user has hidden, as taskId → the timestamp they hid it at.
+ *
+ * The list is folded from an append-only activity stream, so there is nothing to
+ * delete: a task can only be hidden, and the record of hiding it has to live on
+ * the client.
+ */
+export type ProviderTaskDismissals = Readonly<Record<string, string>>;
+
+/**
+ * Hides dismissed tasks — unless the task has reported since being dismissed.
+ *
+ * That exception is the point. A runtime that dies mid-turn leaves a task
+ * claiming to run forever, and dismissing it must be permanent or it was not
+ * worth offering. But the user cannot know for certain that a task is dead, so
+ * dismissing genuinely-live work must not silently discard it: the next event
+ * that task emits proves it is alive and brings the row back. A ghost emits
+ * nothing and stays gone.
+ */
+export function applyProviderTaskDismissals(
+  tasks: ReadonlyArray<ProviderTask>,
+  dismissals: ProviderTaskDismissals,
+): ReadonlyArray<ProviderTask> {
+  return tasks.filter((task) => {
+    const dismissedAt = dismissals[task.taskId];
+    if (dismissedAt === undefined) return true;
+    // Reappear only on evidence *newer* than the dismissal.
+    return task.updatedAt > dismissedAt;
+  });
+}
+
+/**
+ * The tasks a "clear" action should hide: everything not confidently running.
+ *
+ * Running work is deliberately excluded. A bulk control is used without reading
+ * the rows, and silently hiding live work would defeat the panel's only job;
+ * anything genuinely finished, failed, stopped, or gone quiet is fair game.
+ */
+export function dismissableProviderTaskIds(
+  tasks: ReadonlyArray<ProviderTask>,
+): ReadonlyArray<string> {
+  return tasks.filter((task) => task.status !== "running").map((task) => task.taskId);
+}
+
+export function hasDismissableProviderTasks(tasks: ReadonlyArray<ProviderTask>): boolean {
+  return tasks.some((task) => task.status !== "running");
+}
+
+/**
+ * Drops dismissals for tasks that have aged out of the panel anyway.
+ *
+ * Without this the record grows for the lifetime of the install, storing keys
+ * for tasks that can never be rendered again.
+ */
+export function pruneProviderTaskDismissals(
+  dismissals: ProviderTaskDismissals,
+  options?: { readonly nowMs?: number },
+): ProviderTaskDismissals {
+  const nowMs = options?.nowMs ?? Date.now();
+  const kept: Record<string, string> = {};
+  for (const [taskId, dismissedAt] of Object.entries(dismissals)) {
+    const dismissedMs = Date.parse(dismissedAt);
+    if (Number.isNaN(dismissedMs)) continue;
+    if (nowMs - dismissedMs > PROVIDER_TASK_MAX_AGE_MS) continue;
+    kept[taskId] = dismissedAt;
+  }
+  return kept;
+}
+
 export function countActiveProviderTasks(tasks: ReadonlyArray<ProviderTask>): number {
   return tasks.filter(isProviderTaskActive).length;
 }
