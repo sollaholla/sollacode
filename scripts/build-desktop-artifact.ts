@@ -1673,6 +1673,16 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
+  if (options.version !== undefined && options.version !== serverPackageJson.version) {
+    // The server bakes its reported version in from apps/server/package.json at
+    // build time (a static import in ServerEnvironment.ts), so this flag can
+    // rename the artifact but cannot change what the server tells clients.
+    // Overriding it therefore *creates* the version drift the banner reports.
+    // Real version bumps belong in package.json.
+    yield* Effect.logWarning(
+      `[desktop-artifact] Requested version ${options.version} differs from apps/server/package.json (${serverPackageJson.version}). The running server will still report ${serverPackageJson.version}, which clients will read as version drift. Bump the package versions instead.`,
+    );
+  }
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
@@ -1696,6 +1706,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: repoRoot,
         shell: spawnCommand.shell,
+        // The web bundle bakes its version in at build time from
+        // `process.env.APP_VERSION || pkg.version` (apps/web/vite.config.ts).
+        // Without this it fell back to apps/web's own package version, which
+        // drifted from the server's and left every build reporting a permanent
+        // "Version drift: client X, server Y" banner that no rebuild could fix.
+        env: { ...process.env, APP_VERSION: appVersion },
       }),
       { label: "vp run build:desktop", verbose: options.verbose },
     );

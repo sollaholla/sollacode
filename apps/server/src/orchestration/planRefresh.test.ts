@@ -3,9 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { buildPlanRefreshTranscript, derivePlanRefreshCurrentSteps } from "./planRefresh.ts";
 
+let activitySeq = 0;
+
 function activity(kind: string, payload: unknown): OrchestrationThreadActivity {
+  activitySeq += 1;
   return {
-    id: `event-${kind}-${Math.random()}`,
+    id: `event-${kind}-${activitySeq}`,
     tone: "info",
     kind,
     summary: kind,
