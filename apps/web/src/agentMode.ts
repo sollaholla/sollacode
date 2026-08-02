@@ -75,6 +75,36 @@ export function shouldContinueAgentLoop(input: {
   return !containsAgentStopToken(text);
 }
 
+export interface AgentLoopMessageView {
+  readonly role: string;
+  readonly streaming?: boolean;
+  readonly text?: string;
+}
+
+/**
+ * The text the loop decision is allowed to inspect.
+ *
+ * Only the newest assistant message is a candidate. Skipping past it to an
+ * older, already-final message would let the decision read the PREVIOUS
+ * turn's text during the window where the turn has settled but the final
+ * message's streaming flag has not flipped yet — which is exactly how a stop
+ * token gets missed and a turn that asked to end is nudged anyway. `null`
+ * means "not readable yet": the caller must wait for the flags to agree, not
+ * fall back to stale text. No assistant message at all reads as empty, which
+ * the loop already refuses to continue on.
+ */
+export function selectAgentLoopAssistantText(
+  messages: ReadonlyArray<AgentLoopMessageView>,
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined || message.role !== "assistant") continue;
+    if (message.streaming === true) return null;
+    return message.text ?? "";
+  }
+  return "";
+}
+
 const RECOMMENDED_MARKER = /\(recommended\)/iu;
 
 /**

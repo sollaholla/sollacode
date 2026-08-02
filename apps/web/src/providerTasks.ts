@@ -250,19 +250,35 @@ export function shouldShowProviderTaskPanel(tasks: ReadonlyArray<ProviderTask>):
 }
 
 /**
- * Where the task panel renders. `split` shares the right panel column (or
- * sheet on phones) with the surface tabs; `hidden` when there is nothing to
- * show or the panel is collapsed.
+ * Where the panel renders.
+ *
+ * The panel is bound to the right panel: it never overlays the conversation.
+ * An earlier floating placement covered links and text in the transcript, which
+ * is worse than not seeing task state at all — the conversation is the thing
+ * the user is actually reading.
+ *
+ * `split` takes the lower half of the inline right panel column, so it costs
+ * the conversation no width. `fullscreen` is the mobile form: there is no
+ * column to share on a phone, and a small overlay there would cover almost
+ * everything anyway, so it takes the whole screen and is dismissed back to the
+ * app deliberately.
+ *
+ * Right panel collapsed means hidden, full stop. That is the user's existing
+ * control for "give me my screen back", and this reuses it rather than adding
+ * a second one — which is also why the panel itself has no dismiss control:
+ * background work keeps running whether or not the panel is looked at, and a
+ * separate "hide" would let it be dismissed into invisibility while live.
  */
-export type ProviderTaskPanelPlacement = "hidden" | "split";
+export type ProviderTaskPanelPlacement = "hidden" | "fullscreen" | "split";
 
 export function resolveProviderTaskPanelPlacement(input: {
   readonly hasTasks: boolean;
   readonly rightPanelOpen: boolean;
+  readonly useSheetLayout: boolean;
 }): ProviderTaskPanelPlacement {
   if (!input.hasTasks) return "hidden";
   if (!input.rightPanelOpen) return "hidden";
-  return "split";
+  return input.useSheetLayout ? "fullscreen" : "split";
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {
