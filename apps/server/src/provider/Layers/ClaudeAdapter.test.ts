@@ -64,6 +64,18 @@ describe("Claude result interruption classification", () => {
     );
   });
 
+  it("recognizes an abort that landed mid-tool-call as interruption", () => {
+    assert.equal(
+      isClaudeInterruptedResult({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+      } as unknown as SDKMessage & Parameters<typeof isClaudeInterruptedResult>[0]),
+      true,
+    );
+  });
+
   it("does not suppress an unrelated provider execution failure", () => {
     assert.equal(
       isClaudeInterruptedResult({

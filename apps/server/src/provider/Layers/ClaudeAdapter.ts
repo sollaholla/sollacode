@@ -340,12 +340,18 @@ function isClaudeUserAbortDiagnostic(result: SDKResultMessage): boolean {
   const raw = result as unknown as Record<string, unknown>;
   const terminalReason = typeof raw.terminal_reason === "string" ? raw.terminal_reason : "";
   const errors = resultErrorsText(result);
-  return (
-    result.subtype === "error_during_execution" &&
-    terminalReason === "aborted_streaming" &&
-    errors.includes("[ede_diagnostic]") &&
-    errors.includes("result_type=user")
-  );
+  if (
+    result.subtype !== "error_during_execution" ||
+    !errors.includes("[ede_diagnostic]") ||
+    !errors.includes("result_type=user")
+  ) {
+    return false;
+  }
+  // `stop_reason=tool_use` means the session was torn down while a tool call
+  // was still in flight — only an external abort (user Stop, process teardown)
+  // produces that shape, so treat it as an interruption regardless of
+  // terminal_reason.
+  return terminalReason === "aborted_streaming" || errors.includes("stop_reason=tool_use");
 }
 
 export function isClaudeInterruptedResult(result: SDKResultMessage): boolean {
