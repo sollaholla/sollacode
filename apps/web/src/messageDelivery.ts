@@ -82,8 +82,20 @@ export function threadReportsDelivery(delivered: ReadonlySet<string>): boolean {
 export function shouldShowDeliveryIndicator(input: {
   readonly isDelivered: boolean;
   readonly isNewestUserMessage: boolean;
+  /**
+   * Whether this thread has ever produced a receipt — see
+   * {@link threadReportsDelivery}.
+   */
+  readonly threadReportsDelivery: boolean;
 }): boolean {
-  return input.isDelivered || input.isNewestUserMessage;
+  // A confirmed receipt is always worth showing.
+  if (input.isDelivered) return true;
+  // An unconfirmed one is only honest when receipts are known to arrive here.
+  // A server that never emits them — an older build, which for a remote
+  // environment is the *remote* machine's server rather than this one — would
+  // otherwise leave the newest message sitting on a single check reading
+  // "waiting for the CLI" forever, describing a stall that is not happening.
+  return input.isNewestUserMessage && input.threadReportsDelivery;
 }
 
 export function messageDeliveryLabel(state: MessageDeliveryState): string {
