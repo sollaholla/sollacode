@@ -50,28 +50,148 @@ export function isAgentMode(mode: ProviderInteractionMode | undefined): boolean 
  * something needs a human, and an empty reply usually signals the provider is
  * wedged rather than working.
  */
-export function shouldContinueAgentLoop(input: {
+/**
+ * Nudges are one per completed turn, but a provider that fails instantly mints a
+ * fresh turn for every nudge, so per-turn keying alone is no brake at all. This
+ * is the floor between consecutive nudges: below it, something is failing fast
+ * rather than working.
+ */
+export const AGENT_LOOP_MIN_NUDGE_INTERVAL_MS = 4_000;
+
+/**
+ * How many turns the loop may drive without the user touching it.
+ *
+ * The mode is meant to be unattended, so this is deliberately generous — but it
+ * is not unbounded, because "unbounded" is indistinguishable from "runaway" when
+ * something upstream is broken, and the user is not necessarily watching.
+ */
+export const AGENT_LOOP_MAX_CONSECUTIVE_NUDGES = 50;
+
+/**
+ * Provider-level failures that repeat identically forever.
+ *
+ * These come back instantly, so the loop retries at full speed and floods the
+ * thread — this is what filled a conversation with hundreds of identical nudges
+ * after a logout. None of them can be resolved by trying again; they all need
+ * the user.
+ */
+const AGENT_LOOP_BLOCKING_SIGNATURES = [
+  /\bnot logged in\b/i,
+  /\bplease run\s+\/login\b/i,
+  /\bsession (has )?expired\b/i,
+  /\bunauthorized\b/i,
+  /\bauthentication (failed|required)\b/i,
+  /\binvalid api key\b/i,
+  /\bcredit balance is too low\b/i,
+  /\b(quota|rate limit) exceeded\b/i,
+];
+
+/**
+ * Error text is short. A real work summary is not.
+ *
+ * The length bound is what makes matching on prose safe: an agent legitimately
+ * writing about authentication ("Refactored the rate limiter tests", "I added a
+ * login form") produces a normal-length reply, while a provider failure is a
+ * single terse line. Without this the guard ends healthy loops for talking about
+ * the wrong subject.
+ */
+const AGENT_LOOP_BLOCKING_MAX_CHARS = 200;
+
+/**
+ * Whether the reply is a provider failure that retrying cannot fix.
+ *
+ * Deliberately matched on the visible text: these arrive as ordinary assistant
+ * output rather than a failed turn state, so the turn settles "completed" and
+ * every structural guard passes.
+ *
+ * This is a fast path, not the real safety net — the interval floor and the
+ * identical-reply check catch the same runaway a beat later without needing to
+ * recognise the wording. It exists so the common case stops on the first repeat
+ * instead of the second.
+ */
+export function isAgentLoopBlockingReply(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length > AGENT_LOOP_BLOCKING_MAX_CHARS) return false;
+  return AGENT_LOOP_BLOCKING_SIGNATURES.some((pattern) => pattern.test(trimmed));
+}
+
+export interface AgentLoopGuardInput {
   readonly interactionMode: ProviderInteractionMode | undefined;
   readonly turnState: string | null | undefined;
   readonly assistantText: string;
   readonly isStreaming: boolean;
   readonly hasPendingUserInput: boolean;
   readonly isConnected: boolean;
-}): boolean {
+  /**
+   * The user has actually started this loop by sending a message in agent mode.
+   *
+   * Selecting the mode must not be enough. The previous turn is already
+   * `completed`, so without this the act of choosing "Agent" satisfied every
+   * other guard and fired a turn immediately — the mode picker became a send
+   * button.
+   */
+  readonly armed?: boolean;
+  /** Nudges already sent without user input; see the max above. */
+  readonly consecutiveNudges?: number;
+  /** Wall clock, and when the last nudge went out — for the interval floor. */
+  readonly nowMs?: number;
+  readonly lastNudgeAtMs?: number | null;
+  /** The previous turn's reply, to catch a loop that is making no progress. */
+  readonly previousAssistantText?: string | null;
+  /** The provider session is usable (not stopped, errored, or unauthenticated). */
+  readonly isSessionReady?: boolean;
+}
+
+/**
+ * Whether a completed turn should be followed by another nudge.
+ *
+ * Every guard here exists to stop the loop running away. The structural ones —
+ * streaming, turn state, pending input — catch an orderly stop. The rest catch
+ * the disorderly one: a provider that answers instantly and identically forever,
+ * which passes every structural check while doing no work at all.
+ */
+export function shouldContinueAgentLoop(input: AgentLoopGuardInput): boolean {
   if (!isAgentMode(input.interactionMode)) return false;
+  // Selecting the mode is not consent to start sending.
+  if (input.armed === false) return false;
   // Never nudge while the connection is down. A dropped link cannot deliver the
   // turn, and retrying into a dead socket would spin the loop against the
   // network instead of waiting for it to come back. The supervisor reconnects on
   // its own, and the next completed turn resumes the loop.
   if (!input.isConnected) return false;
+  // A session that is stopped or errored cannot run a turn; nudging it just
+  // manufactures failures.
+  if (input.isSessionReady === false) return false;
   if (input.isStreaming) return false;
   // Only a cleanly completed turn continues. "incomplete", "failed", and
   // "interrupted" all mean the user should be looking at it.
   if (input.turnState !== "completed") return false;
   // A question is outstanding; answering it drives the next turn instead.
   if (input.hasPendingUserInput) return false;
+
+  if ((input.consecutiveNudges ?? 0) >= AGENT_LOOP_MAX_CONSECUTIVE_NUDGES) return false;
+
+  // Anything coming back faster than a real turn is a failure loop.
+  const nowMs = input.nowMs;
+  const lastNudgeAtMs = input.lastNudgeAtMs;
+  if (
+    nowMs !== undefined &&
+    lastNudgeAtMs !== undefined &&
+    lastNudgeAtMs !== null &&
+    nowMs - lastNudgeAtMs < AGENT_LOOP_MIN_NUDGE_INTERVAL_MS
+  ) {
+    return false;
+  }
+
   const text = input.assistantText.trim();
   if (text.length === 0) return false;
+  if (isAgentLoopBlockingReply(text)) return false;
+
+  // Byte-identical to last turn means the nudge changed nothing. Real work
+  // never repeats itself exactly, so this is a stuck provider.
+  const previous = input.previousAssistantText?.trim();
+  if (previous !== undefined && previous.length > 0 && previous === text) return false;
+
   return !containsAgentStopToken(text);
 }
 
