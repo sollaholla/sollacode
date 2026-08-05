@@ -321,6 +321,12 @@ export interface ProviderCommandReactorLiveOptions {
    * real wall-clock time.
    */
   readonly providerSilenceRestartMs?: number;
+  /**
+   * The longer leash used while the awaited turn is actively running: a
+   * reasoning model can think for minutes while streaming nothing, and the
+   * fast window above must not execute it. Production uses fifteen minutes.
+   */
+  readonly providerMidTurnSilenceRestartMs?: number;
 }
 
 const make = (options?: ProviderCommandReactorLiveOptions) =>
@@ -1882,6 +1888,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
      * while genuinely working.
      */
     const PROVIDER_SILENCE_RESTART_MS = options?.providerSilenceRestartMs ?? 240_000;
+    // A turn that is actively running gets a much longer leash: a reasoning
+    // model at high effort can think for many minutes while streaming nothing
+    // at all — no deltas, no heartbeats — and killing that is executing a
+    // healthy turn (observed live: a 12m33s turn died 4m01s after its last
+    // tool event, mid-think, with zero assistant text to show for it). The
+    // fast window continues to cover the state it was built for: a session
+    // wedged in ready/idle with no active turn, which never thinks.
+    const PROVIDER_MID_TURN_SILENCE_RESTART_MS =
+      options?.providerMidTurnSilenceRestartMs ?? 900_000;
 
     const retryWorkAfter15Seconds = (reason: string) =>
       DateTime.now.pipe(
@@ -2045,10 +2060,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           latestTurn?.state ?? "",
         ].join("|");
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        const midTurn =
+          shell.session?.status === "running" && shell.session.activeTurnId === input.turnId;
+        const silenceRestartMs = midTurn
+          ? PROVIDER_MID_TURN_SILENCE_RESTART_MS
+          : PROVIDER_SILENCE_RESTART_MS;
         if (shellFingerprint !== lastShellFingerprint || !Number.isFinite(lastShellChangeAtMs)) {
           lastShellFingerprint = shellFingerprint;
           lastShellChangeAtMs = nowMs;
-        } else if (nowMs - lastShellChangeAtMs > PROVIDER_SILENCE_RESTART_MS) {
+        } else if (nowMs - lastShellChangeAtMs > silenceRestartMs) {
           // Deliberately NOT gated on a "running" session. A session that settles
           // to "ready"/"idle" with no active turn, while this turn never reached
           // a terminal latestTurn, matches none of the exits above: not an error,
@@ -2070,7 +2090,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           const livenessAt = yield* threadWorkScheduler
             .runtimeLivenessAt(input.threadId)
             .pipe(Effect.map(Option.getOrUndefined));
-          if (livenessAt !== undefined && nowMs - livenessAt <= PROVIDER_SILENCE_RESTART_MS) {
+          if (livenessAt !== undefined && nowMs - livenessAt <= silenceRestartMs) {
             lastShellChangeAtMs = livenessAt;
           } else {
             yield* Effect.logWarning("thread-work.turn-wait.provider-silent", {
