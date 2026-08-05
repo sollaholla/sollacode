@@ -19,6 +19,7 @@ import { Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase, type PreparedConnection } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
 import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
@@ -54,7 +55,11 @@ const PREPARED_CONNECTION_WAIT = Duration.seconds(5);
 
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
-  return status !== "starting" && status !== "running";
+  if (status === "starting" || status === "running") return false;
+  // A snapshot with a still-streaming bubble is a lie once restored: it
+  // re-renders minutes-old mid-turn text as if it were current. Only settled
+  // bodies are worth caching.
+  return !thread.messages.some((message) => message.streaming === true);
 }
 
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
@@ -88,7 +93,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
   );
   const awaitingCompletion = yield* Ref.make(false);
-  const forceSnapshot = yield* Ref.make(false);
+  // Cached snapshots written by older builds can contain a mid-turn streaming
+  // bubble; resuming by sequence on top of one keeps rendering stale text.
+  // Start those threads from a fresh snapshot instead.
+  const forceSnapshot = yield* Ref.make(
+    Option.match(cachedThread, {
+      onNone: () => false,
+      onSome: (thread) => thread.messages.some((message) => message.streaming === true),
+    }),
+  );
   const resubscribeRequests = yield* Queue.sliding<void>(1);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
@@ -251,6 +264,25 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
+  // A zombie server-side subscription (live deltas silently dropped) can only
+  // be repaired by resubscribing, so app-foreground wakeups force one — but
+  // only while the stream is not demonstrably healthy, so returning to a live
+  // thread never thrashes a full snapshot reload and a deleted thread is
+  // never resurrected.
+  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
+  const foregroundResubscriptions: Stream.Stream<unknown> = Option.match(wakeups, {
+    onNone: () => Stream.never,
+    onSome: (service) =>
+      service.changes.pipe(
+        Stream.filter((reason) => reason === "application-active"),
+        Stream.filterEffect(() =>
+          SubscriptionRef.get(state).pipe(
+            Effect.map((current) => current.status !== "live" && current.status !== "deleted"),
+          ),
+        ),
+      ),
+  });
+
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
@@ -317,7 +349,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       {
         onExpectedFailure: setStreamError,
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: Stream.fromQueue(resubscribeRequests),
+        resubscribe: Stream.merge(
+          Stream.fromQueue(resubscribeRequests) as Stream.Stream<unknown>,
+          foregroundResubscriptions,
+        ),
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

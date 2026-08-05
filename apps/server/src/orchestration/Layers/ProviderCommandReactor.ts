@@ -24,6 +24,8 @@ import {
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
+import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
+import { SETTINGS_UPDATE_MESSAGE_PREFIX } from "@t3tools/shared/settingsPrompt";
 import { buildPlanRefreshTranscript, derivePlanRefreshCurrentSteps } from "../planRefresh.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -157,8 +159,9 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
-const SETTINGS_UPDATE_MESSAGE_PREFIX = "Settings updated:";
 const AGENT_AUTO_RESUME_MESSAGE_PREFIX = "agent-auto-resume-message:";
+/** Baseline (pre-server-loop) runaway budget: continuations without any real user input. */
+const AGENT_LOOP_MAX_CONSECUTIVE_CONTINUATIONS = 50;
 
 export function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -1006,18 +1009,90 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       },
     );
 
+    // Supersede-collapse used to eat message bursts: when several user messages
+    // arrived while no turn could start (dead CLI, restart churn), every message
+    // except the newest was cancelled as "turn-start was superseded" — and
+    // because an attached CLI session never re-reads thread history, the
+    // superseded texts were never delivered anywhere. The winning turn therefore
+    // carries every recent, still-undelivered predecessor along with it.
+    const UNDELIVERED_CARRY_WINDOW_MS = 45 * 60 * 1000;
+    const collectUndeliveredPredecessors = Effect.fnUntraced(function* (
+      thread: OrchestrationThread,
+      source: OrchestrationThread["messages"][number],
+    ) {
+      const sourceIndex = thread.messages.findIndex((message) => message.id === source.id);
+      if (sourceIndex <= 0) return [] as ReadonlyArray<OrchestrationThread["messages"][number]>;
+      const sourceCreatedAt = Date.parse(source.createdAt);
+      const carried: Array<OrchestrationThread["messages"][number]> = [];
+      for (let index = sourceIndex - 1; index >= 0; index -= 1) {
+        const candidate = thread.messages[index];
+        if (candidate === undefined) break;
+        if (candidate.role !== "user") continue;
+        if (candidate.inputOrigin === "agent-loop") continue;
+        if (candidate.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)) continue;
+        const candidateCreatedAt = Date.parse(candidate.createdAt);
+        if (
+          Number.isFinite(sourceCreatedAt) &&
+          Number.isFinite(candidateCreatedAt) &&
+          sourceCreatedAt - candidateCreatedAt > UNDELIVERED_CARRY_WINDOW_MS
+        ) {
+          break;
+        }
+        // Whether a message reached the provider is decided by its turn, not by
+        // a delivery activity: only the claudeAgent driver emits those, and
+        // absence would make every predecessor look stranded and get re-sent.
+        // A turn-start that produced a real provider turn was delivered; one
+        // that produced none was cancelled as superseded and reached nobody.
+        const predecessorContext = yield* getPersistedTurnStartContext(
+          thread.id,
+          candidate.id,
+        ).pipe(Effect.map(Option.getOrUndefined));
+        if (predecessorContext === undefined) break;
+        if (predecessorContext.providerTurnId !== null) break;
+        carried.unshift(candidate);
+      }
+      return carried as ReadonlyArray<OrchestrationThread["messages"][number]>;
+    });
+
     const sendProjectedUserTurn = Effect.fn("sendProjectedUserTurn")(function* (input: {
       readonly thread: OrchestrationThread;
       readonly message: OrchestrationThread["messages"][number];
       readonly context: TurnStartRequestedPayload;
     }) {
+      // Delivery records only exist for the claudeAgent driver; other drivers
+      // would treat the whole recent history as "undelivered" and re-send it.
+      const carryInstanceId =
+        input.context.modelSelection?.instanceId ??
+        input.thread.session?.providerInstanceId ??
+        input.thread.modelSelection.instanceId;
+      const undeliveredPredecessors =
+        carryInstanceId === "claudeAgent"
+          ? yield* collectUndeliveredPredecessors(input.thread, input.message)
+          : [];
+      const outgoingText =
+        undeliveredPredecessors.length === 0
+          ? input.message.text
+          : [...undeliveredPredecessors.map((message) => message.text), input.message.text].join(
+              "\n\n",
+            );
+      const carriedAttachments = [
+        ...undeliveredPredecessors.flatMap((message) => message.attachments ?? []),
+        ...(input.message.attachments ?? []),
+      ];
+      if (undeliveredPredecessors.length > 0) {
+        yield* Effect.logInfo("sendProjectedUserTurn carrying undelivered predecessors").pipe(
+          Effect.annotateLogs({
+            threadId: input.context.threadId,
+            messageId: input.message.id,
+            carriedMessageIds: undeliveredPredecessors.map((message) => message.id).join(","),
+          }),
+        );
+      }
       const sendTurnRequest = yield* buildSendTurnRequestForThread({
         threadId: input.context.threadId,
         messageId: input.message.id,
-        messageText: input.message.text,
-        ...(input.message.attachments !== undefined
-          ? { attachments: input.message.attachments }
-          : {}),
+        messageText: outgoingText,
+        ...(carriedAttachments.length > 0 ? { attachments: carriedAttachments } : {}),
         ...(input.context.modelSelection !== undefined
           ? { modelSelection: input.context.modelSelection }
           : {}),
@@ -2240,16 +2315,51 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }),
       );
 
-    const executeStartupResume: ThreadWorkHandler = (obligation) => {
-      const { messageId } = startupAutoResumeIds({
-        threadId: obligation.threadId,
-        incompleteTurnId: obligation.sourceTurnId,
-      });
-      return executeActiveTurnRecovery({
-        ...obligation,
-        sourceTurnId: activeTurnWorkSourceId(messageId),
-      });
-    };
+    const executeStartupResume: ThreadWorkHandler = (obligation) =>
+      Effect.gen(function* () {
+        const { commandId, messageId } = startupAutoResumeIds({
+          threadId: obligation.threadId,
+          incompleteTurnId: obligation.sourceTurnId,
+        });
+        // The boot obligation used to be a pure supervisor: it waited for a
+        // client to arrive and dispatch the resume turn with these ids, and
+        // hard-cancelled after the retry cap (~2 minutes) when none did —
+        // headless servers and closed laptops never resumed at all. Dispatch
+        // the resume turn ourselves, exactly like executeAgentContinuation;
+        // the stable command id keeps a racing client dispatch idempotent.
+        const thread = yield* resolveThread(obligation.threadId);
+        if (!thread) {
+          return { state: "cancelled" as const, reason: "thread disappeared" };
+        }
+        if (thread.settledOverride === "settled") {
+          return { state: "cancelled" as const, reason: "thread was settled" };
+        }
+        const syntheticMessage = thread.messages.find((message) => message.id === messageId);
+        const context = yield* getPersistedTurnStartContext(obligation.threadId, messageId).pipe(
+          Effect.map(Option.getOrUndefined),
+        );
+        if (syntheticMessage === undefined && context === undefined) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.turn.start",
+            commandId,
+            threadId: obligation.threadId,
+            message: {
+              messageId,
+              role: "user",
+              text: RESUME_PROMPT,
+              attachments: [],
+            },
+            modelSelection: threadModelSelections.get(obligation.threadId) ?? thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            createdAt: yield* nowIso,
+          });
+        }
+        return yield* executeActiveTurnRecovery({
+          ...obligation,
+          sourceTurnId: activeTurnWorkSourceId(messageId),
+        });
+      }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
 
     const hasLaterRealUserMessage = (input: {
       readonly thread: OrchestrationThread;
@@ -2343,6 +2453,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           )
         ) {
           return { state: "cancelled" as const, reason: "control-only turn" };
+        }
+
+        // Two baseline agent-mode brakes (62099dc3b) that were lost when the
+        // loop moved server-side: a consecutive-continuation budget and an
+        // identical-reply stop. Without them the server loop has strictly
+        // fewer runaway defenses than the client loop it replaced.
+        const lastRealUserIndex = thread.messages.findLastIndex(
+          (message) => message.role === "user" && message.inputOrigin !== "agent-loop",
+        );
+        const continuationsSinceUser = thread.messages
+          .slice(lastRealUserIndex + 1)
+          .filter(
+            (message) => message.role === "user" && message.inputOrigin === "agent-loop",
+          ).length;
+        if (continuationsSinceUser >= AGENT_LOOP_MAX_CONSECUTIVE_CONTINUATIONS) {
+          return {
+            state: "cancelled" as const,
+            reason: "agent continuation budget exhausted without user input",
+          };
+        }
+        const previousAssistant = thread.messages
+          .slice(0, assistantIndex)
+          .toReversed()
+          .find((message) => message.role === "assistant" && !message.streaming);
+        if (previousAssistant !== undefined && previousAssistant.text === assistant.text) {
+          return {
+            state: "cancelled" as const,
+            reason: "assistant reply identical to the previous turn",
+          };
         }
 
         if (syntheticMessage === undefined) {

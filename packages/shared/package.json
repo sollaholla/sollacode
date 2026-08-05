@@ -79,6 +79,14 @@
       "types": "./src/Struct.ts",
       "import": "./src/Struct.ts"
     },
+    "./resumePrompt": {
+      "types": "./src/resumePrompt.ts",
+      "import": "./src/resumePrompt.ts"
+    },
+    "./settingsPrompt": {
+      "types": "./src/settingsPrompt.ts",
+      "import": "./src/settingsPrompt.ts"
+    },
     "./serverSettings": {
       "types": "./src/serverSettings.ts",
       "import": "./src/serverSettings.ts"

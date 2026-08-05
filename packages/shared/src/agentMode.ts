@@ -72,6 +72,26 @@ export function extractAgentStopSignoff(text: string): AgentStopSignoff {
   };
 }
 
+/**
+ * How far back from the end of a reply a bare stop token still reads as a
+ * signoff rather than as prose that merely mentions the token.
+ */
+const AGENT_STOP_LENIENT_WINDOW_CHARS = 300;
+
+/**
+ * Deliberately lenient stop detector used only to gate Agent continuation.
+ * The strict `extractAgentStopSignoff` still governs display stripping; here
+ * a false positive merely ends the loop (the user can continue it), while a
+ * false negative kept the agent running straight over an explicit stop —
+ * models wrap the token, add a closing sentence after it, or append a footer,
+ * and every one of those continued the loop.
+ */
+export function emittedAgentStop(text: string): boolean {
+  if (containsAgentStopToken(text)) return true;
+  const windowText = text.trimEnd().slice(-AGENT_STOP_LENIENT_WINDOW_CHARS);
+  return new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}([^A-Za-z0-9_]|$)`, "u").test(windowText);
+}
+
 /** Strips the control token before assistant text is reused as prompt context. */
 export function stripAgentStopToken(text: string): string {
   return text.replaceAll(new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}`, "gu"), "$1").trimEnd();
@@ -150,6 +170,6 @@ export function shouldAgentContinueAfterReply(text: string): boolean {
   return (
     trimmed.length > 0 &&
     classifyAgentLoopReplyFailure(trimmed) === null &&
-    !containsAgentStopToken(trimmed)
+    !emittedAgentStop(trimmed)
   );
 }

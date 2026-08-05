@@ -36,6 +36,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
   deriveStartupResumableThreads,
   isStartupAutoResumeRequested,
+  isStartupAutoResumeStalled,
   pruneStartupResumeSelection,
   shouldAutoCloseStartupResume,
   shouldClearStartupResumePending,
@@ -125,6 +126,24 @@ export function StartupResumeCoordinator() {
       }
     }
   }, [threads]);
+
+  // Stalled entries must clear at the store, not per-consumer: the effect
+  // above only re-runs when thread state changes, and in the exact stuck case
+  // (resume dispatched, obligation dead, no CLI ever spawned) nothing about
+  // the thread ever changes again. The sidebar and side-chat indicators read
+  // the raw map, so without this sweep they spun forever.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const pending = useStartupResumeStore.getState().pendingStartedAtByThreadKey;
+      const nowMs = Date.now();
+      for (const [key, startedAt] of Object.entries(pending)) {
+        if (isStartupAutoResumeStalled({ startedAt, nowMs })) {
+          useStartupResumeStore.getState().clearPending(key);
+        }
+      }
+    }, 5_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Keep the footer count honest when only some candidates drain away. Selection
   // is seeded once on open, so without this the stale keys keep the Resume

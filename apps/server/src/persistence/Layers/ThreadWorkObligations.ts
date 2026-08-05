@@ -442,6 +442,12 @@ const make = Effect.gen(function* () {
         AND (
           ${input.mode} <> 'user-supersede'
           OR state NOT IN ('claimed', 'executing')
+          -- A claimed-but-not-yet-running agent continuation is the one piece
+          -- of claimed work a user reply must beat: the handler's own CAS to
+          -- 'executing' fails on the cancelled row, so the synthetic prompt
+          -- is never dispatched over the user's message. Executing rows stay
+          -- exempt — cancelling live supervision mid-turn is the 0.1.55 wedge.
+          OR (kind = 'agent-continuation' AND state = 'claimed')
         )
       RETURNING obligation_id AS "obligationId"
     `,
@@ -462,7 +468,10 @@ const make = Effect.gen(function* () {
       WHERE obligation_id IN (
         SELECT obligation_id
         FROM thread_work_obligations
-        WHERE state IN ('claimed', 'executing')
+        -- 'sleeping' is orphaned too: the retry fiber that would wake it died
+        -- with the previous process, and a sleeping row occupies its thread's
+        -- one-active-obligation slot, starving all later work on the thread.
+        WHERE state IN ('claimed', 'executing', 'sleeping')
         ORDER BY updated_at ASC, obligation_id ASC
         LIMIT ${Math.max(0, Math.min(256, limit))}
       )
