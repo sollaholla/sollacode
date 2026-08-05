@@ -112,14 +112,14 @@ layer("ThreadWorkScheduler", (it) => {
         yield* scheduler.start();
         yield* scheduler.wake();
         yield* waitUntil(
-          scheduler.snapshot.pipe(Effect.map(({ activeGlobal }) => activeGlobal === 8)),
-          "eight admitted obligations",
+          scheduler.snapshot.pipe(Effect.map(({ activeGlobal }) => activeGlobal === 12)),
+          "twelve admitted obligations",
         );
 
         const active = yield* scheduler.snapshot;
-        assert.strictEqual(active.activeGlobal, 8);
-        assert.isAtMost(active.activeByProvider.codex ?? 0, 4);
-        assert.isAtMost(active.activeByProvider.claudeAgent ?? 0, 4);
+        assert.strictEqual(active.activeGlobal, 12);
+        assert.isAtMost(active.activeByProvider.codex ?? 0, 6);
+        assert.isAtMost(active.activeByProvider.claudeAgent ?? 0, 6);
         assert.isAtMost(active.activeRecoveryByProvider.codex ?? 0, 2);
         assert.isAtMost(active.activeRecoveryByProvider.claudeAgent ?? 0, 2);
         assert.strictEqual(new Set(active.activeThreads).size, active.activeThreads.length);

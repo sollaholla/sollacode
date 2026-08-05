@@ -40,8 +40,10 @@ import {
   type ThreadWorkSchedulerShape,
 } from "../Services/ThreadWorkScheduler.ts";
 
-const DEFAULT_MAX_GLOBAL = 8;
-const DEFAULT_MAX_PER_PROVIDER = 4;
+// Sized for the real workflow: several long-running agent threads plus their
+// side chats, concurrently, on one provider.
+const DEFAULT_MAX_GLOBAL = 12;
+const DEFAULT_MAX_PER_PROVIDER = 6;
 const DEFAULT_MAX_RECOVERY_PER_PROVIDER = 2;
 const DEFAULT_WINDOW_SIZE = 256;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
@@ -94,8 +96,14 @@ const emptyAdmissionState = (): AdmissionState => ({
   activeThreads: new Set(),
 });
 
+// The recovery throttle exists to keep autonomous boot/auth resume storms
+// from spawning a CLI per thread at once. `active-turn-recovery` must NOT
+// count against it: it is also the delivery obligation for every ordinary
+// user message, so including it capped live concurrent chats at
+// maxRecoveryPerProvider (2) — two busy main threads then starved every
+// side chat's send forever, which read as "side chats never reach a CLI".
 const recoveryKind = (kind: ThreadWorkKind): boolean =>
-  kind === "authentication-resume" || kind === "startup-resume" || kind === "active-turn-recovery";
+  kind === "authentication-resume" || kind === "startup-resume";
 
 const runtimePhase = (kind: ThreadWorkKind) =>
   kind === "provider-retry" ? ("provider-retrying" as const) : ("provider-running" as const);
