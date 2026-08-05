@@ -23,6 +23,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Equal from "effect/Equal";
@@ -2045,6 +2046,88 @@ describe("ProviderCommandReactor", () => {
     const parked = await readObligation();
     expect(parked?.state).toBe("sleeping");
     expect(parked?.blockedReason).toContain("provider went silent mid-turn");
+    expect(harness.stopSession).toHaveBeenCalled();
+
+    await Effect.runPromise(
+      harness.threadWorkObligations.cancelByThread({
+        threadId,
+        updatedAt: "2026-01-01T00:01:00.000Z",
+        blockedReason: "test cleanup",
+        mode: "thread-terminal",
+      }),
+    );
+  });
+
+  // The watchdog must not execute a session whose provider is quietly
+  // mid-tool: long tool calls emit only 30-second progress heartbeats, none
+  // of which touch the projected shell, so shell silence alone is not a dead
+  // feed. Ingestion's runtime observations are the liveness signal — while
+  // they stay fresh the watchdog holds fire, and only genuine provider
+  // silence restarts the session. Observed in production 2026-08-05: an
+  // 11-minute APK build was killed mid-flight ("Session stopped", command
+  // failed, turn interrupted) because the shell fingerprint froze.
+  it("keeps a silent-shell session alive while runtime observations stay fresh", async () => {
+    const blockingTurnId = asTurnId("turn-quiet-tool");
+    const harness = await createHarness({
+      providerSilenceRestartMs: 750,
+      startSessionEffect: (session) =>
+        Effect.succeed({ ...session, status: "running" as const, activeTurnId: blockingTurnId }),
+    });
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-quiet-tool");
+    const sourceTurnId = activeTurnWorkSourceId(messageId);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-quiet-tool"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "a long tool call that heartbeats without touching the shell",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    const readObligation = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({ threadId, sourceTurnId, kind: "active-turn-recovery" })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+
+    // Pump liveness the way ingestion does for tool_progress heartbeats. The
+    // observation only registers once the scheduler owns work for the thread.
+    let pumping = true;
+    const pump = (async () => {
+      while (pumping) {
+        await Effect.runPromise(
+          harness.threadWorkScheduler.observeRuntime({ threadId, phase: "tool-running" }),
+        );
+        await Effect.runPromise(Effect.sleep(Duration.millis(100)));
+      }
+    })();
+
+    // Several full silence windows: the watchdog must not misfire while the
+    // heartbeats keep arriving.
+    await Effect.runPromise(Effect.sleep(Duration.millis(2_500)));
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    const live = await readObligation();
+    expect(live?.state === "claimed" || live?.state === "executing").toBe(true);
+
+    // Cut the heartbeats: now the feed is genuinely dead and the watchdog
+    // must restart the session exactly as before.
+    pumping = false;
+    await pump;
+    await waitFor(async () => {
+      const work = await readObligation();
+      return work?.state === "sleeping" || work?.state === "cancelled";
+    }, 20_000);
     expect(harness.stopSession).toHaveBeenCalled();
 
     await Effect.runPromise(

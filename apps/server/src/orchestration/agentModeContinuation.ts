@@ -30,7 +30,13 @@ export function shouldAutoContinueCompletedAgentTurn(
   if (thread.session?.activeTurnId !== null && thread.session?.activeTurnId !== undefined) {
     return false;
   }
-  if (thread.session?.status === "error" || thread.session?.status === "stopped") return false;
+  // "stopped" is continuable: the CLI simply exited between turns (idle exit,
+  // watchdog restart, a deploy) and dispatching the continuation spawns a
+  // fresh session, exactly like a startup resume does. Declining on it
+  // orphaned agent threads whose CLI died in the seconds between the turn
+  // settling and the continuation being claimed. Only "error" stays terminal
+  // so a failing provider is never hammered (62099dc3b).
+  if (thread.session?.status === "error") return false;
   return shouldAgentContinueAfterReply(input.assistantText);
 }
 

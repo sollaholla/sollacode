@@ -87,6 +87,13 @@ interface ActiveRuntimeObservation {
   readonly obligationId: string;
   readonly activeTurnId: TurnId | null;
   readonly phase: ThreadRuntimePhase;
+  /**
+   * When runtime ingestion last reported ANY provider event for this thread.
+   * Long tool calls emit only 30s progress heartbeats that never touch the
+   * projected shell, so this in-memory stamp is the only liveness signal the
+   * silence watchdog can consult before declaring the feed dead.
+   */
+  readonly lastObservedAtMs: number;
 }
 
 const emptyAdmissionState = (): AdmissionState => ({
@@ -248,18 +255,27 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
       });
 
     const observeRuntime: ThreadWorkSchedulerShape["observeRuntime"] = (input) =>
-      Ref.modify(runtimeObservations, (current) => {
-        const existing = current.get(input.threadId);
-        if (existing === undefined) return [false, current] as const;
-        const next = new Map(current);
-        next.set(input.threadId, {
-          ...existing,
-          activeTurnId:
-            input.activeTurnId === undefined ? existing.activeTurnId : input.activeTurnId,
-          phase: input.phase,
+      Effect.gen(function* () {
+        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        return yield* Ref.modify(runtimeObservations, (current) => {
+          const existing = current.get(input.threadId);
+          if (existing === undefined) return [false, current] as const;
+          const next = new Map(current);
+          next.set(input.threadId, {
+            ...existing,
+            activeTurnId:
+              input.activeTurnId === undefined ? existing.activeTurnId : input.activeTurnId,
+            phase: input.phase,
+            lastObservedAtMs: nowMs,
+          });
+          return [true, next] as const;
         });
-        return [true, next] as const;
       });
+
+    const runtimeLivenessAt: ThreadWorkSchedulerShape["runtimeLivenessAt"] = (threadId) =>
+      Ref.get(runtimeObservations).pipe(
+        Effect.map((current) => Option.fromUndefinedOr(current.get(threadId)?.lastObservedAtMs)),
+      );
 
     const tryReserve = (obligation: ThreadWorkObligation) =>
       Ref.modify(admissions, (current) => {
@@ -395,6 +411,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
               obligationId: claimed.obligationId,
               activeTurnId: claimed.sourceTurnId,
               phase: runtimePhase(claimed.kind),
+              lastObservedAtMs: DateTime.toEpochMillis(executingAt),
             });
             return next;
           });
@@ -990,6 +1007,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
           return next;
         }).pipe(Effect.andThen(releaseRetainedRetryLeases)),
       observeRuntime,
+      runtimeLivenessAt,
       snapshot,
     } satisfies ThreadWorkSchedulerShape;
   });

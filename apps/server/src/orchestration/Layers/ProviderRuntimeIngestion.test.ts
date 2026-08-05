@@ -30,6 +30,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 import * as PubSub from "effect/PubSub";
@@ -534,6 +535,7 @@ describe("ProviderRuntimeIngestion", () => {
           runtimeObservations.push(input);
           return true;
         }),
+      runtimeLivenessAt: () => Effect.succeed(Option.none()),
       snapshot: Effect.succeed({
         activeGlobal: 0,
         activeByProvider: {},
