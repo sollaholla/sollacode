@@ -269,6 +269,7 @@ describe("ProviderCommandReactor", () => {
     readonly requiresNewThreadForModelChange?: boolean;
     readonly startReactor?: boolean;
     readonly providerSilenceRestartMs?: number;
+    readonly providerMidTurnSilenceRestartMs?: number;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
@@ -515,9 +516,17 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(RuntimeLeaseRegistryLive),
     );
     const providerCommandReactorLayer = makeProviderCommandReactorLive(
-      input?.providerSilenceRestartMs === undefined
+      input?.providerSilenceRestartMs === undefined &&
+        input?.providerMidTurnSilenceRestartMs === undefined
         ? undefined
-        : { providerSilenceRestartMs: input.providerSilenceRestartMs },
+        : {
+            ...(input?.providerSilenceRestartMs === undefined
+              ? {}
+              : { providerSilenceRestartMs: input.providerSilenceRestartMs }),
+            ...(input?.providerMidTurnSilenceRestartMs === undefined
+              ? {}
+              : { providerMidTurnSilenceRestartMs: input.providerMidTurnSilenceRestartMs }),
+          },
     ).pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
@@ -2007,6 +2016,7 @@ describe("ProviderCommandReactor", () => {
     const blockingTurnId = asTurnId("turn-already-running");
     const harness = await createHarness({
       providerSilenceRestartMs: 750,
+      providerMidTurnSilenceRestartMs: 750,
       startSessionEffect: (session) =>
         Effect.succeed({ ...session, status: "running" as const, activeTurnId: blockingTurnId }),
     });
@@ -2070,6 +2080,7 @@ describe("ProviderCommandReactor", () => {
     const blockingTurnId = asTurnId("turn-quiet-tool");
     const harness = await createHarness({
       providerSilenceRestartMs: 750,
+      providerMidTurnSilenceRestartMs: 750,
       startSessionEffect: (session) =>
         Effect.succeed({ ...session, status: "running" as const, activeTurnId: blockingTurnId }),
     });
