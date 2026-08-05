@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -52,6 +53,18 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+/**
+ * Ceiling on how long we wait for the app server to answer a request.
+ *
+ * Every method we call is control plane and normally answers in milliseconds —
+ * `turn/start` returns once the prompt is accepted, long before the turn ends —
+ * so this only ever fires when the app server has stopped servicing its stdin
+ * loop while keeping the pipe open. Without it a wedged app server swallows
+ * sends and interrupts forever: the message is persisted, never delivered, and
+ * the UI has nothing to report but "waiting for the CLI". Generous enough that
+ * a merely busy app server is never mistaken for a wedged one.
+ */
+const CODEX_APP_SERVER_REQUEST_TIMEOUT = "90 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -73,6 +86,9 @@ const CodexUserInputAnswerObject = Schema.Struct({
 });
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
+const isCodexAppServerRequestTimeoutError = Schema.is(
+  CodexErrors.CodexAppServerRequestTimeoutError,
+);
 
 // TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
 // `V2TurnStartParams` schema includes `collaborationMode` directly.
@@ -105,6 +121,8 @@ export interface CodexSessionRuntimeOptions {
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
+  /** Native Codex active-context limit that triggers automatic compaction. */
+  readonly autoCompactionTokenLimit?: number;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
 }
@@ -137,6 +155,21 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  /**
+   * Inject input into the currently running turn via `turn/steer`.
+   *
+   * The app server enforces `expectedTurnId` as a precondition, so a steer
+   * that races the turn's completion fails instead of starting a stray turn —
+   * callers fall back to a queued `sendTurn` in that case.
+   */
+  readonly steerTurn: (input: {
+    readonly expectedTurnId: TurnId;
+    readonly input?: string;
+    readonly attachments?: ReadonlyArray<{
+      readonly type: "image";
+      readonly url: string;
+    }>;
+  }) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -307,6 +340,7 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly autoCompactionTokenLimit?: number | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -316,7 +350,32 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.autoCompactionTokenLimit !== undefined
+      ? {
+          config: {
+            model_auto_compact_token_limit: input.autoCompactionTokenLimit,
+            model_auto_compact_token_limit_scope: "total",
+          },
+        }
+      : {}),
   };
+}
+
+/** Codex reports 258,400 usable tokens for the current 272k model family. */
+export const CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS = 258_400;
+
+export function resolveCodexAutoCompactionTokenLimit(
+  thresholdPercentage: number | undefined,
+): number | undefined {
+  if (
+    thresholdPercentage === undefined ||
+    !Number.isInteger(thresholdPercentage) ||
+    thresholdPercentage < 50 ||
+    thresholdPercentage > 95
+  ) {
+    return undefined;
+  }
+  return Math.floor((CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS * thresholdPercentage) / 100);
 }
 
 function runtimeModeToTurnSandboxPolicy(
@@ -469,6 +528,7 @@ export const openCodexThread = (input: {
   readonly cwd: string;
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly autoCompactionTokenLimit?: number | undefined;
   readonly resumeThreadId: string | undefined;
   readonly forkThread: boolean;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
@@ -478,6 +538,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    autoCompactionTokenLimit: input.autoCompactionTokenLimit,
   });
 
   if (resumeThreadId === undefined) {
@@ -778,10 +839,24 @@ export const makeCodexSessionRuntime = (
         ),
       );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
+    // Filled in below once the session pieces (sessionRef, emitters, closedRef)
+    // exist; the client needs the callback at construction time.
+    const terminationHandler = yield* Ref.make<
+      (error: CodexErrors.CodexAppServerError) => Effect.Effect<void>
+    >(() => Effect.void);
+    const clientContext = yield* CodexClient.layerChildProcess(child, {
+      requestTimeout: CODEX_APP_SERVER_REQUEST_TIMEOUT,
+      onTermination: (error) =>
+        Ref.get(terminationHandler).pipe(
+          Effect.flatMap((handle) => handle(error)),
+          Effect.catchCause((cause) =>
+            Effect.logError("Codex transport termination handler failed.", {
+              threadId: options.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+    }).pipe(Layer.build, Effect.provideService(Scope.Scope, runtimeScope));
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
     );
@@ -1244,6 +1319,7 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
+        autoCompactionTokenLimit: options.autoCompactionTokenLimit,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
         forkThread: readResumeCursorFork(options.resumeCursor),
       });
@@ -1293,6 +1369,56 @@ export const makeCodexSessionRuntime = (
       yield* Queue.shutdown(events);
     });
 
+    // The transport reader dying (defect, stream failure, or EOF) is the one
+    // failure mode with no process exit to observe: the child is alive but the
+    // session is deaf. Without this hook the session kept reporting "running"
+    // while every notification was lost and every request hung — mark it
+    // errored instead so recovery treats it like any other dead session. This
+    // runs inside the dying reader fiber, so it must not close the runtime
+    // scope (that would await its own interruption); teardown happens on the
+    // next request, which now fails fast against a terminated transport.
+    yield* Ref.set(terminationHandler, (error) =>
+      Effect.gen(function* () {
+        if (yield* Ref.get(closedRef)) return;
+        const current = yield* Ref.get(sessionRef);
+        if (current.status === "closed" || current.status === "error") return;
+        yield* Effect.logWarning(
+          "Codex App Server transport terminated; marking session errored.",
+          {
+            threadId: options.threadId,
+            error: error.message,
+          },
+        );
+        yield* updateSession(sessionRef, {
+          status: "error",
+          activeTurnId: undefined,
+        });
+        yield* emitSessionEvent(
+          "session/terminated",
+          `Codex App Server transport terminated: ${error.message}`,
+        ).pipe(Effect.ignore);
+      }),
+    );
+
+    /**
+     * A request timeout proves the app server has stopped servicing its stdin
+     * loop while holding the pipe open, so it will never answer this request or
+     * any later one. Closing the session converts a permanent silent wedge into
+     * an ordinary dead session, which the caller's recovery path restarts on the
+     * next attempt — otherwise every subsequent send waits out the full timeout
+     * against a process that is never coming back.
+     */
+    const closeIfWedged = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.tapError(effect, (error) =>
+        isCodexAppServerRequestTimeoutError(error)
+          ? Effect.logWarning("Codex App Server stopped responding; closing session.", {
+              threadId: options.threadId,
+              method: error.method,
+              timeoutMillis: error.timeoutMillis,
+            }).pipe(Effect.andThen(Effect.ignore(close)))
+          : Effect.void,
+      );
+
     return {
       start,
       getSession: Ref.get(sessionRef),
@@ -1301,10 +1427,16 @@ export const makeCodexSessionRuntime = (
           const providerThreadId = yield* readProviderThreadId;
           if (hasConfiguredMcpServer(options.appServerArgs)) {
             yield* client.request("config/mcpServer/reload", undefined).pipe(
+              // Refreshing the catalog is best effort, but a timeout is not a
+              // failed refresh — it means the app server has stopped answering,
+              // so surface it instead of swallowing it and then waiting out the
+              // same timeout again on turn/start.
               Effect.catch((cause) =>
-                Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
-                  cause,
-                }),
+                isCodexAppServerRequestTimeoutError(cause)
+                  ? Effect.fail(cause)
+                  : Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
+                      cause,
+                    }),
               ),
             );
           }
@@ -1345,7 +1477,31 @@ export const makeCodexSessionRuntime = (
               ? { resumeCursor: { threadId: resumedProviderThreadId } }
               : {}),
           } satisfies ProviderTurnStartResult;
-        }),
+        }).pipe(closeIfWedged),
+      steerTurn: (input) =>
+        Effect.gen(function* () {
+          const providerThreadId = yield* readProviderThreadId;
+          const steerInput: Array<EffectCodexSchema.V2TurnSteerParams__UserInput> = [];
+          if (input.input) {
+            steerInput.push({ type: "text", text: input.input });
+          }
+          for (const attachment of input.attachments ?? []) {
+            steerInput.push(attachment);
+          }
+          const response = yield* client.request("turn/steer", {
+            threadId: providerThreadId,
+            expectedTurnId: input.expectedTurnId,
+            input: steerInput,
+          });
+          const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+          return {
+            threadId: options.threadId,
+            turnId: TurnId.make(response.turnId),
+            ...(resumedProviderThreadId
+              ? { resumeCursor: { threadId: resumedProviderThreadId } }
+              : {}),
+          } satisfies ProviderTurnStartResult;
+        }).pipe(closeIfWedged),
       interruptTurn: (turnId) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
@@ -1358,7 +1514,7 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             turnId: effectiveTurnId,
           });
-        }),
+        }).pipe(closeIfWedged),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         const response = yield* client.request("thread/read", {

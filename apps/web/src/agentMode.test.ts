@@ -8,13 +8,25 @@ import {
   AGENT_STOP_TOKEN,
   agentAnswerForQuestion,
   buildAgentAnswers,
+  classifyAgentLoopReplyFailure,
   containsAgentStopToken,
+  hasUserRepliedAfterLastAssistant,
+  isAgentContinuePrompt,
   isAgentLoopBlockingReply,
   selectAgentLoopAssistantText,
   selectRecommendedOption,
+  shouldShowAgentAutoResumePending,
   shouldContinueAgentLoop,
   stripAgentStopToken,
 } from "./agentMode";
+
+describe("isAgentContinuePrompt", () => {
+  it("only identifies the app-authored Agent mode continuation", () => {
+    expect(isAgentContinuePrompt(AGENT_CONTINUE_PROMPT)).toBe(true);
+    expect(isAgentContinuePrompt(`prefix ${AGENT_CONTINUE_PROMPT}`)).toBe(false);
+    expect(isAgentContinuePrompt("Agent auto-resuming")).toBe(false);
+  });
+});
 
 describe("containsAgentStopToken", () => {
   it("detects the token in the sign-offs a model actually writes", () => {
@@ -29,6 +41,19 @@ describe("containsAgentStopToken", () => {
     // Otherwise the loop ends the moment the model discusses its own tooling.
     expect(containsAgentStopToken("see AGENT_STOPPING for details")).toBe(false);
     expect(containsAgentStopToken("MY_AGENT_STOP_TOKEN")).toBe(false);
+  });
+
+  it("only treats the token as a sign-off when it ends the reply", () => {
+    expect(containsAgentStopToken("I am not using AGENT_STOP because work remains.")).toBe(false);
+    expect(containsAgentStopToken("AGENT_STOP then continue working")).toBe(false);
+  });
+
+  it("allows hidden memory metadata after the visible sign-off", () => {
+    expect(
+      containsAgentStopToken(
+        "Finished. AGENT_STOP\n<oai-mem-citation><citation_entries /></oai-mem-citation>",
+      ),
+    ).toBe(true);
   });
 
   it("does not fire on unrelated text", () => {
@@ -60,10 +85,29 @@ describe("shouldContinueAgentLoop", () => {
     expect(shouldContinueAgentLoop(base)).toBe(true);
   });
 
-  it("stops when the model emits the token", () => {
+  it("stops immediately when the model emits the token", () => {
     expect(shouldContinueAgentLoop({ ...base, assistantText: `done ${AGENT_STOP_TOKEN}` })).toBe(
       false,
     );
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        assistantText: `verified complete ${AGENT_STOP_TOKEN}`,
+        previousAssistantText: `done ${AGENT_STOP_TOKEN}`,
+      }),
+    ).toBe(false);
+  });
+
+  it("honors the stop token even when it arrives inside the rapid-reply window", () => {
+    expect(
+      shouldContinueAgentLoop({
+        ...base,
+        assistantText: `finished ${AGENT_STOP_TOKEN}`,
+        previousAssistantText: "Finished one sweep.",
+        nowMs: 10_000,
+        lastNudgeAtMs: 9_999,
+      }),
+    ).toBe(false);
   });
 
   it("never runs outside agent mode", () => {
@@ -90,6 +134,61 @@ describe("shouldContinueAgentLoop", () => {
 
   it("stops on an empty reply rather than spinning", () => {
     expect(shouldContinueAgentLoop({ ...base, assistantText: "   " })).toBe(false);
+  });
+});
+
+describe("shouldShowAgentAutoResumePending", () => {
+  const base = {
+    interactionMode: "agent" as const,
+    turnId: "turn-1",
+    turnState: "completed",
+    latestTurnSettled: true,
+    hasPendingApproval: false,
+    hasPendingUserInput: false,
+    sessionStatus: "ready",
+    messages: [
+      {
+        role: "assistant",
+        turnId: "turn-1",
+        text: "Finished one phase; more work remains.",
+        streaming: false,
+      },
+    ],
+  };
+
+  it("covers the gap before the server continuation appears", () => {
+    expect(shouldShowAgentAutoResumePending(base)).toBe(true);
+  });
+
+  it("stays visible after the app-authored continuation message is projected", () => {
+    expect(
+      shouldShowAgentAutoResumePending({
+        ...base,
+        messages: [...base.messages, { role: "user", inputOrigin: "agent-loop" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not talk over a real user message or a clean stop", () => {
+    expect(
+      shouldShowAgentAutoResumePending({
+        ...base,
+        messages: [...base.messages, { role: "user" }],
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowAgentAutoResumePending({
+        ...base,
+        messages: [
+          {
+            role: "assistant",
+            turnId: "turn-1",
+            text: "Everything is verified. AGENT_STOP",
+            streaming: false,
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });
 
@@ -128,6 +227,19 @@ describe("AGENT_CONTINUE_PROMPT", () => {
     // would never sign off at all.
     expect(AGENT_CONTINUE_PROMPT.toLowerCase()).toContain("finish");
     expect(AGENT_CONTINUE_PROMPT).not.toContain("absolutely CAN NOT");
+  });
+
+  it("treats the stop token as verified completion rather than a pause between passes", () => {
+    expect(AGENT_CONTINUE_PROMPT).toContain("strict completion signal, not a pause button");
+    expect(AGENT_CONTINUE_PROMPT).toContain("every requested deliverable and acceptance criterion");
+    expect(AGENT_CONTINUE_PROMPT).toContain("sweep, iteration, phase, or milestone");
+    expect(AGENT_CONTINUE_PROMPT).toContain("diminishing returns");
+    expect(AGENT_CONTINUE_PROMPT).toContain("failed check");
+    expect(AGENT_CONTINUE_PROMPT).toContain("unverified claim");
+    expect(AGENT_CONTINUE_PROMPT).toContain("planned step remains");
+    expect(AGENT_CONTINUE_PROMPT).toContain("exhausted safe alternatives");
+    expect(AGENT_CONTINUE_PROMPT).toContain("honors that stop signal immediately");
+    expect(AGENT_CONTINUE_PROMPT).not.toContain("final completion audit");
   });
 });
 
@@ -192,6 +304,8 @@ describe("agent loop runaway guards", () => {
       "Unauthorized",
       "Invalid API key",
       "Your credit balance is too low",
+      "Usage credits are required for fast mode.",
+      "Fast mode disabled · usage credits exhausted",
       "Rate limit exceeded",
     ]) {
       expect(shouldContinueAgentLoop({ ...base, assistantText: reply })).toBe(false);
@@ -340,6 +454,28 @@ describe("selectAgentLoopAssistantText", () => {
     expect(containsAgentStopToken(text ?? "")).toBe(true);
   });
 
+  it("refuses an older matching turn when the newest assistant belongs to a newer turn", () => {
+    const text = selectAgentLoopAssistantText(
+      [
+        {
+          role: "assistant",
+          turnId: "turn-stale",
+          streaming: false,
+          text: "Continue working.",
+        },
+        {
+          role: "assistant",
+          turnId: "turn-final",
+          streaming: false,
+          text: `Everything is complete. ${AGENT_STOP_TOKEN}`,
+        },
+      ],
+      "turn-stale",
+    );
+
+    expect(text).toBe("");
+  });
+
   it("reads empty when the conversation has no assistant message", () => {
     // Empty text is refused by shouldContinueAgentLoop, so this stays safe.
     expect(selectAgentLoopAssistantText([{ role: "user", text: "hi" }])).toBe("");
@@ -348,5 +484,89 @@ describe("selectAgentLoopAssistantText", () => {
 
   it("treats a settled newest assistant message as readable even with missing text", () => {
     expect(selectAgentLoopAssistantText([{ role: "assistant", streaming: false }])).toBe("");
+  });
+
+  it("requires the finalized assistant reply to belong to the completed turn", () => {
+    expect(
+      selectAgentLoopAssistantText(
+        [
+          { role: "assistant", turnId: "turn-old", streaming: false, text: "old clean reply" },
+          { role: "user", turnId: null, streaming: false, text: "settings updated" },
+        ],
+        "turn-settings",
+      ),
+    ).toBe("");
+    expect(
+      selectAgentLoopAssistantText(
+        [{ role: "assistant", turnId: "turn-current", streaming: false, text: "done" }],
+        "turn-current",
+      ),
+    ).toBe("done");
+  });
+});
+
+describe("classifyAgentLoopReplyFailure", () => {
+  // Verbatim from a real run — 162 chars, so it sits inside the length bound
+  // and used to pass every guard and get nudged.
+  const GATEWAY_502 =
+    "API Error: 502 terminated. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:60934).";
+
+  it("treats a gateway failure as transient", () => {
+    expect(classifyAgentLoopReplyFailure(GATEWAY_502)).toBe("transient");
+    expect(classifyAgentLoopReplyFailure("API Error: 503 Service Unavailable")).toBe("transient");
+    expect(classifyAgentLoopReplyFailure("Upstream is overloaded, try again")).toBe("transient");
+  });
+
+  it("treats an auth failure as fatal", () => {
+    expect(classifyAgentLoopReplyFailure("Not logged in · Please run /login")).toBe("fatal");
+    expect(classifyAgentLoopReplyFailure("Your session has expired")).toBe("fatal");
+    expect(classifyAgentLoopReplyFailure("Usage credits are required for fast mode.")).toBe(
+      "fatal",
+    );
+  });
+
+  it("prefers fatal when a failure reads as both", () => {
+    // A quota wall is server-side but retrying never clears it.
+    expect(classifyAgentLoopReplyFailure("API Error: rate limit exceeded")).toBe("fatal");
+  });
+
+  it("does not classify real work as a failure", () => {
+    expect(classifyAgentLoopReplyFailure("Fixed the login form and added tests.")).toBeNull();
+    expect(classifyAgentLoopReplyFailure("")).toBeNull();
+  });
+
+  it("ignores long prose that merely discusses an error", () => {
+    const essay = `${GATEWAY_502} `.repeat(4);
+    expect(classifyAgentLoopReplyFailure(essay)).toBeNull();
+  });
+
+  it("blocks the loop for both kinds", () => {
+    expect(isAgentLoopBlockingReply(GATEWAY_502)).toBe(true);
+    expect(isAgentLoopBlockingReply("Not logged in · Please run /login")).toBe(true);
+    expect(isAgentLoopBlockingReply("Fixed the login form and added tests.")).toBe(false);
+  });
+});
+
+describe("hasUserRepliedAfterLastAssistant", () => {
+  it("is true when the user has spoken since the last reply", () => {
+    expect(
+      hasUserRepliedAfterLastAssistant([
+        { role: "assistant", text: "done" },
+        { role: "user", text: "actually, do this instead" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("is false when the assistant spoke last", () => {
+    expect(
+      hasUserRepliedAfterLastAssistant([
+        { role: "user", text: "go" },
+        { role: "assistant", text: "done" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("is false for an empty thread", () => {
+    expect(hasUserRepliedAfterLastAssistant([])).toBe(false);
   });
 });

@@ -1217,7 +1217,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("normalizes OpenCode's native HTTP 529 retry status", () =>
+  it.effect("normalizes OpenCode's native retryable upstream statuses", () =>
     Effect.sync(() => {
       NodeAssert.equal(
         openCodeOverloadRetryReason({
@@ -1230,6 +1230,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         openCodeOverloadRetryReason({
           attempt: 3,
           error: { statusCode: 503 },
+        }),
+        "provider_overloaded:retrying;attempt=3",
+      );
+      NodeAssert.equal(
+        openCodeOverloadRetryReason({
+          attempt: 3,
+          error: { statusCode: 500 },
         }),
         undefined,
       );

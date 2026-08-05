@@ -114,7 +114,7 @@ export interface ProviderServiceShape {
     readonly sourceThreadId: ThreadId;
     readonly targetThreadId: ThreadId;
     readonly runtimeMode: ProviderSession["runtimeMode"];
-  }) => Effect.Effect<boolean, ProviderServiceError>;
+  }) => Effect.Effect<ProviderSession | null, ProviderServiceError>;
 
   /**
    * Canonical provider runtime event stream.

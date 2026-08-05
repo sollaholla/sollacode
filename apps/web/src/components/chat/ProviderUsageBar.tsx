@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import {
   mergeProviderUsageEntry,
   providerUsageAccountKey,
@@ -17,6 +18,7 @@ import {
   useProviderUsageStore,
 } from "../../providerUsageStore";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 export type ProviderUsageWindow = PersistedProviderUsageWindow;
@@ -132,6 +134,7 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
       label: durationLabel(durationMinutes, fallback),
       usedPercent: clampPercentage(usedPercent),
       resetAt: epochMilliseconds(value.resetsAt),
+      windowDurationMs: durationMinutes === null ? null : durationMinutes * MINUTE_MS,
     });
   }
 
@@ -161,6 +164,200 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
     });
   }
   return windows;
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Quota windows are fixed-length, but providers only report when one *resets* —
+ * so a window's start is recovered as `resetAt - duration`. Codex sends its
+ * length outright; Claude never does, and instead the window key implies it.
+ *
+ * A key absent from this map has no known length, and the elapsed overlay is
+ * omitted rather than guessed — a bar drawn from a wrong start would misreport
+ * pace, which is the one thing it exists to show.
+ */
+const CLAUDE_WINDOW_DURATIONS_MS: Record<string, number> = {
+  current_session: 5 * HOUR_MS,
+  one_day: DAY_MS,
+  daily: DAY_MS,
+  seven_day: 7 * DAY_MS,
+  seven_day_oauth_apps: 7 * DAY_MS,
+  seven_day_opus: 7 * DAY_MS,
+  seven_day_sonnet: 7 * DAY_MS,
+  // Every Fable alias normalizes to this key, and all of them are weekly.
+  fable: 7 * DAY_MS,
+};
+
+/**
+ * How far through its window a quota is, by wall clock rather than consumption.
+ *
+ * Paired with `usedPercent` this is the pace read: usage ahead of elapsed time
+ * means the quota is burning faster than it refills. Returns null when the
+ * window length is unknown, which callers render as no overlay at all.
+ */
+export function resolveUsageWindowElapsedPercent({
+  resetAt,
+  windowDurationMs,
+  nowMs,
+}: {
+  readonly resetAt: number | null | undefined;
+  readonly windowDurationMs: number | null | undefined;
+  readonly nowMs: number;
+}): number | null {
+  if (resetAt === null || resetAt === undefined) return null;
+  if (windowDurationMs === null || windowDurationMs === undefined) return null;
+  if (!Number.isFinite(resetAt) || !Number.isFinite(windowDurationMs)) return null;
+  if (!Number.isFinite(nowMs) || windowDurationMs <= 0) return null;
+  const elapsed = nowMs - (resetAt - windowDurationMs);
+  // A stale reset time (or a clock skewed past it) must not overshoot the track.
+  if (elapsed <= 0) return 0;
+  if (elapsed >= windowDurationMs) return 100;
+  return (elapsed / windowDurationMs) * 100;
+}
+
+/**
+ * Signed wall-clock distance between the elapsed-time overlay and the current
+ * usage fill. Positive means the overlay has not reached usage yet; negative
+ * means it passed that point already.
+ */
+export function resolveUsageWindowPaceDeltaMs({
+  usedPercent,
+  resetAt,
+  windowDurationMs,
+  nowMs,
+}: {
+  readonly usedPercent: number | null | undefined;
+  readonly resetAt: number | null | undefined;
+  readonly windowDurationMs: number | null | undefined;
+  readonly nowMs: number;
+}): number | null {
+  if (usedPercent === null || usedPercent === undefined) return null;
+  if (resetAt === null || resetAt === undefined) return null;
+  if (windowDurationMs === null || windowDurationMs === undefined) return null;
+  if (
+    !Number.isFinite(usedPercent) ||
+    !Number.isFinite(resetAt) ||
+    !Number.isFinite(windowDurationMs) ||
+    !Number.isFinite(nowMs) ||
+    windowDurationMs <= 0
+  ) {
+    return null;
+  }
+
+  const boundedUsedPercent = Math.max(0, Math.min(100, usedPercent));
+  const windowStartAt = resetAt - windowDurationMs;
+  const usagePositionAt = windowStartAt + (boundedUsedPercent / 100) * windowDurationMs;
+  return usagePositionAt - nowMs;
+}
+
+export function formatUsageWindowPaceDelta(deltaMs: number | null): string | null {
+  if (deltaMs === null || !Number.isFinite(deltaMs)) return null;
+
+  const absoluteSeconds = Math.round(Math.abs(deltaMs) / 1_000);
+  if (absoluteSeconds === 0) {
+    return "±0s — time and usage bars meet now";
+  }
+
+  const sign = deltaMs > 0 ? "+" : "−";
+  let duration: string;
+  if (absoluteSeconds < 60) {
+    duration = `${absoluteSeconds}s`;
+  } else {
+    const absoluteMinutes = Math.round(absoluteSeconds / 60);
+    if (absoluteMinutes < 60) {
+      duration = `${absoluteMinutes}m`;
+    } else {
+      const hours = Math.floor(absoluteMinutes / 60);
+      const minutes = absoluteMinutes % 60;
+      duration = `${hours}h${minutes === 0 ? "" : ` ${minutes}m`}`;
+    }
+  }
+
+  return deltaMs > 0
+    ? `${sign}${duration} until time bar reaches usage`
+    : `${sign}${duration} since time bar passed usage`;
+}
+
+/**
+ * Re-render on a slow cadence so the elapsed overlay keeps advancing while the
+ * app sits idle. Windows run hours to days, so a minute is already far finer
+ * than the bar can show and costs a single render.
+ */
+function useMinuteTick(): number {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), MINUTE_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return nowMs;
+}
+
+/**
+ * The animated dotted marker showing how much of the quota window has elapsed.
+ *
+ * It shares the usage track so their endpoints remain directly comparable,
+ * while the moving dot pattern stays visually distinct from the solid usage
+ * fill. CSS disables the movement when reduced motion is requested.
+ */
+function UsageWindowElapsedOverlay({ elapsedPercent }: { elapsedPercent: number }) {
+  return (
+    <span
+      aria-hidden="true"
+      data-usage-window-elapsed-marker="dots"
+      className="provider-usage-elapsed-dots pointer-events-none absolute inset-y-0 left-0 rounded-full"
+      style={{ width: `${elapsedPercent}%` }}
+    />
+  );
+}
+
+function UsageWindowProgressLine({
+  name,
+  window,
+  elapsedPercent,
+  paceDelta,
+  paceDescription,
+}: {
+  readonly name: string;
+  readonly window: ProviderUsageWindow & { readonly usedPercent: number };
+  readonly elapsedPercent: number | null;
+  readonly paceDelta: string | null;
+  readonly paceDescription: string | null;
+}) {
+  const line = (
+    <span
+      role="progressbar"
+      aria-label={`${name} ${window.label} used`}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(window.usedPercent)}
+      {...(paceDescription === null
+        ? {}
+        : { title: paceDescription, "aria-valuetext": paceDescription })}
+      className="relative block h-1.5 overflow-hidden rounded-full bg-foreground/10"
+    >
+      <span
+        className={`block h-full rounded-full ${usageProgressClass(window.usedPercent)}`}
+        style={{ width: `${window.usedPercent}%` }}
+      />
+      {elapsedPercent === null ? null : (
+        <UsageWindowElapsedOverlay elapsedPercent={elapsedPercent} />
+      )}
+    </span>
+  );
+
+  if (paceDelta === null) return line;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={line} />
+      <TooltipPopup side="top" sideOffset={6}>
+        {paceDelta}
+      </TooltipPopup>
+    </Tooltip>
+  );
 }
 
 const CLAUDE_WINDOW_LABELS: Record<string, string> = {
@@ -221,6 +418,7 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
         label: claudeWindowLabel(key),
         usedPercent: clampPercentage(utilization),
         resetAt: epochMilliseconds(window.resets_at),
+        windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS[key] ?? null,
       });
     }
     const hasFableWindow = () => windows.some((window) => window.key === "fable");
@@ -238,6 +436,7 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
           label: "Fable",
           usedPercent: clampPercentage(utilization),
           resetAt: epochMilliseconds(window.resets_at),
+          windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS.fable ?? null,
         });
       }
     }
@@ -260,6 +459,7 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
           label: "Fable",
           usedPercent: clampPercentage(percent),
           resetAt: epochMilliseconds(limit.resets_at),
+          windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS.fable ?? null,
         });
         break;
       }
@@ -278,6 +478,7 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
       label: claudeWindowLabel(key),
       usedPercent: clampPercentage(normalizedUtilization),
       resetAt: epochMilliseconds(info?.resetsAt ?? info?.overageResetsAt),
+      windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS[key] ?? null,
     },
   ];
 }
@@ -552,6 +753,7 @@ export function ProviderUsageDetails({
   isRefreshing?: boolean;
   refreshError?: string | null;
 }) {
+  const nowMs = useMinuteTick();
   const hasUsage = windows.length > 0;
   const visibleState = isRefreshing ? "loading" : state;
   const statusLabel =
@@ -620,6 +822,23 @@ export function ProviderUsageDetails({
           {windows.map((window) => {
             const reset = formatReset(window.resetAt);
             const detail = usageDetail(window);
+            const elapsedPercent = resolveUsageWindowElapsedPercent({
+              resetAt: window.resetAt,
+              windowDurationMs: window.windowDurationMs,
+              nowMs,
+            });
+            const paceDelta = formatUsageWindowPaceDelta(
+              resolveUsageWindowPaceDeltaMs({
+                usedPercent: window.usedPercent,
+                resetAt: window.resetAt,
+                windowDurationMs: window.windowDurationMs,
+                nowMs,
+              }),
+            );
+            const paceDescription =
+              elapsedPercent === null
+                ? null
+                : `${Math.round(window.usedPercent ?? 0)}% used · ${Math.round(elapsedPercent)}% of the window elapsed${paceDelta === null ? "" : ` · ${paceDelta}`}`;
             return (
               <li key={window.key} className="space-y-1">
                 <div className="flex items-start justify-between gap-3 text-xs">
@@ -635,19 +854,13 @@ export function ProviderUsageDetails({
                   </span>
                 </div>
                 {window.usedPercent !== null ? (
-                  <span
-                    role="progressbar"
-                    aria-label={`${name} ${window.label} used`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(window.usedPercent)}
-                    className="block h-1.5 overflow-hidden rounded-full bg-foreground/10"
-                  >
-                    <span
-                      className={`block h-full rounded-full ${usageProgressClass(window.usedPercent)}`}
-                      style={{ width: `${window.usedPercent}%` }}
-                    />
-                  </span>
+                  <UsageWindowProgressLine
+                    name={name}
+                    window={{ ...window, usedPercent: window.usedPercent }}
+                    elapsedPercent={elapsedPercent}
+                    paceDelta={paceDelta}
+                    paceDescription={paceDescription}
+                  />
                 ) : null}
                 {reset ? (
                   <div className="text-[11px] text-muted-foreground">Resets {reset}</div>
@@ -731,7 +944,14 @@ function ProviderUsageBadge({
   detailsSide: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
 }) {
+  const nowMs = useMinuteTick();
   const [open, setOpen] = useState(false);
+  // Hover- and focus-to-open are mouse affordances, and on touch they strand the
+  // popup open. A tap synthesizes an enter with no matching leave, so `closeDelay`
+  // never fires; the same tap also focuses the trigger, so `onFocus` re-opens it
+  // on every tap and again on re-render after switching threads. Only a blur
+  // elsewhere closed it. On coarse pointers, leave it a plain tap-to-toggle.
+  const hoverCapable = useMediaQuery("(hover: hover) and (pointer: fine)");
   const { provider } = summary;
   const name = providerUsageName(provider);
   const usageDetailsLabel =
@@ -739,20 +959,41 @@ function ProviderUsageBadge({
   const compactUsedPercent = compactMetric.window?.usedPercent ?? null;
   const compactRoundedUsedPercent =
     compactUsedPercent === null ? null : Math.round(compactUsedPercent);
+  const compactElapsedPercent = resolveUsageWindowElapsedPercent({
+    resetAt: compactMetric.window?.resetAt ?? null,
+    windowDurationMs: compactMetric.window?.windowDurationMs ?? null,
+    nowMs,
+  });
+  const compactPaceDelta = formatUsageWindowPaceDelta(
+    resolveUsageWindowPaceDeltaMs({
+      usedPercent: compactUsedPercent,
+      resetAt: compactMetric.window?.resetAt ?? null,
+      windowDurationMs: compactMetric.window?.windowDurationMs ?? null,
+      nowMs,
+    }),
+  );
   const compactUsageLabel = `${name} ${compactMetric.label}`;
   const compactStatus =
     compactRoundedUsedPercent === null ? "not reported" : `${compactRoundedUsedPercent}% used`;
+  // The overlay encodes pace visually; state it in text too, so the comparison
+  // is available to screen readers and on hover rather than by color alone.
+  const compactStatusWithPace =
+    compactElapsedPercent === null
+      ? compactStatus
+      : `${compactStatus}, ${Math.round(compactElapsedPercent)}% of the window elapsed${
+          compactPaceDelta === null ? "" : `, ${compactPaceDelta}`
+        }`;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        openOnHover
+        openOnHover={hoverCapable}
         delay={150}
         closeDelay={150}
-        aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatus}`}
-        title={`${compactUsageLabel}: ${compactStatus}`}
+        aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatusWithPace}`}
+        title={`${compactUsageLabel}: ${compactStatusWithPace}`}
         data-provider-usage-compact-driver={provider.driver}
         className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
-        onFocus={() => setOpen(true)}
+        {...(hoverCapable ? { onFocus: () => setOpen(true) } : {})}
       >
         <ProviderInstanceIcon
           driverKind={provider.driver}
@@ -777,12 +1018,15 @@ function ProviderUsageBadge({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(compactUsedPercent)}
-            className="h-1 w-7 overflow-hidden rounded-full bg-foreground/10 sm:w-8"
+            className="relative h-1 w-7 overflow-hidden rounded-full bg-foreground/10 sm:w-8"
           >
             <span
               className={`block h-full rounded-full ${usageProgressClass(compactUsedPercent)}`}
               style={{ width: `${compactUsedPercent}%` }}
             />
+            {compactElapsedPercent === null ? null : (
+              <UsageWindowElapsedOverlay elapsedPercent={compactElapsedPercent} />
+            )}
           </span>
         ) : null}
       </PopoverTrigger>

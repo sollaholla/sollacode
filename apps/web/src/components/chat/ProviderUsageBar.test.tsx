@@ -20,6 +20,9 @@ import {
   ProviderUsagePlacementRow,
   providerUsageDetailsSide,
   resolveProviderUsagePlacement,
+  resolveUsageWindowElapsedPercent,
+  resolveUsageWindowPaceDeltaMs,
+  formatUsageWindowPaceDelta,
   usageThreshold,
 } from "./ProviderUsageBar";
 import { mergeProviderUsageEntry, providerUsageAccountKey } from "../../providerUsageStore";
@@ -404,6 +407,108 @@ describe("provider usage summaries", () => {
 
     expect(transientZero[accountKey]?.windows).toEqual([
       expect.objectContaining({ key: "weekly", usedPercent: 49 }),
+    ]);
+  });
+
+  it("repairs a stale Codex 100% snapshot from a current non-zero provider report", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const resetAt = Date.parse("2026-08-05T15:00:00.000Z");
+    const poisoned = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-08-02T19:59:00.000Z",
+        windows: [{ key: "weekly", label: "Weekly", usedPercent: 100, resetAt }],
+      },
+    );
+    const corrected = mergeProviderUsageEntry(poisoned, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-02T20:01:00.000Z",
+      windows: [{ key: "weekly", label: "Weekly", usedPercent: 4, resetAt }],
+    });
+
+    expect(corrected[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 4 }),
+    ]);
+  });
+
+  it("repairs a stale Codex 98% snapshot from the current 10% provider report", () => {
+    const provider = {
+      ...makeProvider("codex", "codex-work", "work@example.com"),
+      accountUsage: {
+        rateLimits: {
+          primary: {
+            usedPercent: 10,
+            windowDurationMins: 10_080,
+            resetsAt: Date.parse("2026-08-05T15:00:00.000Z") / 1_000,
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-08-02T23:46:43.652Z",
+    } satisfies ServerProvider;
+    const accountKey = providerUsageAccountKey(provider)!;
+    const persisted = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-08-02T23:40:00.000Z",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 98,
+            resetAt: Date.parse("2026-08-05T15:00:00.000Z"),
+          },
+        ],
+      },
+    );
+
+    const summary = deriveProviderUsageSummaries(
+      [provider],
+      [],
+      persisted,
+      Date.parse("2026-08-02T23:47:00.000Z"),
+    )[0]!;
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Codex"
+        state={summary.state}
+        reportedAt={summary.reportedAt}
+        windows={summary.windows}
+      />,
+    );
+
+    expect(summary.windows).toEqual([expect.objectContaining({ key: "weekly", usedPercent: 10 })]);
+    expect(markup).toContain("10% used");
+    expect(markup).not.toContain("98% used");
+  });
+
+  it("does not repair a stale Codex 100% snapshot from a transient zero", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const resetAt = Date.parse("2026-08-05T15:00:00.000Z");
+    const poisoned = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-08-02T19:59:00.000Z",
+        windows: [{ key: "weekly", label: "Weekly", usedPercent: 100, resetAt }],
+      },
+    );
+    const transientZero = mergeProviderUsageEntry(poisoned, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-02T20:01:00.000Z",
+      windows: [{ key: "weekly", label: "Weekly", usedPercent: 0, resetAt }],
+    });
+
+    expect(transientZero[accountKey]?.windows).toEqual([
+      expect.objectContaining({ key: "weekly", usedPercent: 100 }),
     ]);
   });
 
@@ -997,5 +1102,137 @@ describe("provider usage summaries", () => {
       label: "Weekly",
       window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
     });
+  });
+});
+
+describe("resolveUsageWindowElapsedPercent", () => {
+  const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+  // A window that started at t=0 and resets five hours later.
+  const resetAt = FIVE_HOURS_MS;
+
+  it("reports elapsed time as a share of the window", () => {
+    expect(
+      resolveUsageWindowElapsedPercent({
+        resetAt,
+        windowDurationMs: FIVE_HOURS_MS,
+        nowMs: FIVE_HOURS_MS / 2,
+      }),
+    ).toBe(50);
+    expect(
+      resolveUsageWindowElapsedPercent({
+        resetAt,
+        windowDurationMs: FIVE_HOURS_MS,
+        nowMs: FIVE_HOURS_MS / 4,
+      }),
+    ).toBe(25);
+  });
+
+  it("omits the overlay when the window length is unknown", () => {
+    // Claude never reports a length, so an unmapped key must render nothing
+    // rather than imply a start time the provider never gave.
+    expect(
+      resolveUsageWindowElapsedPercent({ resetAt, windowDurationMs: null, nowMs: 1_000 }),
+    ).toBeNull();
+    expect(
+      resolveUsageWindowElapsedPercent({ resetAt, windowDurationMs: undefined, nowMs: 1_000 }),
+    ).toBeNull();
+    expect(
+      resolveUsageWindowElapsedPercent({
+        resetAt: null,
+        windowDurationMs: FIVE_HOURS_MS,
+        nowMs: 1_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("clamps to the track rather than overshooting it", () => {
+    // A stale reset time keeps the bar pinned at full instead of running past.
+    expect(
+      resolveUsageWindowElapsedPercent({
+        resetAt,
+        windowDurationMs: FIVE_HOURS_MS,
+        nowMs: FIVE_HOURS_MS * 10,
+      }),
+    ).toBe(100);
+    // A clock behind the window start reads as not yet begun.
+    expect(
+      resolveUsageWindowElapsedPercent({
+        resetAt,
+        windowDurationMs: FIVE_HOURS_MS,
+        nowMs: -FIVE_HOURS_MS,
+      }),
+    ).toBe(0);
+  });
+
+  it("rejects a non-positive or non-finite window length", () => {
+    for (const windowDurationMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        resolveUsageWindowElapsedPercent({ resetAt, windowDurationMs, nowMs: 1_000 }),
+      ).toBeNull();
+    }
+  });
+});
+
+describe("usage-window pace delta", () => {
+  const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+
+  it("reports positive time until elapsed pace reaches heavier usage", () => {
+    const delta = resolveUsageWindowPaceDeltaMs({
+      usedPercent: 80,
+      resetAt: FIVE_HOURS_MS,
+      windowDurationMs: FIVE_HOURS_MS,
+      nowMs: 2 * 60 * 60 * 1000,
+    });
+    expect(delta).toBe(2 * 60 * 60 * 1000);
+    expect(formatUsageWindowPaceDelta(delta)).toBe("+2h until time bar reaches usage");
+  });
+
+  it("reports negative time after elapsed pace has passed lighter usage", () => {
+    const delta = resolveUsageWindowPaceDeltaMs({
+      usedPercent: 25,
+      resetAt: FIVE_HOURS_MS,
+      windowDurationMs: FIVE_HOURS_MS,
+      nowMs: 2 * 60 * 60 * 1000,
+    });
+    expect(delta).toBe(-45 * 60 * 1000);
+    expect(formatUsageWindowPaceDelta(delta)).toBe("−45m since time bar passed usage");
+  });
+
+  it("uses seconds at the crossover and omits unknown windows", () => {
+    expect(formatUsageWindowPaceDelta(0)).toBe("±0s — time and usage bars meet now");
+    expect(formatUsageWindowPaceDelta(42_000)).toBe("+42s until time bar reaches usage");
+    expect(
+      resolveUsageWindowPaceDeltaMs({
+        usedPercent: 50,
+        resetAt: FIVE_HOURS_MS,
+        windowDurationMs: null,
+        nowMs: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("puts the signed pace duration on the hoverable quota line", () => {
+    const nowMs = Date.now();
+    const markup = renderToStaticMarkup(
+      <ProviderUsageDetails
+        name="Claude"
+        state="available"
+        reportedAt="2026-08-03T16:00:00.000Z"
+        windows={[
+          {
+            key: "current_session",
+            label: "Current session",
+            usedPercent: 80,
+            resetAt: nowMs + FIVE_HOURS_MS,
+            windowDurationMs: FIVE_HOURS_MS,
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("until time bar reaches usage");
+    expect(markup).toContain("aria-valuetext=");
+    expect(markup).toContain('data-usage-window-elapsed-marker="dots"');
+    expect(markup).toContain("provider-usage-elapsed-dots");
   });
 });

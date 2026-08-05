@@ -292,6 +292,47 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens side chats and reconciles them to the authoritative server children", () => {
+    useRightPanelStore.getState().openSideChat(refA, "side-1", "Investigate auth");
+    useRightPanelStore.getState().openSideChat(refA, "side-2", "Check scroll jank");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "side-chat:side-2",
+      surfaces: [
+        {
+          id: "side-chat:side-1",
+          kind: "side-chat",
+          resourceId: "side-1",
+          title: "Investigate auth",
+        },
+        {
+          id: "side-chat:side-2",
+          kind: "side-chat",
+          resourceId: "side-2",
+          title: "Check scroll jank",
+        },
+      ],
+    });
+
+    useRightPanelStore
+      .getState()
+      .reconcileSideChatSurfaces(refA, [{ threadId: "side-2", title: "Check scroll anchoring" }]);
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "side-chat:side-2",
+      surfaces: [
+        {
+          id: "side-chat:side-2",
+          kind: "side-chat",
+          resourceId: "side-2",
+          title: "Check scroll anchoring",
+        },
+      ],
+    });
+  });
+
   it("tracks one surface per terminal session", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
     useRightPanelStore.getState().openTerminal(refA, "term-2");

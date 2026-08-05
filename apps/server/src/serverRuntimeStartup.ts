@@ -34,6 +34,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
+import * as ThreadWorkScheduler from "./orchestration/Services/ThreadWorkScheduler.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -70,6 +71,8 @@ interface QueuedCommand {
   readonly run: Effect.Effect<void, never>;
 }
 
+const STARTUP_COMMAND_QUEUE_CAPACITY = 256;
+
 type CommandReadinessState = "pending" | "ready" | ServerRuntimeStartupError;
 
 interface CommandGate {
@@ -88,7 +91,7 @@ const settleQueuedCommand = <A, E>(deferred: Deferred.Deferred<A, E>, exit: Exit
 
 export const makeCommandGate = Effect.gen(function* () {
   const commandReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
-  const commandQueue = yield* Queue.unbounded<QueuedCommand>();
+  const commandQueue = yield* Queue.bounded<QueuedCommand>(STARTUP_COMMAND_QUEUE_CAPACITY);
   const commandReadinessState = yield* Ref.make<CommandReadinessState>("pending");
 
   const commandWorker = Effect.forever(
@@ -110,11 +113,10 @@ export const makeCommandGate = Effect.gen(function* () {
     enqueueCommand: <A, E>(effect: Effect.Effect<A, E>) =>
       Effect.gen(function* () {
         const readinessState = yield* Ref.get(commandReadinessState);
-        if (readinessState === "ready") {
-          return yield* effect;
-        }
         if (readinessState !== "pending") {
-          return yield* readinessState;
+          if (readinessState !== "ready") {
+            return yield* readinessState;
+          }
         }
 
         const result = yield* Deferred.make<A, E | ServerRuntimeStartupError>();
@@ -293,6 +295,7 @@ export const make = Effect.gen(function* () {
   const keybindings = yield* Keybindings.Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
+  const threadWorkScheduler = yield* ThreadWorkScheduler.ThreadWorkScheduler;
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -342,6 +345,7 @@ export const make = Effect.gen(function* () {
       "reactors.start",
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
+        yield* threadWorkScheduler.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );

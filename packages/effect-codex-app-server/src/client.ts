@@ -1,4 +1,6 @@
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -24,6 +26,16 @@ export interface CodexAppServerClientOptions {
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
+  /** See {@link CodexProtocol.CodexAppServerPatchedProtocolOptions.requestTimeout}. */
+  readonly requestTimeout?: Duration.Input;
+  /**
+   * Invoked once when the transport terminates — the input stream ended,
+   * failed, or the reader defected. This is the only signal a session owner
+   * gets when the process is still alive but the transport is dead, so use it
+   * to mark the session errored rather than letting it report "running"
+   * forever.
+   */
+  readonly onTermination?: (error: CodexError.CodexAppServerError) => Effect.Effect<void, never>;
 }
 
 interface CodexAppServerClientRaw {
@@ -148,19 +160,51 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         : undefined;
     const handlers = notificationHandlers.get(notification.method) ?? [];
 
-    if (schema) {
-      return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
-        Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+    // Handlers run inside the transport's reader fiber. A defect here used to
+    // propagate up and kill that fiber, permanently deafening the session
+    // while it still reported itself alive — so one bad notification must
+    // never take down the stream. Typed failures are dropped as before;
+    // defects are logged and dropped.
+    const containCause = <A>(effect: Effect.Effect<A, CodexError.CodexAppServerError>) =>
+      effect.pipe(
+        Effect.asVoid,
+        // A dropped notification is never fine to lose silently: an
+        // unparseable payload (app-server schema drift) once swallowed every
+        // event of a turn — the turn ran to completion provider-side while
+        // this client reported nothing. Log the drop so schema drift is
+        // visible in one grep instead of presenting as a dead thread.
+        Effect.catch((error) =>
+          Effect.logWarning("Codex notification dropped; payload failed to decode.", {
+            method: notification.method,
+            error: error.message,
+          }),
         ),
-        Effect.catch(() => Effect.void),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("Codex notification handler defected; dropping notification.", {
+                method: notification.method,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
+
+    if (schema) {
+      return containCause(
+        decodeNotificationPayload(notification.method, schema, notification.params).pipe(
+          Effect.flatMap((decoded) =>
+            // Contained per handler: one defecting subscriber must not starve
+            // its peers of the notification, let alone kill the stream.
+            Effect.forEach(handlers, (handler) => containCause(handler(decoded)), {
+              discard: true,
+            }),
+          ),
+        ),
       );
     }
 
     return unknownNotificationHandler
-      ? unknownNotificationHandler(notification.method, notification.params).pipe(
-          Effect.catch(() => Effect.void),
-        )
+      ? containCause(unknownNotificationHandler(notification.method, notification.params))
       : Effect.void;
   };
 
@@ -190,6 +234,8 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.requestTimeout !== undefined ? { requestTimeout: options.requestTimeout } : {}),
+    ...(options.onTermination !== undefined ? { onTermination: options.onTermination } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
   });

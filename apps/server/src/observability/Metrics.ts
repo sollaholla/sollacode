@@ -74,6 +74,81 @@ export const terminalRestartsTotal = Metric.counter("t3_terminal_restarts_total"
   description: "Total terminal restart requests handled.",
 });
 
+export const threadWorkObligationsCurrent = Metric.gauge("t3_thread_work_obligations_current", {
+  description: "Current durable thread work obligations grouped by provider, kind, and state.",
+});
+
+export const threadWorkObligationOldestAgeSeconds = Metric.gauge(
+  "t3_thread_work_obligation_oldest_age_seconds",
+  {
+    description: "Age in seconds of the oldest durable thread work obligation in each group.",
+  },
+);
+
+export const threadWorkSchedulerQueueDepth = Metric.gauge("t3_thread_work_scheduler_queue_depth", {
+  description: "Currently schedulable durable work grouped by provider and priority.",
+});
+
+export const threadWorkSchedulerOldestWaitSeconds = Metric.gauge(
+  "t3_thread_work_scheduler_oldest_wait_seconds",
+  {
+    description: "Age in seconds of the oldest currently schedulable work item in each group.",
+  },
+);
+
+export const threadRuntimeLeasesCurrent = Metric.gauge("t3_thread_runtime_leases_current", {
+  description: "Current live thread runtime leases grouped by execution phase.",
+});
+
+export const threadWorkDuplicateConflictsTotal = Metric.counter(
+  "t3_thread_work_duplicate_conflicts_total",
+  {
+    description:
+      "Deterministic duplicate durable work inserts prevented by repository constraints.",
+  },
+);
+
+export const threadWorkRecoveredTotal = Metric.counter("t3_thread_work_recovered_total", {
+  description: "Durable thread work recovered after process or scheduler interruption.",
+});
+
+export const threadWorkAuthenticationTransitionsTotal = Metric.counter(
+  "t3_thread_work_authentication_transitions_total",
+  {
+    description: "Threads paused or resumed through durable authentication recovery.",
+  },
+);
+
+export const providerSessionReaperSkippedTotal = Metric.counter(
+  "t3_provider_session_reaper_skipped_total",
+  {
+    description:
+      "Provider session reap attempts skipped because live work or interaction state exists.",
+  },
+);
+
+export const threadsRunningWithoutClientCurrent = Metric.gauge(
+  "t3_threads_running_without_client_current",
+  {
+    description: "Current server-owned running threads without a connected detailed client.",
+  },
+);
+
+export const threadSubscriptionsCurrent = Metric.gauge("t3_thread_subscriptions_current", {
+  description: "Current shell and detailed thread subscriptions grouped by subscription kind.",
+});
+
+export const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
+  description: "Current preview activity leases grouped by consumer type.",
+});
+
+export const backgroundContextCompactionDuration = Metric.timer(
+  "t3_background_context_compaction_duration",
+  {
+    description: "Duration of server-owned context compaction, independent of client visibility.",
+  },
+);
+
 export const metricAttributes = (
   attributes: Readonly<Record<string, unknown>>,
 ): ReadonlyArray<[string, string]> => Object.entries(compactMetricAttributes(attributes));

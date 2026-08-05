@@ -16,7 +16,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationProjectionSnapshotQueryLive,
+  THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+} from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -34,6 +37,181 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("bounds activity hydration for transport thread snapshots", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        ) VALUES (
+          'project-large-snapshot',
+          'Large Snapshot Project',
+          '/tmp/large-snapshot',
+          NULL,
+          '[]',
+          '2026-08-02T00:00:00.000Z',
+          '2026-08-02T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        ) VALUES (
+          'thread-large-snapshot',
+          'project-large-snapshot',
+          'Large Snapshot Thread',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          'full-access',
+          'default',
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          0,
+          0,
+          0,
+          '2026-08-02T00:00:00.000Z',
+          '2026-08-02T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE activity_numbers(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1
+          FROM activity_numbers
+          WHERE value < ${THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('activity-%04d', value),
+          'thread-large-snapshot',
+          NULL,
+          'info',
+          'runtime.note',
+          printf('activity %d', value),
+          '{}',
+          value,
+          '2026-08-02T00:00:01.000Z'
+        FROM activity_numbers
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        ) VALUES
+          (
+            'message-large-snapshot-1',
+            'thread-large-snapshot',
+            NULL,
+            'user',
+            'oldest conversation message',
+            0,
+            '2026-08-02T00:00:00.000Z',
+            '2026-08-02T00:00:00.000Z'
+          ),
+          (
+            'message-large-snapshot-2',
+            'thread-large-snapshot',
+            NULL,
+            'assistant',
+            'newest conversation message',
+            0,
+            '2026-08-02T00:00:02.000Z',
+            '2026-08-02T00:00:02.000Z'
+          )
+      `;
+
+      const full = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-large-snapshot"));
+      const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(
+        ThreadId.make("thread-large-snapshot"),
+      );
+
+      assert.equal(full._tag, "Some");
+      assert.equal(snapshot._tag, "Some");
+      if (full._tag === "Some" && snapshot._tag === "Some") {
+        assert.equal(full.value.activities.length, THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5);
+        assert.equal(
+          snapshot.value.thread.activities.length,
+          THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+        );
+        assert.equal(snapshot.value.thread.activities[0]?.sequence, 6);
+        assert.equal(
+          snapshot.value.thread.activities.at(-1)?.sequence,
+          THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5,
+        );
+        assert.deepEqual(
+          snapshot.value.thread.messages.map((message) => message.text),
+          ["oldest conversation message", "newest conversation message"],
+        );
+      }
+
+      yield* sql`
+        DELETE FROM projection_thread_messages
+        WHERE thread_id = 'thread-large-snapshot'
+      `;
+      yield* sql`
+        DELETE FROM projection_thread_activities
+        WHERE thread_id = 'thread-large-snapshot'
+      `;
+      yield* sql`
+        DELETE FROM projection_threads
+        WHERE thread_id = 'thread-large-snapshot'
+      `;
+      yield* sql`
+        DELETE FROM projection_projects
+        WHERE project_id = 'project-large-snapshot'
+      `;
+    }),
+  );
+
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -285,6 +463,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          isSideChat: false,
+          sideChatParentThreadId: null,
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -399,6 +579,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           title: "Thread 1",
+          isSideChat: false,
+          sideChatParentThreadId: null,
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",

@@ -18,7 +18,9 @@ import { RpcClientError } from "effect/unstable/rpc";
 
 import {
   AVAILABLE_CONNECTION_STATE,
+  BearerConnectionTarget,
   PrimaryConnectionTarget,
+  type ConnectionTarget,
   type PreparedConnection,
   type SupervisorConnectionState,
 } from "../connection/model.ts";
@@ -53,7 +55,9 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
   };
 }
 
-const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
+const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* (
+  target: ConnectionTarget = TARGET,
+) {
   const state = yield* SubscriptionRef.make<SupervisorConnectionState>(AVAILABLE_CONNECTION_STATE);
   const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
     Option.none(),
@@ -61,7 +65,7 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
   const retryCount = yield* Ref.make(0);
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-    target: TARGET,
+    target,
     state,
     session: activeSession,
     prepared,
@@ -77,6 +81,51 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it.effect("waits for a reconnecting local session before dispatching a request", () =>
+    Effect.gen(function* () {
+      const client = {
+        [WS_METHODS.cloudGetRelayClientStatus]: () =>
+          Effect.succeed({ status: "available", version: "2026.6.0" }),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      const resultFiber = yield* request(WS_METHODS.cloudGetRelayClientStatus, {}).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      expect(resultFiber.pollUnsafe()).toBeUndefined();
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      expect(yield* Fiber.join(resultFiber)).toEqual({
+        status: "available",
+        version: "2026.6.0",
+      });
+    }),
+  );
+
+  it.effect("still rejects requests immediately for a disconnected remote environment", () =>
+    Effect.gen(function* () {
+      const remoteTarget = new BearerConnectionTarget({
+        environmentId: EnvironmentId.make("environment-remote"),
+        label: "Remote environment",
+        connectionId: "remote-1",
+      });
+      const { supervisor } = yield* makeHarness(remoteTarget);
+
+      const error = yield* request(WS_METHODS.cloudGetRelayClientStatus, {}).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+
+      expect(error).toMatchObject({
+        _tag: "EnvironmentRpcUnavailableError",
+        environmentId: remoteTarget.environmentId,
+        message: "Remote environment is not connected.",
+      });
+    }),
+  );
+
   it.effect("observes unary requests until they complete", () =>
     Effect.gen(function* () {
       const observations: string[] = [];

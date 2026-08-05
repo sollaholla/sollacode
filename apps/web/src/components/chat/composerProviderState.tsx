@@ -44,6 +44,8 @@ type TraitsRenderInput = {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
+  persistSticky?: boolean;
+  iconOnly?: boolean;
   prompt: string;
   onPromptChange: (prompt: string) => void;
 };
@@ -92,6 +94,8 @@ function renderTraitsControl(
     model,
     models,
     modelOptions,
+    persistSticky,
+    iconOnly,
     prompt,
     onPromptChange,
   } = input;
@@ -111,6 +115,8 @@ function renderTraitsControl(
       {...(draftId ? { draftId } : {})}
       model={model}
       modelOptions={modelOptions}
+      {...(persistSticky !== undefined ? { persistSticky } : {})}
+      {...(iconOnly !== undefined ? { iconOnly } : {})}
       prompt={prompt}
       onPromptChange={onPromptChange}
     />

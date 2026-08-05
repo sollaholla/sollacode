@@ -33,6 +33,32 @@ export function mergeVoiceTranscriptPrompt(currentPrompt: string, transcript: st
   return `${currentPrompt} ${normalizedTranscript}`;
 }
 
+export type VoiceTranscriptInputTarget =
+  | { readonly kind: "composer-draft" }
+  | { readonly kind: "pending-user-input"; readonly questionId: string };
+
+/**
+ * Resolve dictation against the input the composer is visibly presenting.
+ * A provider question temporarily replaces the normal thread draft, so voice
+ * input must follow that same ownership boundary instead of writing behind it.
+ */
+export function resolveVoiceTranscriptInputUpdate(input: {
+  readonly currentPrompt: string;
+  readonly transcript: string;
+  readonly pendingQuestionId: string | null;
+}): {
+  readonly prompt: string;
+  readonly target: VoiceTranscriptInputTarget;
+} {
+  return {
+    prompt: mergeVoiceTranscriptPrompt(input.currentPrompt, input.transcript),
+    target:
+      input.pendingQuestionId === null
+        ? { kind: "composer-draft" }
+        : { kind: "pending-user-input", questionId: input.pendingQuestionId },
+  };
+}
+
 export function shouldTranscribeStoppedRecording(input: {
   readonly audioByteLength: number;
   readonly reachedRecordingLimit: boolean;

@@ -116,7 +116,18 @@ function isFinished(status: ProviderTaskStatus): boolean {
  */
 export function deriveProviderTasks(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options?: { readonly nowMs?: number },
+  options?: {
+    readonly nowMs?: number;
+    /**
+     * The provider session that owned these tasks has been torn down.
+     *
+     * Nothing can still be running once the process is gone, so unfinished
+     * rows are reported as `stopped` immediately instead of waiting out the
+     * staleness timer. Without this the panel advertises live background work
+     * on a chat the user can plainly see is stopped.
+     */
+    readonly providerSessionEnded?: boolean;
+  },
 ): ReadonlyArray<ProviderTask> {
   const nowMs = options?.nowMs ?? Date.now();
   const byTaskId = new Map<string, ProviderTask>();
@@ -168,16 +179,30 @@ export function deriveProviderTasks(
     // that has said nothing for a day is history regardless of whether we ever
     // saw it end — and a ghost never will.
     if (ageMs > PROVIDER_TASK_MAX_AGE_MS) continue;
-    if (isFinished(task.status)) {
+
+    // A background task cannot outlive the process that owns it. Once the
+    // provider session is torn down there is nothing left to run, so a row
+    // still folded as "running" is a ghost: the runtime died before it could
+    // emit `task.completed`, and the fold has no other way to learn that.
+    // `stopped` is the honest status — we know it is not running — and it also
+    // makes the row age out and become dismissable like any other finished work.
+    const settled =
+      options?.providerSessionEnded === true && !isFinished(task.status)
+        ? { ...task, status: "stopped" as const }
+        : task;
+
+    if (isFinished(settled.status)) {
       const retentionMs =
-        task.status === "failed"
+        settled.status === "failed"
           ? PROVIDER_TASK_FAILED_RETENTION_MS
           : PROVIDER_TASK_COMPLETED_RETENTION_MS;
       if (ageMs > retentionMs) continue;
-      aged.push(task);
+      aged.push(settled);
       continue;
     }
-    aged.push(ageMs > PROVIDER_TASK_STALE_AFTER_MS ? { ...task, status: "stale" as const } : task);
+    aged.push(
+      ageMs > PROVIDER_TASK_STALE_AFTER_MS ? { ...settled, status: "stale" as const } : settled,
+    );
   }
 
   // Running first — those are the ones still consuming time and the reason to
@@ -326,11 +351,10 @@ export function shouldShowProviderTaskPanel(tasks: ReadonlyArray<ProviderTask>):
  * is worse than not seeing task state at all — the conversation is the thing
  * the user is actually reading.
  *
- * `split` takes the lower half of the inline right panel column, so it costs
- * the conversation no width. `fullscreen` is the mobile form: there is no
- * column to share on a phone, and a small overlay there would cover almost
- * everything anyway, so it takes the whole screen and is dismissed back to the
- * app deliberately.
+ * `stacked` takes the lower part of the right panel, below its active surface.
+ * The same vertical composition is used for the inline desktop panel and the
+ * full-viewport responsive sheet. This keeps task rows at the full panel width
+ * instead of squeezing them beside another surface on narrow screens.
  *
  * Right panel collapsed means hidden, full stop. That is the user's existing
  * control for "give me my screen back", and this reuses it rather than adding
@@ -338,16 +362,15 @@ export function shouldShowProviderTaskPanel(tasks: ReadonlyArray<ProviderTask>):
  * background work keeps running whether or not the panel is looked at, and a
  * separate "hide" would let it be dismissed into invisibility while live.
  */
-export type ProviderTaskPanelPlacement = "hidden" | "fullscreen" | "split";
+export type ProviderTaskPanelPlacement = "hidden" | "stacked";
 
 export function resolveProviderTaskPanelPlacement(input: {
   readonly hasTasks: boolean;
   readonly rightPanelOpen: boolean;
-  readonly useSheetLayout: boolean;
 }): ProviderTaskPanelPlacement {
   if (!input.hasTasks) return "hidden";
   if (!input.rightPanelOpen) return "hidden";
-  return input.useSheetLayout ? "fullscreen" : "split";
+  return "stacked";
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {

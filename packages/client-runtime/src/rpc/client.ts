@@ -1,7 +1,7 @@
 import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
-import type * as Duration from "effect/Duration";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -81,6 +81,7 @@ export class EnvironmentRpcSubscriptionObserver extends Context.Reference<{
 }) {}
 
 const isRpcClientError = Schema.is(RpcClientError.RpcClientError);
+const PRIMARY_SESSION_RECONNECT_WAIT = Duration.seconds(30);
 
 export type EnvironmentRpcInput<TTag extends EnvironmentRpcTag> = Parameters<RpcMethod<TTag>>[0];
 
@@ -106,20 +107,34 @@ export type EnvironmentRpcStreamFailure<TTag extends EnvironmentStreamRpcTag> =
 
 const currentSession = Effect.fn("EnvironmentRpc.currentSession")(function* () {
   const supervisor = yield* EnvironmentSupervisor;
-  return yield* SubscriptionRef.get(supervisor.session).pipe(
-    Effect.flatMap(
-      Option.match({
-        onNone: () =>
-          Effect.fail(
-            new EnvironmentRpcUnavailableError({
-              environmentId: supervisor.target.environmentId,
-              message: `${supervisor.target.label} is not connected.`,
-            }),
-          ),
-        onSome: Effect.succeed,
-      }),
-    ),
+  const active = yield* SubscriptionRef.get(supervisor.session);
+  if (Option.isSome(active)) return active.value;
+
+  if (supervisor.target._tag !== "PrimaryConnectionTarget") {
+    return yield* new EnvironmentRpcUnavailableError({
+      environmentId: supervisor.target.environmentId,
+      message: `${supervisor.target.label} is not connected.`,
+    });
+  }
+
+  // Local sends are accepted while the desktop renderer reconnects to its
+  // bundled server. Waiting here keeps the captured command payload intact and
+  // lets the existing UI recovery restore the draft if the grace period ends.
+  // Remote environments still fail immediately above so an offline host never
+  // becomes an implicit client-side queue.
+  const reconnected = yield* SubscriptionRef.changes(supervisor.session).pipe(
+    Stream.filter(Option.isSome),
+    Stream.map((next) => next.value),
+    Stream.runHead,
+    Effect.timeoutOption(PRIMARY_SESSION_RECONNECT_WAIT),
+    Effect.map(Option.flatten),
   );
+  if (Option.isSome(reconnected)) return reconnected.value;
+
+  return yield* new EnvironmentRpcUnavailableError({
+    environmentId: supervisor.target.environmentId,
+    message: `${supervisor.target.label} did not reconnect within 30 seconds.`,
+  });
 });
 
 export const request = Effect.fn("EnvironmentRpc.request")(function* <

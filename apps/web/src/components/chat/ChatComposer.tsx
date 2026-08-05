@@ -44,6 +44,10 @@ import {
   replaceTextRange,
   shouldSubmitComposerOnEnter,
 } from "../../composer-logic";
+import {
+  resolveVoiceTranscriptInputUpdate,
+  type VoiceTranscriptInputTarget,
+} from "../../pushToTalkTranscription";
 import { deriveComposerSendState, readFileAsDataUrl } from "../ChatView.logic";
 import {
   dataTransferHasComposerMention,
@@ -83,8 +87,9 @@ import { ComposerPendingElementContexts } from "./ComposerPendingElementContexts
 import { ComposerPendingReviewComments } from "./ComposerPendingReviewComments";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import {
+  type ComposerFooterLayoutMode,
+  resolveComposerFooterLayoutMode,
   shouldUseCompactComposerPrimaryActions,
-  shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
@@ -111,9 +116,12 @@ import {
 } from "./mobileComposerPresentation";
 import {
   discardComposerTransfer,
+  hasPersistedComposerTransfer,
   hasTransferableComposerContent,
+  persistComposerTransfer,
   planComposerPaste,
   readComposerTransferFromClipboard,
+  resolveComposerTransferFromClipboard,
   stageComposerTransfer,
   writeComposerTransferToClipboard,
 } from "../../composerTransferClipboard";
@@ -297,6 +305,7 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
 }
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
+  iconOnly: boolean;
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
@@ -320,7 +329,10 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   // to jump between directly.
   const interactionModeToggle = props.showInteractionModeToggle ? (
     <>
-      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+      <Separator
+        orientation="vertical"
+        className={cn("mx-0.5 hidden h-4 sm:block", props.iconOnly && "sm:hidden")}
+      />
       <Tooltip>
         <Select
           value={props.interactionMode}
@@ -331,10 +343,13 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
               <ComposerSelectControl
                 className={cn(
                   "font-medium",
+                  props.iconOnly &&
+                    "size-7 justify-center px-0 [&_[data-slot=select-icon]]:hidden [&_[data-slot=select-value]]:hidden",
                   props.interactionMode !== "default" &&
                     "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300",
                 )}
                 aria-label="Interaction mode"
+                data-chat-composer-control-display={props.iconOnly ? "icon" : "label"}
               />
             }
           >
@@ -368,14 +383,21 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             })}
           </SelectPopup>
         </Select>
-        <TooltipPopup side="top">{interactionModeOption.description}</TooltipPopup>
+        <TooltipPopup side="top">
+          {props.iconOnly
+            ? `${interactionModeOption.label}: ${interactionModeOption.description}`
+            : interactionModeOption.description}
+        </TooltipPopup>
       </Tooltip>
     </>
   ) : null;
 
   return (
     <>
-      <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+      <Separator
+        orientation="vertical"
+        className={cn("mx-0.5 hidden h-4 sm:block", props.iconOnly && "sm:hidden")}
+      />
 
       <Tooltip>
         <Select
@@ -383,7 +405,17 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
           onValueChange={(value) => props.onRuntimeModeChange(value!)}
         >
           <TooltipTrigger
-            render={<ComposerSelectControl className="font-medium" aria-label="Runtime mode" />}
+            render={
+              <ComposerSelectControl
+                className={cn(
+                  "font-medium",
+                  props.iconOnly &&
+                    "size-7 justify-center px-0 [&_[data-slot=select-icon]]:hidden [&_[data-slot=select-value]]:hidden",
+                )}
+                aria-label="Runtime mode"
+                data-chat-composer-control-display={props.iconOnly ? "icon" : "label"}
+              />
+            }
           >
             <ComposerControlIcon icon={RuntimeModeIcon} />
             <SelectValue>{runtimeModeOption.label}</SelectValue>
@@ -410,20 +442,28 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             })}
           </SelectPopup>
         </Select>
-        <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
+        <TooltipPopup side="top">
+          {props.iconOnly
+            ? `${runtimeModeOption.label}: ${runtimeModeOption.description}`
+            : runtimeModeOption.description}
+        </TooltipPopup>
       </Tooltip>
 
       {interactionModeToggle}
 
       {props.showPlanToggle ? (
         <>
-          <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+          <Separator
+            orientation="vertical"
+            className={cn("mx-0.5 hidden h-4 sm:block", props.iconOnly && "sm:hidden")}
+          />
           <Tooltip>
             <TooltipTrigger
               render={
                 <ComposerControl
                   className={cn(
                     "shrink-0 whitespace-nowrap",
+                    props.iconOnly && "size-7 justify-center px-0",
                     props.planSidebarOpen
                       ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300"
                       : "text-muted-foreground/70 hover:text-foreground/80",
@@ -431,6 +471,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
                   type="button"
                   onClick={props.onTogglePlanSidebar}
                   aria-label={planSidebarTooltip}
+                  data-chat-composer-control-display={props.iconOnly ? "icon" : "label"}
                 />
               }
             >
@@ -438,7 +479,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
                 icon={ListTodoIcon}
                 className={props.planSidebarOpen ? "text-current opacity-100" : undefined}
               />
-              <span className="sr-only sm:not-sr-only">{props.planSidebarLabel}</span>
+              <span className={props.iconOnly ? "sr-only" : "sr-only sm:not-sr-only"}>
+                {props.planSidebarLabel}
+              </span>
             </TooltipTrigger>
             <TooltipPopup side="top">{planSidebarTooltip}</TooltipPopup>
           </Tooltip>
@@ -556,6 +599,10 @@ export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
   insertTextAtEnd: (text: string, options?: { ensureLeadingBoundary?: boolean }) => boolean;
+  applyVoiceTranscript: (transcript: string) => {
+    readonly prompt: string;
+    readonly target: VoiceTranscriptInputTarget;
+  };
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
@@ -664,6 +711,7 @@ export interface ChatComposerProps {
 
   // Context window
   activeThreadActivities: Thread["activities"] | undefined;
+  persistModelSelectionAsDefault: boolean;
 
   // Misc
   resolvedTheme: "light" | "dark";
@@ -802,6 +850,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     scheduleComposerFocus,
     setThreadError,
     onExpandImage,
+    persistModelSelectionAsDefault,
   } = props;
   const isSendDisabled = sendDisabledReason !== null;
   const updateEnvironmentSettings = useUpdateEnvironmentSettings(environmentId);
@@ -1158,7 +1207,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     null,
   );
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
-  const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
+  const [composerFooterLayoutMode, setComposerFooterLayoutMode] =
+    useState<ComposerFooterLayoutMode>("full");
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
@@ -1419,6 +1469,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    persistSticky: persistModelSelectionAsDefault,
     prompt,
     onPromptChange: setPromptFromTraits,
   });
@@ -1430,6 +1481,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
+    persistSticky: persistModelSelectionAsDefault,
+    iconOnly: composerFooterLayoutMode === "icons",
     prompt,
     onPromptChange: setPromptFromTraits,
   });
@@ -1629,42 +1682,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [draftId, activeThreadId, promptRef]);
 
   // ------------------------------------------------------------------
-  // Footer compact layout observation
+  // Footer responsive layout observation
   // ------------------------------------------------------------------
   useLayoutEffect(() => {
     const composerForm = composerFormRef.current;
     if (!composerForm) return;
     const measureComposerFormWidth = () => composerForm.clientWidth;
-    const measureFooterCompactness = () => {
+    const measureFooterLayout = () => {
       const composerFormWidth = measureComposerFormWidth();
-      const footerCompact = shouldUseCompactComposerFooter(composerFormWidth, {
+      const footerLayoutMode = resolveComposerFooterLayoutMode(composerFormWidth, {
         hasWideActions: composerFooterHasWideActions,
       });
-      const primaryActionsCompact =
-        footerCompact &&
-        shouldUseCompactComposerPrimaryActions(composerFormWidth, {
-          hasWideActions: composerFooterHasWideActions,
-        });
+      const primaryActionsCompact = shouldUseCompactComposerPrimaryActions(composerFormWidth, {
+        hasWideActions: composerFooterHasWideActions,
+      });
       return {
         primaryActionsCompact,
-        footerCompact,
+        footerLayoutMode,
       };
     };
 
-    const initialCompactness = measureFooterCompactness();
-    setIsComposerPrimaryActionsCompact(initialCompactness.primaryActionsCompact);
-    setIsComposerFooterCompact(initialCompactness.footerCompact);
+    const initialLayout = measureFooterLayout();
+    setIsComposerPrimaryActionsCompact(initialLayout.primaryActionsCompact);
+    setComposerFooterLayoutMode(initialLayout.footerLayoutMode);
     if (typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver(() => {
-      const nextCompactness = measureFooterCompactness();
+      const nextLayout = measureFooterLayout();
       setIsComposerPrimaryActionsCompact((previous) =>
-        previous === nextCompactness.primaryActionsCompact
-          ? previous
-          : nextCompactness.primaryActionsCompact,
+        previous === nextLayout.primaryActionsCompact ? previous : nextLayout.primaryActionsCompact,
       );
-      setIsComposerFooterCompact((previous) =>
-        previous === nextCompactness.footerCompact ? previous : nextCompactness.footerCompact,
+      setComposerFooterLayoutMode((previous) =>
+        previous === nextLayout.footerLayoutMode ? previous : nextLayout.footerLayoutMode,
       );
     });
 
@@ -2600,7 +2649,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Callbacks: images
   // ------------------------------------------------------------------
   const addComposerImages = (files: File[]) => {
-    if (!activeThreadId || files.length === 0) return;
+    if (files.length === 0) return;
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
@@ -2657,6 +2706,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
     setIsCuttingComposerContents(true);
     try {
+      if (cutImages.length > 0 && !(await persistComposerTransfer(transfer))) {
+        discardComposerTransfer(transfer.token);
+        toastManager.add({
+          type: "error",
+          title: "Could not safely cut these images",
+          description:
+            "Browser storage could not preserve every attachment, so the composer was left unchanged.",
+          data: { hideCopyButton: true },
+        });
+        return;
+      }
       const copied = await writeComposerTransferToClipboard(
         transfer,
         cutImages.map((image) => image.file),
@@ -2709,27 +2769,61 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Callbacks: paste / drag
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
-    const plan = planComposerPaste({
-      transfer: readComposerTransferFromClipboard(event.clipboardData),
-      clipboardText: event.clipboardData.getData("text/plain"),
-      clipboardFiles: Array.from(event.clipboardData.files),
-    });
-    if (!plan.handled) return;
-    event.preventDefault();
-
-    if (plan.prompt !== null) {
-      // Preventing the default paste also suppresses the browser's own text
-      // insertion, so text arriving beside an image has to be inserted here.
-      const snapshot = composerEditorRef.current?.readSnapshot();
-      if (snapshot && snapshot.value !== promptRef.current) {
-        promptRef.current = snapshot.value;
+    const clipboardText = event.clipboardData.getData("text/plain");
+    const clipboardFiles = Array.from(event.clipboardData.files);
+    const immediateTransfer = readComposerTransferFromClipboard(event.clipboardData);
+    const needsDurableRestore =
+      immediateTransfer === null && hasPersistedComposerTransfer(event.clipboardData);
+    const applyPastePlan = (plan: ReturnType<typeof planComposerPaste>) => {
+      if (!plan.handled) return;
+      if (plan.prompt !== null) {
+        // Preventing the default paste also suppresses the browser's own text
+        // insertion, so text arriving beside an image has to be inserted here.
+        const snapshot = composerEditorRef.current?.readSnapshot();
+        if (snapshot && snapshot.value !== promptRef.current) {
+          promptRef.current = snapshot.value;
+        }
+        const cursor = snapshot?.expandedCursor ?? promptRef.current.length;
+        applyPromptReplacement(cursor, cursor, plan.prompt);
       }
-      const cursor = snapshot?.expandedCursor ?? promptRef.current.length;
-      applyPromptReplacement(cursor, cursor, plan.prompt);
+      if (plan.files.length > 0) {
+        addComposerImages([...plan.files]);
+      }
+    };
+
+    if (!needsDurableRestore) {
+      const plan = planComposerPaste({
+        transfer: immediateTransfer,
+        clipboardText,
+        clipboardFiles,
+      });
+      if (!plan.handled) return;
+      event.preventDefault();
+      applyPastePlan(plan);
+      return;
     }
-    if (plan.files.length > 0) {
-      addComposerImages([...plan.files]);
-    }
+
+    // Hold the browser's default text insertion while IndexedDB returns every
+    // staged image. If storage unexpectedly fails, insert the text ourselves
+    // and report the missing images rather than silently delivering half a cut.
+    event.preventDefault();
+    void resolveComposerTransferFromClipboard(event.clipboardData).then((transfer) => {
+      const plan = planComposerPaste({ transfer, clipboardText, clipboardFiles });
+      if (plan.handled) {
+        applyPastePlan(plan);
+        return;
+      }
+      if (clipboardText.length > 0) {
+        applyPastePlan({ handled: true, prompt: clipboardText, files: [] });
+      }
+      toastManager.add({
+        type: "error",
+        title: "Could not restore cut images",
+        description:
+          "The prompt text was kept, but browser storage could not read the staged attachments.",
+        data: { hideCopyButton: true },
+      });
+    });
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2893,6 +2987,36 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         composerEditorRef.current?.focusAt(cursor);
       },
       insertTextAtEnd: insertComposerTextAtEnd,
+      applyVoiceTranscript: (transcript: string) => {
+        const pendingQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
+        const update = resolveVoiceTranscriptInputUpdate({
+          currentPrompt:
+            activePendingProgress?.activeQuestion === null || activePendingProgress === null
+              ? promptRef.current
+              : activePendingProgress.customAnswer,
+          transcript,
+          pendingQuestionId,
+        });
+        const nextExpandedCursor = update.prompt.length;
+        const nextCursor = collapseExpandedComposerCursor(update.prompt, nextExpandedCursor);
+
+        promptRef.current = update.prompt;
+        if (update.target.kind === "pending-user-input") {
+          onChangeActivePendingUserInputCustomAnswer(
+            update.target.questionId,
+            update.prompt,
+            nextCursor,
+            nextExpandedCursor,
+            false,
+          );
+        } else {
+          setPrompt(update.prompt);
+        }
+        setComposerHighlightedItemId(null);
+        setComposerCursor(nextCursor);
+        setComposerTrigger(null);
+        return update;
+      },
       openModelPicker: () => {
         setIsComposerModelPickerOpen(true);
       },
@@ -2973,6 +3097,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }),
     }),
     [
+      activePendingProgress,
       activeThread,
       composerDraftTarget,
       composerCursor,
@@ -2995,6 +3120,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModelOptionsForDispatch,
       selectedModelSelection,
       noProviderAvailable,
+      onChangeActivePendingUserInputCustomAnswer,
+      setPrompt,
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
@@ -3481,11 +3608,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ) : (
             <div
               data-chat-composer-footer="true"
-              data-chat-composer-footer-compact={isComposerFooterCompact ? "true" : "false"}
+              data-chat-composer-footer-layout={composerFooterLayoutMode}
+              data-chat-composer-footer-compact={
+                composerFooterLayoutMode === "overflow" ? "true" : "false"
+              }
               className={cn(
                 "flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-visible px-2.5 pb-2.5 sm:px-3 sm:pb-3",
                 pendingUserInputs.length > 0 && "pt-2",
-                isComposerFooterCompact ? "gap-1.5" : "gap-2 sm:gap-0",
+                composerFooterLayoutMode === "full" ? "gap-2 sm:gap-0" : "gap-1.5",
                 showMobilePendingAnswerActions && "hidden sm:flex",
               )}
             >
@@ -3497,16 +3627,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     variant="ghost"
                     disabled
                     data-chat-provider-unavailable="true"
-                    className="shrink-0 gap-2 px-2 text-muted-foreground/70 sm:px-3"
+                    aria-label={
+                      activeThreadProviderDisplayName
+                        ? `${activeThreadProviderDisplayName} unavailable on this environment`
+                        : "No provider available on this environment"
+                    }
+                    className={cn(
+                      "shrink-0 gap-2 text-muted-foreground/70",
+                      composerFooterLayoutMode === "full" ? "px-2 sm:px-3" : "size-7 px-0",
+                    )}
                   >
                     <CircleAlertIcon className="size-4" />
-                    {activeThreadProviderDisplayName
-                      ? `${activeThreadProviderDisplayName} unavailable on this environment`
-                      : "No provider available on this environment"}
+                    {composerFooterLayoutMode === "full"
+                      ? activeThreadProviderDisplayName
+                        ? `${activeThreadProviderDisplayName} unavailable on this environment`
+                        : "No provider available on this environment"
+                      : null}
                   </Button>
                 ) : (
                   <ProviderModelPicker
-                    compact={isComposerFooterCompact}
+                    compact={composerFooterLayoutMode !== "full"}
+                    iconOnly={composerFooterLayoutMode !== "full"}
                     activeInstanceId={selectedInstanceId}
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
@@ -3530,7 +3671,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   />
                 )}
 
-                {isComposerFooterCompact ? (
+                {composerFooterLayoutMode === "overflow" ? (
                   <CompactComposerControlsMenu
                     activePlan={showPlanSidebarToggle}
                     interactionMode={interactionMode}
@@ -3547,11 +3688,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   <>
                     {providerTraitsPicker ? (
                       <>
-                        <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+                        <Separator
+                          orientation="vertical"
+                          className={cn(
+                            "mx-0.5 hidden h-4 sm:block",
+                            composerFooterLayoutMode === "icons" && "sm:hidden",
+                          )}
+                        />
                         {providerTraitsPicker}
                       </>
                     ) : null}
                     <ComposerFooterModeControls
+                      iconOnly={composerFooterLayoutMode === "icons"}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}

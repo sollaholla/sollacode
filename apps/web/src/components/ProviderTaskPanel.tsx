@@ -20,7 +20,6 @@ import {
   providerTaskStatusLabel,
   providerTaskTypeLabel,
   type ProviderTask,
-  type ProviderTaskPanelPlacement,
 } from "../providerTasks";
 import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
 import { Button } from "~/components/ui/button";
@@ -50,14 +49,12 @@ function TaskStatusIcon({ task }: { readonly task: ProviderTask }) {
  * Without this, a turn that fans out to sub-agents looks like a turn that has
  * simply gone quiet — there is no other signal that work is still in flight.
  *
- * Bound to the right panel in both placements, so it never overlays the
- * transcript. `split` takes the lower half of the inline right panel column.
- * `fullscreen` is the mobile form: a phone has no column to share, and a
- * partial overlay there would cover most of the screen anyway, so it takes all
- * of it and is dismissed back to the app deliberately.
+ * Bound to the right panel and stacked below its active surface, so it never
+ * overlays the transcript or competes with the surface for horizontal space.
+ * On mobile the right panel itself owns the viewport, giving task rows the full
+ * screen width while keeping the task list independently scrollable.
  */
 export function ProviderTaskPanel(props: {
-  readonly placement: Exclude<ProviderTaskPanelPlacement, "hidden">;
   readonly tasks: ReadonlyArray<ProviderTask>;
   /** Briefly ringed after the composer chip is clicked, to say "over here". */
   readonly highlighted: boolean;
@@ -65,7 +62,6 @@ export function ProviderTaskPanel(props: {
   const activeCount = countActiveProviderTasks(props.tasks);
   const dismissTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
   const canClear = hasDismissableProviderTasks(props.tasks);
-  const isFullscreen = props.placement === "fullscreen";
   const [requestedPage, setRequestedPage] = useState(0);
   // Clamped inside the helper, so the list ageing out from under a held page
   // index shows the last page rather than nothing.
@@ -74,36 +70,20 @@ export function ProviderTaskPanel(props: {
   return (
     <section
       aria-label="Agents and tasks"
-      aria-modal={isFullscreen ? true : undefined}
-      role={isFullscreen ? "dialog" : undefined}
       className={cn(
-        "flex min-h-0 flex-col overflow-hidden border bg-background",
-        isFullscreen
-          ? // Opaque and inset-0: on a phone this is the screen, so it must not
-            // let the transcript show through and it must respect the notch and
-            // the home indicator.
-            "fixed inset-0 z-50 border-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] wco:pt-[max(env(safe-area-inset-top),env(titlebar-area-height))]"
-          : "max-h-[45%] shrink-0 border-x-0 border-b-0",
+        "flex max-h-[45%] min-h-0 shrink-0 flex-col overflow-hidden border border-x-0 border-b-0 bg-background",
         props.highlighted && "ring-2 ring-primary/60 ring-inset transition-shadow",
       )}
     >
-      <header
-        className={cn(
-          "flex shrink-0 items-center justify-between gap-2 border-b",
-          isFullscreen ? "px-4 py-3" : "px-3 py-2",
-        )}
-      >
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           {activeCount > 0 ? (
             <LoaderCircle
               aria-hidden
-              className={cn(
-                "shrink-0 animate-spin text-muted-foreground",
-                isFullscreen ? "size-4" : "size-3.5",
-              )}
+              className="size-3.5 shrink-0 animate-spin text-muted-foreground"
             />
           ) : null}
-          <h2 className={cn("truncate font-medium", isFullscreen ? "text-sm" : "text-xs")}>
+          <h2 className="truncate text-xs font-medium">
             {activeCount > 0 ? `Agents & tasks · ${activeCount} running` : "Agents & tasks"}
           </h2>
         </div>

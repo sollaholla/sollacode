@@ -335,7 +335,10 @@ export function deriveActiveWorkStartedAt(
     if (latestTurn?.turnId === runningTurnId) {
       return latestTurn.startedAt ?? sendStartedAt;
     }
-    return sendStartedAt;
+    // Agent auto-resume starts a new turn without a local send; fall back to
+    // the previous turn's start so the timer keeps counting instead of
+    // rendering "Working" with no elapsed time.
+    return sendStartedAt ?? latestTurn?.startedAt ?? null;
   }
   if (!isLatestTurnSettled(latestTurn, session)) {
     return latestTurn?.startedAt ?? sendStartedAt;

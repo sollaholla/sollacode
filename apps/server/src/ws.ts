@@ -49,10 +49,10 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
-  type TerminalAttachStreamEvent,
+  type TerminalAttachStreamItem,
   type TerminalError,
-  type TerminalEvent,
-  type TerminalMetadataStreamEvent,
+  type TerminalEventStreamItem,
+  type TerminalMetadataStreamItem,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -75,6 +75,7 @@ import {
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ThreadSubscriptionRegistry from "./orchestration/Services/ThreadSubscriptionRegistry.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -107,6 +108,8 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
+import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
+import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
@@ -127,6 +130,67 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
+const TERMINAL_STREAM_MAX_BYTES = 1024 * 1024;
+const TERMINAL_METADATA_STREAM_MAX_BYTES = 2 * 1024 * 1024;
+const TERMINAL_STREAM_MAX_ITEMS = 256;
+const terminalStreamTextEncoder = new TextEncoder();
+
+const terminalResyncRequired = {
+  type: "resync-required" as const,
+  reason: "slow-consumer" as const,
+};
+
+function terminalSnapshotByteSize(snapshot: { readonly history: string }): number {
+  return terminalStreamTextEncoder.encode(snapshot.history).byteLength + 2_048;
+}
+
+function terminalStreamEventByteSize(
+  event: TerminalAttachStreamItem | TerminalEventStreamItem,
+): number {
+  switch (event.type) {
+    case "snapshot":
+    case "restarted":
+      return terminalSnapshotByteSize(event.snapshot);
+    case "started":
+      return terminalSnapshotByteSize(event.snapshot);
+    case "output":
+      return terminalStreamTextEncoder.encode(event.data).byteLength + 256;
+    case "error":
+      return terminalStreamTextEncoder.encode(event.message).byteLength + 256;
+    case "activity":
+      return terminalStreamTextEncoder.encode(event.label).byteLength + 256;
+    case "exited":
+    case "closed":
+    case "cleared":
+    case "resync-required":
+      return 256;
+  }
+}
+
+function terminalMetadataEventByteSize(event: TerminalMetadataStreamItem): number {
+  const summaryByteSize = (terminal: {
+    readonly cwd: string;
+    readonly label: string;
+    readonly threadId: string;
+    readonly terminalId: string;
+  }) =>
+    terminalStreamTextEncoder.encode(
+      `${terminal.threadId}\u0000${terminal.terminalId}\u0000${terminal.cwd}\u0000${terminal.label}`,
+    ).byteLength + 512;
+  switch (event.type) {
+    case "snapshot":
+      return event.terminals.reduce((total, terminal) => total + summaryByteSize(terminal), 512);
+    case "upsert":
+      return summaryByteSize(event.terminal);
+    case "remove":
+      return (
+        terminalStreamTextEncoder.encode(`${event.threadId}\u0000${event.terminalId}`).byteLength +
+        256
+      );
+    case "resync-required":
+      return 256;
+  }
+}
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
@@ -358,6 +422,8 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const threadSubscriptionRegistry =
+        yield* ThreadSubscriptionRegistry.ThreadSubscriptionRegistry;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -717,6 +783,7 @@ const makeWsRpcLayer = (
       // traffic so it can't serialize the shell stream behind per-event DB reads.
       const SHELL_COALESCE_WINDOW = Duration.millis(50);
       const SHELL_COALESCE_MAX_CHUNK = 512;
+      const PROJECTION_LIVE_BUFFER_CAPACITY = 256;
       const coalesceShellStream = <E, R>(
         stream: Stream.Stream<OrchestrationEvent, E, R>,
       ): Stream.Stream<OrchestrationShellStreamEvent, E, R> =>
@@ -728,7 +795,8 @@ const makeWsRpcLayer = (
 
       type ShellLiveInput =
         | { readonly kind: "event"; readonly event: OrchestrationEvent }
-        | { readonly kind: "synchronized" };
+        | { readonly kind: "synchronized" }
+        | { readonly kind: "resync-required" };
 
       // A completion marker is queued alongside raw live events so it cannot
       // overtake an event still waiting in the coalescing window. Split each
@@ -748,7 +816,7 @@ const makeWsRpcLayer = (
 
             output.push(...(yield* coalesceShellEvents(pendingEvents)));
             pendingEvents = [];
-            output.push({ kind: "synchronized" });
+            output.push({ kind: input.kind });
           }
 
           output.push(...(yield* coalesceShellEvents(pendingEvents)));
@@ -1147,6 +1215,10 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                threadSubscriptionRegistry.acquireShell(),
+                threadSubscriptionRegistry.release,
+              );
               // Coalesce the live shell stream per aggregate over a small window
               // so bursts of high-frequency events (streaming message deltas,
               // activity appends) collapse into a single shell refetch and never
@@ -1158,16 +1230,17 @@ const makeWsRpcLayer = (
               // sequence but the live subscription is not attached yet). Every
               // path below emits from this same buffered live tail. Overlapping
               // events are deduped by sequence on the client.
-              const liveBuffer = yield* Queue.unbounded<ShellLiveInput>();
+              const liveBuffer = yield* ProjectionLiveBuffer.make<ShellLiveInput>({
+                capacity: PROJECTION_LIVE_BUFFER_CAPACITY,
+                resyncItem: { kind: "resync-required" },
+              });
               yield* Effect.forkScoped(
                 orchestrationEngine.streamDomainEvents.pipe(
-                  Stream.runForEach((event) =>
-                    Queue.offer(liveBuffer, { kind: "event" as const, event }),
-                  ),
+                  Stream.runForEach((event) => liveBuffer.offer({ kind: "event", event })),
                 ),
                 { startImmediately: true },
               );
-              const bufferedLiveStream = coalesceShellLiveStream(Stream.fromQueue(liveBuffer));
+              const bufferedLiveStream = coalesceShellLiveStream(liveBuffer.stream);
 
               const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
@@ -1189,10 +1262,12 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
-                          Effect.andThen(Queue.takeAll(liveBuffer)),
-                          Effect.flatMap(coalesceShellLiveInputs),
-                        ),
+                        liveBuffer
+                          .offer({ kind: "synchronized" })
+                          .pipe(
+                            Effect.andThen(liveBuffer.takeAll),
+                            Effect.flatMap(coalesceShellLiveInputs),
+                          ),
                       ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
                       bufferedLiveStream,
                     )
@@ -1271,6 +1346,10 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                threadSubscriptionRegistry.acquireDetail(input.threadId),
+                threadSubscriptionRegistry.release,
+              );
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&
@@ -1286,11 +1365,12 @@ const makeWsRpcLayer = (
 
               // Attach live delivery before reading either replay or snapshot state.
               // Otherwise an event published while the snapshot is loading is lost.
-              const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
-              yield* Effect.forkScoped(
-                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
-              );
-              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
+              const liveBuffer = yield* ProjectionLiveBuffer.make<OrchestrationThreadStreamItem>({
+                capacity: PROJECTION_LIVE_BUFFER_CAPACITY,
+                resyncItem: { kind: "resync-required" },
+              });
+              yield* Effect.forkScoped(liveStream.pipe(Stream.runForEach(liveBuffer.offer)));
+              const bufferedLiveStream = liveBuffer.stream;
 
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
@@ -1338,9 +1418,9 @@ const makeWsRpcLayer = (
                   const afterCatchUp =
                     input.requestCompletionMarker === true
                       ? Stream.concat(
-                          Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                          ).pipe(Stream.drain),
+                          Stream.fromEffect(liveBuffer.offer({ kind: "synchronized" })).pipe(
+                            Stream.drain,
+                          ),
                           bufferedLiveStream,
                         )
                       : bufferedLiveStream;
@@ -1373,9 +1453,9 @@ const makeWsRpcLayer = (
               const afterSnapshot =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
-                      Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                      ).pipe(Stream.drain),
+                      Stream.fromEffect(liveBuffer.offer({ kind: "synchronized" })).pipe(
+                        Stream.drain,
+                      ),
                       bufferedLiveStream,
                     )
                   : bufferedLiveStream;
@@ -1927,11 +2007,22 @@ const makeWsRpcLayer = (
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
-            Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<TerminalAttachStreamItem>({
+                  maxBytes: TERMINAL_STREAM_MAX_BYTES,
+                  maxItems: TERMINAL_STREAM_MAX_ITEMS,
+                  resyncItem: terminalResyncRequired,
+                  sizeOf: terminalStreamEventByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  terminalManager.attachStream(input, (event) =>
+                    buffer.offer(event).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
             ),
             { "rpc.aggregate": "terminal" },
           ),
@@ -1958,22 +2049,42 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeTerminalEvents]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
-            Stream.callback<TerminalEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribe((event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<TerminalEventStreamItem>({
+                  maxBytes: TERMINAL_STREAM_MAX_BYTES,
+                  maxItems: TERMINAL_STREAM_MAX_ITEMS,
+                  resyncItem: terminalResyncRequired,
+                  sizeOf: terminalStreamEventByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  terminalManager.subscribe((event) => buffer.offer(event).pipe(Effect.asVoid)),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
             ),
             { "rpc.aggregate": "terminal" },
           ),
         [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalMetadata,
-            Stream.callback<TerminalMetadataStreamEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<TerminalMetadataStreamItem>({
+                  maxBytes: TERMINAL_METADATA_STREAM_MAX_BYTES,
+                  maxItems: TERMINAL_STREAM_MAX_ITEMS,
+                  resyncItem: terminalResyncRequired,
+                  sizeOf: terminalMetadataEventByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  terminalManager.subscribeMetadata((event) =>
+                    buffer.offer(event).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
             ),
             { "rpc.aggregate": "terminal" },
           ),
@@ -2118,6 +2229,14 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             WS_METHODS.subscribeServerConfig,
             Effect.gen(function* () {
+              // Acquire the settings subscription before reading the initial
+              // snapshot. `ServerSettingsService.streamChanges` subscribes
+              // lazily when the stream starts, so putting it after the
+              // snapshot leaves a gap where a settings write can be lost and
+              // the client can remain on stale provider enablement until the
+              // next unrelated settings change or reconnect.
+              const subscribedSettingsChanges = yield* serverSettings.subscribeChanges;
+              const subscribedProviderChanges = yield* providerRegistry.subscribeChanges;
               const keybindingsUpdates = keybindings.streamChanges.pipe(
                 Stream.map((event) => ({
                   version: 1 as const,
@@ -2128,7 +2247,7 @@ const makeWsRpcLayer = (
                   },
                 })),
               );
-              const providerStatuses = providerRegistry.streamChanges.pipe(
+              const providerStatuses = subscribedProviderChanges.pipe(
                 Stream.map((providers) => ({
                   version: 1 as const,
                   type: "providerStatuses" as const,
@@ -2136,7 +2255,7 @@ const makeWsRpcLayer = (
                 })),
                 Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
               );
-              const settingsUpdates = serverSettings.streamChanges.pipe(
+              const settingsUpdates = subscribedSettingsChanges.pipe(
                 Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
                 Stream.map((settings) => ({
                   version: 1 as const,

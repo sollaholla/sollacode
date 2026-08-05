@@ -30,6 +30,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -38,6 +39,7 @@ interface RemoteControlHostConnection {
   readonly sessionId: AuthSessionId;
   readonly connectionId: string;
   readonly queue: Queue.Queue<RemoteControlHostStreamEvent>;
+  readonly deliveryLock: Semaphore.Semaphore;
 }
 
 interface RemoteControlSessionRecord {
@@ -48,6 +50,8 @@ interface RemoteControlSessionRecord {
   readonly requestId: string;
   readonly changes: PubSub.PubSub<RemoteControlControllerStreamEvent>;
   readonly frames: PubSub.PubSub<RemoteControlControllerStreamEvent>;
+  readonly videoChunks: PubSub.PubSub<RemoteControlControllerStreamEvent>;
+  readonly deliveryLock: Semaphore.Semaphore;
   readonly lastFrameSequence: number;
   readonly lastFramePublishedAt: number;
   readonly lastInputSequence: number;
@@ -56,6 +60,14 @@ interface RemoteControlSessionRecord {
   // container header it needs before any media chunk makes sense.
   readonly videoInitChunk: RemoteControlVideoChunk | null;
 }
+
+const REMOTE_CONTROL_HOST_QUEUE_CAPACITY = 256;
+// Each chunk is schema-capped at 4,000,000 base64 characters, so this bounds
+// an individual controller's queued video payload to roughly 32 MB while
+// preserving the continuous stream through producer backpressure.
+const REMOTE_CONTROL_VIDEO_CHUNK_CAPACITY = 8;
+const REMOTE_CONTROL_MAX_RETAINED_TERMINAL_SESSIONS = 128;
+const REMOTE_CONTROL_TERMINAL_RETENTION_MS = 10 * 60 * 1_000;
 
 interface RemoteControlBrokerState {
   readonly host: RemoteControlHostConnection | null;
@@ -188,6 +200,50 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     yield* PubSub.publish(record.changes, event);
   });
 
+  const pruneTerminalSessions = Effect.fn("RemoteControlBroker.pruneTerminalSessions")(
+    function* () {
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const removed = yield* SynchronizedRef.modify(state, (current) => {
+        const terminal = [...current.sessions.values()]
+          .filter((record) => isTerminalStatus(record.session.status))
+          .toSorted((left, right) => left.session.updatedAt.localeCompare(right.session.updatedAt));
+        const excess = Math.max(0, terminal.length - REMOTE_CONTROL_MAX_RETAINED_TERMINAL_SESSIONS);
+        const expiredIds = new Set(
+          terminal
+            .filter((record, index) => {
+              const updatedAt = Date.parse(record.session.updatedAt);
+              return (
+                index < excess ||
+                (Number.isFinite(updatedAt) &&
+                  now - updatedAt >= REMOTE_CONTROL_TERMINAL_RETENTION_MS)
+              );
+            })
+            .map((record) => record.session.sessionId),
+        );
+        if (expiredIds.size === 0) return [[] as RemoteControlSessionRecord[], current] as const;
+        const sessions = new Map(current.sessions);
+        const removed: RemoteControlSessionRecord[] = [];
+        for (const sessionId of expiredIds) {
+          const record = sessions.get(sessionId);
+          if (!record) continue;
+          sessions.delete(sessionId);
+          removed.push(record);
+        }
+        return [removed, { ...current, sessions }] as const;
+      });
+      yield* Effect.forEach(
+        removed,
+        (record) =>
+          Effect.all([
+            PubSub.shutdown(record.changes),
+            PubSub.shutdown(record.frames),
+            PubSub.shutdown(record.videoChunks),
+          ]),
+        { discard: true },
+      );
+    },
+  );
+
   const disconnectHost = Effect.fn("RemoteControlBroker.disconnectHost")(function* (
     connection: RemoteControlHostConnection,
   ) {
@@ -212,6 +268,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           }
           const updated: RemoteControlSessionRecord = {
             ...record,
+            videoInitChunk: null,
             session: {
               ...record.session,
               status: record.session.status === "approved" ? "ended" : "failed",
@@ -229,19 +286,24 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     );
     yield* Effect.forEach(changed, publishSession, { discard: true });
     yield* Queue.shutdown(connection.queue);
+    yield* pruneTerminalSessions();
   });
 
   const acquireHost = Effect.fn("RemoteControlBroker.acquireHost")(function* (
     host: RemoteControlHost,
     hostSessionId: AuthSessionId,
   ) {
-    const queue = yield* Queue.unbounded<RemoteControlHostStreamEvent>();
+    const queue = yield* Queue.bounded<RemoteControlHostStreamEvent>(
+      REMOTE_CONTROL_HOST_QUEUE_CAPACITY,
+    );
+    const deliveryLock = yield* Semaphore.make(1);
     const connectionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const connection: RemoteControlHostConnection = {
       host,
       sessionId: hostSessionId,
       connectionId,
       queue,
+      deliveryLock,
     };
     yield* Queue.offer(queue, { type: "connected", connectionId });
     const replacementTime = DateTime.formatIso(yield* DateTime.now);
@@ -259,6 +321,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           }
           const updated: RemoteControlSessionRecord = {
             ...record,
+            videoInitChunk: null,
             session: {
               ...record.session,
               status: record.session.status === "approved" ? "ended" : "failed",
@@ -281,6 +344,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     if (registration.previous) {
       yield* Queue.shutdown(registration.previous.queue);
     }
+    yield* pruneTerminalSessions();
     return connection;
   });
 
@@ -299,14 +363,19 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const requestAccess: RemoteControlBroker["Service"]["requestAccess"] = Effect.fn(
     "RemoteControlBroker.requestAccess",
   )(function* (input, requester) {
+    yield* pruneTerminalSessions();
     const host = (yield* SynchronizedRef.get(state)).host;
     if (!host) return yield* new RemoteControlNoHostError();
 
     const now = DateTime.formatIso(yield* DateTime.now);
     const sessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const requestId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-    const changes = yield* PubSub.sliding<RemoteControlControllerStreamEvent>(16);
+    const changes = yield* PubSub.bounded<RemoteControlControllerStreamEvent>(16);
     const frames = yield* PubSub.sliding<RemoteControlControllerStreamEvent>(2);
+    const videoChunks = yield* PubSub.bounded<RemoteControlControllerStreamEvent>(
+      REMOTE_CONTROL_VIDEO_CHUNK_CAPACITY,
+    );
+    const deliveryLock = yield* Semaphore.make(1);
     const session: RemoteControlSession = {
       sessionId,
       status: "waiting-for-host-approval",
@@ -329,32 +398,50 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
       requestId,
       changes,
       frames,
+      videoChunks,
+      deliveryLock,
       lastFrameSequence: -1,
       lastFramePublishedAt: 0,
       lastInputSequence: -1,
       lastChunkSequence: -1,
       videoInitChunk: null,
     };
-    const registered = yield* SynchronizedRef.modify(state, (current) => {
-      if (current.host?.connectionId !== host.connectionId || current.host.queue !== host.queue) {
-        return [false, current] as const;
-      }
-      const sessions = new Map(current.sessions);
-      sessions.set(sessionId, record);
-      return [true, { ...current, sessions }] as const;
-    });
-    if (!registered) return yield* new RemoteControlNoHostError();
+    yield* host.deliveryLock.withPermit(
+      Effect.uninterruptibleMask((restore) => {
+        let delivered = false;
+        const rollback = SynchronizedRef.update(state, (current) => {
+          if (delivered || current.sessions.get(sessionId) !== record) return current;
+          const sessions = new Map(current.sessions);
+          sessions.delete(sessionId);
+          return { ...current, sessions };
+        });
+        return Effect.gen(function* () {
+          const registered = yield* SynchronizedRef.modify(state, (current) => {
+            if (
+              current.host?.connectionId !== host.connectionId ||
+              current.host.queue !== host.queue
+            ) {
+              return [false, current] as const;
+            }
+            const sessions = new Map(current.sessions);
+            sessions.set(sessionId, record);
+            return [true, { ...current, sessions }] as const;
+          });
+          if (!registered) return yield* new RemoteControlNoHostError();
 
-    const offered = yield* Queue.offer(host.queue, {
-      type: "access-requested",
-      connectionId: host.connectionId,
-      requestId,
-      session,
-    });
-    if (!offered) {
-      yield* disconnectHost(host);
-      return yield* new RemoteControlNoHostError();
-    }
+          const offered = yield* restore(
+            Queue.offer(host.queue, {
+              type: "access-requested",
+              connectionId: host.connectionId,
+              requestId,
+              session,
+            }),
+          );
+          if (!offered) return yield* new RemoteControlNoHostError();
+          delivered = true;
+        }).pipe(Effect.ensuring(rollback));
+      }),
+    );
     return session;
   });
 
@@ -396,7 +483,11 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           grantedCapabilities,
           updatedAt: now,
         };
-        const updatedRecord = { ...record, session: updatedSession };
+        const updatedRecord = {
+          ...record,
+          session: updatedSession,
+          ...(input.decision === "decline" ? { videoInitChunk: null } : {}),
+        };
         const sessions = new Map(current.sessions);
         sessions.set(updatedSession.sessionId, updatedRecord);
         return [
@@ -421,6 +512,9 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         });
       case "Updated":
         yield* publishSession(result.record);
+        if (isTerminalStatus(result.record.session.status)) {
+          yield* pruneTerminalSessions();
+        }
         return result.record.session;
     }
   });
@@ -503,72 +597,96 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
   const publishVideoChunk: RemoteControlBroker["Service"]["publishVideoChunk"] = Effect.fn(
     "RemoteControlBroker.publishVideoChunk",
   )(function* (input, hostSessionId) {
-    const result = yield* SynchronizedRef.modify(
-      state,
-      (current): readonly [RemoteControlFramePublishResult, RemoteControlBrokerState] => {
-        const host = current.host;
-        const record = current.sessions.get(input.chunk.sessionId);
-        if (!record) return [{ _tag: "NotFound" }, current];
-        if (
-          !host ||
-          host.sessionId !== hostSessionId ||
-          host.host.clientId !== input.clientId ||
-          host.connectionId !== input.connectionId ||
-          record.hostConnectionId !== input.connectionId
-        ) {
-          return [{ _tag: "Denied" }, current];
-        }
-        if (
-          record.session.status !== "approved" ||
-          !record.session.grantedCapabilities.includes("screen")
-        ) {
-          return [{ _tag: "Invalid", session: record.session }, current];
-        }
-        if (input.chunk.sequence <= record.lastChunkSequence) {
-          return [{ _tag: "Dropped" }, current];
-        }
-        const updatedRecord: RemoteControlSessionRecord = {
-          ...record,
-          lastChunkSequence: input.chunk.sequence,
-          // A fresh init segment supersedes the old one: the host restarts its
-          // recorder when the captured monitor changes.
-          ...(input.chunk.isInit ? { videoInitChunk: input.chunk } : {}),
-        };
-        const sessions = new Map(current.sessions);
-        sessions.set(input.chunk.sessionId, updatedRecord);
-        return [
-          { _tag: "Published", record: updatedRecord },
-          { ...current, sessions },
-        ];
-      },
-    );
-    switch (result._tag) {
-      case "NotFound":
-        return yield* new RemoteControlSessionNotFoundError({
-          sessionId: input.chunk.sessionId,
-        });
-      case "Denied":
-        return yield* new RemoteControlSessionAccessDeniedError({
-          sessionId: input.chunk.sessionId,
-        });
-      case "Invalid":
-        return yield* new RemoteControlInvalidTransitionError({
-          sessionId: input.chunk.sessionId,
-          status: result.session.status,
-        });
-      case "Dropped":
-        return;
-      case "Published":
-        yield* PubSub.publish(result.record.frames, {
-          type: "video-chunk",
-          chunk: input.chunk,
-        });
-        return;
+    const initialRecord = (yield* SynchronizedRef.get(state)).sessions.get(input.chunk.sessionId);
+    if (!initialRecord) {
+      return yield* new RemoteControlSessionNotFoundError({ sessionId: input.chunk.sessionId });
     }
+
+    return yield* initialRecord.deliveryLock.withPermit(
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const result = yield* SynchronizedRef.modify(
+            state,
+            (current): readonly [RemoteControlFramePublishResult, RemoteControlBrokerState] => {
+              const host = current.host;
+              const record = current.sessions.get(input.chunk.sessionId);
+              if (!record) return [{ _tag: "NotFound" }, current];
+              if (
+                !host ||
+                host.sessionId !== hostSessionId ||
+                host.host.clientId !== input.clientId ||
+                host.connectionId !== input.connectionId ||
+                record.hostConnectionId !== input.connectionId
+              ) {
+                return [{ _tag: "Denied" }, current];
+              }
+              if (
+                record.session.status !== "approved" ||
+                !record.session.grantedCapabilities.includes("screen")
+              ) {
+                return [{ _tag: "Invalid", session: record.session }, current];
+              }
+              if (input.chunk.sequence <= record.lastChunkSequence) {
+                return [{ _tag: "Dropped" }, current];
+              }
+              return [{ _tag: "Published", record }, current];
+            },
+          );
+          switch (result._tag) {
+            case "NotFound":
+              return yield* new RemoteControlSessionNotFoundError({
+                sessionId: input.chunk.sessionId,
+              });
+            case "Denied":
+              return yield* new RemoteControlSessionAccessDeniedError({
+                sessionId: input.chunk.sessionId,
+              });
+            case "Invalid":
+              return yield* new RemoteControlInvalidTransitionError({
+                sessionId: input.chunk.sessionId,
+                status: result.session.status,
+              });
+            case "Dropped":
+              return;
+            case "Published": {
+              const published = yield* restore(
+                PubSub.publish(result.record.videoChunks, {
+                  type: "video-chunk",
+                  chunk: input.chunk,
+                }),
+              );
+              if (!published) {
+                return yield* new RemoteControlSessionNotFoundError({
+                  sessionId: input.chunk.sessionId,
+                });
+              }
+              yield* SynchronizedRef.update(state, (current) => {
+                const record = current.sessions.get(input.chunk.sessionId);
+                if (
+                  !record ||
+                  record.deliveryLock !== result.record.deliveryLock ||
+                  record.session.status !== "approved"
+                ) {
+                  return current;
+                }
+                const updatedRecord: RemoteControlSessionRecord = {
+                  ...record,
+                  lastChunkSequence: input.chunk.sequence,
+                  ...(input.chunk.isInit ? { videoInitChunk: input.chunk } : {}),
+                };
+                const sessions = new Map(current.sessions);
+                sessions.set(input.chunk.sessionId, updatedRecord);
+                return { ...current, sessions };
+              });
+            }
+          }
+        }),
+      ),
+    );
   });
 
-  const endByHost: RemoteControlBroker["Service"]["endByHost"] = Effect.fn(
-    "RemoteControlBroker.endByHost",
+  const endByHostUnlocked: RemoteControlBroker["Service"]["endByHost"] = Effect.fn(
+    "RemoteControlBroker.endByHostUnlocked",
   )(function* (input, hostSessionId) {
     const now = DateTime.formatIso(yield* DateTime.now);
     const result = yield* SynchronizedRef.modify(
@@ -591,6 +709,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         }
         const updatedRecord: RemoteControlSessionRecord = {
           ...record,
+          videoInitChunk: null,
           session: {
             ...record.session,
             status: input.failureReason ? "failed" : "ended",
@@ -622,14 +741,19 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         });
       case "Updated":
         yield* publishSession(result.record);
-        yield* Queue.offer(result.record.hostQueue, {
-          type: "session-ended",
-          connectionId: result.record.hostConnectionId,
-          session: result.record.session,
-        });
+        yield* pruneTerminalSessions();
         return result.record.session;
     }
   });
+
+  const endByHost: RemoteControlBroker["Service"]["endByHost"] = (input, hostSessionId) =>
+    Effect.gen(function* () {
+      const record = (yield* SynchronizedRef.get(state)).sessions.get(input.sessionId);
+      if (!record) {
+        return yield* new RemoteControlSessionNotFoundError({ sessionId: input.sessionId });
+      }
+      return yield* record.deliveryLock.withPermit(endByHostUnlocked(input, hostSessionId));
+    });
 
   const sendInput: RemoteControlBroker["Service"]["sendInput"] = Effect.fn(
     "RemoteControlBroker.sendInput",
@@ -642,75 +766,90 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         : input.input.type === "select-display" || input.input.type === "request-image-fallback"
           ? "screen"
           : "pointer";
-    const result = yield* SynchronizedRef.modify(
-      state,
-      (current): readonly [RemoteControlInputResult, RemoteControlBrokerState] => {
-        const record = current.sessions.get(input.sessionId);
-        if (!record) return [{ _tag: "NotFound" }, current];
-        if (record.controllerSessionId !== controllerSessionId) {
-          return [{ _tag: "Denied" }, current];
-        }
-        if (record.session.status !== "approved") {
-          return [{ _tag: "Invalid", session: record.session }, current];
-        }
-        if (!record.session.grantedCapabilities.includes(requiredCapability)) {
-          return [
-            {
-              _tag: "CapabilityDenied",
-              session: record.session,
-              requiredCapability,
-            },
-            current,
-          ];
-        }
-        if (input.sequence <= record.lastInputSequence) {
-          return [{ _tag: "Dropped" }, current];
-        }
-        const updatedRecord = {
-          ...record,
-          lastInputSequence: input.sequence,
-        };
-        const sessions = new Map(current.sessions);
-        sessions.set(input.sessionId, updatedRecord);
-        return [
-          { _tag: "Forward", record: updatedRecord },
-          { ...current, sessions },
-        ];
-      },
-    );
-    switch (result._tag) {
-      case "NotFound":
-        return yield* new RemoteControlSessionNotFoundError({
-          sessionId: input.sessionId,
-        });
-      case "Denied":
-        return yield* new RemoteControlSessionAccessDeniedError({
-          sessionId: input.sessionId,
-        });
-      case "Invalid":
-        return yield* new RemoteControlInvalidTransitionError({
-          sessionId: input.sessionId,
-          status: result.session.status,
-        });
-      case "CapabilityDenied":
-        return yield* new RemoteControlCapabilityDeniedError({
-          sessionId: input.sessionId,
-          requiredCapability: result.requiredCapability,
-        });
-      case "Dropped":
-        return;
-      case "Forward": {
-        const offered = yield* Queue.offer(result.record.hostQueue, {
-          type: "input",
-          connectionId: result.record.hostConnectionId,
-          sessionId: input.sessionId,
-          sequence: input.sequence,
-          input: input.input,
-        });
-        if (!offered) return yield* new RemoteControlNoHostError();
-        return;
-      }
+    const initialRecord = (yield* SynchronizedRef.get(state)).sessions.get(input.sessionId);
+    if (!initialRecord) {
+      return yield* new RemoteControlSessionNotFoundError({ sessionId: input.sessionId });
     }
+    return yield* initialRecord.deliveryLock.withPermit(
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const result = yield* SynchronizedRef.modify(
+            state,
+            (current): readonly [RemoteControlInputResult, RemoteControlBrokerState] => {
+              const record = current.sessions.get(input.sessionId);
+              if (!record) return [{ _tag: "NotFound" }, current];
+              if (record.controllerSessionId !== controllerSessionId) {
+                return [{ _tag: "Denied" }, current];
+              }
+              if (record.session.status !== "approved") {
+                return [{ _tag: "Invalid", session: record.session }, current];
+              }
+              if (!record.session.grantedCapabilities.includes(requiredCapability)) {
+                return [
+                  {
+                    _tag: "CapabilityDenied",
+                    session: record.session,
+                    requiredCapability,
+                  },
+                  current,
+                ];
+              }
+              if (input.sequence <= record.lastInputSequence) {
+                return [{ _tag: "Dropped" }, current];
+              }
+              return [{ _tag: "Forward", record }, current];
+            },
+          );
+          switch (result._tag) {
+            case "NotFound":
+              return yield* new RemoteControlSessionNotFoundError({
+                sessionId: input.sessionId,
+              });
+            case "Denied":
+              return yield* new RemoteControlSessionAccessDeniedError({
+                sessionId: input.sessionId,
+              });
+            case "Invalid":
+              return yield* new RemoteControlInvalidTransitionError({
+                sessionId: input.sessionId,
+                status: result.session.status,
+              });
+            case "CapabilityDenied":
+              return yield* new RemoteControlCapabilityDeniedError({
+                sessionId: input.sessionId,
+                requiredCapability: result.requiredCapability,
+              });
+            case "Dropped":
+              return;
+            case "Forward": {
+              const offered = yield* restore(
+                Queue.offer(result.record.hostQueue, {
+                  type: "input",
+                  connectionId: result.record.hostConnectionId,
+                  sessionId: input.sessionId,
+                  sequence: input.sequence,
+                  input: input.input,
+                }),
+              );
+              if (!offered) return yield* new RemoteControlNoHostError();
+              yield* SynchronizedRef.update(state, (current) => {
+                const record = current.sessions.get(input.sessionId);
+                if (
+                  !record ||
+                  record.deliveryLock !== result.record.deliveryLock ||
+                  record.session.status !== "approved"
+                ) {
+                  return current;
+                }
+                const sessions = new Map(current.sessions);
+                sessions.set(input.sessionId, { ...record, lastInputSequence: input.sequence });
+                return { ...current, sessions };
+              });
+            }
+          }
+        }),
+      ),
+    );
   });
 
   const watch: RemoteControlBroker["Service"]["watch"] = Effect.fn("RemoteControlBroker.watch")(
@@ -731,6 +870,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           Effect.gen(function* () {
             const changes = yield* PubSub.subscribe(initialRecord.changes);
             const frames = yield* PubSub.subscribe(initialRecord.frames);
+            const videoChunks = yield* PubSub.subscribe(initialRecord.videoChunks);
             // Replay the retained init segment so a controller joining an
             // already-running video stream can decode what follows.
             const preamble: ReadonlyArray<RemoteControlControllerStreamEvent> = [
@@ -741,7 +881,10 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
             ];
             return Stream.concat(
               Stream.fromIterable(preamble),
-              Stream.merge(Stream.fromSubscription(changes), Stream.fromSubscription(frames)),
+              Stream.merge(
+                Stream.merge(Stream.fromSubscription(changes), Stream.fromSubscription(frames)),
+                Stream.fromSubscription(videoChunks),
+              ),
             );
           }),
         );
@@ -750,57 +893,80 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
 
   const cancel: RemoteControlBroker["Service"]["cancel"] = Effect.fn("RemoteControlBroker.cancel")(
     function* (input, controllerSessionId) {
-      const now = DateTime.formatIso(yield* DateTime.now);
-      const result = yield* SynchronizedRef.modify(
-        state,
-        (current): readonly [RemoteControlCancelResult, RemoteControlBrokerState] => {
-          const record = current.sessions.get(input.sessionId);
-          if (!record) return [{ _tag: "NotFound" }, current];
-          if (record.controllerSessionId !== controllerSessionId) {
-            return [{ _tag: "Denied" }, current];
-          }
-          if (isTerminalStatus(record.session.status)) {
-            return [{ _tag: "Invalid", session: record.session }, current];
-          }
-          const updatedRecord: RemoteControlSessionRecord = {
-            ...record,
-            session: {
-              ...record.session,
-              status: "cancelled",
-              updatedAt: now,
-            },
-          };
-          const sessions = new Map(current.sessions);
-          sessions.set(input.sessionId, updatedRecord);
-          return [
-            { _tag: "Updated", record: updatedRecord },
-            { ...current, sessions },
-          ];
-        },
-      );
-      switch (result._tag) {
-        case "NotFound":
-          return yield* new RemoteControlSessionNotFoundError({
-            sessionId: input.sessionId,
-          });
-        case "Denied":
-          return yield* new RemoteControlSessionAccessDeniedError({
-            sessionId: input.sessionId,
-          });
-        case "Invalid":
-          return yield* new RemoteControlInvalidTransitionError({
-            sessionId: input.sessionId,
-            status: result.session.status,
-          });
-        case "Updated":
-          yield* publishSession(result.record);
-          yield* Queue.offer(result.record.hostQueue, {
-            type: "session-ended",
-            connectionId: result.record.hostConnectionId,
-            session: result.record.session,
-          });
-          return result.record.session;
+      const initialRecord = (yield* SynchronizedRef.get(state)).sessions.get(input.sessionId);
+      if (!initialRecord) {
+        return yield* new RemoteControlSessionNotFoundError({ sessionId: input.sessionId });
       }
+      return yield* initialRecord.deliveryLock.withPermit(
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const result = yield* SynchronizedRef.modify(
+              state,
+              (current): readonly [RemoteControlCancelResult, RemoteControlBrokerState] => {
+                const record = current.sessions.get(input.sessionId);
+                if (!record) return [{ _tag: "NotFound" }, current];
+                if (record.controllerSessionId !== controllerSessionId) {
+                  return [{ _tag: "Denied" }, current];
+                }
+                if (isTerminalStatus(record.session.status)) {
+                  return [{ _tag: "Invalid", session: record.session }, current];
+                }
+                return [
+                  {
+                    _tag: "Updated",
+                    record: {
+                      ...record,
+                      videoInitChunk: null,
+                      session: {
+                        ...record.session,
+                        status: "cancelled",
+                        updatedAt: now,
+                      },
+                    },
+                  },
+                  current,
+                ];
+              },
+            );
+            switch (result._tag) {
+              case "NotFound":
+                return yield* new RemoteControlSessionNotFoundError({
+                  sessionId: input.sessionId,
+                });
+              case "Denied":
+                return yield* new RemoteControlSessionAccessDeniedError({
+                  sessionId: input.sessionId,
+                });
+              case "Invalid":
+                return yield* new RemoteControlInvalidTransitionError({
+                  sessionId: input.sessionId,
+                  status: result.session.status,
+                });
+              case "Updated": {
+                const offered = yield* restore(
+                  Queue.offer(result.record.hostQueue, {
+                    type: "session-ended",
+                    connectionId: result.record.hostConnectionId,
+                    session: result.record.session,
+                  }),
+                );
+                if (!offered) return yield* new RemoteControlNoHostError();
+                yield* SynchronizedRef.update(state, (current) => {
+                  const record = current.sessions.get(input.sessionId);
+                  if (record?.deliveryLock !== result.record.deliveryLock) return current;
+                  const sessions = new Map(current.sessions);
+                  sessions.set(input.sessionId, result.record);
+                  return { ...current, sessions };
+                });
+                yield* publishSession(result.record);
+                yield* pruneTerminalSessions();
+                return result.record.session;
+              }
+            }
+          }),
+        ),
+      );
     },
   );
 

@@ -4,12 +4,47 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveStartupResumableThreads,
+  isStartupAutoResumeRequested,
+  isStartupAutoResumeStalled,
   isStartupResumableThread,
   pruneStartupResumeSelection,
+  shouldClearStartupResumePending,
   shouldAutoCloseStartupResume,
+  startupAutoResumeIds,
 } from "./StartupResumeCoordinator.logic";
 
 const NOW = "2026-07-30T20:00:00.000Z";
+
+describe("startup auto-resume request", () => {
+  it("accepts the desktop startup marker", () => {
+    expect(isStartupAutoResumeRequested("sollacode://app/?solla_auto_resume=1")).toBe(true);
+    expect(isStartupAutoResumeRequested("sollacode-dev://app/?solla_auto_resume=1")).toBe(true);
+  });
+
+  it("does not let hosted URLs trigger automatic turns", () => {
+    expect(isStartupAutoResumeRequested("https://example.com/?solla_auto_resume=1")).toBe(false);
+    expect(isStartupAutoResumeRequested("sollacode://app/?solla_auto_resume=0")).toBe(false);
+  });
+
+  it("derives the same durable command and message ids on every client", () => {
+    const input = {
+      threadId: ThreadId.make("thread-shared"),
+      incompleteTurnId: TurnId.make("turn-incomplete"),
+    };
+
+    expect(startupAutoResumeIds(input)).toEqual(startupAutoResumeIds(input));
+    expect(startupAutoResumeIds(input)).toEqual({
+      commandId: "startup-auto-resume-command:thread-shared:turn-incomplete",
+      messageId: "startup-auto-resume-message:thread-shared:turn-incomplete",
+    });
+    expect(
+      startupAutoResumeIds({
+        ...input,
+        incompleteTurnId: TurnId.make("turn-next"),
+      }),
+    ).not.toEqual(startupAutoResumeIds(input));
+  });
+});
 
 function makeThread(
   id: string,
@@ -100,6 +135,41 @@ describe("startup resumable threads", () => {
   });
 });
 
+describe("startup resume pending handoff", () => {
+  it("stays visible while the command is projected but the provider has not started", () => {
+    expect(
+      shouldClearStartupResumePending(
+        makeThread("accepted", {
+          latestTurn: { ...makeThread("accepted").latestTurn!, state: "running" },
+          session: { ...makeThread("accepted").session!, status: "ready" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("hands off to normal working or failure state once the provider responds", () => {
+    for (const status of ["starting", "running", "error"] as const) {
+      expect(
+        shouldClearStartupResumePending(
+          makeThread(status, {
+            session: { ...makeThread(status).session!, status },
+          }),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("clears once a fast resumed turn has already settled", () => {
+    expect(
+      shouldClearStartupResumePending(
+        makeThread("completed", {
+          latestTurn: { ...makeThread("completed").latestTurn!, state: "completed" },
+        }),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("shouldAutoCloseStartupResume", () => {
   it("closes an open dialog once no candidates remain", () => {
     // The prompt is asking about nothing: the threads were resumed elsewhere,
@@ -146,5 +216,26 @@ describe("pruneStartupResumeSelection", () => {
   it("does not invent selections for newly offered candidates", () => {
     const pruned = pruneStartupResumeSelection(new Set(["env:a"]), ["env:a", "env:c"]);
     expect([...pruned]).toEqual(["env:a"]);
+  });
+});
+
+describe("isStartupAutoResumeStalled", () => {
+  const startedAt = "2026-08-05T13:50:00.000Z";
+  const startedMs = Date.parse(startedAt);
+
+  it("still counts a young resume as in progress", () => {
+    // A real resume spawns a CLI first; ~10s of silence is normal.
+    expect(isStartupAutoResumeStalled({ startedAt, nowMs: startedMs + 10_000 })).toBe(false);
+  });
+
+  it("gives up once the resume has plainly not taken", () => {
+    // Observed: minutes of "Auto-resuming thread…" on a thread whose session
+    // was stopped and whose resume obligation had been cancelled.
+    expect(isStartupAutoResumeStalled({ startedAt, nowMs: startedMs + 120_000 })).toBe(true);
+  });
+
+  it("keeps showing progress when the timestamp is unusable", () => {
+    // Absence of evidence is not evidence of a stall.
+    expect(isStartupAutoResumeStalled({ startedAt: "not-a-date", nowMs: startedMs })).toBe(false);
   });
 });

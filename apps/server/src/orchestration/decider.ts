@@ -3,6 +3,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
@@ -18,6 +19,7 @@ import {
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
+  requireThreadNotDeleted,
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
@@ -389,14 +391,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (
-        sourceThread.latestTurn?.state === "running" ||
-        sourceThread.session?.status === "starting" ||
-        sourceThread.session?.status === "running"
-      ) {
+      let sideChatParentThreadId: ThreadId | undefined;
+      if (command.isSideChat === true) {
+        sideChatParentThreadId = command.sideChatParentThreadId ?? sourceThread.id;
+        if (command.sideChatParentThreadId !== undefined) {
+          const allowedParentThreadId =
+            sourceThread.isSideChat === true
+              ? (sourceThread.sideChatParentThreadId ?? sourceThread.id)
+              : sourceThread.id;
+          if (command.sideChatParentThreadId !== allowedParentThreadId) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `Side chat parent '${command.sideChatParentThreadId}' is not the source chat's owning parent.`,
+            });
+          }
+          yield* requireThreadNotArchived({
+            readModel,
+            command,
+            threadId: command.sideChatParentThreadId,
+          });
+        }
+      } else if (command.sideChatParentThreadId !== undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Thread '${command.sourceThreadId}' is still running. Stop or finish the active turn before forking it.`,
+          detail: "A non-side-chat fork cannot declare a side-chat parent.",
         });
       }
       return {
@@ -412,9 +430,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           sourceThreadId: command.sourceThreadId,
           projectId: sourceThread.projectId,
           title: command.title ?? `${sourceThread.title} (fork)`,
-          modelSelection: sourceThread.modelSelection,
-          runtimeMode: sourceThread.runtimeMode,
-          interactionMode: sourceThread.interactionMode,
+          isSideChat: command.isSideChat ?? false,
+          ...(sideChatParentThreadId !== undefined ? { sideChatParentThreadId } : {}),
+          modelSelection: command.modelSelection ?? sourceThread.modelSelection,
+          runtimeMode: command.runtimeMode ?? sourceThread.runtimeMode,
+          interactionMode: command.interactionMode ?? sourceThread.interactionMode,
           branch: sourceThread.branch,
           worktreePath: sourceThread.worktreePath,
           createdAt: command.createdAt,
@@ -424,7 +444,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -681,6 +701,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const restoresDeletedSideChat =
+        thread.deletedAt !== null && thread.isSideChat === true && command.isSideChat === false;
+      if (thread.deletedAt !== null && !restoresDeletedSideChat) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' is already deleted and cannot handle command '${command.type}'.`,
+        });
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -699,6 +727,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.isSideChat !== undefined ? { isSideChat: command.isSideChat } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
@@ -710,7 +739,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.runtime-mode.set": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -733,7 +762,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.interaction-mode.set": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -756,14 +785,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.start": {
-      const targetThread = yield* requireThread({
+      const targetThread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
       });
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
-        ? yield* requireThread({
+        ? yield* requireThreadNotDeleted({
             readModel,
             command,
             threadId: sourceProposedPlan.threadId,
@@ -872,7 +901,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -894,7 +923,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.approval.respond": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -920,7 +949,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.user-input.respond": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -946,7 +975,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.checkpoint.revert": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -968,7 +997,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.stop": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -989,7 +1018,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.plan.refresh": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1010,7 +1039,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.set": {
-      const thread = yield* requireThread({
+      const thread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1061,7 +1090,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.delta": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1088,7 +1117,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.complete": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1115,7 +1144,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.proposed-plan.upsert": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1136,7 +1165,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1163,7 +1192,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.revert.complete": {
-      yield* requireThread({
+      yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,
@@ -1184,7 +1213,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
-      const thread = yield* requireThread({
+      const thread = yield* requireThreadNotDeleted({
         readModel,
         command,
         threadId: command.threadId,

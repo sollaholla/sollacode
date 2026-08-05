@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -44,6 +45,15 @@ export interface CodexAppServerPatchedProtocolOptions {
     request: CodexAppServerIncomingRequest,
   ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
   readonly onTermination?: (error: CodexError.CodexAppServerError) => Effect.Effect<void, never>;
+  /**
+   * How long to wait for a response before failing the request.
+   *
+   * Every method on this protocol is control plane — `turn/start` returns as
+   * soon as the app server has accepted the prompt, not when the turn finishes
+   * — so no legitimate response takes long. Omit to wait forever, which is only
+   * safe when the caller has its own deadline.
+   */
+  readonly requestTimeout?: Duration.Input;
 }
 
 export interface CodexAppServerPatchedProtocol {
@@ -380,6 +390,19 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
             }),
           ),
       }),
+      // matchEffect only intercepts *typed* failures. A defect escaping the
+      // handler chain used to kill this fiber outright: no failAllPending, no
+      // onTermination, the process still alive — every pending and future
+      // request then hung forever while the session looked "running". Route
+      // defects into the same termination path so the reader can never die
+      // silently.
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : handleTermination(() =>
+              Effect.succeed(normalizeIncomingError(cause, "read-input-stream")),
+            ),
+      ),
       Effect.forkScoped,
     );
 
@@ -387,6 +410,17 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
 
     const request = (method: string, payload?: unknown) =>
       Effect.gen(function* () {
+        // After termination nothing will ever resolve a new deferred: the
+        // reader is gone and failAllPending has already swept the map. Fail
+        // immediately instead of parking the caller on a request that cannot
+        // complete.
+        if (yield* Ref.get(terminationHandled)) {
+          const error = yield* (
+            options.terminationError ??
+              Effect.succeed(new CodexError.CodexAppServerInputStreamEndedError({}))
+          );
+          return yield* Effect.fail(error);
+        }
         const requestId = yield* Ref.modify(
           nextRequestId,
           (current) => [current, current + 1] as const,
@@ -400,8 +434,30 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
           method,
           ...(payload !== undefined ? { params: payload } : {}),
         }).pipe(Effect.tapError(() => removePending(String(requestId))));
-        return yield* Deferred.await(deferred).pipe(
+        const awaitResponse = Deferred.await(deferred).pipe(
           Effect.onInterrupt(() => removePending(String(requestId))),
+        );
+        const requestTimeout = options.requestTimeout;
+        if (requestTimeout === undefined) {
+          return yield* awaitResponse;
+        }
+        // A timeout here means the app server is alive but no longer answering,
+        // so the pipe never closes and `failAllPending` never runs. The timeout
+        // interrupts the await, whose `onInterrupt` drops our pending entry, so
+        // a late response is discarded rather than resolving a request the
+        // caller has already given up on.
+        return yield* awaitResponse.pipe(
+          Effect.timeoutOrElse({
+            duration: requestTimeout,
+            orElse: () =>
+              Effect.fail(
+                new CodexError.CodexAppServerRequestTimeoutError({
+                  method,
+                  requestId: String(requestId),
+                  timeoutMillis: Duration.toMillis(Duration.fromInputUnsafe(requestTimeout)),
+                }),
+              ),
+          }),
         );
       });
 

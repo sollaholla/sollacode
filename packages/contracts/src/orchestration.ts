@@ -282,6 +282,9 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+export const OrchestrationSessionFailureKind = Schema.Literal("retryable-upstream");
+export type OrchestrationSessionFailureKind = typeof OrchestrationSessionFailureKind.Type;
+
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
@@ -290,6 +293,7 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  failureKind: Schema.optionalKey(Schema.NullOr(OrchestrationSessionFailureKind)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -360,6 +364,11 @@ export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  /** Disposable fork shown as a side-chat surface. Missing on snapshots from
+      older servers and therefore treated as a normal thread. */
+  isSideChat: Schema.optionalKey(Schema.Boolean),
+  /** Source thread whose right panel owns this side chat. */
+  sideChatParentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
@@ -416,6 +425,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  isSideChat: Schema.optionalKey(Schema.Boolean),
+  sideChatParentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
@@ -473,6 +484,12 @@ export const OrchestrationShellStreamEvent = Schema.Union([
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
 
+export const OrchestrationResyncRequiredStreamItem = Schema.Struct({
+  kind: Schema.Literal("resync-required"),
+});
+export type OrchestrationResyncRequiredStreamItem =
+  typeof OrchestrationResyncRequiredStreamItem.Type;
+
 export const OrchestrationShellStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("synchronized"),
@@ -481,6 +498,7 @@ export const OrchestrationShellStreamItem = Schema.Union([
     kind: Schema.Literal("snapshot"),
     snapshot: OrchestrationShellSnapshot,
   }),
+  OrchestrationResyncRequiredStreamItem,
   OrchestrationShellStreamEvent,
 ]);
 export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.Type;
@@ -577,6 +595,19 @@ const ThreadForkCommand = Schema.Struct({
   threadId: ThreadId,
   sourceThreadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Optional target overrides are part of the fork itself so provider session
+   * cloning cannot race a follow-up metadata command. Omitted values preserve
+   * the normal inherit-from-source behavior used by UI forks.
+   */
+  modelSelection: Schema.optionalKey(ModelSelection),
+  runtimeMode: Schema.optionalKey(RuntimeMode),
+  interactionMode: Schema.optionalKey(ProviderInteractionMode),
+  isSideChat: Schema.optionalKey(Schema.Boolean),
+  /** Optional UI owner for a side chat forked from another side chat. It may
+      only name that source side chat's existing parent, preventing arbitrary
+      relationship reassignment while allowing sibling sub-agent creation. */
+  sideChatParentThreadId: Schema.optionalKey(ThreadId),
   createdAt: IsoDateTime,
 });
 
@@ -640,6 +671,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  isSideChat: Schema.optionalKey(Schema.Boolean),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -1002,6 +1034,8 @@ export const ThreadForkedPayload = Schema.Struct({
   sourceThreadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  isSideChat: Schema.optionalKey(Schema.Boolean),
+  sideChatParentThreadId: Schema.optionalKey(ThreadId),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
@@ -1059,6 +1093,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  isSideChat: Schema.optionalKey(Schema.Boolean),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -1346,6 +1381,7 @@ export const OrchestrationThreadStreamItem = Schema.Union([
     kind: Schema.Literal("snapshot"),
     snapshot: OrchestrationThreadDetailSnapshot,
   }),
+  OrchestrationResyncRequiredStreamItem,
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,

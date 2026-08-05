@@ -24,6 +24,16 @@ export interface OrchestrationProjectionPipelineShape {
   readonly bootstrap: Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Settle work the previous process died in the middle of.
+   *
+   * Separate from `bootstrap` on purpose: bootstrap is a pure replay that
+   * callers (including tests) may run at any time, whereas this is a
+   * process-start action that assumes nothing is live. Run it once, after
+   * bootstrap, before the command worker starts.
+   */
+  readonly reconcileOrphanedInFlightWork: Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * Project a single orchestration event into projection repositories.
    *
    * Projectors are executed sequentially to preserve deterministic ordering.

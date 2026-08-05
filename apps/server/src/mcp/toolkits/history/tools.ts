@@ -16,6 +16,7 @@ export const ThreadHistoryQueryTool = Tool.make("thread_history_query", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
 
 export const ThreadHistoryToolkit = Toolkit.make(ThreadHistoryQueryTool);

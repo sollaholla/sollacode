@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveThreadSyncPhase, threadSyncLabel } from "./threadSync";
+import { resolveThreadSyncPhase, threadSyncLabel, threadSyncOverlayCopy } from "./threadSync";
 
 describe("resolveThreadSyncPhase", () => {
   it("loads when only shell data is available", () => {
@@ -45,5 +45,16 @@ describe("threadSyncLabel", () => {
   it("uses the same loading and syncing language as mobile", () => {
     expect(threadSyncLabel("loading")).toBe("Loading messages...");
     expect(threadSyncLabel("syncing")).toBe("Syncing messages...");
+  });
+
+  it("explains cold loading and fast-forward catch-up without implying lost context", () => {
+    expect(threadSyncOverlayCopy("loading")).toEqual({
+      title: "Loading conversation…",
+      detail: "Restoring this thread’s messages and working context.",
+    });
+    expect(threadSyncOverlayCopy("syncing")).toEqual({
+      title: "Catching up…",
+      detail: "Fast-forwarding to the latest messages. Your conversation context is still here.",
+    });
   });
 });

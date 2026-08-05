@@ -20,6 +20,12 @@ export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;
 export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
+export const LOCAL_TIMELINE_DRAW_DISTANCE = 6_000;
+export const REMOTE_TIMELINE_DRAW_DISTANCE = 2_000;
+
+export function resolveTimelineDrawDistance(hasDesktopBridge: boolean): number {
+  return hasDesktopBridge ? LOCAL_TIMELINE_DRAW_DISTANCE : REMOTE_TIMELINE_DRAW_DISTANCE;
+}
 
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
@@ -257,10 +263,10 @@ export function resolveAssistantMessageCopyState({
 
 /**
  * Identify the one assistant message that can safely offer a same-thread
- * resume. A stopped provider session means the runtime exited without a
- * normal ready/completed transition. A settled turn that still has a
- * streaming assistant message is also internally inconsistent and therefore
- * incomplete. Explicit user interruption and terminal errors are excluded.
+ * resume. The server projection owns this decision: a stopped provider
+ * session settles an actively running turn as `incomplete`, while a clean
+ * provider completion is `completed`. Do not infer incompleteness from a stale
+ * per-message streaming bit after the turn itself has completed.
  */
 export function deriveResumableAssistantMessageId(input: {
   messages: ReadonlyArray<ChatMessage>;
@@ -302,10 +308,7 @@ export function deriveResumableAssistantMessageId(input: {
     return null;
   }
 
-  const providerExitedUnexpectedly = latestTurn.state === "incomplete";
-  const settledStreamingMessage =
-    latestTurn.state === "completed" && candidate.streaming && session.status !== "error";
-  return providerExitedUnexpectedly || settledStreamingMessage ? candidate.id : null;
+  return latestTurn.state === "incomplete" ? candidate.id : null;
 }
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
@@ -345,14 +348,23 @@ interface TurnFold {
 /**
  * The session's running turn is authoritative when latestTurn briefly lags or
  * regresses behind it. Otherwise, the latest turn counts as unsettled while it
- * is still running (or has not recorded a completion). This is deliberately
+ * is still running (or has not recorded a completion). This is primarily
  * keyed on turn lifecycle rather than transient working state: right after the
  * user sends a message, the previous turn is still the "active" one until the
  * server creates the new turn, and folding must not flicker through that window.
+ *
+ * Lifecycle alone is not sufficient, though: agent-mode continuations settle
+ * each provider turn before the server issues the auto-resume turn. While a
+ * continuation is pending, a settled latest turn must keep its fold open —
+ * otherwise the timeline collapses into "Worked for …" and re-expands on every
+ * continuation boundary. Generic isWorking must NOT be used here: right after
+ * a user follow-up send, isWorking is true while the previous turn is settled,
+ * and that fold has to stay closed.
  */
 function deriveUnsettledTurnId(
   latestTurn: TimelineLatestTurn | null,
   runningTurnId: TurnId | null,
+  pendingContinuation: boolean,
 ): TurnId | null {
   if (runningTurnId !== null) {
     return runningTurnId;
@@ -361,7 +373,10 @@ function deriveUnsettledTurnId(
     return null;
   }
   const isSettled = latestTurn.completedAt !== null && latestTurn.state !== "running";
-  return isSettled ? null : latestTurn.turnId;
+  if (!isSettled) {
+    return latestTurn.turnId;
+  }
+  return pendingContinuation ? latestTurn.turnId : null;
 }
 
 /**
@@ -504,6 +519,8 @@ export function deriveMessagesTimelineRows(input: {
   expandedTurnIds?: ReadonlySet<TurnId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
+  /** Agent/startup auto-resume gap: turn settled but a continuation will start. */
+  pendingContinuation?: boolean;
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
@@ -516,6 +533,7 @@ export function deriveMessagesTimelineRows(input: {
   const unsettledTurnId = deriveUnsettledTurnId(
     input.latestTurn ?? null,
     input.runningTurnId ?? null,
+    input.pendingContinuation ?? false,
   );
   const foldsByAnchorEntryId = deriveTurnFolds({
     timelineEntries: input.timelineEntries,

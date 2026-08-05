@@ -841,6 +841,75 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("materializes a frozen side-chat fork before its first turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const sourceThreadId = asThreadId("thread-side-chat-source");
+      const threadId = asThreadId("thread-side-chat");
+
+      const sourceSession = yield* provider.startSession(sourceThreadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: sourceThreadId,
+        cwd: "/tmp/project-side-chat",
+        runtimeMode: "full-access",
+      });
+      const forked = yield* provider.forkSessionBinding!({
+        sourceThreadId,
+        targetThreadId: threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(forked?.threadId, threadId);
+      assert.equal(routing.codex.startSession.mock.calls.length, 2);
+      assert.deepEqual(routing.codex.startSession.mock.calls[1]?.[0].resumeCursor, {
+        ...(sourceSession.resumeCursor as Record<string, unknown>),
+        fork: true,
+      });
+      yield* provider.startSession(sourceThreadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: sourceThreadId,
+        cwd: "/tmp/project-side-chat",
+        resumeCursor: { opaque: "source-advanced-after-fork" },
+        runtimeMode: "full-access",
+      });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "Compare the approaches without changing the workspace.",
+        attachments: [],
+        isSideChat: true,
+      });
+
+      const adapterInput = routing.codex.sendTurn.mock.calls[0]?.[0];
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      assert.include(adapterInput?.input ?? "", "interactive side-chat sub-agent");
+      assert.include(adapterInput?.input ?? "", "main conversation as concurrent work");
+      assert.include(
+        adapterInput?.input ?? "",
+        "Compare the approaches without changing the workspace.",
+      );
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      const activeSessions = yield* provider.listSessions();
+      assert.equal(
+        activeSessions.some((session) => session.threadId === sourceThreadId),
+        true,
+      );
+      assert.equal(
+        activeSessions.some((session) => session.threadId === threadId),
+        true,
+      );
+
+      yield* provider.stopSession({ threadId });
+      yield* provider.stopSession({ threadId: sourceThreadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.stopSession.mockClear();
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

@@ -12,7 +12,7 @@
  * vague "you may have lost context" prompts an apology rather than a lookup.
  */
 
-export const CONTEXT_RECOVERY_TOOL_NAME = "thread_history_query";
+export const CONTEXT_RECOVERY_TOOL_NAME = "mcp__t3-code__thread_history_query";
 
 export type ContextRecoveryReason = "compaction" | "provider-handoff";
 

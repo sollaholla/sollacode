@@ -4,6 +4,7 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -443,5 +444,106 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.equal(error.message, "Codex App Server input stream ended.");
       assert.equal("cause" in error, false);
     }),
+  );
+
+  // A defect in the notification path used to kill the reader fiber outright —
+  // matchEffect only intercepts typed failures — leaving the transport deaf
+  // with no termination, no failAllPending, and every request hung while the
+  // process stayed alive. Defects must terminate loudly instead.
+  it.effect("routes reader defects into termination instead of dying silently", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onNotification: () => Effect.die(new Error("handler blew up")),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      const pending = yield* transport
+        .request("thread/start", {})
+        .pipe(Effect.asVoid, Effect.flip, Effect.forkScoped);
+      yield* Queue.take(output);
+
+      // The defect fires while routing this notification.
+      yield* Queue.offer(input, encodeJsonl({ method: "item/agentMessage/delta", params: {} }));
+
+      const terminationError = yield* Deferred.await(termination);
+      assert.instanceOf(terminationError, CodexError.CodexAppServerTransportError);
+
+      // The in-flight request fails rather than hanging forever…
+      assert.instanceOf(yield* Fiber.join(pending), CodexError.CodexAppServerTransportError);
+      // …and a request made after termination fails fast instead of parking.
+      const postTermination = yield* transport
+        .request("turn/start", {})
+        .pipe(Effect.asVoid, Effect.flip);
+      assert.instanceOf(postTermination, CodexError.CodexAppServerInputStreamEndedError);
+    }),
+  );
+
+  // An app server that stops answering while holding its pipe open never ends
+  // the input stream, so the termination path above never runs. Without a
+  // deadline the request waits forever and the send it carries is silently lost.
+  it.effect("fails a request the app server never answers", () =>
+    Effect.gen(function* () {
+      const { stdio, output } = yield* makeInMemoryStdio();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        requestTimeout: "30 seconds",
+      });
+
+      const pending = yield* transport
+        .request("turn/start", {})
+        .pipe(Effect.asVoid, Effect.flip, Effect.forkScoped);
+      // The request really was written out; only the answer never comes.
+      assert.include(yield* Queue.take(output), '"turn/start"');
+
+      yield* TestClock.adjust("30 seconds");
+
+      const error = yield* Fiber.join(pending);
+      assert.instanceOf(error, CodexError.CodexAppServerRequestTimeoutError);
+      assert.deepInclude(error, {
+        method: "turn/start",
+        requestId: "1",
+        timeoutMillis: 30_000,
+      });
+      assert.equal(
+        error.message,
+        "Codex App Server did not respond to 'turn/start' within 30000ms.",
+      );
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("answers in time are unaffected and late answers are discarded", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        requestTimeout: "30 seconds",
+      });
+
+      const answered = yield* transport.request("thread/start", {}).pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(input, encodeJsonl({ id: 1, result: { ok: true } }));
+      assert.deepEqual(yield* Fiber.join(answered), { ok: true });
+
+      // A timed-out request drops its pending entry, so a response the app
+      // server finally produces has nothing left to resolve and must not
+      // resurrect a request the caller already gave up on.
+      const abandoned = yield* transport
+        .request("turn/start", {})
+        .pipe(Effect.asVoid, Effect.flip, Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* TestClock.adjust("30 seconds");
+      assert.instanceOf(yield* Fiber.join(abandoned), CodexError.CodexAppServerRequestTimeoutError);
+
+      yield* Queue.offer(input, encodeJsonl({ id: 2, result: { late: true } }));
+
+      // The transport is still usable; the late answer resolved nothing.
+      const next = yield* transport.request("thread/read", {}).pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(input, encodeJsonl({ id: 3, result: { fresh: true } }));
+      assert.deepEqual(yield* Fiber.join(next), { fresh: true });
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 });

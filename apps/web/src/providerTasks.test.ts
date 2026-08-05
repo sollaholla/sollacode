@@ -84,6 +84,36 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(countActiveProviderTasks(tasks), 1);
   });
 
+  // Observed 2026-08-05: the "3D Modeling Trial" thread showed a running
+  // background task while its session was stopped and nothing was executing.
+  // The fold only ever leaves "running" on a `task.completed` event, so a
+  // runtime that dies mid-task strands the row as live forever.
+  it("reports tasks as stopped once the provider session is torn down", () => {
+    const activities = [
+      activity("task.started", "2026-08-01T10:00:00Z", { taskId: "a1", detail: "Work" }),
+      activity("task.progress", "2026-08-01T10:00:05Z", { taskId: "a1", title: "Still going" }),
+    ];
+    const nowMs = Date.parse("2026-08-01T10:00:10Z");
+
+    // Same input, live session: still running.
+    NodeAssert.equal(deriveProviderTasks(activities, { nowMs })[0]?.status, "running");
+
+    const settled = deriveProviderTasks(activities, { nowMs, providerSessionEnded: true });
+    NodeAssert.equal(settled[0]?.status, "stopped");
+    NodeAssert.equal(countActiveProviderTasks(settled), 0);
+  });
+
+  it("does not rewrite a task that already reported how it finished", () => {
+    const settled = deriveProviderTasks(
+      [
+        activity("task.started", "2026-08-01T10:00:00Z", { taskId: "a1", detail: "Work" }),
+        activity("task.completed", "2026-08-01T10:00:01Z", { taskId: "a1", status: "failed" }),
+      ],
+      { nowMs: Date.parse("2026-08-01T10:00:02Z"), providerSessionEnded: true },
+    );
+    NodeAssert.equal(settled[0]?.status, "failed");
+  });
+
   it("preserves a failed status rather than overwriting it", () => {
     const tasks = deriveProviderTasks(
       [
@@ -130,41 +160,36 @@ describe("deriveProviderTasks", () => {
     NodeAssert.equal(shouldShowProviderTaskPanel(tasks), false);
   });
 
-  it("shares the inline right panel column on desktop", () => {
+  it("stacks below the active right-panel surface on desktop", () => {
     NodeAssert.equal(
       resolveProviderTaskPanelPlacement({
         hasTasks: true,
         rightPanelOpen: true,
-        useSheetLayout: false,
       }),
-      "split",
+      "stacked",
     );
   });
 
-  it("takes the whole screen on mobile rather than covering part of it", () => {
+  it("uses the same vertical stack inside the full-screen mobile sheet", () => {
     NodeAssert.equal(
       resolveProviderTaskPanelPlacement({
         hasTasks: true,
         rightPanelOpen: true,
-        useSheetLayout: true,
       }),
-      "fullscreen",
+      "stacked",
     );
   });
 
   it("never renders while the right panel is collapsed", () => {
     // Bound to the right panel so it can never overlay the conversation —
     // collapsing that panel is the user's existing "give me my screen back".
-    for (const useSheetLayout of [false, true]) {
-      NodeAssert.equal(
-        resolveProviderTaskPanelPlacement({
-          hasTasks: true,
-          rightPanelOpen: false,
-          useSheetLayout,
-        }),
-        "hidden",
-      );
-    }
+    NodeAssert.equal(
+      resolveProviderTaskPanelPlacement({
+        hasTasks: true,
+        rightPanelOpen: false,
+      }),
+      "hidden",
+    );
   });
 
   it("hides the panel only when there is nothing to show", () => {
@@ -172,7 +197,6 @@ describe("deriveProviderTasks", () => {
       resolveProviderTaskPanelPlacement({
         hasTasks: false,
         rightPanelOpen: true,
-        useSheetLayout: false,
       }),
       "hidden",
     );

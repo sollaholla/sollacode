@@ -45,6 +45,38 @@ it.effect("enqueueCommand waits for readiness and then drains queued work", () =
   ),
 );
 
+it.effect("preserves FIFO order across the readiness transition", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const commandGate = yield* ServerRuntimeStartup.makeCommandGate;
+      const order = yield* Ref.make<ReadonlyArray<string>>([]);
+      const firstEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const record = (value: string) => Ref.update(order, (current) => [...current, value]);
+
+      const first = yield* commandGate
+        .enqueueCommand(
+          Deferred.succeed(firstEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseFirst)),
+            Effect.andThen(record("first")),
+          ),
+        )
+        .pipe(Effect.forkScoped);
+      const second = yield* commandGate.enqueueCommand(record("second")).pipe(Effect.forkScoped);
+
+      yield* commandGate.signalCommandReady;
+      yield* Deferred.await(firstEntered);
+      const afterReady = yield* commandGate
+        .enqueueCommand(record("after-ready"))
+        .pipe(Effect.forkScoped);
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Effect.all([Fiber.join(first), Fiber.join(second), Fiber.join(afterReady)]);
+
+      assert.deepStrictEqual(yield* Ref.get(order), ["first", "second", "after-ready"]);
+    }),
+  ),
+);
+
 it.effect("enqueueCommand fails queued work when readiness fails", () =>
   Effect.scoped(
     Effect.gen(function* () {

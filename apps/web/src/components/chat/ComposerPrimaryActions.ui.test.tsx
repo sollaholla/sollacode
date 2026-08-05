@@ -92,6 +92,47 @@ describe("composer push-to-talk action", () => {
     expect(markup).not.toContain('disabled=""');
   });
 
+  it("shows the microphone beside a pending plan-question action", () => {
+    const markup = renderActions({
+      pendingAction: {
+        questionIndex: 0,
+        isLastQuestion: true,
+        canAdvance: true,
+        isResponding: false,
+        isComplete: true,
+      },
+      isRunning: false,
+    });
+
+    const microphoneIndex = markup.indexOf(
+      'aria-label="Unmute microphone — hold to record (Cmd+D)"',
+    );
+    const submitIndex = markup.indexOf("Submit answer");
+    expect(microphoneIndex).toBeGreaterThan(-1);
+    expect(submitIndex).toBeGreaterThan(microphoneIndex);
+  });
+
+  it("shows the microphone beside both plan follow-up actions", () => {
+    const refineMarkup = renderActions({
+      showPlanFollowUpPrompt: true,
+      promptHasText: true,
+    });
+    const implementMarkup = renderActions({
+      showPlanFollowUpPrompt: true,
+      promptHasText: false,
+      hasSendableContent: false,
+    });
+
+    expect(refineMarkup.indexOf('aria-label="Unmute microphone')).toBeGreaterThan(-1);
+    expect(refineMarkup.indexOf(">Refine</button>")).toBeGreaterThan(
+      refineMarkup.indexOf('aria-label="Unmute microphone'),
+    );
+    expect(implementMarkup.indexOf('aria-label="Unmute microphone')).toBeGreaterThan(-1);
+    expect(implementMarkup.indexOf(">Implement</button>")).toBeGreaterThan(
+      implementMarkup.indexOf('aria-label="Unmute microphone'),
+    );
+  });
+
   it("shows an enabled Send while processing whenever the composer has text", () => {
     const markup = renderActions({
       isRunning: true,

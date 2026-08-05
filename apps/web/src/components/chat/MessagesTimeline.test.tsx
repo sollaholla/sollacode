@@ -3,6 +3,8 @@ import { createRef, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef } from "@legendapp/list/react";
+import { AGENT_CONTINUE_PROMPT } from "../../agentMode";
+import { RESUME_PROMPT } from "../../resumePrompt";
 
 const assetUrlStateCalls = vi.hoisted(() => [] as Array<unknown>);
 
@@ -35,6 +37,7 @@ vi.mock("@legendapp/list/react", async () => {
         };
     initialScrollAtEnd?: boolean;
     initialScrollOffset?: number;
+    drawDistance?: number;
     onScroll?: () => void;
     onLoad?: () => void;
     onItemSizeChanged?: () => void;
@@ -93,6 +96,7 @@ vi.mock("@legendapp/list/react", async () => {
         data-manual-pointer-handler={Boolean(props.onPointerDown)}
         data-initial-scroll-at-end={props.initialScrollAtEnd}
         data-initial-scroll-offset={props.initialScrollOffset}
+        data-draw-distance={props.drawDistance}
         data-load-handler={Boolean(props.onLoad)}
         data-item-size-handler={Boolean(props.onItemSizeChanged)}
         data-scroll-handler={Boolean(props.onScroll)}
@@ -333,6 +337,34 @@ describe("MessagesTimeline", () => {
     expect(userMarkup).not.toContain('aria-label="Compact and continue conversation"');
   });
 
+  it("renders a wrapped terminal Agent stop token as a red status badge", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-agent-stop",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-agent-stop"),
+              role: "assistant",
+              text: 'Everything is complete. "AGENT_STOP"',
+              turnId: TurnId.make("turn-agent-stop"),
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain('data-agent-stop-badge="true"');
+    expect(markup).toContain("Agent stop");
+    expect(markup).toContain("Everything is complete.");
+    expect(markup).not.toContain("AGENT_STOP");
+  });
+
   it("renders an accessible Resume action directly under the eligible assistant message", () => {
     const assistantMessageId = MessageId.make("message-incomplete");
     const timelineEntries = [
@@ -495,6 +527,7 @@ describe("MessagesTimeline", () => {
   it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {
     const {
       resolveTimelineIsAtEnd,
+      resolveTimelineDrawDistance,
       resolveTimelineMinimapHasPersistentGutter,
       resolveTimelineMinimapHeightStyle,
       resolveTimelineMinimapHitStripWidth,
@@ -507,6 +540,8 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineIsAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(false);
     expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
     expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
+    expect(resolveTimelineDrawDistance(false)).toBe(2_000);
+    expect(resolveTimelineDrawDistance(true)).toBe(6_000);
 
     expect(resolveTimelineMinimapHeightStyle(5)).toBe("min(32px, calc(100vh - 18rem))");
     expect(resolveTimelineMinimapTopPercent(2, 5)).toBe(50);
@@ -573,6 +608,7 @@ describe("MessagesTimeline", () => {
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position="object"');
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position-data="true"');
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position-size="true"');
+    expect(followingMarkup).toContain('data-draw-distance="2000"');
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
     expect(followingMarkup).toContain('data-manual-pointer-handler="false"');
@@ -637,6 +673,10 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("[overflow-anchor:none]");
     expect(markup).toContain('data-maintain-scroll-at-end="enabled"');
     expect(markup).toContain('data-maintain-visible-content-position="false"');
+    expect(markup).toContain("aspect-video overflow-hidden");
+    expect(markup).toContain("block size-full object-cover");
+    expect(markup).toContain('loading="lazy"');
+    expect(markup).toContain('decoding="async"');
   });
 
   it("renders collapse controls for long user messages", () => {
@@ -669,6 +709,35 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
     expect(markup).toContain("rounded-2xl bg-accent p-3");
+  });
+
+  it("collapses the synthetic Agent continuation into an inline fast-forward chip", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry(AGENT_CONTINUE_PROMPT)]}
+      />,
+    );
+
+    expect(markup).toContain("Agent auto-resuming");
+    expect(markup).toContain("lucide-fast-forward");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("The user wants you to continue working autonomously");
+  });
+
+  it.each([
+    ["contextual resume prompt", RESUME_PROMPT],
+    ["legacy resume prompt", "resume"],
+  ])("collapses the %s into an inline fast-forward chip", (_name, prompt) => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[buildUserTimelineEntry(prompt)]} />,
+    );
+
+    expect(markup).toContain(">Resume<");
+    expect(markup).toContain("lucide-fast-forward");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("Please resume your current task");
+    expect(markup).not.toContain('rounded-2xl bg-accent p-3"><p>resume</p>');
   });
 
   it("renders inline terminal labels with the composer chip UI", () => {
@@ -856,6 +925,8 @@ describe("MessagesTimeline", () => {
       'src="https://environment.example/api/assets/signed/reference.png?solla_revision=work-image-read"',
     );
     expect(markup).toContain("workspace/art/reference.png");
+    expect(markup).toContain("block h-48 w-full cursor-zoom-in bg-black/10 sm:h-64");
+    expect(markup).toContain("block size-full object-contain");
     expect(assetUrlStateCalls.at(-1)).toMatchObject({
       sourceActivityId: "activity-that-supplied-image-path",
     });

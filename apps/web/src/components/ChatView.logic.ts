@@ -9,6 +9,10 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
+import type {
+  ConnectionTargetKind,
+  EnvironmentConnectionPhase,
+} from "@t3tools/client-runtime/connection";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -20,6 +24,7 @@ import {
   type TerminalContextDraft,
 } from "../lib/terminalContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
+import { RESUME_PROMPT } from "../resumePrompt";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
@@ -36,16 +41,28 @@ export function shouldConfirmRemoteProviderAccountSwitch(input: {
   );
 }
 
+export function canQueueLocalMessageDuringReconnect(input: {
+  readonly targetKind: ConnectionTargetKind | null;
+  readonly phase: EnvironmentConnectionPhase;
+  readonly threadDetailLoaded: boolean;
+}): boolean {
+  return (
+    input.targetKind === "PrimaryConnectionTarget" &&
+    (input.phase === "connecting" || input.phase === "reconnecting") &&
+    input.threadDetailLoaded
+  );
+}
+
 export async function runResumeIncompleteTurn(input: {
   inFlightRef: { current: boolean };
-  send: (message: "resume") => Promise<void>;
+  send: (message: typeof RESUME_PROMPT) => Promise<void>;
 }): Promise<boolean> {
   if (input.inFlightRef.current) {
     return false;
   }
   input.inFlightRef.current = true;
   try {
-    await input.send("resume");
+    await input.send(RESUME_PROMPT);
     return true;
   } finally {
     input.inFlightRef.current = false;
@@ -244,6 +261,29 @@ export function reconcileRetainedMountedThreadIds(input: {
   }
 
   return nextThreadIds;
+}
+
+/**
+ * Keep close suppression active until the server shell has actually removed
+ * each archived side-chat child. Clearing it when the archive RPC returns creates a
+ * race where a lagging shell re-adds the just-closed surface as a zombie.
+ */
+export function retainClosingSideChatThreadIds(
+  closingThreadIds: ReadonlySet<string>,
+  presentSideChatThreadIds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  if (closingThreadIds.size === 0) return closingThreadIds;
+  const retained = new Set(
+    [...closingThreadIds].filter((threadId) => presentSideChatThreadIds.has(threadId)),
+  );
+  return retained.size === closingThreadIds.size ? closingThreadIds : retained;
+}
+
+export function shouldPersistComposerModelDefaults(input: {
+  readonly embeddedSideChat: boolean;
+  readonly threadIsSideChat: boolean;
+}): boolean {
+  return !input.embeddedSideChat && !input.threadIsSideChat;
 }
 
 export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {

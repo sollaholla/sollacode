@@ -34,6 +34,7 @@ const request = (
   operation: "status",
   input: {},
   timeoutMs: 15_000,
+  expiresAt: Date.now() + 60_000,
   ...overrides,
 });
 
@@ -149,6 +150,36 @@ describe("previewAutomationRequestConsumer", () => {
       "request-2",
     ]);
     expect(responses.map((response) => response.requestId)).toEqual(["request-1", "request-2"]);
+    registry.dispose();
+  });
+
+  it("discards an expired queued request without executing its side effect", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const handleRequest = vi.fn(async () => undefined);
+    const respond = vi.fn(async () => undefined);
+    const state = consumerState(handleRequest);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      respond,
+      label: "test:preview-automation-expired-request",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("request-expired", { expiresAt: Date.now() - 1 })),
+    );
+    await Promise.resolve();
+
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
     registry.dispose();
   });
 

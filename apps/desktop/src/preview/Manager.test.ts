@@ -527,6 +527,82 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("attaches CDP only while automation or an emulation override needs it", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let attached = false;
+        let devToolsOpened = false;
+        let onDevToolsClosed: (() => void) | undefined;
+        const attach = vi.fn(() => {
+          attached = true;
+        });
+        const detach = vi.fn(() => {
+          attached = false;
+        });
+        const sendCommand = vi.fn(async (method: string) =>
+          method === "Runtime.evaluate" ? { result: { value: 2 } } : undefined,
+        );
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => devToolsOpened,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          once: vi.fn((event: string, listener: () => void) => {
+            if (event === "devtools-closed") onDevToolsClosed = listener;
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          openDevTools: vi.fn(() => {
+            devToolsOpened = true;
+          }),
+          debugger: {
+            isAttached: () => attached,
+            attach,
+            detach,
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_control_lease");
+        yield* manager.registerWebview("tab_control_lease", 42);
+        yield* Effect.yieldNow;
+
+        expect(attach).not.toHaveBeenCalled();
+
+        expect(
+          yield* manager.automationEvaluate("tab_control_lease", { expression: "1 + 1" }),
+        ).toBe(2);
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(detach).toHaveBeenCalledTimes(1);
+
+        yield* manager.setColorScheme("tab_control_lease", "dark");
+        expect(attach).toHaveBeenCalledTimes(2);
+        expect(detach).toHaveBeenCalledTimes(1);
+
+        yield* manager.setColorScheme("tab_control_lease", "system");
+        expect(detach).toHaveBeenCalledTimes(2);
+
+        yield* manager.openDevTools("tab_control_lease");
+        devToolsOpened = false;
+        onDevToolsClosed?.();
+        yield* Effect.yieldNow;
+
+        expect(attach).toHaveBeenCalledTimes(2);
+      }),
+    ),
+  );
+
   effectIt.effect("blocks late webview and capture starts during tab close", () =>
     withManager((manager) =>
       Effect.gen(function* () {

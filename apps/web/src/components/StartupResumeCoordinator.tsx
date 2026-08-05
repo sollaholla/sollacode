@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   isAtomCommandInterrupted,
@@ -11,6 +11,7 @@ import {
   useUpdateClientSettings,
 } from "../hooks/useSettings";
 import { newMessageId } from "../lib/utils";
+import { RESUME_PROMPT } from "../resumePrompt";
 import {
   useAllEnvironmentShellsBootstrapped,
   useProjects,
@@ -19,6 +20,7 @@ import {
 import { useEnvironments } from "../state/environments";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useStartupResumeStore } from "../startupResumeStore";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import {
@@ -33,8 +35,11 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
   deriveStartupResumableThreads,
+  isStartupAutoResumeRequested,
   pruneStartupResumeSelection,
   shouldAutoCloseStartupResume,
+  shouldClearStartupResumePending,
+  startupAutoResumeIds,
 } from "./StartupResumeCoordinator.logic";
 
 const STARTUP_RESUME_PROMPT_SESSION_KEY = "t3code:startup-resume-prompt:v1";
@@ -60,6 +65,7 @@ function markPromptHandledThisStartup(): void {
 }
 
 export function StartupResumeCoordinator() {
+  const autoResumeRequested = useMemo(() => isStartupAutoResumeRequested(window.location.href), []);
   const settingsHydrated = useClientSettingsHydrated();
   const showOnStartup = useClientSettings((settings) => settings.showResumeThreadsOnStartup);
   const updateClientSettings = useUpdateClientSettings();
@@ -103,30 +109,22 @@ export function StartupResumeCoordinator() {
     [environments],
   );
 
-  useEffect(() => {
-    if (
-      openedRef.current ||
-      !settingsHydrated ||
-      !shellsBootstrapped ||
-      !showOnStartup ||
-      candidates.length === 0 ||
-      wasPromptHandledThisStartup()
-    ) {
-      return;
-    }
-    openedRef.current = true;
-    markPromptHandledThisStartup();
-    setKeepShowingOnStartup(true);
-    setSelectedKeys(
-      new Set(candidates.map((thread) => threadKey(thread.environmentId, thread.id))),
-    );
-    setOpen(true);
-  }, [candidates, settingsHydrated, shellsBootstrapped, showOnStartup]);
-
   const candidateKeys = useMemo(
     () => candidates.map((thread) => threadKey(thread.environmentId, thread.id)),
     [candidates],
   );
+
+  useEffect(() => {
+    const pending = useStartupResumeStore.getState().pendingStartedAtByThreadKey;
+    for (const key of Object.keys(pending)) {
+      const thread = threads.find(
+        (candidate) => threadKey(candidate.environmentId, candidate.id) === key,
+      );
+      if (!thread || shouldClearStartupResumePending(thread)) {
+        useStartupResumeStore.getState().clearPending(key);
+      }
+    }
+  }, [threads]);
 
   // Keep the footer count honest when only some candidates drain away. Selection
   // is seeded once on open, so without this the stale keys keep the Resume
@@ -139,11 +137,11 @@ export function StartupResumeCoordinator() {
     });
   }, [busy, candidateKeys, open]);
 
-  const persistShowOnStartupChoice = () => {
+  const persistShowOnStartupChoice = useCallback(() => {
     if (keepShowingOnStartup !== showOnStartup) {
       updateClientSettings({ showResumeThreadsOnStartup: keepShowingOnStartup });
     }
-  };
+  }, [keepShowingOnStartup, showOnStartup, updateClientSettings]);
 
   const dismiss = () => {
     if (busy) return;
@@ -161,75 +159,136 @@ export function StartupResumeCoordinator() {
     setOpen(false);
   }, [busy, candidates.length, open, keepShowingOnStartup, showOnStartup]);
 
+  const resumeThreads = useCallback(
+    async (
+      selected: typeof candidates,
+      options: { readonly persistStartupChoice: boolean; readonly dedupeAcrossClients: boolean },
+    ) => {
+      if (selected.length === 0) return;
+
+      setBusy(true);
+      useStartupResumeStore
+        .getState()
+        .markPending(selected.map((thread) => threadKey(thread.environmentId, thread.id)));
+      if (options.persistStartupChoice) persistShowOnStartupChoice();
+      const results = await Promise.all(
+        selected.map(async (thread) => {
+          const key = threadKey(thread.environmentId, thread.id);
+          try {
+            const createdAt = new Date().toISOString();
+            const incompleteTurnId = thread.latestTurn?.turnId;
+            const resumeIds =
+              options.dedupeAcrossClients && incompleteTurnId !== undefined
+                ? startupAutoResumeIds({ threadId: thread.id, incompleteTurnId })
+                : null;
+            const result = await startThreadTurn({
+              environmentId: thread.environmentId,
+              input: {
+                ...(resumeIds !== null ? { commandId: resumeIds.commandId } : {}),
+                threadId: thread.id,
+                message: {
+                  messageId: resumeIds?.messageId ?? newMessageId(),
+                  role: "user",
+                  text: RESUME_PROMPT,
+                  attachments: [],
+                },
+                modelSelection: thread.modelSelection,
+                titleSeed: thread.title,
+                runtimeMode: thread.runtimeMode,
+                interactionMode: thread.interactionMode,
+                createdAt,
+              },
+            });
+            if (result._tag === "Success") {
+              return null;
+            }
+            useStartupResumeStore.getState().clearPending(key);
+            if (isAtomCommandInterrupted(result)) {
+              return `${thread.title}: resume was interrupted`;
+            }
+            const failure = squashAtomCommandFailure(result);
+            return `${thread.title}: ${
+              failure instanceof Error ? failure.message : "could not resume"
+            }`;
+          } catch (error) {
+            useStartupResumeStore.getState().clearPending(key);
+            return `${thread.title}: ${error instanceof Error ? error.message : "could not resume"}`;
+          }
+        }),
+      );
+      const failures = results.filter((result): result is string => result !== null);
+      setBusy(false);
+      setOpen(false);
+
+      if (failures.length === 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: `Resumed ${selected.length} ${selected.length === 1 ? "thread" : "threads"}`,
+          }),
+        );
+        return;
+      }
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title:
+            failures.length === selected.length
+              ? "Could not resume selected threads"
+              : `Resumed ${selected.length - failures.length} of ${selected.length} threads`,
+          description: failures.slice(0, 3).join("\n"),
+        }),
+      );
+    },
+    [persistShowOnStartupChoice, startThreadTurn],
+  );
+
   const resumeSelected = async () => {
     if (busy) return;
     const selected = candidates.filter((thread) =>
       selectedKeys.has(threadKey(thread.environmentId, thread.id)),
     );
-    if (selected.length === 0) return;
+    await resumeThreads(selected, {
+      persistStartupChoice: true,
+      dedupeAcrossClients: false,
+    });
+  };
 
-    setBusy(true);
-    persistShowOnStartupChoice();
-    const results = await Promise.all(
-      selected.map(async (thread) => {
-        try {
-          const createdAt = new Date().toISOString();
-          const result = await startThreadTurn({
-            environmentId: thread.environmentId,
-            input: {
-              threadId: thread.id,
-              message: {
-                messageId: newMessageId(),
-                role: "user",
-                text: "resume",
-                attachments: [],
-              },
-              modelSelection: thread.modelSelection,
-              titleSeed: thread.title,
-              runtimeMode: thread.runtimeMode,
-              interactionMode: thread.interactionMode,
-              createdAt,
-            },
-          });
-          if (result._tag === "Success") {
-            return null;
-          }
-          if (isAtomCommandInterrupted(result)) {
-            return `${thread.title}: resume was interrupted`;
-          }
-          const failure = squashAtomCommandFailure(result);
-          return `${thread.title}: ${
-            failure instanceof Error ? failure.message : "could not resume"
-          }`;
-        } catch (error) {
-          return `${thread.title}: ${error instanceof Error ? error.message : "could not resume"}`;
-        }
-      }),
-    );
-    const failures = results.filter((result): result is string => result !== null);
-    setBusy(false);
-    setOpen(false);
-
-    if (failures.length === 0) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "success",
-          title: `Resumed ${selected.length} ${selected.length === 1 ? "thread" : "threads"}`,
-        }),
-      );
+  useEffect(() => {
+    if (
+      openedRef.current ||
+      !settingsHydrated ||
+      !shellsBootstrapped ||
+      (!showOnStartup && !autoResumeRequested) ||
+      candidates.length === 0 ||
+      wasPromptHandledThisStartup()
+    ) {
       return;
     }
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title:
-          failures.length === selected.length
-            ? "Could not resume selected threads"
-            : `Resumed ${selected.length - failures.length} of ${selected.length} threads`,
-        description: failures.slice(0, 3).join("\n"),
-      }),
+    openedRef.current = true;
+    markPromptHandledThisStartup();
+
+    if (autoResumeRequested) {
+      void resumeThreads(candidates, {
+        persistStartupChoice: false,
+        dedupeAcrossClients: true,
+      });
+      return;
+    }
+
+    setKeepShowingOnStartup(true);
+    setSelectedKeys(
+      new Set(candidates.map((thread) => threadKey(thread.environmentId, thread.id))),
     );
-  };
+    setOpen(true);
+  }, [
+    autoResumeRequested,
+    candidates,
+    resumeThreads,
+    settingsHydrated,
+    shellsBootstrapped,
+    showOnStartup,
+  ]);
 
   return (
     <Dialog

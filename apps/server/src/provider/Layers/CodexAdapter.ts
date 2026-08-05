@@ -11,9 +11,11 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
+  EventId,
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
+  MessageId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
@@ -24,8 +26,10 @@ import {
   ThreadId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -51,6 +55,7 @@ import {
 } from "../Errors.ts";
 import {
   hasProviderOverloadStatus,
+  hasRetryableUpstreamStatus,
   providerOverloadExhaustedMessage,
   providerOverloadRetryReason,
 } from "../providerOverloadRetry.ts";
@@ -61,6 +66,7 @@ import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
   makeCodexSessionRuntime,
+  resolveCodexAutoCompactionTokenLimit,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeShape,
@@ -69,6 +75,9 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
+const isCodexAppServerRequestTimeoutError = Schema.is(
+  CodexErrors.CodexAppServerRequestTimeoutError,
+);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
 );
@@ -103,7 +112,14 @@ function mapCodexRuntimeError(
   method: string,
   error: CodexSessionRuntimeError,
 ): ProviderAdapterError {
-  if (isCodexAppServerProcessExitedError(error) || isCodexAppServerTransportError(error)) {
+  if (
+    isCodexAppServerProcessExitedError(error) ||
+    isCodexAppServerTransportError(error) ||
+    // An app server that stopped answering is as dead as one that exited; the
+    // runtime has already closed the session, so report it as closed rather
+    // than as a one-off request failure the caller might retry into the void.
+    isCodexAppServerRequestTimeoutError(error)
+  ) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
       threadId,
@@ -123,6 +139,7 @@ function mapCodexRuntimeError(
     provider: PROVIDER,
     method,
     detail: error.message,
+    ...(hasRetryableUpstreamStatus(error) ? { failureKind: "retryable-upstream" as const } : {}),
     cause: error,
   });
 }
@@ -778,6 +795,7 @@ function mapToRuntimeEvents(
       return [];
     }
     const errorMessage = trimText(payload.turn.error?.message);
+    const retryableUpstream = hasRetryableUpstreamStatus(payload.turn.error);
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -785,6 +803,7 @@ function mapToRuntimeEvents(
         payload: {
           state: toTurnStatus(payload.turn.status),
           ...(errorMessage ? { errorMessage } : {}),
+          ...(retryableUpstream ? { failureKind: "retryable-upstream" as const } : {}),
         },
       },
     ];
@@ -1256,8 +1275,9 @@ function mapToRuntimeEvents(
     const payload = readPayload(EffectCodexSchema.V2ErrorNotification, event.payload);
     const providerMessage = payload?.error.message ?? event.message ?? "Provider runtime error";
     const willRetry = payload?.willRetry === true;
+    const retryableUpstream = hasRetryableUpstreamStatus(payload?.error);
     const isProviderOverload = hasProviderOverloadStatus(payload?.error);
-    if (willRetry && isProviderOverload) {
+    if (willRetry && retryableUpstream) {
       return [
         {
           type: "session.state.changed",
@@ -1281,6 +1301,9 @@ function mapToRuntimeEvents(
         payload: {
           message,
           ...(!willRetry ? { class: "provider_error" as const } : {}),
+          ...(!willRetry && retryableUpstream
+            ? { failureKind: "retryable-upstream" as const }
+            : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
@@ -1417,6 +1440,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
+        const autoCompactionTokenLimit = resolveCodexAutoCompactionTokenLimit(
+          input.autoCompactionThresholdPercentage,
+        );
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
@@ -1434,6 +1460,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { model: input.modelSelection.model }
             : {}),
           ...(serviceTier ? { serviceTier } : {}),
+          ...(autoCompactionTokenLimit !== undefined ? { autoCompactionTokenLimit } : {}),
           ...(mcpSession
             ? {
                 environment: {
@@ -1484,7 +1511,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               return;
             }
             yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }),
+          }).pipe(
+            // This pump is the only route from the session to projections and
+            // logs. If one malformed event were allowed to kill it, the thread
+            // would go silently deaf while the provider kept working — drop the
+            // event loudly and keep pumping instead.
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logError("codex.session.event-pump.event-failed", {
+                    threadId: event.threadId,
+                    method: event.method,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          ),
         ).pipe(Effect.forkChild);
 
         const started = yield* runtime.start().pipe(
@@ -1559,6 +1600,46 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
+
+    // A send while a turn is running is a steer: inject the message into the
+    // live turn via `turn/steer` so the agent sees it immediately, instead of
+    // parking it until the turn ends. The app server's expectedTurnId
+    // precondition makes this race-safe — if the turn finished in the meantime
+    // the steer fails and the caller's queued-delivery fallback handles it.
+    const liveSession = yield* session.runtime.getSession;
+    if (liveSession.status === "running" && liveSession.activeTurnId) {
+      const steered = yield* session.runtime
+        .steerTurn({
+          expectedTurnId: liveSession.activeTurnId,
+          ...(input.input !== undefined ? { input: input.input } : {}),
+          ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+        })
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/steer", cause)),
+        );
+
+      // Steer acceptance is the provider's positive acknowledgement that the
+      // live agent loop received this exact message — the same contract as the
+      // turn/start receipt below.
+      if (input.messageId !== undefined) {
+        const messageId = MessageId.make(input.messageId);
+        yield* Queue.offer(runtimeEventQueue, {
+          type: "message.delivered",
+          eventId: EventId.make(`codex-steered:${messageId}:${steered.turnId}`),
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          threadId: input.threadId,
+          turnId: steered.turnId,
+          payload: { messageId },
+          providerRefs: {
+            providerTurnId: steered.turnId,
+          },
+        });
+      }
+      return steered;
+    }
+
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -1567,7 +1648,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getCodexServiceTierOptionValue(input.modelSelection)
         : undefined;
-    return yield* session.runtime
+    const result = yield* session.runtime
       .sendTurn({
         ...(input.input !== undefined ? { input: input.input } : {}),
         ...(input.modelSelection?.instanceId === boundInstanceId
@@ -1583,6 +1664,30 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+
+    // A successful turn/start response is Codex app-server's positive
+    // acknowledgement that it accepted this exact prompt. Emit the same hidden
+    // delivery receipt Claude produces when its async prompt iterator pulls a
+    // queued message. Crucially this happens after sendTurn succeeds, so a
+    // rejected or disconnected request can never show the second check early.
+    if (input.messageId !== undefined) {
+      const messageId = MessageId.make(input.messageId);
+      yield* Queue.offer(runtimeEventQueue, {
+        type: "message.delivered",
+        eventId: EventId.make(`codex-delivered:${messageId}:${result.turnId}`),
+        provider: PROVIDER,
+        providerInstanceId: boundInstanceId,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+        threadId: input.threadId,
+        turnId: result.turnId,
+        payload: { messageId },
+        providerRefs: {
+          providerTurnId: result.turnId,
+        },
+      });
+    }
+
+    return result;
   });
 
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {

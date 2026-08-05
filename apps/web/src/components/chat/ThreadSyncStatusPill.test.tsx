@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ThreadSyncStatusPill } from "./ThreadSyncStatusPill";
+import { ThreadSyncOverlay, ThreadSyncStatusPill } from "./ThreadSyncStatusPill";
 
 describe("ThreadSyncStatusPill", () => {
   it.each([
@@ -13,5 +13,19 @@ describe("ThreadSyncStatusPill", () => {
     expect(markup).toContain('role="status"');
     expect(markup).toContain(label);
     expect(markup).toContain("animate-spin");
+  });
+
+  it.each([
+    ["loading", "Loading conversation…", "Restoring this thread’s messages"],
+    ["syncing", "Catching up…", "Fast-forwarding to the latest messages"],
+  ] as const)("covers the transcript during %s", (phase, title, detail) => {
+    const markup = renderToStaticMarkup(<ThreadSyncOverlay phase={phase} />);
+
+    expect(markup).toContain(`data-thread-sync-overlay="${phase}"`);
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain("animate-spin");
+    expect(markup).toContain(title);
+    expect(markup).toContain(detail);
   });
 });

@@ -1,13 +1,18 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalFetch:off - The abort test needs a caller-owned request signal.
+// @effect-diagnostics globalTimers:off - A delayed socket reset reproduces a mid-stream transport failure.
 import * as NodeFS from "node:fs";
 import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeTimers from "node:timers";
 
 import { ThreadId, TurnId } from "@t3tools/contracts";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS,
+  claudeUpstreamRetryDelayMs,
   shouldReportTokenOptimizerSummary,
   startClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerApplied,
@@ -74,6 +79,190 @@ async function postJson(
 }
 
 describe("ClaudeTokenOptimizerProxy", () => {
+  it("retries retryable upstream responses below the SDK until one succeeds", async () => {
+    let requests = 0;
+    const upstream = NodeHttp.createServer((_req, res) => {
+      requests += 1;
+      res.setHeader("content-type", "application/json");
+      if (requests <= 2) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ error: "pxpipe upstream unreachable" }));
+        return;
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+
+    const retries: Array<{ attempt: number; delayMs: number; status: number | null }> = [];
+    const upstreamFailures: Array<{ status: number; path: string }> = [];
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-invisible-retry"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-invisible-retry") },
+      onApplied: () => undefined,
+      onRetry: ({ attempt, delayMs, status }) => {
+        retries.push({ attempt, delayMs, status });
+      },
+      onUpstreamFailure: ({ status, path }) => {
+        upstreamFailures.push({ status, path });
+      },
+      initialRetryDelayMs: 1,
+      maxRetryDelayMs: 1,
+    });
+    cleanup.push(() => proxy.close());
+
+    const response = await postJson(`${proxy.baseUrl}/v1/messages`, { prompt: "one request" });
+    expect(response).toEqual({ status: 200, body: { ok: true } });
+    expect(requests).toBe(3);
+    expect(retries).toEqual([
+      { attempt: 1, delayMs: 1, status: 502 },
+      { attempt: 2, delayMs: 1, status: 502 },
+    ]);
+    expect(upstreamFailures).toEqual([
+      { status: 502, path: "/v1/messages" },
+      { status: 502, path: "/v1/messages" },
+    ]);
+  });
+
+  it("retries an upstream reset after headers but before the first response byte", async () => {
+    let requests = 0;
+    const upstream = NodeHttp.createServer((_req, res) => {
+      requests += 1;
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      if (requests === 1) {
+        // Undici resolves fetch as soon as the headers arrive. If the proxy
+        // commits those headers downstream before reading one body byte, this
+        // reset becomes the CLI's terminal "Unable to connect ... ECONNRESET"
+        // result instead of staying inside Solla's retry loop.
+        res.flushHeaders();
+        res.socket?.destroy();
+        return;
+      }
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+
+    const retries: Array<{ attempt: number; status: number | null }> = [];
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-reset-before-first-byte"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-reset-before-first-byte") },
+      onApplied: () => undefined,
+      onRetry: ({ attempt, status }) => {
+        retries.push({ attempt, status });
+      },
+      initialRetryDelayMs: 1,
+      maxRetryDelayMs: 1,
+    });
+    cleanup.push(() => proxy.close());
+
+    await expect(
+      postJson(`${proxy.baseUrl}/v1/messages`, { prompt: "survive reset" }),
+    ).resolves.toEqual({ status: 200, body: { ok: true } });
+    expect(requests).toBe(2);
+    expect(retries).toEqual([{ attempt: 1, status: null }]);
+  });
+
+  it("retries an upstream reset after a partial response without leaking it downstream", async () => {
+    let requests = 0;
+    const upstream = NodeHttp.createServer((_req, res) => {
+      requests += 1;
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      if (requests === 1) {
+        res.write('{"partial":');
+        res.flushHeaders();
+        NodeTimers.setTimeout(() => res.socket?.destroy(), 10);
+        return;
+      }
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+
+    const retries: Array<{ attempt: number; status: number | null }> = [];
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-reset-mid-response"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-reset-mid-response") },
+      onApplied: () => undefined,
+      onRetry: ({ attempt, status }) => {
+        retries.push({ attempt, status });
+      },
+      initialRetryDelayMs: 1,
+      maxRetryDelayMs: 1,
+    });
+    cleanup.push(() => proxy.close());
+
+    await expect(
+      postJson(`${proxy.baseUrl}/v1/messages`, { prompt: "survive partial reset" }),
+    ).resolves.toEqual({ status: 200, body: { ok: true } });
+    expect(requests).toBe(2);
+    expect(retries).toEqual([{ attempt: 1, status: null }]);
+  });
+
+  it("ends an otherwise infinite retry loop when the caller aborts", async () => {
+    const upstream = NodeHttp.createServer((_req, res) => {
+      res.statusCode = 502;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "still unavailable" }));
+    });
+    const upstreamUrl = await listen(upstream);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        ),
+    );
+
+    let sawRetry: (() => void) | undefined;
+    const retrying = new Promise<void>((resolve) => {
+      sawRetry = resolve;
+    });
+    const proxy = await startClaudeTokenOptimizerProxy({
+      threadId: ThreadId.make("thread-abort-retry"),
+      attachmentsDir: NodeOS.tmpdir(),
+      upstream: upstreamUrl,
+      state: { enabled: false, activeTurnId: TurnId.make("turn-abort-retry") },
+      onApplied: () => undefined,
+      onRetry: () => sawRetry?.(),
+    });
+    cleanup.push(() => proxy.close());
+
+    const controller = new AbortController();
+    const request = fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: "POST",
+      body: JSON.stringify({ prompt: "wait" }),
+      headers: { "content-type": "application/json" },
+      signal: controller.signal,
+    });
+    await retrying;
+    controller.abort();
+    await expect(request).rejects.toThrow();
+  });
+
   it("renders profitable Fable context, forwards the request, and persists preview pages", async () => {
     let forwardedBody: unknown;
     const upstream = NodeHttp.createServer((req, res) => {
@@ -244,5 +433,19 @@ describe("shouldReportTokenOptimizerSummary", () => {
         "Optimized 98 pages · saved ~56,000 tokens",
       ),
     ).toBe(true);
+  });
+});
+
+describe("claudeUpstreamRetryDelayMs", () => {
+  it("backs off indefinitely without ever exceeding fifteen seconds", () => {
+    expect([1, 2, 3, 4, 5, 6, 100].map((attempt) => claudeUpstreamRetryDelayMs(attempt))).toEqual([
+      1_000,
+      2_000,
+      4_000,
+      8_000,
+      CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS,
+      CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS,
+      CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS,
+    ]);
   });
 });

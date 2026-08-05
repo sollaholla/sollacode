@@ -31,6 +31,9 @@ import {
 import { flushSync } from "react-dom";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
+import { isAgentContinuePrompt } from "../../agentMode";
+import { extractAgentStopSignoff } from "@t3tools/shared/agentMode";
+import { isResumePrompt } from "../../resumePrompt";
 import {
   deriveTimelineEntries,
   workEntryIndicatesToolFailure,
@@ -52,12 +55,14 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
+  FastForwardIcon,
   GlobeIcon,
   HammerIcon,
   LoaderCircleIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  CircleStopIcon,
   MinusIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -77,6 +82,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveTimelineDrawDistance,
   resolveTimelineIsAtEnd,
   shouldMaintainTimelineScrollAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -203,6 +209,8 @@ const EMPTY_DELIVERED_MESSAGE_IDS: ReadonlySet<string> = new Set<string>();
 
 interface MessagesTimelineProps {
   isWorking: boolean;
+  /** Auto-resume gap: latest turn settled but the server will start a continuation turn. */
+  pendingContinuation?: boolean;
   workingStatusLabel?: string | null;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
@@ -251,6 +259,7 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
+  pendingContinuation = false,
   workingStatusLabel = null,
   activeTurnInProgress,
   activeTurnStartedAt,
@@ -289,6 +298,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isResumeIncompleteTurnBusy,
   isResumeIncompleteTurnDisabled,
 }: MessagesTimelineProps) {
+  const drawDistance = resolveTimelineDrawDistance(
+    typeof window !== "undefined" && window.desktopBridge !== undefined,
+  );
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
@@ -376,6 +388,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         expandedTurnIds,
         expandedWorkGroupIds,
         isWorking,
+        pendingContinuation,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
@@ -387,6 +400,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       expandedTurnIds,
       expandedWorkGroupIds,
       isWorking,
+      pendingContinuation,
       workingStatusLabel,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -667,6 +681,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             getItemType={getItemType}
             renderItem={renderItem}
             estimatedItemSize={90}
+            // Measure ahead of the viewport. Desktop can afford a larger buffer;
+            // remote Safari uses a tighter one so a long thread cannot mount and
+            // request dozens of historical images at once. Both remain well above
+            // the old 250px buffer that caused measurement corrections mid-gesture.
+            drawDistance={drawDistance}
             initialScrollAtEnd={initialScrollAtEnd}
             {...(initialScrollOffset === null ? {} : { initialScrollOffset })}
             maintainScrollAtEnd={
@@ -1074,6 +1093,7 @@ function ProviderTransitionTimelineRow({
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const [syntheticPromptExpanded, setSyntheticPromptExpanded] = useState(false);
   const userImages = row.message.attachments ?? [];
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
@@ -1106,6 +1126,38 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
   });
 
+  const syntheticPromptLabel = isAgentContinuePrompt(row.message.text)
+    ? "Agent auto-resuming"
+    : isResumePrompt(row.message.text)
+      ? "Resume"
+      : null;
+
+  if (syntheticPromptLabel !== null) {
+    return (
+      <div className="flex flex-col items-end gap-1.5">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-accent/70 px-2.5 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-accent"
+          aria-expanded={syntheticPromptExpanded}
+          onClick={() => setSyntheticPromptExpanded((expanded) => !expanded)}
+        >
+          <span>{syntheticPromptLabel}</span>
+          <FastForwardIcon className="size-3.5" aria-hidden />
+        </button>
+        {syntheticPromptExpanded ? (
+          <div className="max-w-[80%] rounded-2xl bg-accent p-3">
+            <CollapsibleUserMessageBody
+              text={row.message.text}
+              terminalContexts={[]}
+              skills={ctx.skills}
+              markdownCwd={ctx.markdownCwd}
+            />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
@@ -1114,7 +1166,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
               <div
                 key={image.id}
-                className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+                className="aspect-video overflow-hidden rounded-lg border border-border/80 bg-background/70"
               >
                 {image.previewUrl ? (
                   <button
@@ -1130,11 +1182,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     <img
                       src={image.previewUrl}
                       alt={image.name}
-                      className="block h-auto max-h-[220px] w-full object-cover"
+                      className="block size-full object-cover"
+                      loading="lazy"
+                      decoding="async"
                     />
                   </button>
                 ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+                  <div className="flex size-full items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
                     {image.name}
                   </div>
                 )}
@@ -1290,27 +1344,42 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const stopSignoff = row.message.streaming
+    ? { hasStop: false, text: messageText }
+    : extractAgentStopSignoff(messageText);
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <ChatMarkdown
-          text={messageText}
-          cwd={ctx.markdownCwd}
-          threadRef={ctx.threadRef ?? undefined}
-          isStreaming={Boolean(row.message.streaming)}
-          assetRevision={row.message.id}
-          sourceMessageId={row.message.id}
-          skills={ctx.skills}
-          lowContextWarningAction={
-            row.message.streaming
-              ? undefined
-              : {
-                  onCompactAndContinue: ctx.onCompactAndContinue,
-                  busy: ctx.isCompactAndContinueBusy,
-                }
-          }
-        />
+        {stopSignoff.text.length > 0 || row.message.streaming ? (
+          <ChatMarkdown
+            text={stopSignoff.text}
+            cwd={ctx.markdownCwd}
+            threadRef={ctx.threadRef ?? undefined}
+            isStreaming={Boolean(row.message.streaming)}
+            assetRevision={row.message.id}
+            sourceMessageId={row.message.id}
+            skills={ctx.skills}
+            lowContextWarningAction={
+              row.message.streaming
+                ? undefined
+                : {
+                    onCompactAndContinue: ctx.onCompactAndContinue,
+                    busy: ctx.isCompactAndContinueBusy,
+                  }
+            }
+          />
+        ) : null}
+        {stopSignoff.hasStop ? (
+          <div
+            className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-red-500/35 bg-red-500/10 px-2.5 py-1 font-medium text-red-600 text-xs dark:text-red-400"
+            data-agent-stop-badge="true"
+            role="status"
+          >
+            <CircleStopIcon aria-hidden="true" className="size-3.5" />
+            <span>Agent stop</span>
+          </div>
+        ) : null}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
@@ -1682,6 +1751,8 @@ function UserMessagePreviewAnnotationCard(props: {
             src={props.image.previewUrl}
             alt="Annotated preview crop"
             className="size-full object-cover"
+            loading="lazy"
+            decoding="async"
           />
         </button>
       ) : null}
@@ -2469,42 +2540,39 @@ function TokenOptimizerPage(props: {
 
   useEffect(() => setFailedUrl(null), [previewUrl]);
 
-  if (failed) {
-    return (
-      <div className="flex min-h-24 items-center justify-center rounded-md border border-border/45 px-3 text-center text-[11px] text-muted-foreground">
-        Optimized page preview unavailable.
-      </div>
-    );
-  }
-  if (!previewUrl) {
-    return (
-      <div className="flex min-h-24 items-center justify-center rounded-md border border-border/45 text-muted-foreground">
-        <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading optimized page" />
-      </div>
-    );
-  }
+  const canOpen = previewUrl !== null && !failed;
   return (
     <button
       type="button"
-      className="overflow-hidden rounded-md border border-border/45 bg-black/10 text-left"
+      className="overflow-hidden rounded-md border border-border/45 bg-black/10 text-left disabled:cursor-default"
       aria-label={`Open optimized page: ${props.attachment.name}`}
       onClick={(event) => {
         event.stopPropagation();
+        if (!canOpen || previewUrl === null) return;
         ctx.onImageExpand({
           images: [{ src: previewUrl, name: props.attachment.name }],
           index: 0,
         });
       }}
       onPointerDown={stopRowToggle}
+      disabled={!canOpen}
     >
-      <img
-        src={previewUrl}
-        alt={props.attachment.name}
-        className="block max-h-72 w-full object-contain"
-        loading="lazy"
-        decoding="async"
-        onError={() => setFailedUrl(previewUrl)}
-      />
+      <span className="flex h-32 w-full items-center justify-center text-muted-foreground">
+        {canOpen && previewUrl !== null ? (
+          <img
+            src={previewUrl}
+            alt={props.attachment.name}
+            className="block size-full object-contain"
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailedUrl(previewUrl)}
+          />
+        ) : failed ? (
+          <span className="px-3 text-center text-[11px]">Optimized page preview unavailable.</span>
+        ) : (
+          <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading optimized page" />
+        )}
+      </span>
       <span className="block truncate border-t border-border/45 px-2 py-1 text-[10px] text-muted-foreground">
         {props.attachment.name}
       </span>
@@ -2690,7 +2758,7 @@ function ToolReadImagePreviewWithThread(props: {
       {!failed && asset._tag === "Success" && previewUrl !== null ? (
         <button
           type="button"
-          className="block w-full cursor-zoom-in bg-black/10"
+          className="block h-48 w-full cursor-zoom-in bg-black/10 sm:h-64"
           aria-label={`Open image preview: ${displayPath}`}
           onClick={(event) => {
             event.stopPropagation();
@@ -2704,19 +2772,19 @@ function ToolReadImagePreviewWithThread(props: {
           <img
             src={previewUrl}
             alt={displayPath}
-            className="block max-h-80 w-full object-contain"
+            className="block size-full object-contain"
             loading="lazy"
             decoding="async"
             onError={() => setFailedUrl(previewUrl)}
           />
         </button>
       ) : failed ? (
-        <div className="flex min-h-20 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground">
+        <div className="flex h-48 items-center justify-center px-4 py-3 text-center text-[11px] text-muted-foreground sm:h-64">
           Image preview unavailable. The file may be missing, too large, or not a valid supported
           image.
         </div>
       ) : (
-        <div className="flex min-h-20 items-center justify-center text-muted-foreground">
+        <div className="flex h-48 items-center justify-center text-muted-foreground sm:h-64">
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading image preview" />
         </div>
       )}

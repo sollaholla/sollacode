@@ -46,11 +46,24 @@ const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
 const GZIP_MIN_BYTES = 1024;
 export const MUTABLE_ASSET_CACHE_CONTROL = "private, no-store, max-age=0";
 export const REVISIONED_ASSET_CACHE_CONTROL = "private, max-age=300, immutable";
+export const STATIC_HTML_CACHE_CONTROL = "no-store, max-age=0";
+export const STATIC_BUNDLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+export const STATIC_FILE_CACHE_CONTROL = "no-cache";
 
 export function assetCacheControlForUrl(url: URL): string {
   return url.searchParams.get("solla_revision")?.trim()
     ? REVISIONED_ASSET_CACHE_CONTROL
     : MUTABLE_ASSET_CACHE_CONTROL;
+}
+
+function staticCacheControlForPath(relativePath: string): string {
+  if (relativePath === "index.html" || relativePath.endsWith("/index.html")) {
+    return STATIC_HTML_CACHE_CONTROL;
+  }
+  if (relativePath === "assets" || relativePath.startsWith("assets/")) {
+    return STATIC_BUNDLE_CACHE_CONTROL;
+  }
+  return STATIC_FILE_CACHE_CONTROL;
 }
 
 function acceptsGzip(value: string | undefined): boolean {
@@ -355,8 +368,8 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.text("Invalid static file path", { status: 400 });
     }
 
-    const ext = path.extname(filePath);
-    if (!ext) {
+    const requestedExtension = path.extname(filePath);
+    if (!requestedExtension) {
       filePath = path.resolve(filePath, "index.html");
       if (!isWithinStaticRoot(filePath)) {
         return HttpServerResponse.text("Invalid static file path", { status: 400 });
@@ -365,6 +378,18 @@ export const staticAndDevRouteLayer = HttpRouter.add(
 
     const fileInfo = yield* fileSystem.stat(filePath).pipe(Effect.orElseSucceed(() => null));
     if (!fileInfo || fileInfo.type !== "File") {
+      // A missing browser asset must remain a real 404. Falling through to the
+      // SPA shell returns text/html for a retired JavaScript URL, so Safari
+      // rejects the module and leaves the static boot logo on screen forever.
+      if (requestedExtension) {
+        return HttpServerResponse.text("Not Found", {
+          status: 404,
+          headers: {
+            "Cache-Control": STATIC_HTML_CACHE_CONTROL,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
       const indexPath = path.resolve(staticRoot, "index.html");
       const indexData = yield* fileSystem
         .readFile(indexPath)
@@ -375,6 +400,10 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: {
+          "Cache-Control": STATIC_HTML_CACHE_CONTROL,
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 
@@ -387,6 +416,10 @@ export const staticAndDevRouteLayer = HttpRouter.add(
     return HttpServerResponse.uint8Array(data, {
       status: 200,
       contentType,
+      headers: {
+        "Cache-Control": staticCacheControlForPath(staticRelativePath),
+        "X-Content-Type-Options": "nosniff",
+      },
     });
   }),
 );

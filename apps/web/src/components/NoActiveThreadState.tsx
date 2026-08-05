@@ -3,6 +3,21 @@ import { SidebarInset } from "./ui/sidebar";
 import { isElectron } from "../env";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
+import { Spinner } from "./ui/spinner";
+
+export function SideChatLoadingState() {
+  return (
+    <div
+      aria-live="polite"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-background px-6 text-center"
+      data-side-chat-loading-state
+      role="status"
+    >
+      <Spinner aria-hidden className="size-6 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">Loading side chat…</span>
+    </div>
+  );
+}
 
 export function NoActiveThreadState() {
   return (

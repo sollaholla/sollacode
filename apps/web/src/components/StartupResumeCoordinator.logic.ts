@@ -1,4 +1,33 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { CommandId, MessageId, type ThreadId, type TurnId } from "@t3tools/contracts";
+
+const DESKTOP_PROTOCOLS = new Set(["sollacode:", "sollacode-dev:"]);
+
+/**
+ * Every client looking at the same incomplete turn must submit the same IDs.
+ * The environment server serializes commands and keeps durable command
+ * receipts, so the first startup resume wins and every raced desktop/remote
+ * client receives that same receipt instead of creating another user message.
+ */
+export function startupAutoResumeIds(input: {
+  readonly threadId: ThreadId;
+  readonly incompleteTurnId: TurnId;
+}): { readonly commandId: CommandId; readonly messageId: MessageId } {
+  const attemptKey = `${input.threadId}:${input.incompleteTurnId}`;
+  return {
+    commandId: CommandId.make(`startup-auto-resume-command:${attemptKey}`),
+    messageId: MessageId.make(`startup-auto-resume-message:${attemptKey}`),
+  };
+}
+
+export function isStartupAutoResumeRequested(urlValue: string): boolean {
+  try {
+    const url = new URL(urlValue);
+    return DESKTOP_PROTOCOLS.has(url.protocol) && url.searchParams.get("solla_auto_resume") === "1";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Startup resume is intentionally conservative. Only turns explicitly
@@ -29,6 +58,23 @@ export function deriveStartupResumableThreads(
   return threads
     .filter(isStartupResumableThread)
     .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+/**
+ * The local pending marker bridges command acceptance to a visible provider
+ * session. A newly projected pending turn is normalized to `running` before
+ * the provider session reaches `starting`, so clearing on turn state alone
+ * creates the exact blank interval this marker is meant to cover.
+ */
+export function shouldClearStartupResumePending(
+  thread: Pick<EnvironmentThreadShell, "latestTurn" | "session">,
+): boolean {
+  const sessionStatus = thread.session?.status;
+  if (sessionStatus === "starting" || sessionStatus === "running" || sessionStatus === "error") {
+    return true;
+  }
+  const turnState = thread.latestTurn?.state;
+  return turnState !== "incomplete" && turnState !== "running";
 }
 
 /**
@@ -63,4 +109,34 @@ export function pruneStartupResumeSelection(
     if (available.has(key)) pruned.add(key);
   }
   return pruned;
+}
+
+/**
+ * How long "Auto-resuming thread…" may be claimed before it counts as stalled.
+ *
+ * Generous on purpose: a real resume has to spawn a CLI (~10s) and wait for it
+ * to accept the turn, and calling a slow-but-working resume dead would be a
+ * worse lie than the one this fixes.
+ */
+export const STARTUP_AUTO_RESUME_STALL_MS = 90_000;
+
+/**
+ * Has a pending startup resume stopped being plausible?
+ *
+ * The pending flag is set when the resume is dispatched and cleared when a
+ * turn appears. Nothing clears it if the dispatch is swallowed — the projector
+ * declines to enqueue work when any row for that key exists, including a
+ * terminal one — so the spinner ran forever on a thread with no CLI behind it.
+ * Observed 2026-08-05: "Auto-resuming thread…" held for minutes on a thread
+ * whose session was `stopped` and whose resume obligation was `cancelled`.
+ */
+export function isStartupAutoResumeStalled(input: {
+  readonly startedAt: string;
+  readonly nowMs: number;
+}): boolean {
+  const startedMs = Date.parse(input.startedAt);
+  // An unparseable stamp is not evidence of a stall; keep showing progress and
+  // let the turn itself clear the flag.
+  if (Number.isNaN(startedMs)) return false;
+  return input.nowMs - startedMs > STARTUP_AUTO_RESUME_STALL_MS;
 }

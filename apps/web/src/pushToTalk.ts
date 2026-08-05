@@ -36,6 +36,21 @@ export function isPushToTalkReleaseEvent(
     : event.code === "ControlLeft" || event.code === "ControlRight" || key === "control";
 }
 
+/**
+ * Exactly one mounted chat surface may own the global push-to-talk shortcut.
+ * The main chat yields whenever the event came from an embedded side chat;
+ * an embedded side chat only handles events originating inside itself.
+ */
+export function shouldHandlePushToTalkForSurface(input: {
+  readonly embeddedSideChat: boolean;
+  readonly targetWithinOwnSurface: boolean;
+  readonly targetWithinEmbeddedSideChat: boolean;
+}): boolean {
+  return input.embeddedSideChat
+    ? input.targetWithinOwnSurface
+    : !input.targetWithinEmbeddedSideChat;
+}
+
 export function downmixAudioChannels(channels: ReadonlyArray<Float32Array>): Float32Array {
   if (channels.length === 0) return new Float32Array();
   if (channels.length === 1) return channels[0]?.slice() ?? new Float32Array();

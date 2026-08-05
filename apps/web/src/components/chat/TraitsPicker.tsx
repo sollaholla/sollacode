@@ -16,7 +16,7 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ZapIcon } from "lucide-react";
+import { SlidersHorizontalIcon, ZapIcon } from "lucide-react";
 import { buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -39,10 +39,12 @@ type TraitsPersistence =
   | {
       threadRef?: ScopedThreadRef;
       draftId?: DraftId;
+      persistSticky?: boolean;
       onModelOptionsChange?: never;
     }
   | {
       threadRef?: undefined;
+      persistSticky?: boolean;
       onModelOptionsChange: (nextOptions: ProviderOptions | undefined) => void;
     };
 
@@ -219,6 +221,7 @@ export interface TraitsMenuContentProps {
   allowPromptInjectedEffort?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
+  iconOnly?: boolean;
 }
 
 export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
@@ -230,6 +233,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   onPromptChange,
   modelOptions,
   allowPromptInjectedEffort = true,
+  iconOnly: _iconOnly,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -246,7 +250,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
       setProviderModelOptions(threadTarget, provider, nextOptions, {
         ...(instanceId ? { instanceId } : {}),
         model,
-        persistSticky: true,
+        persistSticky: persistence.persistSticky !== false,
       });
     },
     [instanceId, model, persistence, provider, setProviderModelOptions],
@@ -431,6 +435,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   allowPromptInjectedEffort = true,
   triggerVariant,
   triggerClassName,
+  iconOnly = false,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -482,16 +487,27 @@ export const TraitsPicker = memo(function TraitsPicker({
         render={
           <ComposerControl
             variant={triggerVariant ?? "ghost"}
+            aria-label={iconOnly ? `Model options: ${triggerLabel}` : undefined}
+            title={iconOnly ? triggerLabel : undefined}
+            data-chat-composer-traits-picker="true"
+            data-chat-composer-control-display={iconOnly ? "icon" : "label"}
             className={cn(
-              isCodexStyle
-                ? "min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
-                : "shrink-0 whitespace-nowrap",
+              iconOnly
+                ? "size-7 shrink-0 justify-center px-0"
+                : isCodexStyle
+                  ? "min-w-0 max-w-40 shrink-0 justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
+                  : "shrink-0 whitespace-nowrap",
               triggerClassName,
             )}
           />
         }
       >
-        {isCodexStyle ? (
+        {iconOnly ? (
+          <>
+            {showFastModeIcon ? fastModeIcon : <ComposerControlIcon icon={SlidersHorizontalIcon} />}
+            <span className="sr-only">{triggerLabel}</span>
+          </>
+        ) : isCodexStyle ? (
           <span className="flex min-w-0 w-full items-center gap-1.5 overflow-hidden">
             {fastModeIcon}
             <span className="min-w-0 truncate">{triggerLabel}</span>

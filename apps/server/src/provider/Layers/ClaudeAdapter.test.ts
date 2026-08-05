@@ -14,6 +14,7 @@ import type {
 import {
   ApprovalRequestId,
   ClaudeSettings,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
@@ -23,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -34,10 +36,12 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { HEIC_FIXTURE_BASE64 } from "../../modelImageCompatibility.test-fixture.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
 import {
   isClaudeInterruptedResult,
   makeClaudeAdapter,
@@ -206,6 +210,8 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly forkSession?: ClaudeAdapterLiveOptions["forkSession"];
+  readonly createMcpProxy?: ClaudeAdapterLiveOptions["createMcpProxy"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -221,6 +227,8 @@ function makeHarness(config?: {
       createInput = input;
       return query;
     },
+    ...(config?.forkSession ? { forkSession: config.forkSession } : {}),
+    ...(config?.createMcpProxy ? { createMcpProxy: config.createMcpProxy } : {}),
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -400,6 +408,11 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_MAX_RETRIES, "0");
+      assert.match(
+        createInput?.options.env?.ANTHROPIC_BASE_URL ?? "",
+        /^http:\/\/127\.0\.0\.1:\d+$/u,
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -440,6 +453,79 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.permissionMode, undefined);
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("always exposes Solla's runtime-injected collaboration tools to Claude", () => {
+    const threadId = ThreadId.make("thread-claude-solla-mcp");
+    const providerInstanceId = ProviderInstanceId.make("claudeAgent");
+    const mcpServer = new McpServer({
+      name: "Solla Code test",
+      version: "0.0.0-test",
+    });
+    let mcpProxyInput:
+      | {
+          readonly endpoint: string;
+          readonly authorizationHeader: string;
+        }
+      | undefined;
+    const harness = makeHarness({
+      createMcpProxy: async (input) => {
+        mcpProxyInput = input;
+        return {
+          serverConfig: {
+            type: "sdk",
+            name: "Solla Code",
+            instance: mcpServer,
+          },
+          close: async () => undefined,
+        };
+      },
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.sync(() =>
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("environment-solla-mcp"),
+          threadId,
+          providerSessionId: "provider-session-solla-mcp",
+          providerInstanceId,
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer test-solla-mcp-token",
+        }),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.deepEqual(mcpProxyInput, {
+        endpoint: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer test-solla-mcp-token",
+      });
+      const mcpServerConfig = createInput?.options.mcpServers?.["t3-code"];
+      assert.equal(mcpServerConfig?.type, "sdk");
+      if (mcpServerConfig?.type === "sdk") {
+        assert.equal(mcpServerConfig.name, "Solla Code");
+        assert.strictEqual(mcpServerConfig.instance, mcpServer);
+      }
+      assert.deepEqual(createInput?.options.systemPrompt, {
+        type: "preset",
+        preset: "claude_code",
+        append: SOLLA_MCP_AGENT_CONTEXT,
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }),
+      ),
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
@@ -770,6 +856,64 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settings, {
         fastMode: true,
       });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("forwards an explicit disabled fast mode into SDK settings", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "fastMode", value: false }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.deepEqual(createInput?.options.settings, {
+        fastMode: false,
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("clears fast mode on the live SDK session before the next turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "fastMode", value: true }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "continue at normal speed",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-4-6",
+          [{ id: "fastMode", value: false }],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [{ fastMode: false }]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1993,6 +2137,81 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("suppresses stream failures caused by stopping all Claude sessions", () => {
+    const queries: Array<FakeClaudeQuery> = [];
+    const layer = Layer.effect(
+      ClaudeAdapter,
+      Effect.gen(function* () {
+        const claudeConfig = decodeClaudeSettings({});
+        return yield* makeClaudeAdapter(claudeConfig, {
+          createQuery: () => {
+            const query = new FakeClaudeQuery();
+            queries.push(query);
+            return query;
+          },
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const secondThreadId = ThreadId.make("thread-claude-shutdown-2");
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.startSession({
+        threadId: secondThreadId,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first", attachments: [] });
+      yield* adapter.sendTurn({ threadId: secondThreadId, input: "second", attachments: [] });
+
+      const firstQuery = queries[0];
+      const secondQuery = queries[1];
+      assert.isDefined(firstQuery);
+      assert.isDefined(secondQuery);
+      (firstQuery as { close: () => void }).close = () => {
+        firstQuery.closeCalls += 1;
+        secondQuery.fail(new Error("stream closed while the app is quitting"));
+        firstQuery.finish();
+      };
+
+      yield* adapter.stopAll();
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      assert.deepEqual(
+        runtimeEvents
+          .filter((event) => event.type === "turn.completed")
+          .map((event) => event.payload.state),
+        ["interrupted", "interrupted"],
+      );
+      assert.equal((yield* adapter.listSessions()).length, 0);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(layer),
+    );
+  });
+
   it.effect("forwards Claude task progress summaries for subagent updates", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2153,11 +2372,15 @@ describe("ClaudeAdapterLive", () => {
         "waiting:session_state:requires_action",
         "ready:session_state:idle",
       ]);
+      // The fixture's 502 is one of the statuses the CLI retries on its own, so
+      // the heartbeat carries the provider-retry reason rather than the generic
+      // one. That is what lets the UI say "retrying shortly" instead of sitting
+      // silent through a 502 storm and then surfacing an error message.
       const heartbeat = runtimeEvents.find(
         (event) =>
           event.type === "session.state.changed" &&
           typeof event.payload.reason === "string" &&
-          event.payload.reason.startsWith("api_retry:"),
+          event.payload.reason.startsWith("provider_overloaded:retrying"),
       );
       assert.equal(heartbeat?.type, "session.state.changed");
       runtimeEventsFiber.interruptUnsafe();
@@ -2219,6 +2442,68 @@ describe("ClaudeAdapterLive", () => {
           session_id: "session",
           uuid: "retry-overload",
         });
+      }
+      runtimeEventsFiber.interruptUnsafe();
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("classifies exhausted structured upstream retries for durable recovery", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "retry this turn",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "api_retry",
+        attempt: 10,
+        max_retries: 10,
+        retry_delay_ms: 15_000,
+        error_status: 502,
+        error: { type: "api_error" },
+        session_id: "session",
+        uuid: "retry-exhausted",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["pxpipe upstream unreachable"],
+        session_id: "session",
+        uuid: "retry-exhausted-result",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      const runtimeError = runtimeEvents.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.type, "runtime.error");
+      if (runtimeError?.type === "runtime.error") {
+        assert.equal(runtimeError.payload.failureKind, "retryable-upstream");
+      }
+      const completed = runtimeEvents.find(
+        (event) => event.type === "turn.completed" && event.payload.state === "failed",
+      );
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.failureKind, "retryable-upstream");
       }
       runtimeEventsFiber.interruptUnsafe();
     }).pipe(
@@ -3358,6 +3643,49 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.resume, durableSessionId);
       assert.equal(createInput?.options.forkSession, true);
       assert.equal(createInput?.options.sessionId, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("materializes a Claude fork immediately without starting an agent loop", () => {
+    const sourceSessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const forkedSessionId = "7368d0c7-40a3-4d8a-bcc1-ac80c49f2719";
+    const forkCalls: Array<readonly [string, { readonly dir?: string } | undefined]> = [];
+    const forkSession: NonNullable<ClaudeAdapterLiveOptions["forkSession"]> = async (
+      sessionId,
+      options,
+    ) => {
+      forkCalls.push([sessionId, options]);
+      return { sessionId: forkedSessionId };
+    };
+    const harness = makeHarness({ forkSession });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const targetThreadId = ThreadId.make("thread-claude-materialized-fork");
+      const session = yield* adapter.forkSession!({
+        sourceThreadId: ThreadId.make("thread-claude-source"),
+        targetThreadId,
+        sourceResumeCursor: {
+          threadId: "thread-claude-source",
+          resume: sourceSessionId,
+          turnCount: 4,
+        },
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/claude-fork-project",
+      });
+
+      assert.deepEqual(forkCalls, [[sourceSessionId, { dir: "/tmp/claude-fork-project" }]]);
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
+      assert.equal(session.threadId, targetThreadId);
+      assert.equal(session.status, "closed");
+      assert.deepEqual(session.resumeCursor, {
+        threadId: targetThreadId,
+        resume: forkedSessionId,
+        turnCount: 4,
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

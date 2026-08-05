@@ -113,12 +113,31 @@ export function requireThread(input: {
   );
 }
 
-export function requireThreadArchived(input: {
+export function requireThreadNotDeleted(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;
   readonly threadId: ThreadId;
 }): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
   return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      thread.deletedAt === null
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' is already deleted and cannot handle command '${input.command.type}'.`,
+            ),
+          ),
+    ),
+  );
+}
+
+export function requireThreadArchived(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThreadNotDeleted(input).pipe(
     Effect.flatMap((thread) =>
       thread.archivedAt !== null
         ? Effect.succeed(thread)
@@ -137,7 +156,7 @@ export function requireThreadNotArchived(input: {
   readonly command: OrchestrationCommand;
   readonly threadId: ThreadId;
 }): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
-  return requireThread(input).pipe(
+  return requireThreadNotDeleted(input).pipe(
     Effect.flatMap((thread) =>
       thread.archivedAt === null
         ? Effect.succeed(thread)

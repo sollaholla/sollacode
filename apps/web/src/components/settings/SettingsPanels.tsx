@@ -98,6 +98,7 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { ThreadListSettingsSection } from "./ThreadListSettings";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
@@ -945,6 +946,7 @@ export function AppearanceSettingsPanel() {
           }
         />
       </SettingsSection>
+      <ThreadListSettingsSection />
     </SettingsPageContainer>
   );
 }
@@ -1007,6 +1009,19 @@ export function GeneralSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection title="General">
+        <SettingsRow
+          title="Token Optimizer"
+          description="Fable 5 only. For new Claude sessions, when the measured ROI is positive, converts repeated bulk context such as tool documentation, large tool results, and older history into dense image pages. Your prompt, recent turns, and exact-value factsheet remain text. Off by default."
+          control={
+            <Switch
+              checked={settings.claudeTokenOptimizerEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ claudeTokenOptimizerEnabled: Boolean(checked) })
+              }
+              aria-label="Enable the Token Optimizer"
+            />
+          }
+        />
         <SettingsRow
           title="Project Grouping"
           description="Combine matching repositories across environments."

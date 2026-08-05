@@ -1,0 +1,273 @@
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProviderInstanceId,
+  ThreadId,
+  TrimmedNonEmptyString,
+  TurnId,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+
+import type { ProjectionRepositoryError } from "../Errors.ts";
+
+export const ThreadWorkKind = Schema.Literals([
+  "agent-continuation",
+  "startup-resume",
+  "authentication-resume",
+  "provider-retry",
+  "active-turn-recovery",
+]);
+export type ThreadWorkKind = typeof ThreadWorkKind.Type;
+
+export const ThreadWorkState = Schema.Literals([
+  "pending",
+  "claimed",
+  "executing",
+  "sleeping",
+  "blocked-authentication",
+  "waiting-approval",
+  "waiting-user-input",
+  "completed",
+  "cancelled",
+]);
+export type ThreadWorkState = typeof ThreadWorkState.Type;
+
+export const ActiveThreadWorkState = Schema.Literals([
+  "claimed",
+  "executing",
+  "sleeping",
+  "blocked-authentication",
+  "waiting-approval",
+  "waiting-user-input",
+]);
+export type ActiveThreadWorkState = typeof ActiveThreadWorkState.Type;
+
+export const ThreadWorkObligation = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  threadId: ThreadId,
+  sourceTurnId: TurnId,
+  kind: ThreadWorkKind,
+  state: ThreadWorkState,
+  providerInstanceId: ProviderInstanceId,
+  attempt: NonNegativeInt,
+  nextAttemptAt: Schema.NullOr(IsoDateTime),
+  claimedAt: Schema.NullOr(IsoDateTime),
+  leaseExpiresAt: Schema.NullOr(IsoDateTime),
+  blockedReason: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ThreadWorkObligation = typeof ThreadWorkObligation.Type;
+
+export const ThreadWorkObligationSummary = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  kind: ThreadWorkKind,
+  state: ThreadWorkState,
+  count: NonNegativeInt,
+  oldestCreatedAt: IsoDateTime,
+  oldestUpdatedAt: IsoDateTime,
+});
+export type ThreadWorkObligationSummary = typeof ThreadWorkObligationSummary.Type;
+
+export const ThreadWorkQueueSummary = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  kind: ThreadWorkKind,
+  count: NonNegativeInt,
+  oldestCreatedAt: IsoDateTime,
+});
+export type ThreadWorkQueueSummary = typeof ThreadWorkQueueSummary.Type;
+
+export const ThreadWorkObligationKey = Schema.Struct({
+  threadId: ThreadId,
+  sourceTurnId: TurnId,
+  kind: ThreadWorkKind,
+});
+export type ThreadWorkObligationKey = typeof ThreadWorkObligationKey.Type;
+
+export const ListSchedulableThreadWorkInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  now: IsoDateTime,
+  limit: NonNegativeInt,
+});
+export type ListSchedulableThreadWorkInput = typeof ListSchedulableThreadWorkInput.Type;
+
+export const ListSchedulableProviderIdsInput = Schema.Struct({
+  now: IsoDateTime,
+  afterProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  limit: NonNegativeInt,
+});
+export type ListSchedulableProviderIdsInput = typeof ListSchedulableProviderIdsInput.Type;
+
+export const ClaimThreadWorkInput = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  now: IsoDateTime,
+  leaseExpiresAt: IsoDateTime,
+});
+export type ClaimThreadWorkInput = typeof ClaimThreadWorkInput.Type;
+
+export const ListThreadWorkByStateInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  state: ThreadWorkState,
+  afterUpdatedAt: Schema.NullOr(IsoDateTime),
+  afterObligationId: Schema.NullOr(TrimmedNonEmptyString),
+  limit: NonNegativeInt,
+});
+export type ListThreadWorkByStateInput = typeof ListThreadWorkByStateInput.Type;
+
+export const TransitionThreadWorkInput = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  expectedState: ThreadWorkState,
+  expectedAttempt: NonNegativeInt,
+  state: ThreadWorkState,
+  nextAttemptAt: Schema.NullOr(IsoDateTime),
+  claimedAt: Schema.NullOr(IsoDateTime),
+  leaseExpiresAt: Schema.NullOr(IsoDateTime),
+  blockedReason: Schema.NullOr(Schema.String),
+  updatedAt: IsoDateTime,
+});
+export type TransitionThreadWorkInput = typeof TransitionThreadWorkInput.Type;
+
+export const ReplaceActiveThreadWorkInput = Schema.Struct({
+  currentObligationId: TrimmedNonEmptyString,
+  expectedCurrentState: ActiveThreadWorkState,
+  expectedCurrentAttempt: NonNegativeInt,
+  currentTerminalState: Schema.Literals(["completed", "cancelled"]),
+  replacement: ThreadWorkObligation,
+  updatedAt: IsoDateTime,
+});
+export type ReplaceActiveThreadWorkInput = typeof ReplaceActiveThreadWorkInput.Type;
+
+export const HeartbeatThreadWorkClaimInput = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  expectedAttempt: NonNegativeInt,
+  leaseExpiresAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type HeartbeatThreadWorkClaimInput = typeof HeartbeatThreadWorkClaimInput.Type;
+
+export const CancelThreadWorkByThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+  blockedReason: Schema.NullOr(Schema.String),
+  /**
+   * Which rows the sweep may cancel. The policy lives here so no call site can
+   * accidentally drop user work with a too-broad sweep.
+   *
+   * - `thread-terminal` (delete/settle/auth-replacement): cancel everything —
+   *   the thread is over or a replacement owner is inserted in the same
+   *   transaction.
+   * - `turn-interrupt` (stop button, session stop): cancel current work but
+   *   spare pending `active-turn-recovery` rows — queued deliveries of real
+   *   user messages the UI has marked "Sent"; they dispatch once the thread is
+   *   idle.
+   * - `user-supersede` (a newer user send): additionally spare `claimed` and
+   *   `executing` rows of every kind. Those are live supervisors whose
+   *   scheduler fiber holds the thread's runtime lease; cancelling the row
+   *   kills their durable heartbeat mid-run, which releases the lease and lets
+   *   a queued delivery dispatch into a busy provider session. Sleeping
+   *   retries are still superseded: their failure was already surfaced, and
+   *   the newer message replaces them.
+   */
+  mode: Schema.Literals(["thread-terminal", "turn-interrupt", "user-supersede"]),
+});
+export type CancelThreadWorkByThreadInput = typeof CancelThreadWorkByThreadInput.Type;
+
+export const PruneTerminalThreadWorkInput = Schema.Struct({
+  updatedBefore: IsoDateTime,
+  limit: NonNegativeInt,
+});
+export type PruneTerminalThreadWorkInput = typeof PruneTerminalThreadWorkInput.Type;
+
+export const RecoverOrphanedThreadWorkInput = Schema.Struct({
+  updatedAt: IsoDateTime,
+  limit: NonNegativeInt,
+});
+export type RecoverOrphanedThreadWorkInput = typeof RecoverOrphanedThreadWorkInput.Type;
+
+export interface ThreadWorkObligationRepositoryShape {
+  /** Insert once by deterministic id/key. Returns false for a duplicate. */
+  readonly insert: (
+    obligation: ThreadWorkObligation,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  readonly getById: (
+    obligationId: string,
+  ) => Effect.Effect<Option.Option<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  readonly getByKey: (
+    key: ThreadWorkObligationKey,
+  ) => Effect.Effect<Option.Option<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  /**
+   * Return one bounded provider-scoped scheduling page. Sleeping work is only
+   * included when due; expired claims are eligible for restart recovery.
+   */
+  readonly listSchedulable: (
+    input: ListSchedulableThreadWorkInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  readonly listSchedulableProviderIds: (
+    input: ListSchedulableProviderIdsInput,
+  ) => Effect.Effect<ReadonlyArray<ProviderInstanceId>, ProjectionRepositoryError>;
+
+  /** Keyset page used by authentication wakeups, recovery, and local metrics. */
+  readonly listByState: (
+    input: ListThreadWorkByStateInput,
+  ) => Effect.Effect<ReadonlyArray<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  /** Database-side aggregate for bounded local telemetry; never loads obligation rows. */
+  readonly summarize: () => Effect.Effect<
+    ReadonlyArray<ThreadWorkObligationSummary>,
+    ProjectionRepositoryError
+  >;
+
+  /** Database-side aggregate of currently due work, grouped by provider and kind. */
+  readonly summarizeSchedulable: (
+    now: IsoDateTime,
+  ) => Effect.Effect<ReadonlyArray<ThreadWorkQueueSummary>, ProjectionRepositoryError>;
+
+  /** Atomically acquire work while preserving the one-active-turn invariant. */
+  readonly claim: (
+    input: ClaimThreadWorkInput,
+  ) => Effect.Effect<Option.Option<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  /** Compare-and-set lifecycle transition. */
+  readonly transition: (
+    input: TransitionThreadWorkInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
+   * Atomically terminalize one active obligation and promote its deterministic
+   * replacement. Used when the kind changes (for example, auth pause) without
+   * opening a crash gap or violating the one-active-thread index.
+   */
+  readonly replaceActive: (
+    input: ReplaceActiveThreadWorkInput,
+  ) => Effect.Effect<Option.Option<ThreadWorkObligation>, ProjectionRepositoryError>;
+
+  readonly heartbeatClaim: (
+    input: HeartbeatThreadWorkClaimInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  readonly cancelByThread: (
+    input: CancelThreadWorkByThreadInput,
+  ) => Effect.Effect<number, ProjectionRepositoryError>;
+
+  /** Requeue a bounded page of claims left behind by a previous server process. */
+  readonly recoverOrphanedClaims: (
+    input: RecoverOrphanedThreadWorkInput,
+  ) => Effect.Effect<number, ProjectionRepositoryError>;
+
+  /** Delete a bounded page of terminal metadata after the seven-day window. */
+  readonly pruneTerminal: (
+    input: PruneTerminalThreadWorkInput,
+  ) => Effect.Effect<number, ProjectionRepositoryError>;
+}
+
+export class ThreadWorkObligationRepository extends Context.Service<
+  ThreadWorkObligationRepository,
+  ThreadWorkObligationRepositoryShape
+>()("t3/persistence/Services/ThreadWorkObligations/ThreadWorkObligationRepository") {}

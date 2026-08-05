@@ -9,6 +9,12 @@ export interface PersistedProviderUsageWindow {
   readonly label: string;
   readonly usedPercent: number | null;
   readonly resetAt: number | null;
+  /**
+   * Length of the quota window. Providers report only when a window *resets*, so
+   * this is what lets the UI recover when it started (`resetAt - duration`) and
+   * chart elapsed time against consumption. Null when the length is unknown.
+   */
+  readonly windowDurationMs?: number | null;
   readonly detail?: string;
 }
 
@@ -32,7 +38,13 @@ function mergeUsageWindow(
     previous?.usedPercent === null ||
     previous?.usedPercent === undefined ||
     next.usedPercent === null ||
-    next.usedPercent >= previous.usedPercent
+    next.usedPercent >= previous.usedPercent ||
+    // Older builds could invert Codex's remaining percentage and poison any
+    // persisted value near the top of the window (for example, 90% remaining
+    // became 98% used after subsequent refreshes). A fresh non-zero snapshot is
+    // authoritative. The provider's known unreliable value is a transient 0%,
+    // which stays guarded by the reset-cycle checks below.
+    next.usedPercent > 0
   ) {
     return next;
   }
@@ -47,9 +59,8 @@ function mergeUsageWindow(
     Number.isFinite(reportedAtMs) &&
     reportedAtMs >= previous.resetAt - CODEX_RESET_TIME_JITTER_MS;
 
-  // Codex usage is monotonically consumed inside one quota window. Ignore a
-  // transient lower snapshot (especially 0%) unless the old window has elapsed
-  // and the provider also advances the reset timestamp to a later cycle.
+  // Ignore a transient zero unless the old window has elapsed and the provider
+  // also advances the reset timestamp to a later cycle.
   return nextCycleIsLater && previousCycleElapsed ? next : previous;
 }
 
@@ -132,6 +143,11 @@ function isPersistedWindow(value: unknown): value is PersistedProviderUsageWindo
       (typeof candidate.resetAt === "number" &&
         Number.isFinite(candidate.resetAt) &&
         candidate.resetAt > 0)) &&
+    (candidate.windowDurationMs === undefined ||
+      candidate.windowDurationMs === null ||
+      (typeof candidate.windowDurationMs === "number" &&
+        Number.isFinite(candidate.windowDurationMs) &&
+        candidate.windowDurationMs > 0)) &&
     (candidate.detail === undefined || typeof candidate.detail === "string")
   );
 }

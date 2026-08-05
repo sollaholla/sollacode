@@ -55,6 +55,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import { withSideChatAgentContext } from "../sideChatContext.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 function forkResumeCursor(provider: ProviderDriverKind, value: unknown): unknown | undefined {
@@ -73,6 +74,14 @@ function forkResumeCursor(provider: ProviderDriverKind, value: unknown): unknown
     default:
       return undefined;
   }
+}
+
+function isPendingForkResumeCursor(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const cursor = value as Record<string, unknown>;
+  return cursor.fork === true || cursor.forkSession === true;
 }
 
 /**
@@ -669,6 +678,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
     const input = {
       ...parsed,
+      ...(parsed.isSideChat === true ? { input: withSideChatAgentContext(parsed.input) } : {}),
       attachments: parsed.attachments ?? [],
     };
     if (!input.input && input.attachments.length === 0) {
@@ -1035,32 +1045,102 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const forkSessionBinding: NonNullable<ProviderServiceMethod<"forkSessionBinding">> = Effect.fn(
     "ProviderService.forkSessionBinding",
   )(function* (input) {
+    const existingTargetBinding = Option.getOrUndefined(
+      yield* directory.getBinding(input.targetThreadId),
+    );
+    if (
+      existingTargetBinding?.resumeCursor !== null &&
+      existingTargetBinding?.resumeCursor !== undefined &&
+      !isPendingForkResumeCursor(existingTargetBinding.resumeCursor)
+    ) {
+      const existingInstanceId = yield* requireBindingInstanceId(
+        "ProviderService.forkSessionBinding",
+        existingTargetBinding,
+      );
+      const existingAdapter = yield* registry.getByInstance(existingInstanceId);
+      const existingSession = (yield* existingAdapter.listSessions()).find(
+        (session) => session.threadId === input.targetThreadId,
+      );
+      if (existingSession) {
+        return {
+          ...existingSession,
+          providerInstanceId: existingInstanceId,
+        };
+      }
+      const timestamp = yield* nowIso;
+      const persistedModelSelection = readPersistedModelSelection(
+        existingTargetBinding.runtimePayload,
+      );
+      const persistedCwd = readPersistedCwd(existingTargetBinding.runtimePayload);
+      return {
+        threadId: input.targetThreadId,
+        provider: existingTargetBinding.provider,
+        providerInstanceId: existingInstanceId,
+        status: existingTargetBinding.status === "error" ? "error" : "closed",
+        runtimeMode: existingTargetBinding.runtimeMode ?? input.runtimeMode,
+        ...(persistedCwd ? { cwd: persistedCwd } : {}),
+        ...(persistedModelSelection?.model ? { model: persistedModelSelection.model } : {}),
+        resumeCursor: existingTargetBinding.resumeCursor,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      } satisfies ProviderSession;
+    }
+
     const sourceBinding = yield* directory.getBinding(input.sourceThreadId);
     if (Option.isNone(sourceBinding)) {
-      return false;
+      return null;
     }
     const resumeCursor = forkResumeCursor(
       sourceBinding.value.provider,
       sourceBinding.value.resumeCursor,
     );
     if (resumeCursor === undefined) {
-      return false;
+      return null;
     }
-    yield* directory.upsert({
+    const providerInstanceId = yield* requireBindingInstanceId(
+      "ProviderService.forkSessionBinding",
+      sourceBinding.value,
+    );
+    const adapter = yield* registry.getByInstance(providerInstanceId);
+    const cwd = readPersistedCwd(sourceBinding.value.runtimePayload);
+    const modelSelection = readPersistedModelSelection(sourceBinding.value.runtimePayload);
+    if (adapter.forkSession) {
+      const session = yield* adapter.forkSession({
+        sourceThreadId: input.sourceThreadId,
+        targetThreadId: input.targetThreadId,
+        sourceResumeCursor: sourceBinding.value.resumeCursor,
+        providerInstanceId,
+        runtimeMode: input.runtimeMode,
+        ...(cwd ? { cwd } : {}),
+        ...(modelSelection ? { modelSelection } : {}),
+      });
+      if (session.provider !== adapter.provider) {
+        return yield* toValidationError(
+          "ProviderService.forkSessionBinding",
+          `Adapter/provider mismatch while forking thread '${input.sourceThreadId}'. Expected '${adapter.provider}', received '${session.provider}'.`,
+        );
+      }
+      const sessionWithInstance = {
+        ...session,
+        providerInstanceId,
+      };
+      yield* upsertSessionBinding(sessionWithInstance, input.targetThreadId, {
+        ...(modelSelection ? { modelSelection } : {}),
+        lastRuntimeEvent: "provider.forkSession",
+        lastRuntimeEventAt: yield* nowIso,
+      });
+      return sessionWithInstance;
+    }
+
+    return yield* startSession(input.targetThreadId, {
       threadId: input.targetThreadId,
       provider: sourceBinding.value.provider,
-      ...(sourceBinding.value.providerInstanceId !== undefined
-        ? { providerInstanceId: sourceBinding.value.providerInstanceId }
-        : {}),
-      ...(sourceBinding.value.adapterKey !== undefined
-        ? { adapterKey: sourceBinding.value.adapterKey }
-        : {}),
-      status: "stopped",
+      providerInstanceId,
+      ...(cwd ? { cwd } : {}),
+      ...(modelSelection ? { modelSelection } : {}),
       resumeCursor,
-      runtimePayload: sourceBinding.value.runtimePayload ?? null,
       runtimeMode: input.runtimeMode,
     });
-    return true;
   });
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
@@ -1076,6 +1156,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ),
       ),
     ).pipe(Effect.map((sessionsByAdapter) => sessionsByAdapter.flatMap((sessions) => sessions)));
+    // Stop provider runtimes before persistence and telemetry work. During an
+    // intentional server shutdown their pipes can close while those slower
+    // steps are running; without this ordering the adapters misclassify that
+    // teardown as a provider stream failure and paint a false red error before
+    // startup auto-resume takes over.
+    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll(), {
+      concurrency: "unbounded",
+      discard: true,
+    });
     yield* Effect.forEach(activeSessions, (session) =>
       Effect.flatMap(nowIso, (lastRuntimeEventAt) =>
         upsertSessionBinding(session, session.threadId, {
@@ -1084,7 +1173,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }),
       ),
     ).pipe(Effect.asVoid);
-    yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(Effect.asVoid);
     yield* McpSessionRegistry.revokeAllActiveMcpCredentials();
     McpProviderSession.clearAllMcpProviderSessions();
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));

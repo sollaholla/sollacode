@@ -75,6 +75,40 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+@keyframes provider-usage-elapsed-dots {
+  from {
+    background-position: 0 center;
+  }
+  to {
+    background-position: 6px center;
+  }
+}
+
+/* A marching dotted line distinguishes elapsed wall-clock time from the solid
+   quota-consumption fill without obscuring either side of their crossover.
+   The light core plus dark halo keeps every dot legible over yellow/red fills,
+   the neutral track, and both color schemes. */
+.provider-usage-elapsed-dots {
+  background-image: radial-gradient(
+    circle at center,
+    rgb(255 255 255 / 96%) 0 0.8px,
+    rgb(0 0 0 / 78%) 0.95px 1.55px,
+    transparent 1.7px
+  );
+  background-repeat: repeat-x;
+  background-position: 0 center;
+  background-size: 6px 100%;
+  animation: provider-usage-elapsed-dots 900ms linear infinite;
+  will-change: background-position;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-usage-elapsed-dots {
+    animation: none;
+    will-change: auto;
+  }
+}
+
 :root {
   --app-scrollbar-width: 6px;
   --app-scrollbar-thumb: rgb(217 217 217);

@@ -84,12 +84,12 @@ import {
 } from "./project.ts";
 import {
   TerminalAttachInput,
-  TerminalAttachStreamEvent,
+  TerminalAttachStreamItem,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
-  TerminalEvent,
-  TerminalMetadataStreamEvent,
+  TerminalEventStreamItem,
+  TerminalMetadataStreamItem,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -630,7 +630,7 @@ export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
 
 export const WsTerminalAttachRpc = Rpc.make(WS_METHODS.terminalAttach, {
   payload: TerminalAttachInput,
-  success: TerminalAttachStreamEvent,
+  success: TerminalAttachStreamItem,
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
   stream: true,
 });
@@ -851,14 +851,14 @@ export const WsOrchestrationSubscribeThreadRpc = Rpc.make(
 
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
-  success: TerminalEvent,
+  success: TerminalEventStreamItem,
   error: EnvironmentAuthorizationError,
   stream: true,
 });
 
 export const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTerminalMetadata, {
   payload: Schema.Struct({}),
-  success: TerminalMetadataStreamEvent,
+  success: TerminalMetadataStreamItem,
   error: EnvironmentAuthorizationError,
   stream: true,
 });
