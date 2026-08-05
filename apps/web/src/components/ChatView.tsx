@@ -42,6 +42,7 @@ import {
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { isProviderAuthenticationFailure } from "@t3tools/shared/agentMode";
+import { buildSettingsUpdatePrompt } from "@t3tools/shared/settingsPrompt";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
@@ -3113,7 +3114,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
-  const agentAutoResumePending = useMemo(
+  const agentAutoResumePredicted = useMemo(
     () =>
       !activeProviderAuthenticationPaused &&
       shouldShowAgentAutoResumePending({
@@ -3149,11 +3150,11 @@ function ChatViewContent(props: ChatViewProps) {
   // the Resume control the user can actually act on.
   const [autoResumeNowMs, setAutoResumeNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (startupAutoResumeStartedAt === null) return;
+    if (startupAutoResumeStartedAt === null && !agentAutoResumePredicted) return;
     setAutoResumeNowMs(Date.now());
     const timer = setInterval(() => setAutoResumeNowMs(Date.now()), 5_000);
     return () => clearInterval(timer);
-  }, [startupAutoResumeStartedAt]);
+  }, [startupAutoResumeStartedAt, agentAutoResumePredicted]);
   const startupAutoResumePending =
     startupAutoResumeStartedAt !== null &&
     !isStartupAutoResumeStalled({
@@ -3162,6 +3163,21 @@ function ChatViewContent(props: ChatViewProps) {
     });
   const visibleStartupAutoResumePending =
     startupAutoResumePending && !activeProviderAuthenticationPaused;
+  // The agent chip is the same client-side prediction of a server decision as
+  // the startup spinner, with the same failure mode: when the server declines
+  // to queue a continuation (or cancels it), nothing on the client ever
+  // learns, and the chip asserted progress forever. Bound it with the same
+  // deadline; the turn's settle time is the moment the prediction was made.
+  const agentAutoResumeStartedAt = agentAutoResumePredicted
+    ? (activeLatestTurn?.completedAt ?? null)
+    : null;
+  const agentAutoResumePending =
+    agentAutoResumePredicted &&
+    (agentAutoResumeStartedAt === null ||
+      !isStartupAutoResumeStalled({
+        startedAt: agentAutoResumeStartedAt,
+        nowMs: autoResumeNowMs,
+      }));
   const timelineIsWorking = isWorking || agentAutoResumePending || visibleStartupAutoResumePending;
   const timelineWorkStartedAt = visibleStartupAutoResumePending
     ? startupAutoResumeStartedAt
@@ -6034,10 +6050,9 @@ function ChatViewContent(props: ChatViewProps) {
     (description: string) => {
       if (isApplyingComposerSettings) return;
       setIsApplyingComposerSettings(true);
-      void sendAutomatedConversationTurn(
-        `Settings updated: ${description}. Apply these settings immediately and continue the current task without waiting for another message.`,
-        { preserveExactText: true },
-      )
+      void sendAutomatedConversationTurn(buildSettingsUpdatePrompt(description), {
+        preserveExactText: true,
+      })
         .catch((error: unknown) => {
           const message =
             error instanceof Error ? error.message : "Failed to apply conversation settings.";

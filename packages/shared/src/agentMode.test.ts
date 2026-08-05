@@ -2,8 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   containsAgentStopToken,
+  emittedAgentStop,
   extractAgentStopSignoff,
   isProviderAuthenticationFailure,
+  shouldAgentContinueAfterReply,
 } from "./agentMode.ts";
 
 describe("extractAgentStopSignoff", () => {
@@ -85,5 +87,44 @@ describe("isProviderAuthenticationFailure", () => {
     expect(isProviderAuthenticationFailure("The tmux session has expired after the reboot.")).toBe(
       false,
     );
+  });
+});
+
+describe("emittedAgentStop (continuation stop-gate)", () => {
+  it("honors a terminal token exactly like the strict parser", () => {
+    expect(emittedAgentStop("All done.\n\nAGENT_STOP")).toBe(true);
+    expect(emittedAgentStop('Finished. "AGENT_STOP"')).toBe(true);
+  });
+
+  it("honors a token followed by a short closing sentence or footer", () => {
+    expect(emittedAgentStop("Everything is verified. AGENT_STOP\n\n(nothing left to verify)")).toBe(
+      true,
+    );
+    expect(emittedAgentStop("Done. AGENT_STOP\n\n---\nSee the summary above.")).toBe(true);
+  });
+
+  it("does not stop on a mid-essay mention far from the end", () => {
+    const filler =
+      "The plan continues with several verification passes over each module in the repository. ".repeat(
+        10,
+      );
+    expect(emittedAgentStop(`I will only emit AGENT_STOP once finished. ${filler}`)).toBe(false);
+  });
+
+  it("never matches the token inside a larger identifier", () => {
+    expect(emittedAgentStop("Set MY_AGENT_STOPWATCH=1 before running.")).toBe(false);
+  });
+});
+
+describe("shouldAgentContinueAfterReply", () => {
+  it("stops when the token is wrapped or trailed by a short postscript", () => {
+    expect(shouldAgentContinueAfterReply("Complete. `AGENT_STOP`")).toBe(false);
+    expect(shouldAgentContinueAfterReply("Complete. AGENT_STOP\n\nAll checks passed.")).toBe(false);
+  });
+
+  it("continues on an ordinary progress reply", () => {
+    expect(
+      shouldAgentContinueAfterReply("Implemented the parser; moving on to the integration tests."),
+    ).toBe(true);
   });
 });

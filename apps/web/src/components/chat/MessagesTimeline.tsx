@@ -34,6 +34,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import { isAgentContinuePrompt } from "../../agentMode";
 import { extractAgentStopSignoff } from "@t3tools/shared/agentMode";
 import { isResumePrompt } from "../../resumePrompt";
+import { parseSettingsUpdatePrompt } from "@t3tools/shared/settingsPrompt";
 import {
   deriveTimelineEntries,
   workEntryIndicatesToolFailure,
@@ -64,6 +65,7 @@ import {
   PaintbrushIcon,
   CircleStopIcon,
   MinusIcon,
+  SlidersHorizontalIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -1125,6 +1127,24 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
     threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
   });
+
+  const settingsUpdate = parseSettingsUpdatePrompt(row.message.text);
+  if (settingsUpdate !== null) {
+    return (
+      <div
+        className="flex items-center gap-3 py-1"
+        role="separator"
+        aria-label={`Settings updated: ${settingsUpdate.description}`}
+      >
+        <div className="h-px flex-1 bg-border/70" />
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+          <SlidersHorizontalIcon className="size-3" aria-hidden />
+          {settingsUpdate.description}
+        </span>
+        <div className="h-px flex-1 bg-border/70" />
+      </div>
+    );
+  }
 
   const syntheticPromptLabel = isAgentContinuePrompt(row.message.text)
     ? "Agent auto-resuming"

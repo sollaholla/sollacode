@@ -783,7 +783,13 @@ const makeWsRpcLayer = (
       // traffic so it can't serialize the shell stream behind per-event DB reads.
       const SHELL_COALESCE_WINDOW = Duration.millis(50);
       const SHELL_COALESCE_MAX_CHUNK = 512;
-      const PROJECTION_LIVE_BUFFER_CAPACITY = 256;
+      // A busy streaming turn emits one item per assistant delta plus one per
+      // tool activity, and the buffer must also absorb everything published
+      // while a multi-MB snapshot is loading or crossing a slow link. At 256
+      // a single live turn overflowed the buffer, forcing a resync — whose
+      // snapshot load overflowed again, looping "Catching up" forever on
+      // remote clients and dropping live deltas until a remount.
+      const PROJECTION_LIVE_BUFFER_CAPACITY = 4096;
       const coalesceShellStream = <E, R>(
         stream: Stream.Stream<OrchestrationEvent, E, R>,
       ): Stream.Stream<OrchestrationShellStreamEvent, E, R> =>
