@@ -1,6 +1,7 @@
 import type { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 
 import type {
@@ -74,6 +75,15 @@ export interface ThreadWorkSchedulerShape {
     readonly activeTurnId?: TurnId | null;
     readonly phase: ThreadRuntimePhase;
   }) => Effect.Effect<boolean>;
+
+  /**
+   * Epoch millis of the last runtime observation for the thread, if the
+   * scheduler currently owns work for it. Long tool calls surface only as
+   * 30-second provider heartbeats that never change the projected shell;
+   * this is the liveness signal that keeps the silence watchdog from
+   * killing a session that is quietly mid-tool.
+   */
+  readonly runtimeLivenessAt: (threadId: ThreadId) => Effect.Effect<Option.Option<number>>;
 
   readonly snapshot: Effect.Effect<ThreadWorkSchedulerSnapshot>;
 }

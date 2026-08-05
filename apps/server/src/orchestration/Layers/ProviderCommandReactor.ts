@@ -2059,15 +2059,31 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // no error anywhere. Every terminal status already returns earlier, so
           // anything still here is non-terminal and a frozen fingerprint means a
           // dead feed regardless of which non-terminal status it froze in.
-          yield* Effect.logWarning("thread-work.turn-wait.provider-silent", {
-            threadId: input.threadId,
-            turnId: input.turnId,
-            silentForMs: nowMs - lastShellChangeAtMs,
-          });
-          yield* providerService.stopSession({ threadId: input.threadId }).pipe(Effect.ignore);
-          return yield* retryWorkAfter15Seconds(
-            "provider went silent mid-turn; restarting the session",
-          );
+          //
+          // A frozen SHELL is not a dead FEED, though: a long-running tool call
+          // emits only 30-second provider heartbeats, none of which touch the
+          // projected shell. Killing the session on shell silence alone
+          // executed an 11-minute APK build mid-flight ("Session stopped",
+          // command failed, turn interrupted). Consult the in-memory runtime
+          // liveness the scheduler keeps from ingestion's observations, and
+          // only declare death when the provider itself has also gone quiet.
+          const livenessAt = yield* threadWorkScheduler
+            .runtimeLivenessAt(input.threadId)
+            .pipe(Effect.map(Option.getOrUndefined));
+          if (livenessAt !== undefined && nowMs - livenessAt <= PROVIDER_SILENCE_RESTART_MS) {
+            lastShellChangeAtMs = livenessAt;
+          } else {
+            yield* Effect.logWarning("thread-work.turn-wait.provider-silent", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              silentForMs: nowMs - lastShellChangeAtMs,
+              lastRuntimeEventAgoMs: livenessAt === undefined ? null : nowMs - livenessAt,
+            });
+            yield* providerService.stopSession({ threadId: input.threadId }).pipe(Effect.ignore);
+            return yield* retryWorkAfter15Seconds(
+              "provider went silent mid-turn; restarting the session",
+            );
+          }
         }
 
         yield* Effect.sleep(Duration.millis(100));
