@@ -131,9 +131,22 @@ describe("server-owned Agent continuation", () => {
     expect(
       shouldAutoContinueAgentThread(shell({ hasPendingUserInput: true }), assistantEvent()),
     ).toBe(false);
+  });
+
+  it("continues over a stopped session but never over a provider error", () => {
+    // "stopped" only means the CLI exited between turns (idle exit, watchdog
+    // restart, a deploy); dispatching the continuation spawns a fresh session
+    // exactly like a startup resume, so it must not orphan the loop.
     expect(
       shouldAutoContinueAgentThread(
         shell({ session: { ...shell().session!, status: "stopped" } }),
+        assistantEvent(),
+      ),
+    ).toBe(true);
+    // "error" stays terminal: continuing would hammer a failing provider.
+    expect(
+      shouldAutoContinueAgentThread(
+        shell({ session: { ...shell().session!, status: "error" } }),
         assistantEvent(),
       ),
     ).toBe(false);
