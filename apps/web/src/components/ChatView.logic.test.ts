@@ -17,6 +17,7 @@ import {
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
   buildThreadTurnInterruptInput,
+  canQueueLocalMessageDuringReconnect,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveLockedProvider,
@@ -27,14 +28,66 @@ import {
   isProviderOverloadRetrying,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  retainClosingSideChatThreadIds,
   resolveVisibleServerThreadError,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
   shouldShowBranchMismatchBanner,
   shouldConfirmRemoteProviderAccountSwitch,
+  shouldPersistComposerModelDefaults,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
+
+describe("canQueueLocalMessageDuringReconnect", () => {
+  it("queues only a loaded local thread during a transient reconnect", () => {
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "PrimaryConnectionTarget",
+        phase: "connecting",
+        threadDetailLoaded: true,
+      }),
+    ).toBe(true);
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "PrimaryConnectionTarget",
+        phase: "reconnecting",
+        threadDetailLoaded: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not queue remote, unloaded, blocked, or offline sends", () => {
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "BearerConnectionTarget",
+        phase: "reconnecting",
+        threadDetailLoaded: true,
+      }),
+    ).toBe(false);
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "PrimaryConnectionTarget",
+        phase: "reconnecting",
+        threadDetailLoaded: false,
+      }),
+    ).toBe(false);
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "PrimaryConnectionTarget",
+        phase: "offline",
+        threadDetailLoaded: true,
+      }),
+    ).toBe(false);
+    expect(
+      canQueueLocalMessageDuringReconnect({
+        targetKind: "PrimaryConnectionTarget",
+        phase: "error",
+        threadDetailLoaded: true,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("resolveVisibleServerThreadError", () => {
   it("hides only the exact persisted error the user dismissed", () => {
@@ -101,7 +154,7 @@ describe("isProviderOverloadRetrying", () => {
     createdAt: "2026-07-29T15:00:02.000Z",
     tone: "info" as const,
     kind: "provider.overload.retrying",
-    summary: "Provider overloaded — retrying shortly",
+    summary: "Provider unavailable — retrying shortly",
     payload: { reason: "provider_overloaded:retrying;attempt=1" },
     turnId: latestTurn.turnId,
   };
@@ -633,6 +686,42 @@ describe("reconcileRetainedMountedThreadIds", () => {
         maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
       }),
     ).toEqual(currentThreadIds.slice(-MAX_HIDDEN_MOUNTED_PREVIEW_THREADS));
+  });
+});
+
+describe("retainClosingSideChatThreadIds", () => {
+  it("suppresses a closed child until its authoritative shell disappears", () => {
+    const closing = new Set(["side-a", "side-b"]);
+
+    expect(retainClosingSideChatThreadIds(closing, new Set(["side-a", "side-b"]))).toBe(closing);
+    expect([...retainClosingSideChatThreadIds(closing, new Set(["side-b"]))]).toEqual(["side-b"]);
+    expect([...retainClosingSideChatThreadIds(closing, new Set())]).toEqual([]);
+  });
+});
+
+describe("shouldPersistComposerModelDefaults", () => {
+  it("keeps side-chat model and trait changes out of global composer defaults", () => {
+    expect(
+      shouldPersistComposerModelDefaults({
+        embeddedSideChat: true,
+        threadIsSideChat: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPersistComposerModelDefaults({
+        embeddedSideChat: false,
+        threadIsSideChat: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("continues persisting explicit model choices from a normal main chat", () => {
+    expect(
+      shouldPersistComposerModelDefaults({
+        embeddedSideChat: false,
+        threadIsSideChat: false,
+      }),
+    ).toBe(true);
   });
 });
 

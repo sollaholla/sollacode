@@ -4,6 +4,7 @@ import {
   assembleTranscriptionText,
   LONG_FORM_TRANSCRIPTION_OPTIONS,
   mergeVoiceTranscriptPrompt,
+  resolveVoiceTranscriptInputUpdate,
   shouldTranscribeStoppedRecording,
 } from "./pushToTalkTranscription";
 
@@ -32,6 +33,32 @@ describe("long-form push-to-talk transcription", () => {
     expect(mergeVoiceTranscriptPrompt("Existing draft", "and dictation.")).toBe(
       "Existing draft and dictation.",
     );
+  });
+
+  it("routes dictation into the visible pending plan answer instead of the background draft", () => {
+    expect(
+      resolveVoiceTranscriptInputUpdate({
+        currentPrompt: "Existing answer",
+        transcript: " plus the dictated detail ",
+        pendingQuestionId: "scope",
+      }),
+    ).toEqual({
+      prompt: "Existing answer plus the dictated detail",
+      target: { kind: "pending-user-input", questionId: "scope" },
+    });
+  });
+
+  it("routes ordinary dictation into the composer draft", () => {
+    expect(
+      resolveVoiceTranscriptInputUpdate({
+        currentPrompt: "",
+        transcript: "Normal chat message",
+        pendingQuestionId: null,
+      }),
+    ).toEqual({
+      prompt: "Normal chat message",
+      target: { kind: "composer-draft" },
+    });
   });
 
   it("transcribes the captured blob when the two-minute limit stops recording", () => {

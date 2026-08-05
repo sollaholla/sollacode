@@ -79,6 +79,8 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         threadId: ThreadId.make("thread-null-options"),
         projectId: ProjectId.make("project-null-options"),
         title: "Null options thread",
+        isSideChat: true,
+        sideChatParentThreadId: ThreadId.make("parent-thread"),
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
           model: "claude-opus-4-6",
@@ -130,6 +132,11 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         model: "claude-opus-4-6",
       });
+      assert.strictEqual(Option.getOrNull(persisted)?.isSideChat, true);
+      assert.strictEqual(
+        Option.getOrNull(persisted)?.sideChatParentThreadId,
+        ThreadId.make("parent-thread"),
+      );
     }),
   );
 

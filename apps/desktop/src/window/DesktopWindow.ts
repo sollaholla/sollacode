@@ -165,6 +165,22 @@ export function isSameOriginRendererNavigation(input: {
   }
 }
 
+const AUTO_RESUME_ARGUMENT = "--auto-resume";
+const AUTO_RESUME_QUERY_PARAMETER = "solla_auto_resume";
+
+export function withStartupAutoResumeRequest(
+  applicationUrl: string,
+  argv: readonly string[] = process.argv,
+): string {
+  if (!argv.includes(AUTO_RESUME_ARGUMENT)) {
+    return applicationUrl;
+  }
+
+  const url = new URL(applicationUrl);
+  url.searchParams.set(AUTO_RESUME_QUERY_PARAMETER, "1");
+  return url.toString();
+}
+
 export function isRetryableDevelopmentRendererLoadFailure(input: {
   readonly applicationUrl: string;
   readonly errorCode: number;
@@ -291,7 +307,7 @@ export const make = Effect.gen(function* () {
     DesktopWindowError
   > {
     yield* previewManager.getBrowserSession();
-    const applicationUrl = getDesktopUrl(environment.isDevelopment);
+    const applicationUrl = withStartupAutoResumeRequest(getDesktopUrl(environment.isDevelopment));
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
@@ -331,7 +347,6 @@ export const make = Effect.gen(function* () {
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
       webPreferences: {
         preload: environment.preloadPath,
-        backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,

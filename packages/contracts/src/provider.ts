@@ -87,6 +87,9 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** Internal harness hint: prepend the invisible side-chat sub-agent guard
+      before sending this turn to the provider. */
+  isSideChat: Schema.optionalKey(Schema.Boolean),
   autoCompactionThresholdPercentage: Schema.optional(AutoCompactionThresholdPercentage),
   tokenOptimizerEnabled: Schema.optional(Schema.Boolean),
 });

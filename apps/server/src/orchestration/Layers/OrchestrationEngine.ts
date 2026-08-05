@@ -87,7 +87,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
-  const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
+  // Command dispatch is lossless, but callers apply backpressure once this
+  // bounded window is full instead of retaining an unlimited number of command
+  // payloads and Deferreds during a burst from multiple clients.
+  const commandQueue = yield* Queue.bounded<CommandEnvelope>(256);
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
 
   const projectEventsOntoReadModel = (
@@ -298,6 +301,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   };
 
   yield* projectionPipeline.bootstrap;
+  // Settle turns/sessions/streams the previous process died inside of, before
+  // the worker starts and before anything reads the projections. Without this a
+  // hard-killed turn stays "running" forever: the UI counts up indefinitely and
+  // the resume scan — which only considers settled turns — never sees it.
+  yield* projectionPipeline.reconcileOrphanedInFlightWork;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));

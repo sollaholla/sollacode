@@ -148,6 +148,26 @@ export function HostedBrowserWebview(props: {
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;
+
+  useEffect(() => {
+    const bridge = previewBridge;
+    const tabLease = tabLeaseRef.current;
+    if (!bridge || !tabLease) return;
+    let disposed = false;
+    void tabLease.ready
+      .then(async () => {
+        if (disposed) return;
+        await bridge.setUiActivity(runtimeTabId, "visible-surface", active);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      if (active) {
+        void bridge.setUiActivity(runtimeTabId, "visible-surface", false).catch(() => undefined);
+      }
+    };
+  }, [active, runtimeTabId]);
+
   const normalizedZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
   const viewportWidth = viewport._tag === "fill" ? null : viewport.width;
   const viewportHeight = viewport._tag === "fill" ? null : viewport.height;

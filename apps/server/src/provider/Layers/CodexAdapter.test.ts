@@ -7,6 +7,7 @@ import {
   ApprovalRequestId,
   CodexSettings,
   EventId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderItemId,
@@ -62,17 +63,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
   private readonly now = "2026-01-01T00:00:00.000Z";
 
-  public readonly startImpl = vi.fn(() =>
-    Promise.resolve({
-      provider: ProviderDriverKind.make("codex"),
-      status: "ready" as const,
-      runtimeMode: this.options.runtimeMode,
-      threadId: this.options.threadId,
-      cwd: this.options.cwd,
-      ...(this.options.model ? { model: this.options.model } : {}),
-      createdAt: this.now,
-      updatedAt: this.now,
-    } satisfies ProviderSession),
+  public readonly startImpl = vi.fn(
+    (): Promise<ProviderSession> =>
+      Promise.resolve({
+        provider: ProviderDriverKind.make("codex"),
+        status: "ready" as const,
+        runtimeMode: this.options.runtimeMode,
+        threadId: this.options.threadId,
+        cwd: this.options.cwd,
+        ...(this.options.model ? { model: this.options.model } : {}),
+        createdAt: this.now,
+        updatedAt: this.now,
+      } satisfies ProviderSession),
   );
 
   public readonly sendTurnImpl = vi.fn(
@@ -80,6 +82,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       Promise.resolve({
         threadId: this.options.threadId,
         turnId: asTurnId("turn-1"),
+      }),
+  );
+
+  public readonly steerTurnImpl = vi.fn(
+    (_input: {
+      readonly expectedTurnId: TurnId;
+      readonly input?: string;
+      readonly attachments?: ReadonlyArray<{ readonly type: "image"; readonly url: string }>;
+    }): Promise<ProviderTurnStartResult> =>
+      Promise.resolve({
+        threadId: this.options.threadId,
+        turnId: _input.expectedTurnId,
       }),
   );
 
@@ -129,6 +143,14 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
+  }
+
+  steerTurn(input: {
+    readonly expectedTurnId: TurnId;
+    readonly input?: string;
+    readonly attachments?: ReadonlyArray<{ readonly type: "image"; readonly url: string }>;
+  }) {
+    return Effect.promise(() => this.steerTurnImpl(input));
   }
 
   interruptTurn(turnId?: TurnId) {
@@ -273,6 +295,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
         modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
           { id: "serviceTier", value: "priority" },
         ]),
+        autoCompactionThresholdPercentage: 80,
         runtimeMode: "full-access",
       });
 
@@ -283,6 +306,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
         model: "gpt-5.3-codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
         serviceTier: "priority",
+        autoCompactionTokenLimit: 206_720,
         threadId: asThreadId("thread-1"),
         runtimeMode: "full-access",
       });
@@ -357,6 +381,87 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         effort: "high",
         serviceTier: "priority",
       });
+    }),
+  );
+
+  it.effect("emits a delivery receipt only after Codex accepts the message", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-delivery-receipt");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const receiptFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("message-codex-accepted"),
+        input: "hello",
+      });
+
+      const receipt = yield* Fiber.join(receiptFiber);
+      NodeAssert.equal(receipt._tag, "Some");
+      if (Option.isSome(receipt)) {
+        NodeAssert.equal(receipt.value.type, "message.delivered");
+        if (receipt.value.type === "message.delivered") {
+          NodeAssert.equal(receipt.value.payload.messageId, "message-codex-accepted");
+          NodeAssert.equal(receipt.value.turnId, "turn-1");
+        }
+      }
+    }),
+  );
+
+  it.effect("steers a running turn instead of starting a new one", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-steer-live-turn");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      // The provider reports a live turn: the next send must inject into it.
+      runtime.startImpl.mockResolvedValue({
+        provider: ProviderDriverKind.make("codex"),
+        status: "running",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: runtime.options.cwd,
+        activeTurnId: asTurnId("turn-live"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies ProviderSession);
+
+      const receiptFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const result = yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("message-steered"),
+        input: "mid-turn message",
+      });
+
+      NodeAssert.equal(result.turnId, "turn-live");
+      NodeAssert.equal(runtime.steerTurnImpl.mock.calls.length, 1);
+      NodeAssert.deepEqual(runtime.steerTurnImpl.mock.calls[0]?.[0], {
+        expectedTurnId: asTurnId("turn-live"),
+        input: "mid-turn message",
+      });
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+
+      // Steer acceptance emits the same delivery receipt as turn/start.
+      const receipt = yield* Fiber.join(receiptFiber);
+      NodeAssert.equal(receipt._tag, "Some");
+      if (Option.isSome(receipt)) {
+        NodeAssert.equal(receipt.value.type, "message.delivered");
+        if (receipt.value.type === "message.delivered") {
+          NodeAssert.equal(receipt.value.payload.messageId, "message-steered");
+          NodeAssert.equal(receipt.value.turnId, "turn-live");
+        }
+      }
     }),
   );
 
@@ -761,7 +866,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("maps retryable Codex HTTP 529 errors to provider-overload running state", () =>
+  it.effect("maps retryable Codex gateway errors to provider-overload running state", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
@@ -781,7 +886,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             message: "The provider is overloaded.",
             codexErrorInfo: {
               responseStreamConnectionFailed: {
-                httpStatusCode: 529,
+                httpStatusCode: 502,
               },
             },
           },
@@ -838,6 +943,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       NodeAssert.equal(firstEvent.value.type, "runtime.error");
       if (firstEvent.value.type === "runtime.error") {
         NodeAssert.match(firstEvent.value.payload.message, /Try this turn again shortly/);
+        NodeAssert.equal(firstEvent.value.payload.failureKind, "retryable-upstream");
       }
     }),
   );

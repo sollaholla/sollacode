@@ -115,6 +115,7 @@ it.effect("registers the history query as a read-only idempotent MCP tool", () =
       idempotentHint: true,
       openWorldHint: false,
     });
+    expect(tool?.tool._meta).toMatchObject({ "anthropic/alwaysLoad": true });
   }).pipe(Effect.provide(TestLayer)),
 );
 

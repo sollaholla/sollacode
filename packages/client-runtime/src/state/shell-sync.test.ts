@@ -240,7 +240,77 @@ describe("environment shell synchronization", () => {
     }),
   );
 
-  it.effect("refreshes the authoritative shell snapshot when the app becomes active", () =>
+  it.effect("resubscribes from an authoritative snapshot when the live tail overflows", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+      const subscriptions = yield* Queue.unbounded<{
+        readonly afterSequence?: number;
+        readonly requestCompletionMarker?: boolean;
+      }>();
+      const loaderCalls = yield* Ref.make(0);
+      const client = {
+        [ORCHESTRATION_WS_METHODS.subscribeShell]: (input: {
+          readonly afterSequence?: number;
+          readonly requestCompletionMarker?: boolean;
+        }) =>
+          Stream.unwrap(
+            Queue.offer(subscriptions, input).pipe(Effect.as(Stream.fromQueue(events))),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session(client))),
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeed(Option.some(LIVE_SHELL_SNAPSHOT)),
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeed(Option.none()),
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeed(Option.none()),
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeed(Option.none()),
+        saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
+        clearVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const snapshotLoader = ShellSnapshotLoader.of({
+        load: () =>
+          Ref.updateAndGet(loaderCalls, (count) => count + 1).pipe(
+            Effect.map((count) =>
+              Option.some({ ...LIVE_SHELL_SNAPSHOT, snapshotSequence: count * 10 }),
+            ),
+          ),
+      });
+      const shellState = yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader, snapshotLoader),
+      );
+
+      expect((yield* Queue.take(subscriptions)).afterSequence).toBe(10);
+      yield* Queue.offer(events, { kind: "synchronized" });
+      yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter((state) => state.status === "live"),
+        Stream.runHead,
+      );
+
+      yield* Queue.offer(events, { kind: "resync-required" });
+      expect((yield* Queue.take(subscriptions)).afterSequence).toBe(20);
+      expect(yield* Ref.get(loaderCalls)).toBe(2);
+      expect(
+        Option.getOrThrow((yield* SubscriptionRef.get(shellState)).snapshot).snapshotSequence,
+      ).toBe(20);
+    }),
+  );
+
+  it.effect("keeps the live shell subscription stable when the app becomes active", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
       const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
@@ -312,23 +382,15 @@ describe("environment shell synchronization", () => {
       );
 
       yield* Queue.offer(wakeups, "application-active");
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter(
-          (value) =>
-            value.status === "synchronizing" &&
-            Option.isSome(value.snapshot) &&
-            value.snapshot.value.snapshotSequence === 20,
-        ),
-        Stream.runHead,
-      );
-
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(subscriptionCount)) >= 2) break;
         yield* Effect.yieldNow;
       }
 
-      expect(yield* Ref.get(loaderCalls)).toBe(2);
-      expect(yield* Ref.get(subscriptionCount)).toBe(2);
+      const latest = yield* SubscriptionRef.get(shellState);
+      expect(latest.status).toBe("live");
+      expect(Option.getOrThrow(latest.snapshot).snapshotSequence).toBe(10);
+      expect(yield* Ref.get(loaderCalls)).toBe(1);
+      expect(yield* Ref.get(subscriptionCount)).toBe(1);
     }),
   );
 });

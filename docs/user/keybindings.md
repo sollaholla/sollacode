@@ -61,6 +61,12 @@ and Solla Code shows an error instead of sending an unverified transcript.
 Push to talk reserves the platform shortcut while its chat composer is active, ahead of
 single-press configurable commands that also use `mod+d`.
 
+The microphone action remains available beside plan-question **Next/Submit** controls and plan
+follow-up **Refine/Implement** controls. Dictation is inserted into whichever input is visibly
+active. In particular, a plan question receives the transcript as its custom answer rather than
+leaving the text in the conversation draft behind the question. When automatic voice sending is
+enabled, Solla Code waits for that answer update to render before advancing or submitting it.
+
 ## Configuration
 
 ### Rule Shape

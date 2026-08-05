@@ -62,7 +62,13 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       if (event.type === "connected") {
         return;
       }
-      const request = event.request;
+      if (Date.now() >= event.request.expiresAt) {
+        return;
+      }
+      const request = {
+        ...event.request,
+        timeoutMs: Math.max(1, event.request.expiresAt - Date.now()),
+      };
       void get
         .once(options.requestHandlerAtom)
         .handle(request)

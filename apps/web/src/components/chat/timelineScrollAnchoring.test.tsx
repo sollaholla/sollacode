@@ -10,6 +10,7 @@ import {
   shouldReleaseTimelineLiveFollowForWheel,
   shouldMaintainTimelineVisibleContentPosition,
   shouldResumeTimelineLiveFollow,
+  shouldSuppressTimelineAutoScroll,
 } from "./timelineScrollAnchoring";
 
 function buildState({
@@ -277,5 +278,47 @@ describe("timeline scroll anchoring", () => {
 
     expect(withoutComposer?.overflowsUsableViewport).toBe(false);
     expect(withComposer?.overflowsUsableViewport).toBe(true);
+  });
+});
+
+describe("shouldSuppressTimelineAutoScroll", () => {
+  const cooldownMs = 5_000;
+
+  it("does not suppress when the user has not scrolled", () => {
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: null, nowMs: 10_000, cooldownMs }),
+    ).toBe(false);
+  });
+
+  it("suppresses agent-driven scrolling inside the cooldown", () => {
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 10_000, nowMs: 10_001, cooldownMs }),
+    ).toBe(true);
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 10_000, nowMs: 14_999, cooldownMs }),
+    ).toBe(true);
+  });
+
+  it("resumes once the cooldown elapses", () => {
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 10_000, nowMs: 15_000, cooldownMs }),
+    ).toBe(false);
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 10_000, nowMs: 20_000, cooldownMs }),
+    ).toBe(false);
+  });
+
+  it("treats a cleared timestamp as an immediate bypass", () => {
+    // Sending, or jumping to the live edge, clears the stamp rather than
+    // waiting out the remainder of the window.
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: null, nowMs: 10_001, cooldownMs }),
+    ).toBe(false);
+  });
+
+  it("does not strand live-follow when the clock moves backwards", () => {
+    expect(
+      shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 60_000, nowMs: 10_000, cooldownMs }),
+    ).toBe(false);
   });
 });

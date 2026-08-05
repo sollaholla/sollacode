@@ -113,6 +113,8 @@ interface BrokerState {
   readonly focusSequence: number;
 }
 
+const PREVIEW_AUTOMATION_HOST_QUEUE_CAPACITY = 64;
+
 const removeConnectionFromState = (
   current: BrokerState,
   clientId: string,
@@ -323,7 +325,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     host: PreviewAutomationHost,
   ) {
     const clientId = host.clientId;
-    const queue = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const queue = yield* Queue.bounded<PreviewAutomationStreamEvent>(
+      PREVIEW_AUTOMATION_HOST_QUEUE_CAPACITY,
+    );
     const connectionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     yield* Queue.offer(queue, { type: "connected", connectionId });
     const connection: ClientConnection = {
@@ -517,6 +521,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     }
     const { connection, requestId, requestContext, requestSequence } = route;
+    const expiresAt = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + timeoutMs;
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;
       const pending = new Map(next.pending);
@@ -524,30 +529,33 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       return { ...next, pending };
     });
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
-      const offered = yield* Queue.offer(connection.queue, {
-        type: "request",
-        connectionId: connection.connectionId,
-        request: {
-          requestId,
-          threadId: input.scope.threadId,
-          tabId: requestContext.tabId,
-          tabIdExplicit: input.tabId !== undefined,
-          operation: input.operation,
-          input: input.input,
-          timeoutMs,
-        },
-      });
-      if (!offered) {
-        const completion = yield* Deferred.poll(deferred);
-        if (Option.isSome(completion)) {
-          return (yield* completion.value) as A;
+      const result = yield* Effect.gen(function* () {
+        const offered = yield* Queue.offer(connection.queue, {
+          type: "request",
+          connectionId: connection.connectionId,
+          request: {
+            requestId,
+            threadId: input.scope.threadId,
+            tabId: requestContext.tabId,
+            tabIdExplicit: input.tabId !== undefined,
+            operation: input.operation,
+            input: input.input,
+            timeoutMs,
+            expiresAt,
+          },
+        });
+        if (!offered) {
+          const completion = yield* Deferred.poll(deferred);
+          if (Option.isSome(completion)) {
+            return (yield* completion.value) as A;
+          }
+          return yield* new PreviewAutomationRequestQueueClosedError(requestContext);
         }
-        return yield* new PreviewAutomationRequestQueueClosedError(requestContext);
-      }
-      const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(timeoutMs));
+        return (yield* Deferred.await(deferred)) as A;
+      }).pipe(Effect.timeoutOption(timeoutMs));
       return yield* Option.match(result, {
         onNone: () => Effect.fail(new PreviewAutomationTimeoutError(requestContext)),
-        onSome: (value) => Effect.succeed(value as A),
+        onSome: Effect.succeed,
       });
     });
     const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));

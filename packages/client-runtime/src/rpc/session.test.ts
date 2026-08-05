@@ -287,6 +287,33 @@ describe("RpcSessionFactory", () => {
     }),
   );
 
+  it.effect("does not tear down a local session when a renderer heartbeat is delayed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory();
+        const session = yield* factory.connect(PREPARED);
+        const readyFiber = yield* Effect.forkChild(session.ready);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        yield* completeInitialConfig(socket);
+        yield* Fiber.join(readyFiber);
+
+        const closedFiber = yield* Effect.forkChild(Effect.flip(session.closed));
+        yield* TestClock.adjust("11 seconds");
+        yield* Effect.yieldNow;
+
+        expect(socket.sent.length).toBeGreaterThanOrEqual(2);
+        expect(closedFiber.pollUnsafe()).toBeUndefined();
+
+        socket.close(1012, "service restart");
+        expect(yield* Fiber.join(closedFiber)).toMatchObject({
+          reason: "transport",
+          message: "Test environment disconnected.",
+        });
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("reaches ready when a newer server sends unknown config members", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();

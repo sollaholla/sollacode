@@ -15,6 +15,7 @@ import {
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetColorSchemeInputSchema,
   DesktopPreviewTabInputSchema,
+  DesktopPreviewUiActivityInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationPayloadSchema,
   PreviewAutomationSnapshot,
@@ -73,6 +74,16 @@ export const registerWebview = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.preview.registerWebview")(function* ({ tabId, webContentsId }) {
     const manager = yield* PreviewManager.PreviewManager;
     yield* manager.registerWebview(tabId, webContentsId);
+  }),
+});
+
+export const setUiActivity = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_UI_ACTIVITY_CHANNEL,
+  payload: DesktopPreviewUiActivityInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setUiActivity")(function* ({ tabId, leaseId, active }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setUiActivity(tabId, leaseId, active);
   }),
 });
 
@@ -358,6 +369,7 @@ export const methods = [
   createTab,
   closeTab,
   registerWebview,
+  setUiActivity,
   navigate,
   goBack,
   goForward,

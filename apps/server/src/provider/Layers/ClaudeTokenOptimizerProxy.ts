@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off - This Promise is an abort-aware HTTP retry delay outside the Effect runtime.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeHttp from "node:http";
 import * as NodePath from "node:path";
-import * as NodeStream from "node:stream";
+import * as NodeTimers from "node:timers";
 
 import type { ChatAttachment, ThreadId, TurnId } from "@t3tools/contracts";
 import {
@@ -13,9 +14,17 @@ import {
 } from "pxpipe-proxy";
 
 import { attachmentRelativePath, createAttachmentId } from "../../attachmentStore.ts";
+import { isRetryableUpstreamStatus } from "../providerOverloadRetry.ts";
 
 const FABLE_MODEL_ID = "claude-fable-5";
 const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
+// Keep ordinary Claude responses replayable until the upstream stream closes.
+// This prevents a mid-response ECONNRESET from committing a truncated response
+// to the CLI. The cap bounds aggregate memory when many side chats are active;
+// responses beyond it fall back to streaming once the buffer is full.
+const MAX_RETRYABLE_RESPONSE_BUFFER_BYTES = 8 * 1024 * 1024;
+const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
+export const CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS = 15_000;
 
 // pxpipe has profiles for other providers/models, but Solla's beta deliberately
 // starts with the reader that was measured for this transport.
@@ -41,6 +50,39 @@ export interface ClaudeTokenOptimizerApplied {
 export interface ClaudeTokenOptimizerProxy {
   readonly baseUrl: string;
   readonly close: () => Promise<void>;
+}
+
+export interface ClaudeUpstreamRetryEvent {
+  readonly attempt: number;
+  readonly delayMs: number;
+  readonly status: number | null;
+  readonly cause?: unknown;
+}
+
+export interface ClaudeUpstreamFailureEvent {
+  readonly status: number;
+  readonly path: string;
+  readonly durationMs: number;
+  readonly error?: string | undefined;
+  readonly requestBodySha8?: string | undefined;
+}
+
+/**
+ * Solla owns Claude's upstream retry schedule. It is deliberately unbounded;
+ * aborting the pending HTTP request (Stop, session shutdown, or disconnect)
+ * is the only retry-loop terminator for a retryable transport failure.
+ */
+export function claudeUpstreamRetryDelayMs(
+  attempt: number,
+  options?: {
+    readonly initialDelayMs?: number;
+    readonly capMs?: number;
+  },
+): number {
+  const initialDelayMs = Math.max(0, options?.initialDelayMs ?? DEFAULT_INITIAL_RETRY_DELAY_MS);
+  const capMs = Math.max(0, options?.capMs ?? CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS);
+  const exponent = Math.max(0, Math.min(30, Math.trunc(attempt) - 1));
+  return Math.min(capMs, initialDelayMs * 2 ** exponent);
 }
 
 /**
@@ -75,41 +117,117 @@ function requestHeaders(req: NodeHttp.IncomingMessage): Headers {
   return headers;
 }
 
-function requestBody(req: NodeHttp.IncomingMessage): NonNullable<RequestInit["body"]> | null {
-  return req.method === "GET" || req.method === "HEAD"
-    ? null
-    : (NodeStream.Readable.toWeb(req) as ReadableStream<Uint8Array>);
+async function requestBody(req: NodeHttp.IncomingMessage): Promise<Buffer | null> {
+  if (req.method === "GET" || req.method === "HEAD") return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
-async function writeFetchResponse(response: Response, res: NodeHttp.ServerResponse): Promise<void> {
+function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const timeout = NodeTimers.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      NodeTimers.clearTimeout(timeout);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function reportRetry(
+  input: Pick<Parameters<typeof startClaudeTokenOptimizerProxy>[0], "onRetry" | "onError">,
+  event: ClaudeUpstreamRetryEvent,
+): Promise<void> {
+  try {
+    await input.onRetry?.(event);
+  } catch (cause) {
+    try {
+      await input.onError?.(cause);
+    } catch {
+      // Retry telemetry must never alter the transport retry loop.
+    }
+  }
+}
+
+function writeFetchResponseHead(response: Response, res: NodeHttp.ServerResponse): void {
   res.statusCode = response.status;
   res.statusMessage = response.statusText;
   response.headers.forEach((value, name) => res.setHeader(name, value));
+}
 
-  if (!response.body) {
+async function writeResponseChunk(res: NodeHttp.ServerResponse, chunk: Uint8Array): Promise<void> {
+  if (res.write(Buffer.from(chunk))) return;
+  await new Promise<void>((resolve, reject) => {
+    const onDrain = () => {
+      res.off("error", onError);
+      resolve();
+    };
+    const onError = (cause: Error) => {
+      res.off("drain", onDrain);
+      reject(cause);
+    };
+    res.once("drain", onDrain);
+    res.once("error", onError);
+  });
+}
+
+async function writeFetchResponse(response: Response, res: NodeHttp.ServerResponse): Promise<void> {
+  const body = response.body;
+
+  if (!body) {
+    writeFetchResponseHead(response, res);
     res.end();
     return;
   }
 
-  const reader = response.body.getReader();
+  const reader = body.getReader();
+  const bufferedChunks: Uint8Array[] = [];
+  let bufferedBytes = 0;
+  let streaming = false;
   try {
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) break;
-      if (!res.write(Buffer.from(chunk.value))) {
-        await new Promise<void>((resolve, reject) => {
-          const onDrain = () => {
-            res.off("error", onError);
-            resolve();
-          };
-          const onError = (cause: Error) => {
-            res.off("drain", onDrain);
-            reject(cause);
-          };
-          res.once("drain", onDrain);
-          res.once("error", onError);
-        });
+
+      if (
+        !streaming &&
+        bufferedBytes + chunk.value.byteLength <= MAX_RETRYABLE_RESPONSE_BUFFER_BYTES
+      ) {
+        bufferedChunks.push(chunk.value);
+        bufferedBytes += chunk.value.byteLength;
+        continue;
       }
+
+      if (!streaming) {
+        writeFetchResponseHead(response, res);
+        streaming = true;
+        for (const bufferedChunk of bufferedChunks) {
+          await writeResponseChunk(res, bufferedChunk);
+        }
+        bufferedChunks.length = 0;
+      }
+      await writeResponseChunk(res, chunk.value);
+    }
+
+    if (!streaming) {
+      // Do not commit response headers or bytes until the upstream body has
+      // ended cleanly. A reset anywhere in the normal-size response therefore
+      // throws back into the retry loop with the downstream request untouched.
+      writeFetchResponseHead(response, res);
+      res.end(
+        Buffer.concat(
+          bufferedChunks.map((chunk) => Buffer.from(chunk)),
+          bufferedBytes,
+        ),
+      );
+      return;
     }
     res.end();
   } finally {
@@ -183,6 +301,12 @@ export async function startClaudeTokenOptimizerProxy(input: {
   readonly state: ClaudeTokenOptimizerState;
   readonly onApplied: (event: ClaudeTokenOptimizerApplied) => void | Promise<void>;
   readonly onError?: ((cause: unknown) => void | Promise<void>) | undefined;
+  readonly onUpstreamFailure?:
+    | ((event: ClaudeUpstreamFailureEvent) => void | Promise<void>)
+    | undefined;
+  readonly onRetry?: ((event: ClaudeUpstreamRetryEvent) => void | Promise<void>) | undefined;
+  readonly initialRetryDelayMs?: number | undefined;
+  readonly maxRetryDelayMs?: number | undefined;
 }): Promise<ClaudeTokenOptimizerProxy> {
   const reportedRequests = new Set<string>();
   const upstream = normalizeUpstream(input.upstream);
@@ -199,6 +323,15 @@ export async function startClaudeTokenOptimizerProxy(input: {
     }),
     onRequest: async (event) => {
       try {
+        if (isRetryableUpstreamStatus(event.status)) {
+          await input.onUpstreamFailure?.({
+            status: event.status,
+            path: event.path,
+            durationMs: event.durationMs,
+            ...(event.error !== undefined ? { error: event.error } : {}),
+            ...(event.reqBodySha8 !== undefined ? { requestBodySha8: event.reqBodySha8 } : {}),
+          });
+        }
         const info = event.info;
         if (!info?.compressed || !input.state.enabled) return;
         const requestKey =
@@ -236,20 +369,60 @@ export async function startClaudeTokenOptimizerProxy(input: {
       try {
         const controller = new AbortController();
         req.once("aborted", () => controller.abort());
+        res.once("close", () => {
+          if (!res.writableEnded) controller.abort();
+        });
         const origin = `http://${req.headers.host ?? "127.0.0.1"}`;
         const init: RequestInit & { duplex?: "half" } = {
           method: req.method ?? "GET",
           headers: requestHeaders(req),
           signal: controller.signal,
         };
-        const body = requestBody(req);
+        const body = await requestBody(req);
         if (body !== null) {
           init.body = body;
-          init.duplex = "half";
         }
-        const response = await proxy(new Request(new URL(req.url ?? "/", origin).toString(), init));
-        await writeFetchResponse(response, res);
+        const url = new URL(req.url ?? "/", origin).toString();
+        let attempt = 0;
+        while (!controller.signal.aborted) {
+          try {
+            const response = await proxy(new Request(url, init));
+            if (!isRetryableUpstreamStatus(response.status)) {
+              await writeFetchResponse(response, res);
+              return;
+            }
+            await response.body?.cancel().catch(() => undefined);
+            attempt += 1;
+            const delayMs = claudeUpstreamRetryDelayMs(attempt, {
+              ...(input.initialRetryDelayMs !== undefined
+                ? { initialDelayMs: input.initialRetryDelayMs }
+                : {}),
+              ...(input.maxRetryDelayMs !== undefined ? { capMs: input.maxRetryDelayMs } : {}),
+            });
+            await reportRetry(input, { attempt, delayMs, status: response.status });
+            await waitForRetry(delayMs, controller.signal);
+          } catch (cause) {
+            if (controller.signal.aborted) throw cause;
+            if (res.headersSent) {
+              // Only oversized responses cross the bounded replay buffer. Once
+              // bytes have reached the CLI they cannot be safely replayed.
+              // Terminate instead of appending a second response to the first.
+              res.destroy(cause instanceof Error ? cause : undefined);
+              return;
+            }
+            attempt += 1;
+            const delayMs = claudeUpstreamRetryDelayMs(attempt, {
+              ...(input.initialRetryDelayMs !== undefined
+                ? { initialDelayMs: input.initialRetryDelayMs }
+                : {}),
+              ...(input.maxRetryDelayMs !== undefined ? { capMs: input.maxRetryDelayMs } : {}),
+            });
+            await reportRetry(input, { attempt, delayMs, status: null, cause });
+            await waitForRetry(delayMs, controller.signal);
+          }
+        }
       } catch (cause) {
+        if (req.aborted || res.destroyed) return;
         if (!res.headersSent) {
           res.statusCode = 502;
           res.setHeader("content-type", "application/json");
@@ -258,8 +431,8 @@ export async function startClaudeTokenOptimizerProxy(input: {
           res.end(
             JSON.stringify({
               error: {
-                type: "solla_token_optimizer_proxy_error",
-                message: cause instanceof Error ? cause.message : "Local optimizer proxy failed.",
+                type: "solla_claude_transport_proxy_error",
+                message: cause instanceof Error ? cause.message : "Local Claude transport failed.",
               },
             }),
           );

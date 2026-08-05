@@ -210,6 +210,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(
         Layer.succeed(OrchestrationProjectionPipeline, {
           bootstrap: Effect.void,
+          reconcileOrphanedInFlightWork: Effect.void,
           projectEvent: () => Effect.void,
         } satisfies OrchestrationProjectionPipelineShape),
       ),
@@ -237,6 +238,93 @@ describe("OrchestrationEngine", () => {
     expect(fullSnapshotReadCount).toBe(0);
 
     await runtime.dispose();
+  });
+
+  it("accepts a raced deterministic turn-start command only once", async () => {
+    const createdAt = now();
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const projectId = asProjectId("project-raced-resume");
+    const threadId = ThreadId.make("thread-raced-resume");
+    const commandId = CommandId.make(
+      "startup-auto-resume-command:thread-raced-resume:turn-incomplete",
+    );
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-raced-resume-create"),
+        projectId,
+        title: "Raced Resume Project",
+        workspaceRoot: "/tmp/project-raced-resume",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-raced-resume-create"),
+        threadId,
+        projectId,
+        title: "Raced Resume Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const command = (messageId: MessageId) => ({
+      type: "thread.turn.start" as const,
+      commandId,
+      threadId,
+      message: {
+        messageId,
+        role: "user" as const,
+        text: "Please resume your current task using the context provided.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access" as const,
+      createdAt,
+    });
+
+    const [macResult, windowsResult, remoteResult] = await Promise.all([
+      system.run(engine.dispatch(command(asMessageId("message-raced-resume-mac")))),
+      system.run(engine.dispatch(command(asMessageId("message-raced-resume-windows")))),
+      system.run(engine.dispatch(command(asMessageId("message-raced-resume-remote")))),
+    ]);
+
+    expect(macResult.sequence).toBe(windowsResult.sequence);
+    expect(remoteResult.sequence).toBe(macResult.sequence);
+    const events = await system.run(
+      Stream.runCollect(engine.readEvents(0)).pipe(
+        Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+      ),
+    );
+    expect(events.filter((event) => event.commandId === commandId)).toHaveLength(2);
+    expect(
+      events.filter(
+        (event) => event.type === "thread.message-sent" && event.payload.threadId === threadId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "thread.turn-start-requested" && event.payload.threadId === threadId,
+      ),
+    ).toHaveLength(1);
+
+    await system.dispose();
   });
 
   it("persists deterministic read models for repeated snapshot reads", async () => {
@@ -336,6 +424,24 @@ describe("OrchestrationEngine", () => {
         createdAt,
       }),
     );
+    await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-thread-source-running"),
+        threadId: ThreadId.make("thread-source"),
+        session: {
+          threadId: ThreadId.make("thread-source"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-source-running"),
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
 
     await system.run(
       engine.dispatch({
@@ -344,24 +450,36 @@ describe("OrchestrationEngine", () => {
         threadId: ThreadId.make("thread-fork"),
         sourceThreadId: ThreadId.make("thread-source"),
         title: "Independent fork",
+        isSideChat: true,
         createdAt,
       }),
     );
 
     const snapshot = await system.readModel();
+    const source = snapshot.threads.find((thread) => thread.id === "thread-source");
     const fork = snapshot.threads.find((thread) => thread.id === "thread-fork");
     expect(fork).toMatchObject({
       id: "thread-fork",
       projectId: "project-fork",
       title: "Independent fork",
+      isSideChat: true,
+      sideChatParentThreadId: "thread-source",
       interactionMode: "plan",
       runtimeMode: "full-access",
       branch: "main",
+      latestTurn: null,
+      messages: [],
       session: null,
     });
-    expect(snapshot.threads.find((thread) => thread.id === "thread-source")?.title).toBe(
-      "Source thread",
-    );
+    expect(source).toMatchObject({
+      title: "Source thread",
+      latestTurn: {
+        state: "running",
+      },
+      session: {
+        status: "running",
+      },
+    });
 
     await system.dispose();
   });
@@ -941,6 +1059,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailRequestedProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileOrphanedInFlightWork: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailRequestedProjection &&
@@ -1085,6 +1204,7 @@ describe("OrchestrationEngine", () => {
     let shouldFailProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
+      reconcileOrphanedInFlightWork: Effect.void,
       projectEvent: (event) => {
         if (
           shouldFailProjection &&

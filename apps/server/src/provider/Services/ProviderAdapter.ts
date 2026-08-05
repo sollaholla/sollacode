@@ -11,11 +11,14 @@ import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
+  ProviderInstanceId,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ModelSelection,
+  RuntimeMode,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -42,6 +45,16 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+export interface ProviderSessionForkInput {
+  readonly sourceThreadId: ThreadId;
+  readonly targetThreadId: ThreadId;
+  readonly sourceResumeCursor: unknown;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly runtimeMode: RuntimeMode;
+  readonly cwd?: string;
+  readonly modelSelection?: ModelSelection;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -54,6 +67,15 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly startSession: (
     input: ProviderSessionStartInput,
+  ) => Effect.Effect<ProviderSession, TError>;
+
+  /**
+   * Materialize a provider-native conversation fork without starting an
+   * agent loop. Adapters that cannot fork independently may omit this and the
+   * provider service will materialize the fork by starting a target session.
+   */
+  readonly forkSession?: (
+    input: ProviderSessionForkInput,
   ) => Effect.Effect<ProviderSession, TError>;
 
   /**

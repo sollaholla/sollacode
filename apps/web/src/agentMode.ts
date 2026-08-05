@@ -1,42 +1,25 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
+import {
+  AGENT_CONTINUE_PROMPT,
+  AGENT_STOP_TOKEN,
+  classifyAgentLoopReplyFailure,
+  containsAgentStopToken,
+  isAgentContinuePrompt,
+  shouldAgentContinueAfterReply,
+  stripAgentStopToken,
+  type AgentLoopReplyFailure,
+} from "@t3tools/shared/agentMode";
 
-/**
- * Agent mode keeps a thread working without the user re-prompting. After each
- * assistant turn completes the app sends a nudge, and the loop only ends when
- * the model signs off with the stop token.
- *
- * The loop is intentionally unbounded — that is the point of the mode — so the
- * stop token is the contract, and the running turn indicator plus the manual
- * stop button remain the user's way out.
- */
-
-export const AGENT_STOP_TOKEN = "AGENT_STOP";
-
-export const AGENT_CONTINUE_PROMPT =
-  "The user wants you to continue working autonomously without input returned to them. " +
-  "First judge honestly: is the requested work finished, or are you blocked on something " +
-  "only the user can provide? If either is true, summarize what you did and end your " +
-  `message with \`${AGENT_STOP_TOKEN}\` to stop this agent loop — finishing is the right ` +
-  "reason to stop, not a failure to continue. Otherwise keep working on the next concrete " +
-  "step, and do not stop to ask questions you can resolve yourself.";
-
-/**
- * True when the assistant signed off.
- *
- * Matched on a word boundary so prose that merely mentions the token — such as
- * these instructions being quoted back — does not end the loop, while the usual
- * sign-offs (bare, fenced, bolded, or followed by punctuation) all do.
- */
-export function containsAgentStopToken(text: string): boolean {
-  return new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}([^A-Za-z0-9_]|$)`, "u").test(text);
-}
-
-/**
- * Strips the token so it never reaches the next prompt as literal text.
- */
-export function stripAgentStopToken(text: string): string {
-  return text.replaceAll(new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}`, "gu"), "$1").trimEnd();
-}
+export {
+  AGENT_CONTINUE_PROMPT,
+  AGENT_STOP_TOKEN,
+  classifyAgentLoopReplyFailure,
+  containsAgentStopToken,
+  isAgentContinuePrompt,
+  shouldAgentContinueAfterReply,
+  stripAgentStopToken,
+  type AgentLoopReplyFailure,
+};
 
 export function isAgentMode(mode: ProviderInteractionMode | undefined): boolean {
   return mode === "agent";
@@ -75,44 +58,20 @@ export const AGENT_LOOP_MAX_CONSECUTIVE_NUDGES = 50;
  * after a logout. None of them can be resolved by trying again; they all need
  * the user.
  */
-const AGENT_LOOP_BLOCKING_SIGNATURES = [
-  /\bnot logged in\b/i,
-  /\bplease run\s+\/login\b/i,
-  /\bsession (has )?expired\b/i,
-  /\bunauthorized\b/i,
-  /\bauthentication (failed|required)\b/i,
-  /\binvalid api key\b/i,
-  /\bcredit balance is too low\b/i,
-  /\b(quota|rate limit) exceeded\b/i,
-];
-
 /**
- * Error text is short. A real work summary is not.
- *
- * The length bound is what makes matching on prose safe: an agent legitimately
- * writing about authentication ("Refactored the rate limiter tests", "I added a
- * login form") produces a normal-length reply, while a provider failure is a
- * single terse line. Without this the guard ends healthy loops for talking about
- * the wrong subject.
+ * Failures a retry cannot fix. Something about the account or credentials has
+ * to change first, so the turn is over.
  */
-const AGENT_LOOP_BLOCKING_MAX_CHARS = 200;
-
 /**
- * Whether the reply is a provider failure that retrying cannot fix.
+ * Whether the reply is a provider failure rather than work.
  *
- * Deliberately matched on the visible text: these arrive as ordinary assistant
- * output rather than a failed turn state, so the turn settles "completed" and
- * every structural guard passes.
- *
- * This is a fast path, not the real safety net — the interval floor and the
+ * A fast path, not the real safety net — the interval floor and the
  * identical-reply check catch the same runaway a beat later without needing to
  * recognise the wording. It exists so the common case stops on the first repeat
  * instead of the second.
  */
 export function isAgentLoopBlockingReply(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length > AGENT_LOOP_BLOCKING_MAX_CHARS) return false;
-  return AGENT_LOOP_BLOCKING_SIGNATURES.some((pattern) => pattern.test(trimmed));
+  return classifyAgentLoopReplyFailure(text) !== null;
 }
 
 export interface AgentLoopGuardInput {
@@ -122,6 +81,14 @@ export interface AgentLoopGuardInput {
   readonly isStreaming: boolean;
   readonly hasPendingUserInput: boolean;
   readonly isConnected: boolean;
+  /**
+   * The user has sent a message of their own since the loop last acted.
+   *
+   * `hasPendingUserInput` covers a question the agent asked and is waiting on;
+   * this covers the user simply typing something unprompted. Their message is
+   * already driving the next turn, so nudging would talk over them.
+   */
+  readonly userHasRepliedSinceNudge?: boolean;
   /**
    * The user has actually started this loop by sending a message in agent mode.
    *
@@ -168,6 +135,19 @@ export function shouldContinueAgentLoop(input: AgentLoopGuardInput): boolean {
   if (input.turnState !== "completed") return false;
   // A question is outstanding; answering it drives the next turn instead.
   if (input.hasPendingUserInput) return false;
+  // The user beat the loop to it — their message is the next turn.
+  if (input.userHasRepliedSinceNudge === true) return false;
+
+  const text = input.assistantText.trim();
+  if (text.length === 0) return false;
+  if (isAgentLoopBlockingReply(text)) return false;
+
+  const previous = input.previousAssistantText?.trim();
+
+  // The token is the terminal contract. The prompt already requires the agent
+  // to audit completion before emitting it; sending another user turn after a
+  // clean sign-off violates that contract and can restart finished work.
+  if (containsAgentStopToken(text)) return false;
 
   if ((input.consecutiveNudges ?? 0) >= AGENT_LOOP_MAX_CONSECUTIVE_NUDGES) return false;
 
@@ -183,22 +163,19 @@ export function shouldContinueAgentLoop(input: AgentLoopGuardInput): boolean {
     return false;
   }
 
-  const text = input.assistantText.trim();
-  if (text.length === 0) return false;
-  if (isAgentLoopBlockingReply(text)) return false;
-
   // Byte-identical to last turn means the nudge changed nothing. Real work
   // never repeats itself exactly, so this is a stuck provider.
-  const previous = input.previousAssistantText?.trim();
   if (previous !== undefined && previous.length > 0 && previous === text) return false;
 
-  return !containsAgentStopToken(text);
+  return true;
 }
 
 export interface AgentLoopMessageView {
   readonly role: string;
+  readonly turnId?: string | null;
   readonly streaming?: boolean;
   readonly text?: string;
+  readonly inputOrigin?: string | undefined;
 }
 
 /**
@@ -215,14 +192,74 @@ export interface AgentLoopMessageView {
  */
 export function selectAgentLoopAssistantText(
   messages: ReadonlyArray<AgentLoopMessageView>,
+  turnId?: string | null,
 ): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message === undefined || message.role !== "assistant") continue;
+    // Settings-only and provider-handoff turns must not borrow an older
+    // assistant reply as proof that the current turn finished cleanly.
+    // Likewise, a stale latest-turn pointer must not skip past a newer reply
+    // and infer continuation from an older turn. The newest assistant reply is
+    // authoritative; a turn mismatch means the projection has not converged
+    // yet, so the UI must show neither a pending continuation nor a Resume.
+    if (turnId != null && message.turnId !== turnId) return "";
     if (message.streaming === true) return null;
     return message.text ?? "";
   }
   return "";
+}
+
+export interface AgentAutoResumePendingInput {
+  readonly interactionMode: ProviderInteractionMode | undefined;
+  readonly turnId: string | null | undefined;
+  readonly turnState: string | null | undefined;
+  readonly latestTurnSettled: boolean;
+  readonly hasPendingApproval: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly sessionStatus: string | null | undefined;
+  readonly messages: ReadonlyArray<AgentLoopMessageView>;
+}
+
+/**
+ * Shows the otherwise invisible interval between a clean Agent reply and the
+ * server-owned continuation becoming an active provider turn.
+ */
+export function shouldShowAgentAutoResumePending(input: AgentAutoResumePendingInput): boolean {
+  if (!isAgentMode(input.interactionMode)) return false;
+  if (input.turnState !== "completed" || !input.latestTurnSettled) return false;
+  if (input.hasPendingApproval || input.hasPendingUserInput) return false;
+  if (input.sessionStatus === "error" || input.sessionStatus === "stopped") return false;
+
+  const assistantText = selectAgentLoopAssistantText(input.messages, input.turnId);
+  if (assistantText === null || !shouldAgentContinueAfterReply(assistantText)) return false;
+
+  for (let index = input.messages.length - 1; index >= 0; index -= 1) {
+    const message = input.messages[index];
+    if (message === undefined) continue;
+    if (message.role === "assistant" && message.turnId === input.turnId) break;
+    if (message.role === "user" && message.inputOrigin !== "agent-loop") return false;
+  }
+  return true;
+}
+
+/**
+ * Whether the newest message is the user's rather than the assistant's.
+ *
+ * Walking back from the end, a user message reached before any assistant one
+ * means the user has spoken since the last reply — so the next turn is already
+ * theirs and the loop has nothing to nudge for.
+ */
+export function hasUserRepliedAfterLastAssistant(
+  messages: ReadonlyArray<AgentLoopMessageView>,
+): boolean {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined) continue;
+    if (message.role === "assistant") return false;
+    if (message.role === "user") return true;
+  }
+  return false;
 }
 
 const RECOMMENDED_MARKER = /\(recommended\)/iu;

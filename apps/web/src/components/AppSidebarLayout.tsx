@@ -28,14 +28,12 @@ import {
 } from "./threadSidebarWidth";
 import {
   Sidebar,
-  SidebarInsetOverlayProvider,
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
   useSidebar,
   useSidebarVisibility,
 } from "./ui/sidebar";
-import { ReconnectingOverlay } from "./ReconnectingOverlay";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
@@ -193,30 +191,28 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   }, [navigate, pathname]);
 
   return (
-    <SidebarInsetOverlayProvider overlay={<ReconnectingOverlay />}>
-      <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarProviderStyle}>
-        <Sidebar
-          side="left"
-          collapsible="offcanvas"
-          data-app-sidebar=""
-          data-sidebar-version={useSidebarV2Theme ? "v2" : "v1"}
-          className="border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
-          resizable={{
-            maxWidth: sidebarMaximumWidth,
-            minWidth: THREAD_SIDEBAR_MIN_WIDTH,
-            shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
-              nextWidth <= currentWidth ||
-              wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-            storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-            onResize: setSidebarWidth,
-          }}
-        >
-          {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
-          <SidebarRail />
-        </Sidebar>
-        {children}
-        <SidebarControl />
-      </SidebarProvider>
-    </SidebarInsetOverlayProvider>
+    <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarProviderStyle}>
+      <Sidebar
+        side="left"
+        collapsible="offcanvas"
+        data-app-sidebar=""
+        data-sidebar-version={useSidebarV2Theme ? "v2" : "v1"}
+        className="border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+        resizable={{
+          maxWidth: sidebarMaximumWidth,
+          minWidth: THREAD_SIDEBAR_MIN_WIDTH,
+          shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
+            nextWidth <= currentWidth ||
+            wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
+          storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+          onResize: setSidebarWidth,
+        }}
+      >
+        {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
+        <SidebarRail />
+      </Sidebar>
+      {children}
+      <SidebarControl />
+    </SidebarProvider>
   );
 }

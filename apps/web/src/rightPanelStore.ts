@@ -14,7 +14,15 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-export const RIGHT_PANEL_KINDS = ["plan", "diff", "files", "file", "preview", "terminal"] as const;
+export const RIGHT_PANEL_KINDS = [
+  "plan",
+  "diff",
+  "files",
+  "file",
+  "preview",
+  "terminal",
+  "side-chat",
+] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type RightPanelSurface =
@@ -30,6 +38,7 @@ export type RightPanelSurface =
     }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
+  | { id: `side-chat:${string}`; kind: "side-chat"; resourceId: string; title: string }
   | {
       id: `file:${string}`;
       kind: "file";
@@ -40,7 +49,7 @@ export type RightPanelSurface =
   | { id: "plan"; kind: "plan" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 7;
+const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -50,7 +59,10 @@ export interface ThreadRightPanelState {
 
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
-  open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  open: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat">,
+  ) => void;
   /**
    * Opens the panel without adding a surface. The agents & tasks section lives
    * in this column and outlives every tab, so it needs a way in that does not
@@ -60,6 +72,7 @@ interface RightPanelStoreState {
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
+  openSideChat: (ref: ScopedThreadRef, sideChatThreadId: string, title: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -75,10 +88,17 @@ interface RightPanelStoreState {
   closeAllSurfaces: (ref: ScopedThreadRef) => void;
   reconcileBrowserSurfaces: (ref: ScopedThreadRef, tabIds: readonly string[]) => void;
   reconcileFileSurfaces: (ref: ScopedThreadRef, workspaceAvailable: boolean) => void;
+  reconcileSideChatSurfaces: (
+    ref: ScopedThreadRef,
+    sideChats: ReadonlyArray<{ threadId: string; title: string }>,
+  ) => void;
   show: (ref: ScopedThreadRef) => void;
   close: (ref: ScopedThreadRef) => void;
   toggleVisibility: (ref: ScopedThreadRef) => void;
-  toggle: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  toggle: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat">,
+  ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
 
@@ -89,7 +109,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "side-chat">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -124,6 +144,15 @@ const terminalSurface = (terminalId: string): RightPanelSurface => ({
   resourceId: terminalId,
   terminalIds: [terminalId],
   activeTerminalId: terminalId,
+});
+
+type SideChatSurface = Extract<RightPanelSurface, { kind: "side-chat" }>;
+
+const sideChatSurface = (threadId: string, title: string): SideChatSurface => ({
+  id: `side-chat:${threadId}`,
+  kind: "side-chat",
+  resourceId: threadId,
+  title,
 });
 
 const upsertSurface = (
@@ -189,6 +218,18 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           ? surface.revealRequestId
                           : 0;
                       return [{ ...surface, revealLine, revealRequestId }];
+                    }
+                    if (surface.kind === "side-chat") {
+                      if (
+                        !("resourceId" in surface) ||
+                        typeof surface.resourceId !== "string" ||
+                        surface.id !== `side-chat:${surface.resourceId}` ||
+                        !("title" in surface) ||
+                        typeof surface.title !== "string"
+                      ) {
+                        return [];
+                      }
+                      return [surface];
                     }
                     if (surface.kind !== "terminal") return [surface];
                     if (
@@ -302,6 +343,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
             upsertSurface(current, terminalSurface(terminalId)),
+          ),
+        })),
+      openSideChat: (ref, sideChatThreadId, title) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, sideChatSurface(sideChatThreadId, title)),
           ),
         })),
       splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
@@ -486,6 +533,55 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return {
               ...current,
               isOpen: current.isOpen,
+              surfaces,
+              activeSurfaceId: activeStillExists
+                ? current.activeSurfaceId
+                : (surfaces.at(-1)?.id ?? null),
+            };
+          }),
+        })),
+      reconcileSideChatSurfaces: (ref, sideChats) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const expectedById = new Map<SideChatSurface["id"], SideChatSurface>(
+              sideChats.map((sideChat) => [
+                `side-chat:${sideChat.threadId}` as const,
+                sideChatSurface(sideChat.threadId, sideChat.title),
+              ]),
+            );
+            // The server shell list is authoritative. Keeping a missing side
+            // chat here turns a completed delete into a zombie composer: the
+            // stale surface can still dispatch commands to a tombstoned
+            // thread, but no provider reactor can ever adopt that turn.
+            // Opening a new side chat is safe without a grace exception: the
+            // store update itself does not change this reconciliation effect's
+            // shell dependency, and the eventual shell event confirms it.
+            const surfaces: RightPanelSurface[] = [];
+            for (const surface of current.surfaces) {
+              if (surface.kind !== "side-chat") {
+                surfaces.push(surface);
+                continue;
+              }
+              const expected = expectedById.get(surface.id);
+              if (!expected) continue;
+              surfaces.push(expected.title === surface.title ? surface : expected);
+            }
+            const knownIds = new Set(surfaces.map((surface) => surface.id));
+            for (const [surfaceId, surface] of expectedById) {
+              if (!knownIds.has(surfaceId)) surfaces.push(surface);
+            }
+            const activeStillExists = surfaces.some(
+              (surface) => surface.id === current.activeSurfaceId,
+            );
+            if (
+              surfaces.length === current.surfaces.length &&
+              activeStillExists &&
+              surfaces.every((surface, index) => surface === current.surfaces[index])
+            ) {
+              return current;
+            }
+            return {
+              ...current,
               surfaces,
               activeSurfaceId: activeStillExists
                 ? current.activeSurfaceId

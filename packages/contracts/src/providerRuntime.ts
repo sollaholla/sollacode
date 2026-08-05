@@ -73,6 +73,9 @@ export type RuntimeThreadState = typeof RuntimeThreadState.Type;
 const RuntimeTurnState = Schema.Literals(["completed", "failed", "interrupted", "cancelled"]);
 export type RuntimeTurnState = typeof RuntimeTurnState.Type;
 
+export const ProviderRuntimeFailureKind = Schema.Literal("retryable-upstream");
+export type ProviderRuntimeFailureKind = typeof ProviderRuntimeFailureKind.Type;
+
 const RuntimePlanStepStatus = Schema.Literals(["pending", "inProgress", "completed"]);
 export type RuntimePlanStepStatus = typeof RuntimePlanStepStatus.Type;
 
@@ -369,6 +372,7 @@ const TurnCompletedPayload = Schema.Struct({
   modelUsage: Schema.optional(UnknownRecordSchema),
   totalCostUsd: Schema.optional(Schema.Number),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
+  failureKind: Schema.optional(ProviderRuntimeFailureKind),
 });
 export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;
 
@@ -626,6 +630,7 @@ const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
   detail: Schema.optional(Schema.Unknown),
+  failureKind: Schema.optional(ProviderRuntimeFailureKind),
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;
 

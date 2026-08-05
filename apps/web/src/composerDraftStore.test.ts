@@ -188,6 +188,20 @@ describe("composerDraftStore addImages", () => {
     URL.revokeObjectURL = originalRevokeObjectUrl;
   });
 
+  it("stores one image on an unpromoted draft alongside its prompt", () => {
+    const draftId = DraftId.make("draft-before-thread-creation");
+    const image = makeImage({ id: "img-draft", previewUrl: "blob:draft" });
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(draftId, "mixed text and image paste");
+    store.addImage(draftId, image);
+
+    expect(store.getComposerDraft(draftId)).toMatchObject({
+      prompt: "mixed text and image paste",
+      images: [{ id: "img-draft" }],
+    });
+  });
+
   it("deduplicates identical images in one batch by file signature", () => {
     const first = makeImage({
       id: "img-1",

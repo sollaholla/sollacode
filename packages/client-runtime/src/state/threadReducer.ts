@@ -63,6 +63,8 @@ export function applyThreadDetailEvent(
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           title: event.payload.title,
+          isSideChat: false,
+          sideChatParentThreadId: null,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
           interactionMode: event.payload.interactionMode,
@@ -155,6 +157,12 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+          ...(event.payload.isSideChat !== undefined
+            ? { isSideChat: event.payload.isSideChat }
+            : {}),
+          ...(event.payload.isSideChat === false
+            ? { isSideChat: false, sideChatParentThreadId: null, deletedAt: null }
+            : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }
             : {}),

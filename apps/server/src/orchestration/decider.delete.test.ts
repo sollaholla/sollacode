@@ -2,6 +2,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
+  MessageId,
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
@@ -103,6 +104,11 @@ const seedReadModel = Effect.gen(function* () {
 });
 
 type PlannedEvent = Omit<OrchestrationEvent, "sequence">;
+type TypedPlannedEvent = OrchestrationEvent extends infer Event
+  ? Event extends OrchestrationEvent
+    ? Omit<Event, "sequence">
+    : never
+  : never;
 
 function normalizeDeleteEvent(event: PlannedEvent | ReadonlyArray<PlannedEvent>) {
   const events = Array.isArray(event) ? event : [event];
@@ -134,6 +140,15 @@ function normalizeDeleteEvent(event: PlannedEvent | ReadonlyArray<PlannedEvent>)
         return entry;
     }
   });
+}
+
+function singleEventOfType<T extends TypedPlannedEvent["type"]>(
+  event: unknown,
+  type: T,
+): Extract<TypedPlannedEvent, { readonly type: T }> {
+  expect(Array.isArray(event)).toBe(false);
+  expect((event as { readonly type: unknown }).type).toBe(type);
+  return event as Extract<TypedPlannedEvent, { readonly type: T }>;
 }
 
 it.layer(NodeServices.layer)("decider deletion flows", (it) => {
@@ -212,6 +227,189 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
       }
 
       expect(normalizeDeleteEvent(forcedResult)).toEqual(normalizeDeleteEvent(sequentialEvents));
+    }),
+  );
+
+  it.effect(
+    "rejects turns on deleted threads but lets explicit side-chat promotion restore one",
+    () =>
+      Effect.gen(function* () {
+        const readModel = yield* seedReadModel;
+        const sideChatId = asThreadId("thread-side-chat-deleted");
+        const fork = singleEventOfType(
+          yield* decideOrchestrationCommand({
+            command: {
+              type: "thread.fork",
+              commandId: asCommandId("cmd-side-chat-fork"),
+              threadId: sideChatId,
+              sourceThreadId: asThreadId("thread-delete-1"),
+              title: "Temporary side chat",
+              isSideChat: true,
+              createdAt: "2026-01-01T00:00:01.000Z",
+            },
+            readModel,
+          }),
+          "thread.forked",
+        );
+        const forkedReadModel = yield* projectEvent(readModel, { ...fork, sequence: 4 });
+        const deleted = singleEventOfType(
+          yield* decideOrchestrationCommand({
+            command: {
+              type: "thread.delete",
+              commandId: asCommandId("cmd-side-chat-delete"),
+              threadId: sideChatId,
+            },
+            readModel: forkedReadModel,
+          }),
+          "thread.deleted",
+        );
+        const deletedReadModel = yield* projectEvent(forkedReadModel, {
+          ...deleted,
+          sequence: 5,
+        });
+
+        const turnError = yield* Effect.flip(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.turn.start",
+              commandId: asCommandId("cmd-deleted-side-chat-turn"),
+              threadId: sideChatId,
+              message: {
+                messageId: MessageId.make("message-deleted-side-chat"),
+                role: "user",
+                text: "This must not be accepted",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              createdAt: "2026-01-01T00:00:02.000Z",
+            },
+            readModel: deletedReadModel,
+          }),
+        );
+        expect(turnError.message).toContain("already deleted");
+
+        const promoted = singleEventOfType(
+          yield* decideOrchestrationCommand({
+            command: {
+              type: "thread.meta.update",
+              commandId: asCommandId("cmd-deleted-side-chat-promote"),
+              threadId: sideChatId,
+              isSideChat: false,
+            },
+            readModel: deletedReadModel,
+          }),
+          "thread.meta-updated",
+        );
+        const restoredReadModel = yield* projectEvent(deletedReadModel, {
+          ...promoted,
+          sequence: 6,
+        });
+        expect(restoredReadModel.threads.find((thread) => thread.id === sideChatId)).toMatchObject({
+          isSideChat: false,
+          sideChatParentThreadId: null,
+          deletedAt: null,
+        });
+      }),
+  );
+
+  it.effect("lets a side chat create a sibling only under its existing owning parent", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel;
+      const mainThreadId = asThreadId("thread-delete-1");
+      const unrelatedThreadId = asThreadId("thread-delete-2");
+      const sideChatId = asThreadId("thread-side-chat-source");
+      const sideChatFork = singleEventOfType(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fork",
+            commandId: asCommandId("cmd-side-chat-source"),
+            threadId: sideChatId,
+            sourceThreadId: mainThreadId,
+            isSideChat: true,
+            createdAt: "2026-01-01T00:00:01.000Z",
+          },
+          readModel,
+        }),
+        "thread.forked",
+      );
+      const withSideChat = yield* projectEvent(readModel, {
+        ...sideChatFork,
+        sequence: 4,
+      });
+
+      const siblingFork = singleEventOfType(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fork",
+            commandId: asCommandId("cmd-side-chat-sibling"),
+            threadId: asThreadId("thread-side-chat-sibling"),
+            sourceThreadId: sideChatId,
+            isSideChat: true,
+            sideChatParentThreadId: mainThreadId,
+            createdAt: "2026-01-01T00:00:02.000Z",
+          },
+          readModel: withSideChat,
+        }),
+        "thread.forked",
+      );
+      expect(siblingFork.payload).toMatchObject({
+        sourceThreadId: sideChatId,
+        isSideChat: true,
+        sideChatParentThreadId: mainThreadId,
+      });
+
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.fork",
+            commandId: asCommandId("cmd-side-chat-cross-family"),
+            threadId: asThreadId("thread-side-chat-cross-family"),
+            sourceThreadId: sideChatId,
+            isSideChat: true,
+            sideChatParentThreadId: unrelatedThreadId,
+            createdAt: "2026-01-01T00:00:03.000Z",
+          },
+          readModel: withSideChat,
+        }),
+      );
+      expect(error.message).toContain("is not the source chat's owning parent");
+    }),
+  );
+
+  it.effect("projects provider and mode overrides atomically with a fork", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel;
+      const fork = singleEventOfType(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fork",
+            commandId: asCommandId("cmd-cross-provider-fork"),
+            threadId: asThreadId("thread-cross-provider-fork"),
+            sourceThreadId: asThreadId("thread-delete-1"),
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-fable-5",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "agent",
+            isSideChat: true,
+            createdAt: "2026-01-01T00:00:04.000Z",
+          },
+          readModel,
+        }),
+        "thread.forked",
+      );
+
+      expect(fork.payload).toMatchObject({
+        sourceThreadId: asThreadId("thread-delete-1"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-fable-5",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "agent",
+      });
     }),
   );
 });

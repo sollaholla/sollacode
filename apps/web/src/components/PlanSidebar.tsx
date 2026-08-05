@@ -35,6 +35,14 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+export const PLAN_REFRESH_MINIMUM_FEEDBACK_MS = 1_000;
+export const PLAN_REFRESH_INITIATION_TIMEOUT_MS = 20_000;
+
+export function remainingPlanRefreshFeedbackMs(elapsedMs: number): number {
+  if (!Number.isFinite(elapsedMs)) return PLAN_REFRESH_MINIMUM_FEEDBACK_MS;
+  return Math.max(0, PLAN_REFRESH_MINIMUM_FEEDBACK_MS - Math.max(0, elapsedMs));
+}
+
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
     return (
@@ -105,10 +113,28 @@ const PlanSidebar = memo(function PlanSidebar({
   const handleRefreshPlan = useCallback(() => {
     if (!threadRef || isRefreshingPlan) return;
     setIsRefreshingPlan(true);
-    void refreshPlan({
-      environmentId,
-      input: { threadId: threadRef.threadId },
-    }).finally(() => setIsRefreshingPlan(false));
+    const startedAt = performance.now();
+    void (async () => {
+      let initiationTimeout: number | null = null;
+      try {
+        await Promise.race([
+          refreshPlan({
+            environmentId,
+            input: { threadId: threadRef.threadId },
+          }),
+          new Promise<void>((resolve) => {
+            initiationTimeout = window.setTimeout(resolve, PLAN_REFRESH_INITIATION_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (initiationTimeout !== null) window.clearTimeout(initiationTimeout);
+        const remainingMs = remainingPlanRefreshFeedbackMs(performance.now() - startedAt);
+        if (remainingMs > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, remainingMs));
+        }
+        setIsRefreshingPlan(false);
+      }
+    })();
   }, [environmentId, isRefreshingPlan, refreshPlan, threadRef]);
 
   const handleCopyPlan = useCallback(() => {

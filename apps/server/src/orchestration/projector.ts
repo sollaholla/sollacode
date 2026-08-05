@@ -69,7 +69,7 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
  */
 function settledTurnStateForSessionStatus(
   status: OrchestrationSession["status"],
-): "completed" | "interrupted" | "error" | null {
+): "completed" | "interrupted" | "incomplete" | "error" | null {
   switch (status) {
     case "idle":
     case "ready":
@@ -77,8 +77,9 @@ function settledTurnStateForSessionStatus(
     case "error":
       return "error";
     case "interrupted":
-    case "stopped":
       return "interrupted";
+    case "stopped":
+      return "incomplete";
     case "starting":
     case "running":
       return null;
@@ -301,6 +302,8 @@ export function projectEvent(
             id: payload.threadId,
             projectId: payload.projectId,
             title: payload.title,
+            isSideChat: false,
+            sideChatParentThreadId: null,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
@@ -344,6 +347,7 @@ export function projectEvent(
         if (!source) {
           return nextBase;
         }
+        const copiesVisibleHistory = payload.isSideChat !== true;
         const mapTurnId = (turnId: TurnId | null) =>
           turnId === null ? null : forkedTurnId(payload.threadId, turnId);
         const mapMessageId = (messageId: MessageId | null) =>
@@ -354,17 +358,26 @@ export function projectEvent(
             id: payload.threadId,
             projectId: payload.projectId,
             title: payload.title,
+            isSideChat: payload.isSideChat === true,
+            sideChatParentThreadId:
+              payload.isSideChat === true
+                ? (payload.sideChatParentThreadId ?? payload.sourceThreadId)
+                : null,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
             latestTurn:
-              source.latestTurn === null
+              !copiesVisibleHistory || source.latestTurn === null
                 ? null
                 : {
                     ...source.latestTurn,
                     turnId: forkedTurnId(payload.threadId, source.latestTurn.turnId),
+                    state:
+                      source.latestTurn.state === "running"
+                        ? "incomplete"
+                        : source.latestTurn.state,
                     assistantMessageId: mapMessageId(source.latestTurn.assistantMessageId),
                   },
             createdAt: payload.createdAt,
@@ -375,37 +388,45 @@ export function projectEvent(
             snoozedUntil: null,
             snoozedAt: null,
             deletedAt: null,
-            messages: source.messages.map((message) => ({
-              ...message,
-              id: forkedMessageId(payload.threadId, message.id),
-              turnId: mapTurnId(message.turnId),
-              streaming: false,
-              ...(message.attachments !== undefined
-                ? {
-                    attachments: message.attachments.map((attachment) => ({
-                      ...attachment,
-                      id: forkedAttachmentId(
-                        payload.threadId,
-                        attachment.id,
-                      ) as typeof attachment.id,
-                    })),
-                  }
-                : {}),
-            })),
-            proposedPlans: source.proposedPlans.map((plan) => ({
-              ...plan,
-              turnId: mapTurnId(plan.turnId),
-            })),
-            activities: source.activities.map((activity) => ({
-              ...activity,
-              id: forkedActivityId(payload.threadId, activity.id),
-              turnId: mapTurnId(activity.turnId),
-            })),
-            checkpoints: source.checkpoints.map((checkpoint) => ({
-              ...checkpoint,
-              turnId: forkedTurnId(payload.threadId, checkpoint.turnId),
-              assistantMessageId: mapMessageId(checkpoint.assistantMessageId),
-            })),
+            messages: copiesVisibleHistory
+              ? source.messages.map((message) => ({
+                  ...message,
+                  id: forkedMessageId(payload.threadId, message.id),
+                  turnId: mapTurnId(message.turnId),
+                  streaming: false,
+                  ...(message.attachments !== undefined
+                    ? {
+                        attachments: message.attachments.map((attachment) => ({
+                          ...attachment,
+                          id: forkedAttachmentId(
+                            payload.threadId,
+                            attachment.id,
+                          ) as typeof attachment.id,
+                        })),
+                      }
+                    : {}),
+                }))
+              : [],
+            proposedPlans: copiesVisibleHistory
+              ? source.proposedPlans.map((plan) => ({
+                  ...plan,
+                  turnId: mapTurnId(plan.turnId),
+                }))
+              : [],
+            activities: copiesVisibleHistory
+              ? source.activities.map((activity) => ({
+                  ...activity,
+                  id: forkedActivityId(payload.threadId, activity.id),
+                  turnId: mapTurnId(activity.turnId),
+                }))
+              : [],
+            checkpoints: copiesVisibleHistory
+              ? source.checkpoints.map((checkpoint) => ({
+                  ...checkpoint,
+                  turnId: forkedTurnId(payload.threadId, checkpoint.turnId),
+                  assistantMessageId: mapMessageId(checkpoint.assistantMessageId),
+                }))
+              : [],
             session: null,
           },
           event.type,
@@ -507,6 +528,10 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.isSideChat !== undefined ? { isSideChat: payload.isSideChat } : {}),
+            ...(payload.isSideChat === false
+              ? { isSideChat: false, sideChatParentThreadId: null, deletedAt: null }
+              : {}),
             ...(payload.modelSelection !== undefined
               ? { modelSelection: payload.modelSelection }
               : {}),
@@ -750,27 +775,30 @@ export function projectEvent(
         // checkpoint, but don't settle a turn its session is still running.
         const turnStillRunning =
           thread.session?.status === "running" && thread.session.activeTurnId === payload.turnId;
+        const diffTargetsLatestTurn =
+          thread.latestTurn === null || thread.latestTurn.turnId === payload.turnId;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             checkpoints,
-            latestTurn: turnStillRunning
-              ? thread.latestTurn
-              : {
-                  turnId: payload.turnId,
-                  state: checkpointStatusToLatestTurnState(payload.status),
-                  requestedAt:
-                    thread.latestTurn?.turnId === payload.turnId
-                      ? thread.latestTurn.requestedAt
-                      : payload.completedAt,
-                  startedAt:
-                    thread.latestTurn?.turnId === payload.turnId
-                      ? (thread.latestTurn.startedAt ?? payload.completedAt)
-                      : payload.completedAt,
-                  completedAt: payload.completedAt,
-                  assistantMessageId: payload.assistantMessageId,
-                },
+            latestTurn:
+              turnStillRunning || !diffTargetsLatestTurn
+                ? thread.latestTurn
+                : {
+                    turnId: payload.turnId,
+                    state: checkpointStatusToLatestTurnState(payload.status),
+                    requestedAt:
+                      thread.latestTurn?.turnId === payload.turnId
+                        ? thread.latestTurn.requestedAt
+                        : payload.completedAt,
+                    startedAt:
+                      thread.latestTurn?.turnId === payload.turnId
+                        ? (thread.latestTurn.startedAt ?? payload.completedAt)
+                        : payload.completedAt,
+                    completedAt: payload.completedAt,
+                    assistantMessageId: payload.assistantMessageId,
+                  },
             updatedAt: event.occurredAt,
           }),
         };

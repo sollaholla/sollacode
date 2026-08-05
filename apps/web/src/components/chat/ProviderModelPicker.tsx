@@ -39,6 +39,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   activeProviderIconClassName?: string;
   compact?: boolean;
+  iconOnly?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
@@ -150,17 +151,31 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
   const trigger = (
     <ComposerControl
-      aria-label={props.triggerAriaLabel}
+      aria-label={
+        props.triggerAriaLabel ??
+        (props.iconOnly ? `Choose model, currently ${triggerLabel}` : undefined)
+      }
+      title={props.iconOnly ? triggerLabel : undefined}
       variant={props.triggerVariant ?? "ghost"}
       data-chat-provider-model-picker="true"
+      data-chat-composer-control-display={props.iconOnly ? "icon" : "label"}
       className={cn(
         "min-w-0 justify-between whitespace-nowrap",
-        props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
+        props.iconOnly
+          ? "size-7 shrink-0 justify-center px-0"
+          : props.compact
+            ? "max-w-42 shrink-0"
+            : "max-w-48 shrink-0 sm:max-w-56",
         props.triggerClassName,
       )}
       disabled={props.disabled}
     >
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span
+        className={cn(
+          "flex min-w-0 items-center gap-1.5",
+          props.iconOnly ? "justify-center" : "flex-1",
+        )}
+      >
         {activeEntry ? (
           <ProviderInstanceIcon
             driverKind={activeEntry.driverKind}
@@ -176,16 +191,20 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             )}
           />
         ) : null}
-        <Tooltip>
-          <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-            {triggerTitle}
-          </TooltipTrigger>
-          <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-        </Tooltip>
+        {props.iconOnly ? null : (
+          <Tooltip>
+            <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
+              {triggerTitle}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+          </Tooltip>
+        )}
       </span>
-      <span aria-hidden="true" className="flex items-center">
-        <ComposerControlChevron />
-      </span>
+      {props.iconOnly ? null : (
+        <span aria-hidden="true" className="flex items-center">
+          <ComposerControlChevron />
+        </span>
+      )}
     </ComposerControl>
   );
 

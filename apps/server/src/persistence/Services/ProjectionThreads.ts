@@ -27,6 +27,8 @@ export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
+  isSideChat: Schema.optionalKey(Schema.Boolean),
+  sideChatParentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,

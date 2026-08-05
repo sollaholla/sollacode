@@ -21,6 +21,7 @@ import {
   MessageId,
   ProjectId,
   ProviderItemId,
+  RuntimeRequestId,
   type ServerSettings,
   ThreadId,
   TurnId,
@@ -30,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Metric from "effect/Metric";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -44,17 +46,23 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
+import { PROVIDER_OVERLOAD_RETRY_REASON_PREFIX } from "../../provider/providerOverloadRetry.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionLive,
+  runtimeEventWorkObservation,
   runtimeEventToActivities,
 } from "./ProviderRuntimeIngestion.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import {
+  ThreadWorkScheduler,
+  type ThreadWorkSchedulerShape,
+} from "../Services/ThreadWorkScheduler.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -69,6 +77,77 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+
+describe("provider runtime work observation", () => {
+  const base = {
+    provider: ProviderDriverKind.make("codex"),
+    threadId: asThreadId("thread-runtime-observation"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    turnId: asTurnId("turn-runtime-observation"),
+  } as const;
+
+  it("classifies tools, subagents, compaction, retries, and provider interaction", () => {
+    expect(
+      runtimeEventWorkObservation({
+        ...base,
+        type: "item.started",
+        eventId: asEventId("runtime-observation-tool"),
+        payload: { itemType: "command_execution" },
+      }),
+    ).toEqual({
+      activeTurnId: asTurnId("turn-runtime-observation"),
+      phase: "tool-running",
+    });
+    expect(
+      runtimeEventWorkObservation({
+        ...base,
+        type: "item.started",
+        eventId: asEventId("runtime-observation-subagent"),
+        payload: { itemType: "collab_agent_tool_call" },
+      }),
+    ).toEqual({
+      activeTurnId: asTurnId("turn-runtime-observation"),
+      phase: "subagent-running",
+    });
+    expect(
+      runtimeEventWorkObservation({
+        ...base,
+        type: "item.started",
+        eventId: asEventId("runtime-observation-compaction"),
+        payload: { itemType: "context_compaction" },
+      }),
+    ).toEqual({
+      activeTurnId: asTurnId("turn-runtime-observation"),
+      phase: "context-compacting",
+    });
+    expect(
+      runtimeEventWorkObservation({
+        ...base,
+        type: "session.state.changed",
+        eventId: asEventId("runtime-observation-retry"),
+        payload: {
+          state: "running",
+          reason: `${PROVIDER_OVERLOAD_RETRY_REASON_PREFIX} upstream unavailable`,
+        },
+      }),
+    ).toEqual({
+      activeTurnId: asTurnId("turn-runtime-observation"),
+      phase: "provider-retrying",
+    });
+    expect(
+      runtimeEventWorkObservation({
+        ...base,
+        type: "user-input.requested",
+        eventId: asEventId("runtime-observation-input"),
+        requestId: RuntimeRequestId.make("request-runtime-observation"),
+        payload: { questions: [] },
+      }),
+    ).toEqual({
+      activeTurnId: asTurnId("turn-runtime-observation"),
+      phase: "waiting-provider-interaction",
+    });
+  });
+});
 
 describe("provider usage activity projection", () => {
   it("preserves typed provider rate-limit payloads for the usage UI", () => {
@@ -152,19 +231,31 @@ describe("provider overload retry activity projection", () => {
       turnId: asTurnId("turn-overload"),
       type: "session.state.changed" as const,
     };
+    const activities = runtimeEventToActivities({
+      ...base,
+      payload: {
+        state: "running",
+        reason: "provider_overloaded:retrying;attempt=2;max=5;delay_ms=1000",
+      },
+    });
+    expect(activities).toEqual([
+      expect.objectContaining({
+        id: "provider-upstream-retry:thread-overload:turn-overload",
+        kind: "provider.overload.retrying",
+        summary: "Provider unavailable — retrying shortly",
+        turnId: "turn-overload",
+      }),
+    ]);
     expect(
       runtimeEventToActivities({
         ...base,
-        payload: {
-          state: "running",
-          reason: "provider_overloaded:retrying;attempt=2;max=5;delay_ms=1000",
-        },
+        eventId: asEventId("provider-overload-retry-later"),
+        payload: { state: "running", reason: "provider_overloaded:retrying;attempt=3" },
       }),
     ).toEqual([
       expect.objectContaining({
+        id: activities[0]?.id,
         kind: "provider.overload.retrying",
-        summary: "Provider overloaded — retrying shortly",
-        turnId: "turn-overload",
       }),
     ]);
     expect(
@@ -172,6 +263,25 @@ describe("provider overload retry activity projection", () => {
         ...base,
         eventId: asEventId("ordinary-running"),
         payload: { state: "running", reason: "working" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not append a visible error row for a durable upstream retry", () => {
+    expect(
+      runtimeEventToActivities({
+        eventId: asEventId("retryable-runtime-error"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-07-29T15:00:00.000Z",
+        threadId: asThreadId("thread-overload"),
+        turnId: asTurnId("turn-overload"),
+        type: "runtime.error",
+        payload: {
+          message: "pxpipe upstream unreachable",
+          class: "provider_error",
+          failureKind: "retryable-upstream",
+        },
+        providerRefs: {},
       }),
     ).toEqual([]);
   });
@@ -412,6 +522,27 @@ describe("ProviderRuntimeIngestion", () => {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
+    const runtimeObservations: Array<Parameters<ThreadWorkSchedulerShape["observeRuntime"]>[0]> =
+      [];
+    const threadWorkSchedulerLayer = Layer.succeed(ThreadWorkScheduler, {
+      start: () => Effect.void,
+      wake: () => Effect.void,
+      registerHandler: () => Effect.void,
+      unregisterHandler: () => Effect.void,
+      observeRuntime: (input) =>
+        Effect.sync(() => {
+          runtimeObservations.push(input);
+          return true;
+        }),
+      snapshot: Effect.succeed({
+        activeGlobal: 0,
+        activeByProvider: {},
+        activeRecoveryByProvider: {},
+        activeThreads: [],
+        schedulerWindowSize: 0,
+        runtimeByThread: {},
+      }),
+    } satisfies ThreadWorkSchedulerShape);
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -430,6 +561,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeProviderRegistryLayer(options?.providers)),
+      Layer.provideMerge(threadWorkSchedulerLayer),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
@@ -509,6 +641,7 @@ describe("ProviderRuntimeIngestion", () => {
       startSessionCalls: provider.startSessionCalls,
       sendTurnCalls: provider.sendTurnCalls,
       failNextSendTurn: provider.failNextSendTurn,
+      runtimeObservations,
       drain,
     };
   }
@@ -553,6 +686,11 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+    expect(harness.runtimeObservations).toContainEqual({
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("turn-1"),
+      phase: "provider-running",
+    });
   });
 
   it("fails over exactly once from an exhausted active provider and hands off bounded JSON", async () => {
@@ -3495,6 +3633,45 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(activity?.summary).toBe("Context compacted");
     expect(activity?.tone).toBe("info");
+  });
+
+  it("records context compaction duration from server-owned runtime events", async () => {
+    const harness = await createHarness();
+    const providerInstanceId = ProviderInstanceId.make("compaction-metrics-provider");
+
+    harness.emit({
+      type: "item.started",
+      eventId: asEventId("evt-context-compaction-metric-started"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context-compaction-metric"),
+      itemId: asItemId("context-compaction-metric-item"),
+      payload: { itemType: "context_compaction", status: "inProgress" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-context-compaction-metric-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      createdAt: "2026-01-01T00:00:03.500Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-context-compaction-metric"),
+      itemId: asItemId("context-compaction-metric-item"),
+      payload: { itemType: "context_compaction", status: "completed" },
+    });
+    await harness.drain();
+
+    const snapshots = await runtime!.runPromise(Metric.snapshot);
+    const snapshot = snapshots.find(
+      (candidate): candidate is Extract<Metric.Metric.Snapshot, { readonly type: "Histogram" }> =>
+        candidate.type === "Histogram" &&
+        candidate.id === "t3_background_context_compaction_duration" &&
+        candidate.attributes?.provider === providerInstanceId,
+    );
+    expect(snapshot?.state.count).toBe(1);
+    expect(snapshot?.state.sum).toBe(2_500);
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {

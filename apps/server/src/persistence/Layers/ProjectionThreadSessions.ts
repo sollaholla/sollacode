@@ -28,6 +28,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode,
           active_turn_id,
           last_error,
+          failure_kind,
           updated_at
         )
         VALUES (
@@ -38,6 +39,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.runtimeMode},
           ${row.activeTurnId},
           ${row.lastError},
+          ${row.failureKind ?? null},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -48,6 +50,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode = excluded.runtime_mode,
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
+          failure_kind = excluded.failure_kind,
           updated_at = excluded.updated_at
       `,
   });
@@ -65,6 +68,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          failure_kind AS "failureKind",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}

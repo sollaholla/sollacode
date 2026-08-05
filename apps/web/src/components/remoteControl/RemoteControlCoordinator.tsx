@@ -8,6 +8,7 @@ import type {
   RemoteControlHostStreamEvent,
   RemoteControlSession,
 } from "@t3tools/contracts";
+import { REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH } from "@t3tools/contracts";
 import { MonitorUpIcon, ShieldCheckIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -23,6 +24,7 @@ import {
   stopStream,
   supportsRemoteControlVideo,
 } from "./remoteControlEncoder";
+import { createRemoteControlVideoPublishQueue } from "./remoteControlVideoPublishQueue";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
   isRemoteControlDeviceRemembered,
@@ -250,29 +252,66 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     const mimeType = selectRemoteControlMimeType();
     if (!mimeType) return;
 
-    const publishChunk = async (blob: Blob, isInit: boolean, displayId: string | undefined) => {
-      if (cancelled || blob.size === 0) return;
-      const data = await encodeBlobToBase64(blob);
+    const handleFailure = (cause: unknown) => {
       if (cancelled) return;
-      const outcome = await publishVideoChunk({
+      cancelled = true;
+      publishQueue.close();
+      const message =
+        cause instanceof Error && cause.message.trim()
+          ? cause.message
+          : "Solla Code could not encode this screen.";
+      setCaptureError(message);
+      setActive((current) =>
+        current?.session.sessionId === active.session.sessionId ? null : current,
+      );
+      void endByHost({
         environmentId,
         input: {
           clientId,
           connectionId: active.connectionId,
-          chunk: {
-            sessionId: active.session.sessionId,
-            sequence: sequence++,
-            capturedAt: new Date().toISOString(),
-            mimeType,
-            isInit,
-            data,
-            ...(displayId !== undefined ? { displayId } : {}),
-            ...(displaysRef.current.length > 0 ? { displays: displaysRef.current } : {}),
-          },
+          sessionId: active.session.sessionId,
+          failureReason: message,
         },
       });
-      if (outcome._tag === "Failure") throw commandError(outcome);
     };
+
+    const publishQueue = createRemoteControlVideoPublishQueue<{
+      readonly blob: Blob;
+      readonly capturedAt: string;
+      readonly displayId: string | undefined;
+      readonly isInit: boolean;
+    }>({
+      // A binary payload this large encodes to the contract's 4 MB base64
+      // ceiling. Keeping this as the total retained budget also guarantees one
+      // malformed MediaRecorder event cannot allocate an oversized base64 copy.
+      maxPendingBytes: Math.floor(REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH / 4) * 3,
+      pauseAtBytes: 512 * 1_024,
+      resumeAtBytes: 128 * 1_024,
+      sizeOf: (item) => item.blob.size,
+      publish: async ({ blob, capturedAt, displayId, isInit }) => {
+        const data = await encodeBlobToBase64(blob);
+        if (cancelled) return;
+        const outcome = await publishVideoChunk({
+          environmentId,
+          input: {
+            clientId,
+            connectionId: active.connectionId,
+            chunk: {
+              sessionId: active.session.sessionId,
+              sequence: sequence++,
+              capturedAt,
+              mimeType,
+              isInit,
+              data,
+              ...(displayId !== undefined ? { displayId } : {}),
+              ...(displaysRef.current.length > 0 ? { displays: displaysRef.current } : {}),
+            },
+          },
+        });
+        if (outcome._tag === "Failure") throw commandError(outcome);
+      },
+      onError: handleFailure,
+    });
 
     const startRecorder = async () => {
       const catalog = await bridge.listRemoteControlCaptureSources();
@@ -294,22 +333,32 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         stopStream(stream);
         return;
       }
-      recorder = new MediaRecorder(stream, {
+      const currentRecorder = new MediaRecorder(stream, {
         mimeType,
         videoBitsPerSecond: REMOTE_CONTROL_VIDEO_BITS_PER_SECOND,
       });
+      recorder = currentRecorder;
       // MediaRecorder emits the container header in its first blob, so that one
       // is the init segment the broker retains for late-joining controllers.
       let isFirstBlob = true;
-      recorder.addEventListener("dataavailable", (event) => {
+      currentRecorder.addEventListener("dataavailable", (event) => {
+        if (cancelled || event.data.size === 0) return;
         const isInit = isFirstBlob;
         isFirstBlob = false;
-        void publishChunk(event.data, isInit, activeDisplayIdRef.current).catch(handleFailure);
+        publishQueue.enqueue(
+          {
+            blob: event.data,
+            capturedAt: new Date().toISOString(),
+            displayId: activeDisplayIdRef.current,
+            isInit,
+          },
+          currentRecorder,
+        );
       });
-      recorder.addEventListener("error", () =>
+      currentRecorder.addEventListener("error", () =>
         handleFailure(new Error("The screen encoder stopped unexpectedly.")),
       );
-      recorder.start(REMOTE_CONTROL_TIMESLICE_MS);
+      currentRecorder.start(REMOTE_CONTROL_TIMESLICE_MS);
     };
 
     // Switching monitors means a new stream, which means a new container: stop
@@ -328,33 +377,12 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       }, 0);
     };
 
-    const handleFailure = (cause: unknown) => {
-      if (cancelled) return;
-      cancelled = true;
-      const message =
-        cause instanceof Error && cause.message.trim()
-          ? cause.message
-          : "Solla Code could not encode this screen.";
-      setCaptureError(message);
-      setActive((current) =>
-        current?.session.sessionId === active.session.sessionId ? null : current,
-      );
-      void endByHost({
-        environmentId,
-        input: {
-          clientId,
-          connectionId: active.connectionId,
-          sessionId: active.session.sessionId,
-          failureReason: message,
-        },
-      });
-    };
-
     displaySelectionListenerRef.current = applyDisplaySelection;
     void startRecorder().catch(handleFailure);
 
     return () => {
       cancelled = true;
+      publishQueue.close();
       displaySelectionListenerRef.current = null;
       if (restartTimer !== null) window.clearTimeout(restartTimer);
       try {

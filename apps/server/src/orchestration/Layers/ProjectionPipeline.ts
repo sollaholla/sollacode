@@ -3,11 +3,13 @@ import {
   type ChatAttachment,
   EventId,
   MessageId,
+  ProviderInstanceId,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -15,10 +17,15 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  isProviderAuthenticationFailure,
+  shouldAgentContinueAfterReply,
+} from "@t3tools/shared/agentMode";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
+import { ThreadWorkObligationRepository } from "../../persistence/Services/ThreadWorkObligations.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -46,6 +53,7 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import { ThreadWorkObligationRepositoryLive } from "../../persistence/Layers/ThreadWorkObligations.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   OrchestrationProjectionPipeline,
@@ -57,6 +65,15 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import {
+  activeTurnWorkSourceId,
+  startupResumeSourceTurnId,
+  threadWorkObligationId,
+} from "../agentModeContinuation.ts";
+import {
+  increment,
+  threadWorkAuthenticationTransitionsTotal,
+} from "../../observability/Metrics.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -68,6 +85,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  threadWork: "projection.thread-work",
 } as const;
 
 type ProjectorName =
@@ -463,6 +481,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const threadWorkObligationRepository = yield* ThreadWorkObligationRepository;
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -689,6 +708,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            isSideChat: false,
+            sideChatParentThreadId: null,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
@@ -722,13 +743,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            isSideChat: event.payload.isSideChat === true,
+            sideChatParentThreadId:
+              event.payload.isSideChat === true
+                ? (event.payload.sideChatParentThreadId ?? event.payload.sourceThreadId)
+                : null,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             latestTurnId:
-              source.value.latestTurnId === null
+              event.payload.isSideChat === true || source.value.latestTurnId === null
                 ? null
                 : forkedProjectionTurnId(event.payload.threadId, source.value.latestTurnId),
             createdAt: event.payload.createdAt,
@@ -851,6 +877,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.isSideChat !== undefined
+              ? { isSideChat: event.payload.isSideChat }
+              : {}),
+            ...(event.payload.isSideChat === false
+              ? { isSideChat: false, sideChatParentThreadId: null, deletedAt: null }
+              : {}),
             ...(event.payload.modelSelection !== undefined
               ? { modelSelection: event.payload.modelSelection }
               : {}),
@@ -1033,9 +1065,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          // Checkpoint capture is asynchronous and can arrive after a newer
+          // provider turn has already completed. Never let that late diff move
+          // the thread's latest-turn pointer backward; doing so makes clients
+          // inspect an older reply and display a false auto-resume state.
+          const keepsCurrentLatestTurn =
+            existingRow.value.latestTurnId !== null &&
+            existingRow.value.latestTurnId !== event.payload.turnId;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.turnId,
+            latestTurnId: keepsCurrentLatestTurn
+              ? existingRow.value.latestTurnId
+              : event.payload.turnId,
             updatedAt: event.occurredAt,
           });
           if (!deferThreadShellSummary) {
@@ -1092,6 +1133,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.forked": {
+          if (event.payload.isSideChat === true) return;
           const sourceRows = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.sourceThreadId,
           });
@@ -1205,6 +1247,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
         case "thread.forked": {
+          if (event.payload.isSideChat === true) return;
           const sourceRows = yield* projectionThreadProposedPlanRepository.listByThreadId({
             threadId: event.payload.sourceThreadId,
           });
@@ -1276,6 +1319,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
         case "thread.forked": {
+          if (event.payload.isSideChat === true) return;
           const sourceRows = yield* projectionThreadActivityRepository.listByThreadId({
             threadId: event.payload.sourceThreadId,
           });
@@ -1358,6 +1402,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
         lastError: event.payload.session.lastError,
+        failureKind: event.payload.session.failureKind ?? null,
         updatedAt: event.payload.session.updatedAt,
       });
     });
@@ -1367,6 +1412,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
         case "thread.forked": {
+          if (event.payload.isSideChat === true) return;
           const sourceRows = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.sourceThreadId,
           });
@@ -1477,13 +1523,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           if (Option.isSome(existingTurn)) {
-            const nextState =
-              existingTurn.value.state === "completed" || existingTurn.value.state === "error"
-                ? existingTurn.value.state
-                : "running";
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
-              state: nextState,
+              // The provider session is the authoritative liveness signal.
+              // Failover/reconnect can briefly project ready or stopped before
+              // the same provider turn is adopted again; preserving that old
+              // terminal state leaves an actively streaming turn marked as
+              // completed and later produces a false Resume affordance.
+              state: "running",
               pendingMessageId:
                 existingTurn.value.pendingMessageId ??
                 (Option.isSome(pendingTurnStart) ? pendingTurnStart.value.messageId : null),
@@ -1507,6 +1554,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 (Option.isSome(pendingTurnStart)
                   ? pendingTurnStart.value.requestedAt
                   : event.occurredAt),
+              completedAt: null,
             });
           } else {
             yield* projectionTurnRepository.upsertByTurnId({
@@ -1852,6 +1900,302 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    const applyThreadWorkProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyThreadWorkProjection",
+    )(function* (event, _attachmentSideEffects) {
+      if (
+        event.type === "thread.deleted" ||
+        event.type === "thread.settled" ||
+        event.type === "thread.session-stop-requested" ||
+        event.type === "thread.turn-interrupt-requested"
+      ) {
+        yield* threadWorkObligationRepository.cancelByThread({
+          threadId: event.payload.threadId,
+          updatedAt: event.occurredAt,
+          blockedReason: event.type,
+          // Stops and interrupts end the *current* work, but a user message
+          // still parked for delivery ("Sent — waiting") must survive them and
+          // dispatch once the thread is idle — cancelling it here silently
+          // dropped real user input. Only deleting or settling the thread may
+          // discard those deliveries.
+          mode:
+            event.type === "thread.deleted" || event.type === "thread.settled"
+              ? "thread-terminal"
+              : "turn-interrupt",
+        });
+        return;
+      }
+
+      if (event.type === "thread.turn-start-requested") {
+        const sourceMessage = yield* projectionThreadMessageRepository.getByMessageId({
+          messageId: event.payload.messageId,
+        });
+        if (
+          Option.isSome(sourceMessage) &&
+          sourceMessage.value.role === "user" &&
+          sourceMessage.value.inputOrigin !== "agent-loop"
+        ) {
+          const startupSourceTurnId = startupResumeSourceTurnId({
+            threadId: event.payload.threadId,
+            messageId: event.payload.messageId,
+          });
+          const sourceTurnId =
+            startupSourceTurnId ?? activeTurnWorkSourceId(event.payload.messageId);
+          const kind =
+            startupSourceTurnId === null
+              ? ("active-turn-recovery" as const)
+              : ("startup-resume" as const);
+          const existing = yield* threadWorkObligationRepository.getByKey({
+            threadId: event.payload.threadId,
+            sourceTurnId,
+            kind,
+          });
+          // Reapplying the same event must not cancel work that it already
+          // created. The deterministic row is the projector's replay receipt.
+          if (Option.isSome(existing)) return;
+
+          // A newer user message supersedes queued *synthetic* work — agent
+          // continuations, startup resumes, retries — but never earlier user
+          // messages: those deliver FIFO once the thread frees up, exactly as
+          // the "Sent" indicator promised. Cancelling them here meant every
+          // follow-up send silently destroyed the one before it.
+          yield* threadWorkObligationRepository.cancelByThread({
+            threadId: event.payload.threadId,
+            updatedAt: event.occurredAt,
+            blockedReason: "superseded by user turn",
+            mode: "user-supersede",
+          });
+
+          const thread = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (
+            Option.isNone(thread) ||
+            thread.value.settledOverride === "settled" ||
+            thread.value.deletedAt !== null
+          ) {
+            return;
+          }
+          const session = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const providerInstanceId =
+            event.payload.modelSelection?.instanceId ??
+            (Option.isSome(session) && session.value.providerInstanceId !== null
+              ? session.value.providerInstanceId
+              : thread.value.modelSelection.instanceId);
+          yield* threadWorkObligationRepository.insert({
+            obligationId: threadWorkObligationId({
+              threadId: event.payload.threadId,
+              sourceTurnId,
+              kind,
+            }),
+            threadId: event.payload.threadId,
+            sourceTurnId,
+            kind,
+            state: "pending",
+            providerInstanceId,
+            attempt: 0,
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            createdAt: event.occurredAt,
+            updatedAt: event.occurredAt,
+          });
+        }
+        return;
+      }
+
+      if (
+        event.type === "thread.message-sent" &&
+        event.payload.role === "assistant" &&
+        event.payload.turnId !== null &&
+        !event.payload.streaming
+      ) {
+        const projectedAssistant = yield* projectionThreadMessageRepository.getByMessageId({
+          messageId: event.payload.messageId,
+        });
+        const assistantText = Option.isSome(projectedAssistant)
+          ? projectedAssistant.value.text
+          : event.payload.text;
+        if (!isProviderAuthenticationFailure(assistantText)) return;
+        const thread = yield* projectionThreadRepository.getById({
+          threadId: event.payload.threadId,
+        });
+        if (
+          Option.isNone(thread) ||
+          thread.value.interactionMode !== "agent" ||
+          thread.value.settledOverride === "settled" ||
+          thread.value.deletedAt !== null
+        ) {
+          return;
+        }
+        const session = yield* projectionThreadSessionRepository.getByThreadId({
+          threadId: event.payload.threadId,
+        });
+        const providerInstanceId =
+          Option.isSome(session) && session.value.providerInstanceId !== null
+            ? session.value.providerInstanceId
+            : thread.value.modelSelection.instanceId;
+        const existing = yield* threadWorkObligationRepository.getByKey({
+          threadId: event.payload.threadId,
+          sourceTurnId: event.payload.turnId,
+          kind: "authentication-resume",
+        });
+        if (Option.isSome(existing)) return;
+
+        // Authentication loss supersedes every prior execution owner for the
+        // thread. Do this in the projector transaction before inserting the
+        // blocked replacement so an offline restart cannot run the original
+        // user turn and the auth resume as two separate turns. This sweep
+        // deliberately does NOT exempt active-turn-recovery: the auth resume
+        // redelivers the failing turn's message itself, so leaving that
+        // delivery row alive would run the turn twice.
+        yield* threadWorkObligationRepository.cancelByThread({
+          threadId: event.payload.threadId,
+          updatedAt: event.occurredAt,
+          blockedReason: "replaced by authentication-resume",
+          mode: "thread-terminal",
+        });
+        const inserted = yield* threadWorkObligationRepository.insert({
+          obligationId: threadWorkObligationId({
+            threadId: event.payload.threadId,
+            sourceTurnId: event.payload.turnId,
+            kind: "authentication-resume",
+          }),
+          threadId: event.payload.threadId,
+          sourceTurnId: event.payload.turnId,
+          kind: "authentication-resume",
+          state: "blocked-authentication",
+          providerInstanceId,
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: "provider authentication required",
+          createdAt: event.occurredAt,
+          updatedAt: event.occurredAt,
+        });
+        if (inserted) {
+          yield* increment(threadWorkAuthenticationTransitionsTotal, {
+            provider: providerInstanceId,
+            transition: "paused",
+          });
+        }
+        return;
+      }
+
+      if (
+        event.type !== "thread.session-set" ||
+        event.payload.session.status !== "ready" ||
+        event.payload.session.activeTurnId !== null
+      ) {
+        return;
+      }
+
+      const thread = yield* projectionThreadRepository.getById({
+        threadId: event.payload.threadId,
+      });
+      if (
+        Option.isNone(thread) ||
+        thread.value.interactionMode !== "agent" ||
+        thread.value.settledOverride === "settled" ||
+        thread.value.deletedAt !== null ||
+        thread.value.pendingApprovalCount > 0 ||
+        thread.value.pendingUserInputCount > 0 ||
+        thread.value.latestTurnId === null
+      ) {
+        return;
+      }
+
+      const turn = yield* projectionTurnRepository.getByTurnId({
+        threadId: event.payload.threadId,
+        turnId: thread.value.latestTurnId,
+      });
+      if (
+        Option.isNone(turn) ||
+        turn.value.state !== "completed" ||
+        turn.value.assistantMessageId === null ||
+        turn.value.completedAt === null ||
+        event.payload.session.updatedAt !== turn.value.completedAt ||
+        (thread.value.latestUserMessageAt !== null &&
+          thread.value.latestUserMessageAt > turn.value.completedAt)
+      ) {
+        return;
+      }
+
+      const assistantMessage = yield* projectionThreadMessageRepository.getByMessageId({
+        messageId: turn.value.assistantMessageId,
+      });
+      if (
+        Option.isNone(assistantMessage) ||
+        assistantMessage.value.role !== "assistant" ||
+        assistantMessage.value.isStreaming ||
+        assistantMessage.value.turnId !== turn.value.turnId
+      ) {
+        return;
+      }
+
+      const authenticationFailure = isProviderAuthenticationFailure(assistantMessage.value.text);
+      if (!authenticationFailure && !shouldAgentContinueAfterReply(assistantMessage.value.text)) {
+        return;
+      }
+      if (authenticationFailure) return;
+
+      if (turn.value.pendingMessageId !== null) {
+        const sourceMessage = yield* projectionThreadMessageRepository.getByMessageId({
+          messageId: turn.value.pendingMessageId,
+        });
+        if (
+          Option.isNone(sourceMessage) ||
+          sourceMessage.value.role !== "user" ||
+          sourceMessage.value.text.startsWith("Settings updated:")
+        ) {
+          return;
+        }
+        const messages = yield* projectionThreadMessageRepository.listByThreadId({
+          threadId: event.payload.threadId,
+        });
+        const sourceMessageIndex = messages.findIndex(
+          (message) => message.messageId === sourceMessage.value.messageId,
+        );
+        if (
+          sourceMessageIndex < 0 ||
+          messages
+            .slice(sourceMessageIndex + 1)
+            .some((message) => message.role === "user" && message.inputOrigin !== "agent-loop")
+        ) {
+          // A real user turn always outranks synthetic Agent continuation,
+          // including the narrow assistant-complete -> session-ready gap.
+          return;
+        }
+      }
+
+      const kind = "agent-continuation" as const;
+      const providerInstanceId =
+        event.payload.session.providerInstanceId ?? thread.value.modelSelection.instanceId;
+      yield* threadWorkObligationRepository.insert({
+        obligationId: threadWorkObligationId({
+          threadId: event.payload.threadId,
+          sourceTurnId: turn.value.turnId,
+          kind,
+        }),
+        threadId: event.payload.threadId,
+        sourceTurnId: turn.value.turnId,
+        kind,
+        state: "pending",
+        providerInstanceId,
+        attempt: 0,
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: null,
+        createdAt: event.occurredAt,
+        updatedAt: event.occurredAt,
+      });
+    });
+
     const projectors: ReadonlyArray<ProjectorDefinition> = [
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -1889,6 +2233,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,
         apply: (event, attachmentSideEffects) =>
           applyThreadsProjection(event, attachmentSideEffects, false),
+      },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.threadWork,
+        apply: applyThreadWorkProjection,
       },
     ];
 
@@ -1937,6 +2285,347 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ({ threadId }) => refreshThreadShellSummary(ThreadId.make(threadId)),
         { concurrency: 1 },
       );
+    });
+
+    /**
+     * Settle work the previous process was in the middle of when it died.
+     *
+     * This runs inside `bootstrap`, which the engine awaits once before it
+     * starts its command worker — so no provider session or turn can be live
+     * here, and anything still marked in-flight is by definition orphaned.
+     *
+     * A graceful quit projects `thread.session-set(stopped)`, which settles the
+     * running turn to "incomplete" on the way down. A hard kill (crash, deploy,
+     * SIGKILL) projects nothing, so the turn stays "running" forever: the UI
+     * counts "Working for ..." indefinitely, and — because the recovery scan
+     * below only considers turns in ('completed','incomplete','error') — no
+     * resume obligation is ever enqueued. Observed 2026-08-05: a turn sat
+     * "running" for 95 minutes after a restart and only settled when the user
+     * sent a new message.
+     *
+     * Assistant messages are reconciled too: a stream interrupted mid-flight
+     * stays `is_streaming = 1`, and the recovery scan inner-joins on
+     * `is_streaming = 0`, so an orphaned stream would hide its turn from
+     * recovery just as effectively.
+     */
+    const reconcileOrphanedInFlightWork = Effect.gen(function* () {
+      const fallbackNow = DateTime.formatIso(yield* DateTime.now);
+      const settledAt = yield* sql<{
+        readonly now: string;
+      }>`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS "now"`.pipe(
+        Effect.map((rows) => rows[0]?.now ?? fallbackNow),
+      );
+
+      yield* sql`
+        UPDATE projection_thread_messages
+        SET is_streaming = 0
+        WHERE is_streaming = 1
+      `;
+      yield* sql`
+        UPDATE projection_turns
+        SET state = 'incomplete',
+            completed_at = COALESCE(completed_at, ${settledAt})
+        WHERE state = 'running'
+      `;
+      yield* sql`
+        UPDATE projection_thread_sessions
+        SET status = 'stopped',
+            active_turn_id = NULL,
+            updated_at = ${settledAt}
+        WHERE status IN ('running', 'starting')
+      `;
+
+      // Re-arm resumes that were retired without the thread ever recovering.
+      //
+      // The (thread, source turn, kind) key stops one turn being resumed
+      // twice, which is the right default — but it also meant a resume that
+      // was cancelled in a projection race, or that "completed" as an empty
+      // upstream timeout, could never be retried. The thread was left
+      // orphaned: no CLI, no work queued, and an "Auto-resuming…" badge that
+      // never resolved, because the projector declines to enqueue anything
+      // while a row for that key exists. Re-arming here restores the retry
+      // without weakening the key.
+      //
+      // Boot-only, so nothing is live and this cannot race the scheduler. A
+      // thread qualifies only if its newest turn either died mid-flight or
+      // finished having produced literally nothing, and no real user message
+      // has landed since — if someone already replied, they have moved on and
+      // their message drives the thread instead. `attempt` bounds it so an
+      // unrecoverable thread gives up after a few restarts instead of
+      // resurrecting forever.
+      yield* sql`
+        UPDATE thread_work_obligations
+        SET state = 'pending',
+            attempt = attempt + 1,
+            next_attempt_at = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            blocked_reason = NULL,
+            updated_at = ${settledAt}
+        WHERE kind = 'startup-resume'
+          AND state IN ('cancelled', 'completed')
+          AND attempt < 5
+          -- One row per thread. A thread accumulates a retired resume per
+          -- restart, and re-arming all of them would queue several redundant
+          -- resumes of the same conversation.
+          AND created_at = (
+            SELECT MAX(newest.created_at)
+            FROM thread_work_obligations newest
+            WHERE newest.thread_id = thread_work_obligations.thread_id
+              AND newest.kind = 'startup-resume'
+              AND newest.state IN ('cancelled', 'completed')
+          )
+          -- Never race work that is already queued or running for this thread.
+          AND NOT EXISTS (
+            SELECT 1 FROM thread_work_obligations live
+            WHERE live.thread_id = thread_work_obligations.thread_id
+              AND live.state NOT IN ('cancelled', 'completed')
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM projection_turns latest
+            WHERE latest.thread_id = thread_work_obligations.thread_id
+              AND latest.started_at = (
+                SELECT MAX(candidate.started_at)
+                FROM projection_turns candidate
+                WHERE candidate.thread_id = thread_work_obligations.thread_id
+              )
+              AND (
+                latest.state IN ('incomplete', 'error')
+                OR (
+                  latest.state = 'completed'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM projection_thread_messages produced
+                    WHERE produced.turn_id = latest.turn_id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM projection_thread_activities produced
+                    WHERE produced.turn_id = latest.turn_id
+                  )
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM projection_thread_messages newer
+                WHERE newer.thread_id = thread_work_obligations.thread_id
+                  AND newer.role = 'user'
+                  AND COALESCE(newer.input_origin, '') != 'agent-loop'
+                  AND newer.message_id NOT LIKE 'startup-auto-resume-message:%'
+                  -- Compared against the turn's END, not its start: a message
+                  -- sent *during* a turn is a steer, and the turn it steered is
+                  -- the one that died. Comparing against the start counted that
+                  -- steer as "the user moved on" and left the thread orphaned.
+                  AND newer.created_at > COALESCE(latest.completed_at, latest.started_at)
+              )
+          )
+      `;
+
+      // The recovery scan already ran inside `bootstrap`, before these rows
+      // settled, so it could not see them. Re-run it now that they have.
+      // Obligation inserts are ON CONFLICT DO NOTHING, so this is idempotent.
+      yield* backfillCurrentThreadWork;
+    }).pipe(
+      Effect.catchTag("SqlError", (sqlError) =>
+        Effect.fail(
+          toPersistenceSqlError("ProjectionPipeline.reconcileOrphanedInFlightWork:query")(sqlError),
+        ),
+      ),
+    );
+
+    const backfillCurrentThreadWork = Effect.gen(function* () {
+      let afterPendingRowId = 0;
+      while (true) {
+        const pendingRows = yield* sql<{
+          readonly rowId: number;
+          readonly threadId: string;
+          readonly messageId: string;
+          readonly inputOrigin: string | null;
+          readonly providerInstanceId: string | null;
+          readonly requestedAt: string;
+        }>`
+          SELECT
+            turns.row_id AS "rowId",
+            turns.thread_id AS "threadId",
+            turns.pending_message_id AS "messageId",
+            messages.input_origin AS "inputOrigin",
+            COALESCE(
+              sessions.provider_instance_id,
+              json_extract(threads.model_selection_json, '$.instanceId')
+            ) AS "providerInstanceId",
+            turns.requested_at AS "requestedAt"
+          FROM projection_turns AS turns
+          INNER JOIN projection_threads AS threads
+            ON threads.thread_id = turns.thread_id
+          INNER JOIN projection_thread_messages AS messages
+            ON messages.message_id = turns.pending_message_id
+            AND messages.thread_id = turns.thread_id
+            AND messages.role = 'user'
+          LEFT JOIN projection_thread_sessions AS sessions
+            ON sessions.thread_id = turns.thread_id
+          WHERE turns.row_id > ${afterPendingRowId}
+            AND turns.turn_id IS NULL
+            AND turns.state = 'pending'
+            AND turns.pending_message_id IS NOT NULL
+            AND threads.deleted_at IS NULL
+            AND threads.archived_at IS NULL
+            AND COALESCE(threads.settled_override, '') != 'settled'
+          ORDER BY turns.row_id ASC
+          LIMIT 128
+        `;
+        if (pendingRows.length === 0) break;
+
+        for (const row of pendingRows) {
+          if (row.providerInstanceId === null || row.inputOrigin === "agent-loop") continue;
+          const threadId = ThreadId.make(row.threadId);
+          const messageId = MessageId.make(row.messageId);
+          const startupSourceTurnId = startupResumeSourceTurnId({ threadId, messageId });
+          const sourceTurnId = startupSourceTurnId ?? activeTurnWorkSourceId(messageId);
+          const kind =
+            startupSourceTurnId === null
+              ? ("active-turn-recovery" as const)
+              : ("startup-resume" as const);
+          yield* threadWorkObligationRepository.insert({
+            obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
+            threadId,
+            sourceTurnId,
+            kind,
+            state: "pending",
+            providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
+            attempt: 0,
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            createdAt: row.requestedAt,
+            updatedAt: row.requestedAt,
+          });
+        }
+
+        afterPendingRowId = pendingRows.at(-1)!.rowId;
+        if (pendingRows.length < 128) break;
+      }
+
+      let afterThreadId = "";
+      while (true) {
+        const rows = yield* sql<{
+          readonly threadId: string;
+          readonly turnId: string;
+          readonly turnState: string;
+          readonly completedAt: string | null;
+          readonly assistantText: string;
+          readonly assistantUpdatedAt: string;
+          readonly sourceMessageText: string | null;
+          readonly latestUserMessageAt: string | null;
+          readonly sessionStatus: string | null;
+          readonly sessionUpdatedAt: string | null;
+          readonly sessionLastError: string | null;
+          readonly providerInstanceId: string | null;
+        }>`
+          SELECT
+            threads.thread_id AS "threadId",
+            turns.turn_id AS "turnId",
+            turns.state AS "turnState",
+            turns.completed_at AS "completedAt",
+            assistant.text AS "assistantText",
+            assistant.updated_at AS "assistantUpdatedAt",
+            source.text AS "sourceMessageText",
+            threads.latest_user_message_at AS "latestUserMessageAt",
+            sessions.status AS "sessionStatus",
+            sessions.updated_at AS "sessionUpdatedAt",
+            sessions.last_error AS "sessionLastError",
+            COALESCE(
+              sessions.provider_instance_id,
+              json_extract(threads.model_selection_json, '$.instanceId')
+            ) AS "providerInstanceId"
+          FROM projection_threads AS threads
+          INNER JOIN projection_turns AS turns
+            ON turns.thread_id = threads.thread_id
+            AND turns.turn_id = threads.latest_turn_id
+          INNER JOIN projection_thread_messages AS assistant
+            ON assistant.message_id = turns.assistant_message_id
+            AND assistant.role = 'assistant'
+            AND assistant.is_streaming = 0
+          LEFT JOIN projection_thread_messages AS source
+            ON source.message_id = turns.pending_message_id
+          LEFT JOIN projection_thread_sessions AS sessions
+            ON sessions.thread_id = threads.thread_id
+          WHERE threads.thread_id > ${afterThreadId}
+            AND threads.interaction_mode = 'agent'
+            AND threads.deleted_at IS NULL
+            AND threads.archived_at IS NULL
+            AND COALESCE(threads.settled_override, '') != 'settled'
+            AND threads.pending_approval_count = 0
+            AND threads.pending_user_input_count = 0
+            AND turns.turn_id IS NOT NULL
+            AND turns.state IN ('completed', 'incomplete', 'error')
+          ORDER BY threads.thread_id ASC
+          LIMIT 128
+        `;
+        if (rows.length === 0) break;
+
+        for (const row of rows) {
+          if (row.providerInstanceId === null) continue;
+          const authenticationFailure =
+            isProviderAuthenticationFailure(row.assistantText) ||
+            isProviderAuthenticationFailure(row.sessionLastError ?? "");
+          const isAuthenticationPause =
+            authenticationFailure &&
+            (row.sessionStatus === "error" ||
+              row.turnState === "incomplete" ||
+              row.turnState === "error");
+          const isAgentContinuation =
+            !authenticationFailure &&
+            row.turnState === "completed" &&
+            row.completedAt !== null &&
+            row.sessionStatus === "ready" &&
+            row.sessionUpdatedAt === row.completedAt &&
+            (row.latestUserMessageAt === null || row.latestUserMessageAt <= row.completedAt) &&
+            !row.sourceMessageText?.startsWith("Settings updated:") &&
+            shouldAgentContinueAfterReply(row.assistantText);
+          // A turn the process died inside of — a crash, a deploy, a kill —
+          // lands as "incomplete"/"error" without an auth failure. It matches
+          // neither branch above (continuation requires "completed"), so
+          // before this branch existed the thread simply stayed dead until the
+          // user typed again, even though `--auto-resume` was requested and a
+          // startup-resume handler was already registered. A deliberate user
+          // interrupt settles as "interrupted" and is excluded by the query,
+          // so it is never resumed here.
+          const isStartupResume =
+            !authenticationFailure &&
+            !isAgentContinuation &&
+            (row.turnState === "incomplete" || row.turnState === "error") &&
+            // A newer user message supersedes the dead turn; that send carries
+            // its own recovery obligation.
+            (row.latestUserMessageAt === null ||
+              row.latestUserMessageAt <= (row.completedAt ?? row.assistantUpdatedAt));
+          if (!isAuthenticationPause && !isAgentContinuation && !isStartupResume) continue;
+
+          const kind = isAuthenticationPause
+            ? ("authentication-resume" as const)
+            : isStartupResume
+              ? ("startup-resume" as const)
+              : ("agent-continuation" as const);
+          const threadId = ThreadId.make(row.threadId);
+          const sourceTurnId = TurnId.make(row.turnId);
+          yield* threadWorkObligationRepository.insert({
+            obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
+            threadId,
+            sourceTurnId,
+            kind,
+            state: isAuthenticationPause ? "blocked-authentication" : "pending",
+            providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
+            attempt: 0,
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: isAuthenticationPause ? "provider authentication required" : null,
+            createdAt: row.completedAt ?? row.assistantUpdatedAt,
+            updatedAt: row.completedAt ?? row.assistantUpdatedAt,
+          });
+        }
+
+        afterThreadId = rows.at(-1)!.threadId;
+        if (rows.length < 128) break;
+      }
     });
 
     const bootstrapProjector = (projector: ProjectorDefinition) => {
@@ -1992,6 +2681,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
+      Effect.andThen(backfillCurrentThreadWork),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.logDebug("orchestration projection pipeline bootstrapped").pipe(
@@ -2005,6 +2695,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     return {
       bootstrap,
+      reconcileOrphanedInFlightWork,
       projectEvent,
     } satisfies OrchestrationProjectionPipelineShape;
   },
@@ -2023,4 +2714,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionTurnRepositoryLive),
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
+  Layer.provideMerge(ThreadWorkObligationRepositoryLive),
 );

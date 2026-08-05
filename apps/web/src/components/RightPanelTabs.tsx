@@ -1,6 +1,19 @@
-import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  PreviewSessionSnapshot,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
-import { ClipboardList, FileDiff, Files, Globe2, Plus, TerminalSquare, X } from "lucide-react";
+import {
+  ClipboardList,
+  FileDiff,
+  Files,
+  Globe2,
+  MessagesSquare,
+  Plus,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
@@ -24,6 +37,21 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
+
+export interface SideChatTabStatus {
+  readonly hasConversation: boolean;
+  readonly isWorking: boolean;
+  readonly provider: {
+    readonly driverKind: ProviderDriverKind;
+    readonly displayName: string;
+    readonly accentColor?: string;
+  } | null;
+}
+
+export function shouldShowSideChatProviderIcon(status: SideChatTabStatus | null): boolean {
+  return status?.hasConversation === true && status.provider !== null;
+}
 
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -34,6 +62,7 @@ interface RightPanelTabsProps {
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   terminalLabelsById: ReadonlyMap<string, string>;
+  sideChatStatusByThreadId: ReadonlyMap<string, SideChatTabStatus>;
   onActivate: (surface: RightPanelSurface) => void;
   onCloseSurface: (surface: RightPanelSurface) => void;
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
@@ -44,9 +73,11 @@ interface RightPanelTabsProps {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddSideChat: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  sideChatAvailable: boolean;
   children: ReactNode;
   /**
    * Rendered below the surface content, splitting this column vertically.
@@ -60,9 +91,83 @@ const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the Solla Code desktop app.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
+  sideChat: "Side Chat requires a server thread on an updated Solla Code server.",
 } as const;
 
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
+
+export function resolveHorizontalTabWheelDelta(input: {
+  readonly deltaX: number;
+  readonly deltaY: number;
+  readonly deltaMode: number;
+  readonly viewportWidth: number;
+}): number {
+  const rawDelta = Math.abs(input.deltaX) >= Math.abs(input.deltaY) ? input.deltaX : input.deltaY;
+  if (rawDelta === 0) return 0;
+  if (input.deltaMode === 1) return rawDelta * 16;
+  if (input.deltaMode === 2) return rawDelta * Math.max(1, input.viewportWidth);
+  return rawDelta;
+}
+
+interface HorizontalTabViewport {
+  readonly clientWidth: number;
+  readonly scrollWidth: number;
+  scrollLeft: number;
+}
+
+interface HorizontalTabWheelEvent {
+  readonly deltaX: number;
+  readonly deltaY: number;
+  readonly deltaMode: number;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+  stopImmediatePropagation: () => void;
+}
+
+interface CapturedHorizontalTabWheelEvent extends HorizontalTabWheelEvent {
+  composedPath: () => readonly unknown[];
+}
+
+/** Routes a wheel gesture to the strip regardless of which nested control is hovered. */
+export function routeHorizontalTabWheel(
+  viewport: HorizontalTabViewport,
+  event: HorizontalTabWheelEvent,
+): boolean {
+  if (viewport.scrollWidth <= viewport.clientWidth) return false;
+
+  const delta = resolveHorizontalTabWheelDelta({
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
+    deltaMode: event.deltaMode,
+    viewportWidth: viewport.clientWidth,
+  });
+  if (delta === 0) return false;
+
+  const previousScrollLeft = viewport.scrollLeft;
+  const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+  const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, previousScrollLeft + delta));
+  if (nextScrollLeft === previousScrollLeft) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  viewport.scrollLeft = nextScrollLeft;
+  return true;
+}
+
+/**
+ * Claims a window-captured gesture only when it originated inside this strip.
+ *
+ * Window capture runs before document-level popovers and scroll locks, which
+ * otherwise get the first chance to cancel a wheel event aimed at a tab child.
+ */
+export function routeCapturedHorizontalTabWheel(
+  viewport: HorizontalTabViewport,
+  event: CapturedHorizontalTabWheelEvent,
+): boolean {
+  if (!event.composedPath().includes(viewport)) return false;
+  return routeHorizontalTabWheel(viewport, event);
+}
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
   return (
@@ -92,14 +197,16 @@ function SurfaceMenuItem(props: {
   return <DisabledReasonTooltip reason={props.disabledReason} trigger={item} />;
 }
 
-function RightPanelEmptyState(props: {
+export function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddSideChat: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
+  sideChatAvailable: boolean;
 }) {
   const actions = [
     {
@@ -133,6 +240,14 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+    },
+    {
+      label: "Side Chat",
+      description: "Fork an isolated, disposable sub-agent.",
+      icon: MessagesSquare,
+      available: props.sideChatAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.sideChat,
+      onClick: props.onAddSideChat,
     },
   ] as const;
 
@@ -211,6 +326,8 @@ function surfaceTitle(
       );
     case "plan":
       return "Plan";
+    case "side-chat":
+      return surface.title;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -243,10 +360,12 @@ function PreviewFavicon({ url }: { url: string | null }) {
 function SurfaceIcon({
   surface,
   sessions,
+  sideChatStatus,
   theme,
 }: {
   surface: RightPanelSurface;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  sideChatStatus: SideChatTabStatus | null;
   theme: "light" | "dark";
 }) {
   switch (surface.kind) {
@@ -272,6 +391,35 @@ function SurfaceIcon({
       return <TerminalSquare className="size-3.5 shrink-0" />;
     case "plan":
       return <ClipboardList className="size-3.5 shrink-0" />;
+    case "side-chat": {
+      const icon =
+        shouldShowSideChatProviderIcon(sideChatStatus) && sideChatStatus?.provider ? (
+          <ProviderInstanceIcon
+            driverKind={sideChatStatus.provider.driverKind}
+            displayName={sideChatStatus.provider.displayName}
+            accentColor={sideChatStatus.provider.accentColor}
+            className="size-3.5"
+            iconClassName="size-3.5"
+          />
+        ) : (
+          <MessagesSquare className="size-3.5 shrink-0" />
+        );
+      return (
+        <span
+          className="relative inline-flex size-3.5 shrink-0"
+          data-side-chat-working={sideChatStatus?.isWorking ? "true" : undefined}
+        >
+          {icon}
+          {sideChatStatus?.isWorking ? (
+            <span
+              aria-label="Side chat working"
+              className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-sky-500 ring-1 ring-background"
+              role="status"
+            />
+          ) : null}
+        </span>
+      );
+    }
   }
 }
 
@@ -350,6 +498,23 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     },
     [props],
   );
+  useEffect(() => {
+    const viewport = tabListRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (!viewport) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      routeCapturedHorizontalTabWheel(viewport, event);
+    };
+
+    // Own the gesture at the first DOM boundary. Document-level popovers and
+    // scroll locks run before a viewport listener and can otherwise cancel the
+    // event while the pointer is over a nested tab control. The router releases
+    // it untouched whenever the strip cannot move farther in that direction.
+    window.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    return () => window.removeEventListener("wheel", handleWheel, { capture: true });
+  }, []);
 
   useEffect(() => {
     const activeTab = tabListRef.current?.querySelector<HTMLElement>("[data-active-tab='true']");
@@ -382,6 +547,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             {props.surfaces.map((surface) => {
               const active = surface.id === props.activeSurfaceId;
               const pending = props.pendingSurfaceIds.has(surface.id);
+              const sideChatStatus =
+                surface.kind === "side-chat"
+                  ? (props.sideChatStatusByThreadId.get(surface.resourceId) ?? null)
+                  : null;
               const title = surfaceTitle(surface, props.previewSessions, props.terminalLabelsById);
               return (
                 <div
@@ -408,6 +577,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                           <SurfaceIcon
                             surface={surface}
                             sessions={props.previewSessions}
+                            sideChatStatus={sideChatStatus}
                             theme={resolvedTheme}
                           />
                           <span className="truncate">{title}</span>
@@ -477,6 +647,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     <FileDiff />
                     Diff
                   </SurfaceMenuItem>
+                  <SurfaceMenuItem
+                    available={props.sideChatAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.sideChat}
+                    onClick={props.onAddSideChat}
+                  >
+                    <MessagesSquare />
+                    Side Chat
+                  </SurfaceMenuItem>
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -491,9 +669,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddTerminal={props.onAddTerminal}
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
+            onAddSideChat={props.onAddSideChat}
             browserAvailable={props.browserAvailable}
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
+            sideChatAvailable={props.sideChatAvailable}
           />
         ) : (
           props.children

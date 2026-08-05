@@ -50,6 +50,13 @@ import Migration0034 from "./Migrations/034_ProjectionThreadsSnoozed.ts";
 import Migration0035 from "./Migrations/035_ProjectionThreadMessageInputOrigin.ts";
 import Migration0036 from "./Migrations/036_ProjectionThreadActivityKindIndex.ts";
 import Migration0037 from "./Migrations/037_ThreadHistoryQueryIndexes.ts";
+import Migration0038 from "./Migrations/038_ProjectionThreadsSideChat.ts";
+import Migration0039 from "./Migrations/039_RestorePromotedSideChats.ts";
+import Migration0040 from "./Migrations/040_RepairProjectionLatestTurn.ts";
+import Migration0041 from "./Migrations/041_ThreadWorkObligations.ts";
+import Migration0042 from "./Migrations/042_HardenThreadWorkObligations.ts";
+import Migration0043 from "./Migrations/043_SeedThreadWorkProjector.ts";
+import Migration0044 from "./Migrations/044_ProjectionThreadSessionFailureKind.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -99,6 +106,13 @@ export const migrationEntries = [
   [35, "ProjectionThreadMessageInputOrigin", Migration0035],
   [36, "ProjectionThreadActivityKindIndex", Migration0036],
   [37, "ThreadHistoryQueryIndexes", Migration0037],
+  [38, "ProjectionThreadsSideChat", Migration0038],
+  [39, "RestorePromotedSideChats", Migration0039],
+  [40, "RepairProjectionLatestTurn", Migration0040],
+  [41, "ThreadWorkObligations", Migration0041],
+  [42, "HardenThreadWorkObligations", Migration0042],
+  [43, "SeedThreadWorkProjector", Migration0043],
+  [44, "ProjectionThreadSessionFailureKind", Migration0044],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

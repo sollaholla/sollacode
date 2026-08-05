@@ -604,6 +604,8 @@ export const PreviewAutomationRequest = Schema.Struct({
   operation: PreviewAutomationOperation,
   input: Schema.Unknown,
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+  /** Absolute server deadline; hosts must discard work after this time. */
+  expiresAt: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type PreviewAutomationRequest = typeof PreviewAutomationRequest.Type;
 

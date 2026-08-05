@@ -142,12 +142,23 @@ const TerminalMetadataRemoveEvent = Schema.Struct({
   terminalId: Schema.String.check(Schema.isNonEmpty()),
 });
 
+export const TerminalResyncRequiredEvent = Schema.Struct({
+  type: Schema.Literal("resync-required"),
+  reason: Schema.Literal("slow-consumer"),
+});
+export type TerminalResyncRequiredEvent = typeof TerminalResyncRequiredEvent.Type;
+
 export const TerminalMetadataStreamEvent = Schema.Union([
   TerminalMetadataSnapshotEvent,
   TerminalMetadataUpsertEvent,
   TerminalMetadataRemoveEvent,
 ]);
 export type TerminalMetadataStreamEvent = typeof TerminalMetadataStreamEvent.Type;
+export const TerminalMetadataStreamItem = Schema.Union([
+  TerminalMetadataStreamEvent,
+  TerminalResyncRequiredEvent,
+]);
+export type TerminalMetadataStreamItem = typeof TerminalMetadataStreamItem.Type;
 
 const TerminalEventBaseSchema = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
@@ -214,6 +225,8 @@ export const TerminalEvent = Schema.Union([
   TerminalActivityEvent,
 ]);
 export type TerminalEvent = typeof TerminalEvent.Type;
+export const TerminalEventStreamItem = Schema.Union([TerminalEvent, TerminalResyncRequiredEvent]);
+export type TerminalEventStreamItem = typeof TerminalEventStreamItem.Type;
 
 const TerminalAttachSnapshotEvent = Schema.Struct({
   type: Schema.Literal("snapshot"),
@@ -231,6 +244,11 @@ export const TerminalAttachStreamEvent = Schema.Union([
   TerminalActivityEvent,
 ]);
 export type TerminalAttachStreamEvent = typeof TerminalAttachStreamEvent.Type;
+export const TerminalAttachStreamItem = Schema.Union([
+  TerminalAttachStreamEvent,
+  TerminalResyncRequiredEvent,
+]);
+export type TerminalAttachStreamItem = typeof TerminalAttachStreamItem.Type;
 
 export class TerminalCwdNotFoundError extends Schema.TaggedErrorClass<TerminalCwdNotFoundError>()(
   "TerminalCwdNotFoundError",

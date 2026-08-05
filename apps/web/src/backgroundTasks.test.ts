@@ -48,23 +48,32 @@ describe("background task store", () => {
     expect(canCancelBackgroundTask("writing")).toBe(false);
   });
 
-  it("keeps one transient voice transcription task and removes it when complete", () => {
+  it("scopes one transient voice transcription task to its owning composer", () => {
     resetBackgroundTasksForTests();
-    const first = startVoiceTranscriptionBackgroundTask();
-    const second = startVoiceTranscriptionBackgroundTask();
+    const first = startVoiceTranscriptionBackgroundTask("thread:main");
+    const blocked = startVoiceTranscriptionBackgroundTask("thread:side-chat");
 
-    expect(first).toBe(second);
+    expect(first).not.toBeNull();
+    expect(blocked).toBeNull();
     expect(useBackgroundTaskStore.getState().tasks).toHaveLength(1);
     expect(useBackgroundTaskStore.getState().tasks[0]).toMatchObject({
       kind: "voice-transcription",
+      ownerKey: "thread:main",
       status: "loading",
     });
 
-    useBackgroundTaskStore.getState().updateTask(second, {
+    useBackgroundTaskStore.getState().updateTask(first!, {
       status: "transcribing",
       progress: 55,
     });
-    finishVoiceTranscriptionBackgroundTask(second);
+    finishVoiceTranscriptionBackgroundTask(first!);
     expect(useBackgroundTaskStore.getState().tasks).toEqual([]);
+
+    const second = startVoiceTranscriptionBackgroundTask("thread:side-chat");
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    expect(useBackgroundTaskStore.getState().tasks[0]).toMatchObject({
+      ownerKey: "thread:side-chat",
+    });
   });
 });

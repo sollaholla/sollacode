@@ -30,6 +30,8 @@ export interface ThreadExportBackgroundTask extends BackgroundTaskBase {
 
 export interface VoiceTranscriptionBackgroundTask extends BackgroundTaskBase {
   readonly kind: "voice-transcription";
+  /** Composer surface that owns the recording, draft update, and busy UI. */
+  readonly ownerKey: string;
 }
 
 export type BackgroundTask = ThreadExportBackgroundTask | VoiceTranscriptionBackgroundTask;
@@ -39,7 +41,7 @@ interface BackgroundTaskStore {
   readonly panelOpen: boolean;
   setPanelOpen: (open: boolean) => void;
   startThreadExport: (threadRef: ScopedThreadRef, title: string) => string;
-  startVoiceTranscription: () => string;
+  startVoiceTranscription: (ownerKey: string) => string | null;
   updateTask: (
     id: string,
     update: Partial<
@@ -52,7 +54,6 @@ interface BackgroundTaskStore {
 }
 
 let nextTaskId = 1;
-const VOICE_TRANSCRIPTION_TASK_ID = "voice-transcription";
 
 export function isBackgroundTaskActive(status: BackgroundTaskStatus): boolean {
   return !["completed", "failed", "cancelled"].includes(status);
@@ -87,23 +88,38 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
     }));
     return id;
   },
-  startVoiceTranscription: () => {
+  startVoiceTranscription: (ownerKey) => {
+    const normalizedOwnerKey = ownerKey.trim();
+    if (normalizedOwnerKey.length === 0) return null;
     const now = new Date().toISOString();
-    set((state) => ({
-      tasks: [
-        ...state.tasks.filter((task) => task.kind !== "voice-transcription"),
-        {
-          id: VOICE_TRANSCRIPTION_TASK_ID,
-          kind: "voice-transcription",
-          title: "Voice transcription",
-          status: "loading",
-          progress: 5,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-    }));
-    return VOICE_TRANSCRIPTION_TASK_ID;
+    let id: string | null = null;
+    set((state) => {
+      if (
+        state.tasks.some(
+          (task) => task.kind === "voice-transcription" && isBackgroundTaskActive(task.status),
+        )
+      ) {
+        return state;
+      }
+      const nextId = `voice-transcription-${Date.now()}-${nextTaskId++}`;
+      id = nextId;
+      return {
+        tasks: [
+          ...state.tasks.filter((task) => task.kind !== "voice-transcription"),
+          {
+            id: nextId,
+            kind: "voice-transcription",
+            ownerKey: normalizedOwnerKey,
+            title: "Voice transcription",
+            status: "loading",
+            progress: 5,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      };
+    });
+    return id;
   },
   updateTask: (id, update) => {
     set((state) => ({
@@ -146,8 +162,8 @@ export function startThreadExportBackgroundTask(threadRef: ScopedThreadRef, titl
   return useBackgroundTaskStore.getState().startThreadExport(threadRef, title);
 }
 
-export function startVoiceTranscriptionBackgroundTask(): string {
-  return useBackgroundTaskStore.getState().startVoiceTranscription();
+export function startVoiceTranscriptionBackgroundTask(ownerKey: string): string | null {
+  return useBackgroundTaskStore.getState().startVoiceTranscription(ownerKey);
 }
 
 export function finishVoiceTranscriptionBackgroundTask(id: string): void {

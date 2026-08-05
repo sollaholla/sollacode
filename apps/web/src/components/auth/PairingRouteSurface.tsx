@@ -47,11 +47,10 @@ export function PairingRouteSurface({
   initialErrorMessage?: string;
   onAuthenticated: () => void;
 }) {
-  const autoPairTokenRef = useRef<string | null>(peekPairingTokenFromUrl());
-  const [credential, setCredential] = useState(() => autoPairTokenRef.current ?? "");
+  const [credential, setCredential] = useState(() => peekPairingTokenFromUrl() ?? "");
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const autoSubmitAttemptedRef = useRef(false);
+  const autoSubmittedTokenRef = useRef<string | null>(null);
 
   const submitCredential = useCallback(
     async (nextCredential: string) => {
@@ -86,14 +85,23 @@ export function PairingRouteSurface({
   );
 
   useEffect(() => {
-    const token = autoPairTokenRef.current;
-    if (!token || autoSubmitAttemptedRef.current) {
-      return;
-    }
+    const submitTokenFromLocation = () => {
+      const token = peekPairingTokenFromUrl();
+      if (!token || token === autoSubmittedTokenRef.current) return;
 
-    autoSubmitAttemptedRef.current = true;
-    stripPairingTokenFromUrl();
-    void submitCredential(token);
+      autoSubmittedTokenRef.current = token;
+      setCredential(token);
+      stripPairingTokenFromUrl();
+      void submitCredential(token);
+    };
+
+    submitTokenFromLocation();
+    window.addEventListener("hashchange", submitTokenFromLocation);
+    window.addEventListener("popstate", submitTokenFromLocation);
+    return () => {
+      window.removeEventListener("hashchange", submitTokenFromLocation);
+      window.removeEventListener("popstate", submitTokenFromLocation);
+    };
   }, [submitCredential]);
 
   return (

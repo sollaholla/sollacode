@@ -247,6 +247,39 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.modelSelection).toEqual(baseThread.modelSelection);
       }
     });
+
+    it("clears a stale side-chat tombstone when promotion is explicit", () => {
+      const result = applyThreadDetailEvent(
+        {
+          ...baseThread,
+          isSideChat: true,
+          sideChatParentThreadId: ThreadId.make("thread-parent"),
+          deletedAt: "2026-04-01T04:00:00.000Z",
+        },
+        {
+          ...baseEventFields,
+          sequence: 6,
+          occurredAt: "2026-04-01T05:00:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            isSideChat: false,
+            updatedAt: "2026-04-01T05:00:00.000Z",
+          },
+        },
+      );
+
+      expect(result).toMatchObject({
+        kind: "updated",
+        thread: {
+          isSideChat: false,
+          sideChatParentThreadId: null,
+          deletedAt: null,
+        },
+      });
+    });
   });
 
   describe("thread.message-sent", () => {

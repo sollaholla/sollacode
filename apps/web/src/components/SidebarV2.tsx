@@ -105,6 +105,7 @@ import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat"
 import type { SidebarThreadSummary } from "../types";
 import { cn } from "~/lib/utils";
 import {
+  buildSettleThreadsConfirmationMessage,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -158,6 +159,12 @@ import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { startThreadExportBackgroundTask } from "../backgroundTasks";
+import {
+  deriveWorkingSideChatsByParent,
+  sideChatParentActivityKey,
+  type WorkingSideChatActivity,
+} from "../sideChat";
+import { useStartupResumeStore } from "../startupResumeStore";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -397,6 +404,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onChangeRequestState: (threadKey: string, state: "open" | "closed" | "merged" | null) => void;
+  sideChatActivity: WorkingSideChatActivity | null;
+  startupResumeStartedAt: string | null;
 }) {
   const {
     isRenaming,
@@ -429,7 +438,17 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarV2Status(thread);
+  const ownStatus = resolveSidebarV2Status(thread);
+  const status =
+    ownStatus === "ready" &&
+    (props.sideChatActivity !== null || props.startupResumeStartedAt !== null)
+      ? "working"
+      : ownStatus;
+  const ownWorkingStartedAt = ownStatus === "working" ? resolveWorkingStartedAt(thread) : null;
+  const workingStartedAt =
+    [ownWorkingStartedAt, props.sideChatActivity?.startedAt ?? null, props.startupResumeStartedAt]
+      .filter((value): value is string => value !== null && !Number.isNaN(Date.parse(value)))
+      .toSorted((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so unlike Done, a never-visited woke thread still
@@ -455,7 +474,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const topStatus =
     status === "working"
       ? {
-          label: "Working",
+          label: props.startupResumeStartedAt !== null ? "Auto-resuming" : "Working",
           icon: "working" as const,
           className:
             "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
@@ -920,7 +939,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                       <span role="status">{topStatus.label}</span>
                       {status === "working" ? (
                         <span aria-hidden>
-                          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                          <WorkingDuration startedAt={workingStartedAt} />
                         </span>
                       ) : null}
                     </span>
@@ -980,6 +999,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     <ServerIcon aria-hidden className="size-3.5" />
                   </span>
                 ) : null}
+                {props.sideChatActivity ? (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-0.5 font-medium text-sky-600 dark:text-sky-400"
+                    title={`${props.sideChatActivity.count} side ${props.sideChatActivity.count === 1 ? "chat is" : "chats are"} working`}
+                  >
+                    <CircleDashedIcon aria-hidden className="size-3.5" />
+                    <span>{props.sideChatActivity.count} side</span>
+                  </span>
+                ) : null}
                 {driverKind ? (
                   <span className="inline-flex shrink-0 items-center opacity-60">
                     <ProviderInstanceIcon
@@ -1013,6 +1041,13 @@ export default function SidebarV2() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  const startupResumePendingByThreadKey = useStartupResumeStore(
+    (state) => state.pendingStartedAtByThreadKey,
+  );
+  const workingSideChatsByParent = useMemo(
+    () => deriveWorkingSideChatsByParent(threads, startupResumePendingByThreadKey),
+    [startupResumePendingByThreadKey, threads],
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1020,8 +1055,15 @@ export default function SidebarV2() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, forkThread, deleteThread } =
-    useThreadActions();
+  const {
+    settleThread,
+    unsettleThread,
+    snoozeThread,
+    unsnoozeThread,
+    forkThread,
+    deleteThread,
+    archiveThread,
+  } = useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -1397,6 +1439,9 @@ export default function SidebarV2() {
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     for (const thread of visible) {
+      if (thread.isSideChat === true) {
+        continue;
+      }
       // Threads on servers without the settlement capability (old server,
       // or descriptor not loaded yet) never classify as settled: the user
       // could neither un-settle nor pin them, so auto-settling them would
@@ -1406,6 +1451,13 @@ export default function SidebarV2() {
       const supportsSnooze =
         serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+      if (
+        workingSideChatsByParent.has(threadKey) ||
+        startupResumePendingByThreadKey[threadKey] !== undefined
+      ) {
+        active.push(thread);
+        continue;
+      }
       const changeRequestState = changeRequestStateByKey.get(threadKey) ?? null;
       // Snooze outranks settled classification: an explicitly snoozed thread
       // belongs to the shelf even if it would also auto-settle (the shelf's
@@ -1440,6 +1492,8 @@ export default function SidebarV2() {
     serverConfigs,
     snoozeWakeTick,
     threads,
+    startupResumePendingByThreadKey,
+    workingSideChatsByParent,
   ]);
 
   // Arm a timeout for the earliest upcoming wake so the shelf empties the
@@ -1681,6 +1735,33 @@ export default function SidebarV2() {
   // A settle per thread at a time: double clicks and repeated menu picks
   // must not dispatch a second settle that fails and toasts a false error.
   const settlingThreadKeysRef = useRef(new Set<string>());
+  const settleConfirmationThreadKeysRef = useRef(new Set<string>());
+  const confirmSettleThreadRefs = useCallback(async (threadRefs: readonly ScopedThreadRef[]) => {
+    const api = readLocalApi();
+    if (!api || threadRefs.length === 0) return false;
+    const threadKeys = threadRefs.map(scopedThreadKey);
+    if (threadKeys.some((threadKey) => settleConfirmationThreadKeysRef.current.has(threadKey))) {
+      return false;
+    }
+    for (const threadKey of threadKeys) {
+      settleConfirmationThreadKeysRef.current.add(threadKey);
+    }
+    try {
+      const titles = threadRefs.flatMap((threadRef) => {
+        const thread = threadByKeyRef.current.get(scopedThreadKey(threadRef));
+        return thread ? [thread.title] : [];
+      });
+      if (titles.length === 0) return false;
+      const confirmed = await settlePromise(() =>
+        api.dialogs.confirm(buildSettleThreadsConfirmationMessage(titles)),
+      );
+      return confirmed._tag === "Success" && confirmed.value;
+    } finally {
+      for (const threadKey of threadKeys) {
+        settleConfirmationThreadKeysRef.current.delete(threadKey);
+      }
+    }
+  }, []);
   // Parking the thread you're looking at (settle or snooze) moves you
   // forward: the next remaining card (never a settled or snoozed row, never
   // one leaving in the same batch), or a fresh draft in this project when it
@@ -1712,10 +1793,14 @@ export default function SidebarV2() {
   );
 
   const attemptSettle = useCallback(
-    (threadRef: ScopedThreadRef, opts: { coSettlingKeys?: ReadonlySet<string> } = {}) => {
+    (
+      threadRef: ScopedThreadRef,
+      opts: { coSettlingKeys?: ReadonlySet<string>; confirmationGranted?: boolean } = {},
+    ) => {
       void (async () => {
         const threadKey = scopedThreadKey(threadRef);
         if (settlingThreadKeysRef.current.has(threadKey)) return;
+        if (!opts.confirmationGranted && !(await confirmSettleThreadRefs([threadRef]))) return;
         settlingThreadKeysRef.current.add(threadKey);
         try {
           const navigateAfterSettle = planForwardNavigation(threadKey, opts.coSettlingKeys);
@@ -1744,7 +1829,7 @@ export default function SidebarV2() {
         }
       })();
     },
-    [planForwardNavigation, settleThread],
+    [confirmSettleThreadRefs, planForwardNavigation, settleThread],
   );
   const attemptUnsettle = useCallback(
     (threadRef: ScopedThreadRef) => {
@@ -1764,6 +1849,52 @@ export default function SidebarV2() {
     },
     [unsettleThread],
   );
+  // "Clear" on the settled shelf archives the whole tail in one go. Archive
+  // rather than delete: "remove from the sidebar" is already what archive
+  // means here, and it is recoverable — settled threads are finished work, not
+  // disposable work, and a bulk action is the wrong place to be irreversible.
+  const [clearingSettled, setClearingSettled] = useState(false);
+  const clearSettledThreads = useCallback(() => {
+    if (clearingSettled || settledThreads.length === 0) return;
+    void (async () => {
+      const api = readLocalApi();
+      if (api) {
+        const confirmed = await settlePromise(() =>
+          api.dialogs.confirm(
+            settledThreads.length === 1
+              ? "Archive this settled thread? You can restore it from Archived."
+              : `Archive all ${settledThreads.length} settled threads? You can restore them from Archived.`,
+          ),
+        );
+        if (confirmed._tag !== "Success" || !confirmed.value) return;
+      }
+      setClearingSettled(true);
+      let failed = 0;
+      try {
+        // Sequential on purpose: archiveThread navigates away when it archives
+        // the thread you are currently looking at, and racing that against the
+        // next archive leaves the router pointing at a thread already gone.
+        for (const thread of settledThreads) {
+          const result = await archiveThread(scopeThreadRef(thread.environmentId, thread.id));
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) failed += 1;
+        }
+      } finally {
+        setClearingSettled(false);
+      }
+      if (failed > 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title:
+              failed === 1
+                ? "1 thread could not be archived"
+                : `${failed} threads could not be archived`,
+            description: "Threads with a turn still running stay in the list.",
+          }),
+        );
+      }
+    })();
+  }, [archiveThread, clearingSettled, settledThreads]);
   const attemptUnsnooze = useCallback(
     (threadRef: ScopedThreadRef) => {
       void (async () => {
@@ -1911,11 +2042,16 @@ export default function SidebarV2() {
         // batch — they are all leaving the card block together. Rows that
         // are already explicitly settled are skipped: nothing to do on a
         // valid mixed selection.
-        const coSettlingKeys = new Set(threadKeys);
-        for (const threadKey of threadKeys) {
+        const settleTargets = threadKeys.flatMap((threadKey) => {
           const thread = threadByKeyRef.current.get(threadKey);
-          if (!thread || thread.settledOverride === "settled") continue;
-          attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
+          return !thread || thread.settledOverride === "settled"
+            ? []
+            : [scopeThreadRef(thread.environmentId, thread.id)];
+        });
+        if (!(await confirmSettleThreadRefs(settleTargets))) return;
+        const coSettlingKeys = new Set(settleTargets.map(scopedThreadKey));
+        for (const threadRef of settleTargets) {
+          attemptSettle(threadRef, { coSettlingKeys, confirmationGranted: true });
         }
         clearSelection();
         return;
@@ -1972,6 +2108,7 @@ export default function SidebarV2() {
       attemptSettle,
       attemptSnooze,
       clearSelection,
+      confirmSettleThreadRefs,
       confirmThreadDelete,
       deleteThread,
       markThreadUnread,
@@ -2002,6 +2139,9 @@ export default function SidebarV2() {
           true;
         const supportsSnooze =
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
+        const supportsSideChats =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSideChats ===
+          true;
         const isSettled = settledThreadKeysRef.current.has(threadKey);
         const isSnoozed = snoozedThreadKeysRef.current.has(threadKey);
         // Presets resolve at menu-open time (same as the popover).
@@ -2039,6 +2179,7 @@ export default function SidebarV2() {
                         },
                   ]
                 : []),
+              ...(supportsSideChats ? [{ id: "side-chat", label: "Open side chat" }] : []),
               { id: "fork", label: "Fork conversation" },
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
@@ -2100,6 +2241,20 @@ export default function SidebarV2() {
                 stackedThreadToast({
                   type: "error",
                   title: "Failed to fork conversation",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "side-chat": {
+            const result = await forkThread(threadRef, { asSideChat: true });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to open side chat",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -2497,6 +2652,12 @@ export default function SidebarV2() {
                       onSnooze={attemptSnooze}
                       onUnsnooze={attemptUnsnooze}
                       onChangeRequestState={handleChangeRequestState}
+                      sideChatActivity={
+                        workingSideChatsByParent.get(
+                          sideChatParentActivityKey(thread.environmentId, thread.id),
+                        ) ?? null
+                      }
+                      startupResumeStartedAt={startupResumePendingByThreadKey[threadKey] ?? null}
                     />
                   );
                 };
@@ -2539,25 +2700,45 @@ export default function SidebarV2() {
                 if (settledThreads.length > 0) {
                   items.push(
                     <li key="settled-shelf-header" data-thread-selection-safe className="list-none">
-                      <button
-                        type="button"
-                        onClick={toggleSettledShelf}
-                        aria-expanded={settledShelfExpanded}
-                        data-testid="sidebar-v2-settled-shelf-toggle"
-                        className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left"
-                      >
-                        <span className="text-xs font-medium text-muted-foreground/50">
-                          {settledShelfExpanded ? "Settled" : `Settled (${settledThreads.length})`}
-                        </span>
-                        <span className="h-px flex-1 bg-sidebar-border/60" />
-                        <ChevronDownIcon
-                          aria-hidden
-                          className={cn(
-                            "size-3 text-muted-foreground/50 transition-transform",
-                            settledShelfExpanded && "rotate-180",
-                          )}
-                        />
-                      </button>
+                      {/* The toggle and Clear are siblings, not nested: a
+                          button inside a button is invalid and swallows the
+                          inner click in some browsers. */}
+                      <div className="group/settled-shelf mb-1 mt-3 flex w-full items-center gap-2 px-2.5">
+                        <button
+                          type="button"
+                          onClick={toggleSettledShelf}
+                          aria-expanded={settledShelfExpanded}
+                          data-testid="sidebar-v2-settled-shelf-toggle"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                        >
+                          <span className="text-xs font-medium text-muted-foreground/50">
+                            {settledShelfExpanded
+                              ? "Settled"
+                              : `Settled (${settledThreads.length})`}
+                          </span>
+                          <span className="h-px flex-1 bg-sidebar-border/60" />
+                          <ChevronDownIcon
+                            aria-hidden
+                            className={cn(
+                              "size-3 text-muted-foreground/50 transition-transform",
+                              settledShelfExpanded && "rotate-180",
+                            )}
+                          />
+                        </button>
+                        {/* Only revealed on hover/focus of the shelf: this
+                            archives every settled thread, which is not
+                            something to leave one stray click away. */}
+                        <button
+                          type="button"
+                          onClick={clearSettledThreads}
+                          disabled={clearingSettled}
+                          data-testid="sidebar-v2-settled-shelf-clear"
+                          title={`Archive all ${settledThreads.length} settled threads`}
+                          className="shrink-0 cursor-pointer rounded px-1 text-xs font-medium text-muted-foreground/40 opacity-0 transition-opacity hover:text-sidebar-foreground focus-visible:opacity-100 disabled:cursor-default disabled:opacity-40 group-hover/settled-shelf:opacity-100"
+                        >
+                          {clearingSettled ? "Clearing…" : "Clear"}
+                        </button>
+                      </div>
                     </li>,
                   );
                 }

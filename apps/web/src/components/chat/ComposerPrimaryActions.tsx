@@ -248,7 +248,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {isRunning ? microphoneAction : null}
+        {microphoneAction}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
             <Button
@@ -326,65 +326,73 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (showPlanFollowUpPrompt) {
     if (promptHasText) {
       return (
-        <Button
-          type="submit"
-          size="sm"
-          className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
-          {...pointerFocusProps}
-          disabled={
-            isSendBusy ||
-            isSendDisabled ||
-            isConnecting ||
-            isEnvironmentUnavailable ||
-            pushToTalkStatus !== null
-          }
-        >
-          {isConnecting || isSendBusy ? "Sending..." : "Refine"}
-        </Button>
+        <div className="flex items-center justify-end gap-1.5">
+          {microphoneAction}
+          <Button
+            type="submit"
+            size="sm"
+            className={cn("rounded-full", compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8")}
+            {...pointerFocusProps}
+            disabled={
+              isSendBusy ||
+              isSendDisabled ||
+              isConnecting ||
+              isEnvironmentUnavailable ||
+              pushToTalkStatus !== null
+            }
+          >
+            {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+          </Button>
+        </div>
       );
     }
 
     return (
-      <div data-chat-composer-implement-actions="true" className="flex items-center justify-end">
-        <Button
-          type="submit"
-          size="sm"
-          className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-          {...pointerFocusProps}
-          disabled={
-            isSendBusy ||
-            isSendDisabled ||
-            isConnecting ||
-            isEnvironmentUnavailable ||
-            pushToTalkStatus !== null
-          }
-        >
-          {isConnecting || isSendBusy ? "Sending..." : "Implement"}
-        </Button>
-        <Menu>
-          <MenuTrigger
-            render={
-              <Button
-                size="sm"
-                variant="default"
-                className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
-                aria-label="Implementation actions"
-                {...pointerFocusProps}
-                disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
-              />
+      <div className="flex items-center justify-end gap-1.5">
+        {microphoneAction}
+        <div data-chat-composer-implement-actions="true" className="flex items-center justify-end">
+          <Button
+            type="submit"
+            size="sm"
+            className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
+            {...pointerFocusProps}
+            disabled={
+              isSendBusy ||
+              isSendDisabled ||
+              isConnecting ||
+              isEnvironmentUnavailable ||
+              pushToTalkStatus !== null
             }
           >
-            <ChevronDownIcon className="size-3.5" />
-          </MenuTrigger>
-          <MenuPopup align="end" side="top">
-            <MenuItem
-              disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
-              onClick={() => void onImplementPlanInNewThread()}
+            {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+          </Button>
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
+                  aria-label="Implementation actions"
+                  {...pointerFocusProps}
+                  disabled={
+                    isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable
+                  }
+                />
+              }
             >
-              Implement in a new thread
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
+              <ChevronDownIcon className="size-3.5" />
+            </MenuTrigger>
+            <MenuPopup align="end" side="top">
+              <MenuItem
+                disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+                onClick={() => void onImplementPlanInNewThread()}
+              >
+                Implement in a new thread
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </div>
       </div>
     );
   }

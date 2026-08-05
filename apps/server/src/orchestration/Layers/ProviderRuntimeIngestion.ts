@@ -23,6 +23,7 @@ import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -41,6 +42,7 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   buildProviderHandoffSummary,
@@ -48,6 +50,10 @@ import {
   selectProviderFailoverTarget,
 } from "../ProviderUsageLimitFailover.ts";
 import { PROVIDER_OVERLOAD_RETRY_REASON_PREFIX } from "../../provider/providerOverloadRetry.ts";
+import {
+  backgroundContextCompactionDuration,
+  metricAttributes,
+} from "../../observability/Metrics.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -68,6 +74,8 @@ const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY = 10_000;
 const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL = Duration.hours(24);
+const CONTEXT_COMPACTION_METRIC_CACHE_CAPACITY = 10_000;
+const CONTEXT_COMPACTION_METRIC_TTL = Duration.hours(2);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -266,6 +274,82 @@ function sessionStatusAllowsActiveTurn(
   return status === "starting" || status === "running";
 }
 
+export function runtimeEventWorkObservation(event: ProviderRuntimeEvent): {
+  readonly activeTurnId?: TurnId;
+  readonly phase:
+    | "provider-running"
+    | "tool-running"
+    | "subagent-running"
+    | "provider-retrying"
+    | "context-compacting"
+    | "waiting-provider-interaction";
+} | null {
+  const withTurn = (
+    phase:
+      | "provider-running"
+      | "tool-running"
+      | "subagent-running"
+      | "provider-retrying"
+      | "context-compacting"
+      | "waiting-provider-interaction",
+  ) =>
+    event.turnId === undefined ? { phase } : { phase, activeTurnId: TurnId.make(event.turnId) };
+
+  switch (event.type) {
+    case "turn.started":
+      return withTurn("provider-running");
+    case "session.state.changed":
+      if (
+        event.payload.state === "running" &&
+        event.payload.reason?.startsWith(PROVIDER_OVERLOAD_RETRY_REASON_PREFIX)
+      ) {
+        return withTurn("provider-retrying");
+      }
+      if (event.payload.state === "waiting") {
+        return withTurn("waiting-provider-interaction");
+      }
+      return event.payload.state === "running" || event.payload.state === "starting"
+        ? withTurn("provider-running")
+        : null;
+    case "request.opened":
+    case "user-input.requested":
+      return withTurn("waiting-provider-interaction");
+    case "request.resolved":
+    case "user-input.resolved":
+      return withTurn("provider-running");
+    case "task.started":
+    case "task.progress":
+      return withTurn("subagent-running");
+    case "task.completed":
+      return withTurn("provider-running");
+    case "hook.started":
+    case "hook.progress":
+    case "tool.progress":
+    case "tool.summary":
+      return withTurn("tool-running");
+    case "hook.completed":
+      return withTurn("provider-running");
+    case "item.started":
+    case "item.updated":
+      if (event.payload.itemType === "context_compaction") {
+        return withTurn("context-compacting");
+      }
+      if (event.payload.itemType === "collab_agent_tool_call") {
+        return withTurn("subagent-running");
+      }
+      return isToolLifecycleItemType(event.payload.itemType) ? withTurn("tool-running") : null;
+    case "item.completed":
+      return event.payload.itemType === "context_compaction" ||
+        isToolLifecycleItemType(event.payload.itemType)
+        ? withTurn("provider-running")
+        : null;
+    case "thread.state.changed":
+      return event.payload.state === "compacted" ? withTurn("provider-running") : null;
+    default:
+      return null;
+  }
+}
+
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
 ): "command" | "file-read" | "file-change" | undefined {
@@ -303,11 +387,15 @@ export function runtimeEventToActivities(
       }
       return [
         {
-          id: event.eventId,
+          // Retry heartbeats update one durable activity for this logical turn
+          // instead of appending an unbounded row per provider attempt.
+          id: EventId.make(
+            `provider-upstream-retry:${event.threadId}:${event.turnId ?? "session"}`,
+          ),
           createdAt: event.createdAt,
           tone: "info",
           kind: "provider.overload.retrying",
-          summary: "Provider overloaded — retrying shortly",
+          summary: "Provider unavailable — retrying shortly",
           payload: {
             reason: event.payload.reason,
           },
@@ -373,6 +461,9 @@ export function runtimeEventToActivities(
     }
 
     case "runtime.error": {
+      if (event.payload.failureKind === "retryable-upstream") {
+        return [];
+      }
       return [
         {
           id: event.eventId,
@@ -751,6 +842,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const threadWorkScheduler = yield* ThreadWorkScheduler;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
@@ -798,6 +890,48 @@ const make = Effect.gen(function* () {
     timeToLive: EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL,
     lookup: () => Effect.succeed(new Set<string>()),
   });
+
+  const contextCompactionStartedAt = yield* Cache.make<string, string>({
+    capacity: CONTEXT_COMPACTION_METRIC_CACHE_CAPACITY,
+    timeToLive: CONTEXT_COMPACTION_METRIC_TTL,
+    lookup: () => Effect.succeed(""),
+  });
+
+  const contextCompactionMetricKey = (event: ProviderRuntimeEvent) =>
+    `${event.threadId}:${event.turnId ?? "session"}`;
+
+  const observeContextCompactionMetric = (event: ProviderRuntimeEvent) =>
+    Effect.gen(function* () {
+      const isStart =
+        (event.type === "item.started" || event.type === "item.updated") &&
+        event.payload.itemType === "context_compaction";
+      const isEnd =
+        (event.type === "item.completed" && event.payload.itemType === "context_compaction") ||
+        (event.type === "thread.state.changed" && event.payload.state === "compacted");
+      if (!isStart && !isEnd) return;
+
+      const key = contextCompactionMetricKey(event);
+      if (isStart) {
+        const existing = yield* Cache.getOption(contextCompactionStartedAt, key);
+        if (Option.isNone(existing)) {
+          yield* Cache.set(contextCompactionStartedAt, key, event.createdAt);
+        }
+        return;
+      }
+
+      const startedAt = yield* Cache.getOption(contextCompactionStartedAt, key);
+      yield* Cache.invalidate(contextCompactionStartedAt, key);
+      if (Option.isNone(startedAt)) return;
+      const durationMs = Date.parse(event.createdAt) - Date.parse(startedAt.value);
+      if (!Number.isFinite(durationMs) || durationMs < 0) return;
+      yield* Metric.update(
+        Metric.withAttributes(
+          backgroundContextCompactionDuration,
+          metricAttributes({ provider: event.providerInstanceId ?? event.provider }),
+        ),
+        Duration.millis(durationMs),
+      );
+    });
 
   const rememberTaskDescription = (threadId: ThreadId, taskId: string, description: string) =>
     Cache.set(taskDescriptionByTaskKey, providerTaskKey(threadId, taskId), description);
@@ -1638,6 +1772,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+      yield* observeContextCompactionMetric(event);
 
       let loadedThreadContext: ProjectionThreadIngestionContext | null | undefined;
       const getLoadedThreadContext = () =>
@@ -1705,6 +1840,19 @@ const make = Effect.gen(function* () {
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
 
+      const runtimeObservation = runtimeEventWorkObservation(event);
+      const observationMatchesActiveTurn =
+        activeTurnId === null ||
+        eventTurnId === undefined ||
+        sameId(activeTurnId, eventTurnId) ||
+        conflictingTurnStartIsPendingTurnStart;
+      if (runtimeObservation !== null && observationMatchesActiveTurn) {
+        yield* threadWorkScheduler.observeRuntime({
+          threadId: thread.id,
+          ...runtimeObservation,
+        });
+      }
+
       if (
         event.type === "session.started" ||
         event.type === "session.state.changed" ||
@@ -1754,6 +1902,16 @@ const make = Effect.gen(function* () {
               : status === "ready"
                 ? null
                 : (thread.session?.lastError ?? null);
+        const failureKind =
+          event.type === "turn.completed" &&
+          normalizeRuntimeTurnState(event.payload.state) === "failed"
+            ? (event.payload.failureKind ?? thread.session?.failureKind ?? null)
+            : event.type === "turn.started" ||
+                event.type === "session.started" ||
+                event.type === "thread.started" ||
+                status === "ready"
+              ? null
+              : (thread.session?.failureKind ?? null);
 
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
@@ -1790,6 +1948,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
+              failureKind,
               updatedAt: now,
             },
             createdAt: now,
@@ -2040,6 +2199,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
+              failureKind: event.payload.failureKind ?? null,
               updatedAt: now,
             },
             createdAt: now,

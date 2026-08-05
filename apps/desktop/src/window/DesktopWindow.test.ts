@@ -367,6 +367,22 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
   });
 
 describe("DesktopWindow", () => {
+  it("forwards the explicit auto-resume argument to the renderer startup URL", () => {
+    assert.equal(
+      DesktopWindow.withStartupAutoResumeRequest("sollacode://app/", [
+        "/Applications/Solla Code.app/Contents/MacOS/Solla Code",
+        "--auto-resume",
+      ]),
+      "sollacode://app/?solla_auto_resume=1",
+    );
+    assert.equal(
+      DesktopWindow.withStartupAutoResumeRequest("sollacode://app/", [
+        "/Applications/Solla Code.app/Contents/MacOS/Solla Code",
+      ]),
+      "sollacode://app/",
+    );
+  });
+
   it("restores bounds only when the window fits within a connected display", () => {
     const persistedBounds = { x: 2040, y: 80, width: 1320, height: 880 };
     const displays = [
@@ -431,7 +447,9 @@ describe("DesktopWindow", () => {
         assert.isUndefined(createdWindowOptions[0]?.x);
         assert.isUndefined(createdWindowOptions[0]?.y);
         assert.isTrue(createdWindowOptions[0]?.disableAutoHideCursor);
-        assert.isFalse(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
+        // Keep Electron's default background throttling for the main renderer.
+        // Provider work is server-owned and must not require an unthrottled UI.
+        assert.isUndefined(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);

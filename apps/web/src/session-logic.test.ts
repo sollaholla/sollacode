@@ -1971,6 +1971,21 @@ describe("deriveActiveWorkStartedAt", () => {
     ).toBe("2026-02-27T21:11:00.000Z");
   });
 
+  it("falls back to the previous turn's start when a resumed turn has no local send", () => {
+    // Agent auto-resume starts turn-2 server-side without a client send;
+    // the elapsed timer must keep counting from the prior turn's start.
+    expect(
+      deriveActiveWorkStartedAt(
+        latestTurn,
+        {
+          status: "running",
+          activeTurnId: TurnId.make("turn-2"),
+        },
+        null,
+      ),
+    ).toBe("2026-02-27T21:10:00.000Z");
+  });
+
   it("falls back to sendStartedAt once the latest turn is settled", () => {
     expect(
       deriveActiveWorkStartedAt(

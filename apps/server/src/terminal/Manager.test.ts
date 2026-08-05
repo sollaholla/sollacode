@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -202,6 +203,8 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  historyByteLimit?: number;
+  pendingProcessEventByteLimit?: number;
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -241,6 +244,12 @@ const createManager = (
       const manager = yield* TerminalManager.makeWithOptions({
         logsDir,
         historyLineLimit,
+        ...(options.historyByteLimit !== undefined
+          ? { historyByteLimit: options.historyByteLimit }
+          : {}),
+        ...(options.pendingProcessEventByteLimit !== undefined
+          ? { pendingProcessEventByteLimit: options.pendingProcessEventByteLimit }
+          : {}),
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
         ...(options.env !== undefined ? { env: options.env } : {}),
@@ -966,7 +975,33 @@ it.layer(
 
       const reopened = yield* manager.open(openInput());
       const nonEmptyLines = reopened.history.split("\n").filter((line) => line.length > 0);
-      expect(nonEmptyLines).toEqual(["line2", "line3", "line4"]);
+      expect(nonEmptyLines).toEqual([
+        "[Earlier terminal output truncated]",
+        "line2",
+        "line3",
+        "line4",
+      ]);
+    }),
+  );
+
+  it.effect("caps persisted history by UTF-8 bytes with an explicit truncation marker", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 96;
+      const { manager, ptyAdapter } = yield* createManager(5_000, { historyByteLimit });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      process.emitData(`${"old-output-".repeat(20)}${"🙂".repeat(30)}tail\n`);
+      yield* manager.close({ threadId: "thread-1" });
+
+      const reopened = yield* manager.open(openInput());
+      expect(reopened.history).toContain("[Earlier terminal output truncated]");
+      expect(reopened.history).toContain("tail\n");
+      expect(new TextEncoder().encode(reopened.history).byteLength).toBeLessThanOrEqual(
+        historyByteLimit,
+      );
     }),
   );
 
@@ -1219,6 +1254,32 @@ it.layer(
       assert.equal(snapshot.history, "legacy-line\n");
       expect(yield* pathExists(nextPath)).toBe(true);
       expect(yield* readFileString(nextPath)).toBe("legacy-line\n");
+      expect(yield* pathExists(legacyPath)).toBe(false);
+    }),
+  );
+
+  it.effect("tail-loads and bounds oversized legacy history during migration", () =>
+    Effect.gen(function* () {
+      const historyByteLimit = 128;
+      const { manager, logsDir } = yield* createManager(5_000, { historyByteLimit });
+      const path = yield* Path.Path;
+      const legacyPath = path.join(logsDir, "thread-1.log");
+      const nextPath = yield* historyLogPath(logsDir);
+      yield* writeFileString(
+        legacyPath,
+        `${"discarded legacy output\n".repeat(2_048)}${"🙂".repeat(16)}retained-tail\n`,
+      );
+
+      const snapshot = yield* manager.open(openInput());
+
+      expect(snapshot.history).toContain("[Earlier terminal output truncated]");
+      expect(snapshot.history).toContain("retained-tail\n");
+      expect(new TextEncoder().encode(snapshot.history).byteLength).toBeLessThanOrEqual(
+        historyByteLimit,
+      );
+      expect(
+        new TextEncoder().encode(yield* readFileString(nextPath)).byteLength,
+      ).toBeLessThanOrEqual(historyByteLimit);
       expect(yield* pathExists(legacyPath)).toBe(false);
     }),
   );
@@ -1476,6 +1537,55 @@ it.layer(
         ),
         "1200 millis",
       );
+    }),
+  );
+
+  it.effect("byte-bounds output queued behind a slow subscriber and reports truncation", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5_000, {
+        pendingProcessEventByteLimit: 128,
+        ptyAdapter: new FakePtyAdapter("async"),
+      });
+      const subscriberEntered = yield* Deferred.make<void>();
+      const releaseSubscriber = yield* Deferred.make<void>();
+      let shouldBlock = true;
+      const unsubscribe = yield* manager.subscribe((event) => {
+        if (event.type !== "output" || !shouldBlock) return Effect.void;
+        shouldBlock = false;
+        return Deferred.succeed(subscriberEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseSubscriber)),
+        );
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      process.emitData("blocking-output\n");
+      yield* Deferred.await(subscriberEntered);
+      for (let index = 0; index < 40; index += 1) {
+        process.emitData(`queued-${index.toString().padStart(2, "0")}-${"x".repeat(12)}\n`);
+      }
+      yield* Deferred.succeed(releaseSubscriber, undefined);
+
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "output" && event.data.includes("queued-39-")),
+        ),
+        "1200 millis",
+      );
+
+      const emittedOutput = (yield* getEvents)
+        .filter(
+          (event): event is Extract<TerminalEvent, { type: "output" }> => event.type === "output",
+        )
+        .map((event) => event.data)
+        .join("");
+      expect(emittedOutput).toContain("Terminal output truncated because the consumer fell behind");
+      expect(emittedOutput).toContain("queued-39-");
+      expect(emittedOutput).not.toContain("queued-00-");
     }),
   );
 

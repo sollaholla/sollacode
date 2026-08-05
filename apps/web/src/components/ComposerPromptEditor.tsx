@@ -1759,7 +1759,7 @@ function ComposerPromptEditorInner({
 
   return (
     <ComposerTerminalContextActionsContext value={terminalContextActions}>
-      <div className="relative">
+      <div className="relative" data-composer-prompt-editor="true">
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
@@ -1770,7 +1770,7 @@ function ComposerPromptEditorInner({
               data-chat-composer-scroll-container="true"
               data-testid="composer-editor"
               aria-placeholder={placeholder}
-              placeholder={<span />}
+              placeholder={() => null}
               onCompositionEnd={(event) => handleVisibleEditorInput(event.currentTarget)}
               onCompositionUpdate={(event) => handleVisibleEditorInput(event.currentTarget)}
               onInput={(event) => handleVisibleEditorInput(event.currentTarget)}
@@ -1780,8 +1780,10 @@ function ComposerPromptEditorInner({
           placeholder={
             terminalContexts.length > 0 ? null : (
               <div
+                aria-hidden="true"
+                data-testid="composer-placeholder"
                 className={cn(
-                  "pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/35 sm:text-[14px]",
+                  "pointer-events-none absolute inset-x-0 top-0 overflow-hidden whitespace-pre-wrap wrap-break-word text-[16px] leading-relaxed text-muted-foreground/35 select-none sm:text-[14px]",
                   className,
                 )}
               >

@@ -59,6 +59,33 @@ export function shouldResumeTimelineLiveFollow({
 }
 
 /**
+ * Whether agent-driven timeline growth should skip its snap to the live edge.
+ *
+ * A scroll already in flight outranks new agent content for a short window: the
+ * "am I still at the end?" signal lags the gesture, so without this, reading
+ * back through a running turn gets yanked to the bottom every time a chunk
+ * lands. Callers clear `lastUserScrollAt` on the gestures that mean "put me back
+ * on the live edge" — sending, or explicitly jumping to the end — so those never
+ * serve out the remainder of the window.
+ */
+export function shouldSuppressTimelineAutoScroll({
+  lastUserScrollAt,
+  nowMs,
+  cooldownMs,
+}: {
+  readonly lastUserScrollAt: number | null;
+  readonly nowMs: number;
+  readonly cooldownMs: number;
+}): boolean {
+  if (lastUserScrollAt === null) return false;
+  const elapsed = nowMs - lastUserScrollAt;
+  // A clock that moved backwards (NTP correction, sleep/wake) must not strand
+  // live-follow off for an unbounded stretch.
+  if (elapsed < 0) return false;
+  return elapsed < cooldownMs;
+}
+
+/**
  * Sending deliberately enables live-follow. Do not release that lock for
  * downward wheel motion (which is already asking to see newer content); only
  * an explicit gesture toward older content opts the user out.

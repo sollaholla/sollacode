@@ -9,8 +9,11 @@ import {
   createEditor,
   PASTE_COMMAND,
 } from "lexical";
+import { createElement, createRef } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
+import type { ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 
 class TestClipboardEvent extends Event {
   readonly clipboardData: DataTransfer;
@@ -148,5 +151,34 @@ describe("registerComposerInlineTokenPaste", () => {
     expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(
       "<mention:@scope/pkg/sub> ",
     );
+  });
+});
+
+describe("ComposerPromptEditor placeholder", () => {
+  it("renders one geometry-matched overlay without Lexical's extra placeholder wrapper", async () => {
+    const { ComposerPromptEditor } = await import("./ComposerPromptEditor");
+    const placeholder = "Ask anything, @tag files/folders, $use skills, or / for commands";
+    const markup = renderToStaticMarkup(
+      createElement(ComposerPromptEditor, {
+        value: "",
+        cursor: 0,
+        terminalContexts: [],
+        skills: [],
+        disabled: false,
+        placeholder,
+        onRemoveTerminalContext: () => {},
+        onChange: () => {},
+        onPaste: () => {},
+        editorRef: createRef<ComposerPromptEditorHandle | null>(),
+      }),
+    );
+
+    expect(markup).toContain('data-testid="composer-editor"');
+    expect(markup).toContain(
+      'aria-placeholder="Ask anything, @tag files/folders, $use skills, or / for commands"',
+    );
+    expect(markup).toContain('data-testid="composer-placeholder"');
+    expect(markup).toContain("absolute inset-x-0 top-0");
+    expect(markup).not.toContain("absolute inset-0");
   });
 });

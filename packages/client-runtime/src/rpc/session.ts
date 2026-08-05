@@ -91,6 +91,17 @@ export const make = Effect.gen(function* () {
         ),
         Effect.asVoid,
       ),
+      // A local desktop renderer and its bundled server share one machine.
+      // macOS can pause the renderer's JS timers for longer than Effect RPC's
+      // five-second heartbeat while the machine is in Low Power Mode, even
+      // though the WebSocket and server are both healthy. Keep the local
+      // protocol alive through that scheduling stall; an actual socket close
+      // still runs `onDisconnect`, and the supervisor's foreground probe is
+      // the authoritative local liveness check. Remote targets retain the
+      // heartbeat timeout because a half-open network socket must be detected.
+      ...(connection.target._tag === "PrimaryConnectionTarget"
+        ? { onPingTimeout: Effect.never }
+        : {}),
     });
     const socketLayer = Socket.layerWebSocket(connection.socketUrl, {
       openTimeout: SOCKET_OPEN_TIMEOUT,

@@ -8,8 +8,11 @@ import {
   dismissVersionMismatch,
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
+  compareVersions,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
+  resolveVersionSkewDirection,
+  versionSkewGuidance,
   serverUpdateGuidance,
 } from "./versionSkew";
 
@@ -106,5 +109,63 @@ describe("versionSkew", () => {
     expect(serverUpdateGuidance(null, "Local server")).toBe(
       "Relaunch the Local server with the copied command to sync them.",
     );
+  });
+});
+
+describe("version skew direction", () => {
+  it("compares versions numerically, not lexically", () => {
+    // The case that motivated this: a 0.1.8 client on a 0.1.11 server. String
+    // compare puts "0.1.11" before "0.1.8" and inverts the advice.
+    expect(compareVersions("0.1.8", "0.1.11")).toBe(-1);
+    expect(compareVersions("0.1.11", "0.1.8")).toBe(1);
+    expect(compareVersions("0.1.11", "0.1.11")).toBe(0);
+    expect(compareVersions("1.2.3", "1.2")).toBe(1);
+    expect(compareVersions("1.2", "1.2.0")).toBe(0);
+  });
+
+  it("gives up on versions that are not plainly numeric", () => {
+    expect(compareVersions("dev", "0.1.1")).toBeNull();
+    expect(compareVersions("0.1.1", "")).toBeNull();
+  });
+
+  it("identifies which side is stale", () => {
+    expect(resolveVersionSkewDirection({ clientVersion: "0.1.8", serverVersion: "0.1.11" })).toBe(
+      "client-behind",
+    );
+    expect(resolveVersionSkewDirection({ clientVersion: "0.1.11", serverVersion: "0.1.8" })).toBe(
+      "server-behind",
+    );
+    expect(resolveVersionSkewDirection({ clientVersion: "dev", serverVersion: "0.1.8" })).toBe(
+      "unknown",
+    );
+  });
+
+  it("tells a stale client to reload rather than to update the server", () => {
+    // Telling someone on an older client to update a server that is already
+    // ahead describes work that cannot clear the banner.
+    const guidance = versionSkewGuidance({
+      direction: "client-behind",
+      capability: "desktop-managed",
+      serverLabel: "Soloman's MacBook Pro server",
+    });
+    expect(guidance).toContain("Reload");
+    expect(guidance).not.toContain("update the desktop app there");
+  });
+
+  it("keeps the server-update wording when the server is the stale side", () => {
+    expect(
+      versionSkewGuidance({
+        direction: "server-behind",
+        capability: "desktop-managed",
+        serverLabel: "Soloman's MacBook Pro server",
+      }),
+    ).toContain("update the desktop app there");
+    expect(
+      versionSkewGuidance({
+        direction: "unknown",
+        capability: "boot-service",
+        serverLabel: "server",
+      }),
+    ).toContain("Update the server");
   });
 });

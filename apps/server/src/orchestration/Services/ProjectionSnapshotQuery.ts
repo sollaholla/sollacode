@@ -12,6 +12,8 @@ import type {
   MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
+  OrchestrationEvent,
+  OrchestrationLatestTurn,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationProposedPlan,
@@ -23,8 +25,10 @@ import type {
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
+  ProviderInteractionMode,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -67,6 +71,28 @@ export interface ProjectionThreadIngestionContext {
 export interface ProjectionThreadAssetSource {
   readonly activity: OrchestrationThreadActivity | null;
   readonly message: OrchestrationMessage | null;
+}
+
+export interface ProjectionLatestTurnStartContext {
+  readonly interactionMode: ProviderInteractionMode;
+}
+
+export type ProjectionThreadTurnStartContext = Extract<
+  OrchestrationEvent,
+  { readonly type: "thread.turn-start-requested" }
+>["payload"];
+
+export interface ProjectionPersistedTurnStartContext {
+  readonly payload: ProjectionThreadTurnStartContext;
+  readonly sequence: number;
+  readonly hasLaterRealUserTurn: boolean;
+  readonly providerTurnId: TurnId | null;
+  readonly providerTurnState: OrchestrationLatestTurn["state"] | null;
+}
+
+export interface ProjectionProviderTurnForMessage {
+  readonly turnId: TurnId;
+  readonly state: OrchestrationLatestTurn["state"];
 }
 
 /**
@@ -177,6 +203,33 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /**
+   * Reads how the latest concrete turn was started without replaying the
+   * thread transcript. Optional for compatibility with narrow test doubles.
+   */
+  readonly getThreadLatestTurnStartContext?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionLatestTurnStartContext>, ProjectionRepositoryError>;
+
+  /**
+   * Read the immutable start request for one projected user message. Durable
+   * work uses this instead of retaining renderer or event-stream state.
+   */
+  readonly getThreadTurnStartContext?: (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<ProjectionPersistedTurnStartContext>, ProjectionRepositoryError>;
+
+  /**
+   * Read the newest provider turn started from one exact delivery message id.
+   * Unlike getThreadTurnStartContext, this also supports internal recovery
+   * deliveries that intentionally have no projected user message.
+   */
+  readonly getThreadProviderTurnForMessage?: (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<ProjectionProviderTurnForMessage>, ProjectionRepositoryError>;
 
   /**
    * Read only the bounded message/plan state needed while ingesting provider

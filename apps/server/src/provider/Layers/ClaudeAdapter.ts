@@ -8,7 +8,8 @@
  */
 import {
   type CanUseTool,
-  query,
+  forkSession as forkClaudeSession,
+  startup,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
   type PermissionResult,
@@ -77,9 +78,12 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type ContextRecoveryReason, withContextRecoveryReminder } from "../contextRecovery.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
 import {
+  hasRetryableUpstreamStatus,
   providerOverloadExhaustedMessage,
   providerOverloadRetryReason,
+  isRetryableUpstreamStatus,
 } from "../providerOverloadRetry.ts";
 import {
   getClaudeModelCapabilities,
@@ -105,6 +109,7 @@ import {
   type ClaudeTokenOptimizerProxy,
   type ClaudeTokenOptimizerState,
 } from "./ClaudeTokenOptimizerProxy.ts";
+import { createClaudeMcpSdkProxy, type ClaudeMcpSdkProxy } from "./ClaudeMcpSdkProxy.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
 
@@ -204,6 +209,7 @@ interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  readonly mcpProxy: ClaudeMcpSdkProxy | undefined;
   readonly tokenOptimizerProxy: ClaudeTokenOptimizerProxy | undefined;
   readonly tokenOptimizerState: ClaudeTokenOptimizerState;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
@@ -258,7 +264,9 @@ export interface ClaudeAdapterLiveOptions {
   readonly createQuery?: (input: {
     readonly prompt: AsyncIterable<SDKUserMessage>;
     readonly options: ClaudeQueryOptions;
-  }) => ClaudeQueryRuntime;
+  }) => ClaudeQueryRuntime | Promise<ClaudeQueryRuntime>;
+  readonly createMcpProxy?: typeof createClaudeMcpSdkProxy;
+  readonly forkSession?: typeof forkClaudeSession;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
 }
@@ -1342,6 +1350,7 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
     provider: PROVIDER,
     method,
     detail: `${method} failed`,
+    ...(hasRetryableUpstreamStatus(cause) ? { failureKind: "retryable-upstream" as const } : {}),
     cause,
   });
 }
@@ -1485,16 +1494,24 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const createQuery =
     options?.createQuery ??
-    ((input: {
+    (async (input: {
       readonly prompt: AsyncIterable<SDKUserMessage>;
       readonly options: ClaudeQueryOptions;
-    }) =>
-      query({
-        prompt: input.prompt,
-        options: input.options,
-      }) as ClaudeQueryRuntime);
+    }) => {
+      // `query()` begins consuming streaming input as soon as the subprocess
+      // is spawned. That lets the first model request race the CLI's MCP
+      // registry: the API can receive an MCP schema while the local executor
+      // still answers the resulting tool call with "No such tool available".
+      // Warm startup completes the initialize handshake (including always-load
+      // MCP servers) before releasing the first prompt to Claude.
+      const warmQuery = await startup({ options: input.options });
+      return warmQuery.query(input.prompt) as ClaudeQueryRuntime;
+    });
+  const createMcpProxy = options?.createMcpProxy ?? createClaudeMcpSdkProxy;
+  const materializeFork = options?.forkSession ?? forkClaudeSession;
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
+  let stoppingAll = false;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -1813,6 +1830,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: string,
     cause?: unknown,
+    failureKind?: "retryable-upstream",
   ) {
     if (cause !== undefined) {
       void cause;
@@ -1830,6 +1848,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         message,
         class: "provider_error",
         ...(cause !== undefined ? { detail: cause } : {}),
+        ...(failureKind !== undefined ? { failureKind } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -2014,6 +2033,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     status: ProviderRuntimeTurnStatus,
     errorMessage?: string,
     result?: SDKResultMessage,
+    failureKind?: "retryable-upstream",
   ) {
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
@@ -2109,6 +2129,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ? { totalCostUsd: result.total_cost_usd }
             : {}),
           ...(errorMessage ? { errorMessage } : {}),
+          ...(failureKind !== undefined ? { failureKind } : {}),
         },
         providerRefs: {},
       });
@@ -2184,6 +2205,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ? { totalCostUsd: result.total_cost_usd }
           : {}),
         ...(errorMessage ? { errorMessage } : {}),
+        ...(failureKind !== undefined ? { failureKind } : {}),
       },
       providerRefs: nativeProviderRefs(context),
     });
@@ -2697,12 +2719,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const errorMessage = overloadRetriesExhausted
       ? providerOverloadExhaustedMessage(providerErrorMessage)
       : providerErrorMessage;
+    const failureKind = overloadRetriesExhausted ? ("retryable-upstream" as const) : undefined;
 
     if (status === "failed") {
-      yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+      yield* emitRuntimeError(
+        context,
+        errorMessage ?? "Claude turn failed.",
+        undefined,
+        failureKind,
+      );
     }
 
-    yield* completeTurn(context, status, errorMessage, message);
+    yield* completeTurn(context, status, errorMessage, message, failureKind);
   });
 
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
@@ -2910,7 +2938,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // warning row spammed the work log (10 rows during a 502 storm);
         // the terminal result/error path reports the actual failure. Keep
         // the session visibly alive instead.
-        if (message.error_status === 529) {
+        if (isRetryableUpstreamStatus(message.error_status)) {
           context.lastOverloadRetry = {
             attempt: message.attempt,
             maxRetries: message.max_retries,
@@ -2921,14 +2949,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           type: "session.state.changed",
           payload: {
             state: "running",
-            reason:
-              message.error_status === 529
-                ? providerOverloadRetryReason({
-                    attempt: message.attempt,
-                    maxAttempts: message.max_retries,
-                    delayMs: message.retry_delay_ms,
-                  })
-                : `api_retry:${message.attempt}/${message.max_retries}`,
+            reason: isRetryableUpstreamStatus(message.error_status)
+              ? providerOverloadRetryReason({
+                  attempt: message.attempt,
+                  maxAttempts: message.max_retries,
+                  delayMs: message.retry_delay_ms,
+                })
+              : `api_retry:${message.attempt}/${message.max_retries}`,
             detail: message,
           },
         });
@@ -3157,7 +3184,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     exit: Exit.Exit<void, ProviderAdapterProcessError>,
   ) {
-    if (context.stopped) {
+    if (stoppingAll || context.stopped) {
       return;
     }
 
@@ -3257,6 +3284,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         }),
       ),
     );
+
+    const mcpProxy = context.mcpProxy;
+    if (mcpProxy) {
+      yield* Effect.tryPromise({
+        try: () => mcpProxy.close(),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            detail: "Failed to close the Claude MCP bridge.",
+            cause,
+          }),
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("claude.mcp-bridge.close-failed", {
+            threadId: context.session.threadId,
+            cause,
+          }),
+        ),
+      );
+    }
 
     const updatedAt = yield* nowIso;
     context.session = {
@@ -3723,9 +3771,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const thinkingSupported = descriptors.some(
         (descriptor) => descriptor.type === "boolean" && descriptor.id === "thinking",
       );
+      const selectedFastMode = getModelSelectionBooleanOptionValue(modelSelection, "fastMode");
       const fastMode =
-        getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true &&
-        fastModeSupported;
+        fastModeSupported && typeof selectedFastMode === "boolean" ? selectedFastMode : undefined;
       const thinking = thinkingSupported
         ? getModelSelectionBooleanOptionValue(modelSelection, "thinking")
         : undefined;
@@ -3739,7 +3787,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const permissionMode = runtimeModeToPermission[input.runtimeMode];
       const settings = {
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-        ...(fastMode ? { fastMode: true } : {}),
+        ...(fastMode !== undefined ? { fastMode } : {}),
         ...(ultracode ? { ultracode: true } : {}),
         ...(autoCompactWindow !== undefined ? { autoCompactEnabled: true, autoCompactWindow } : {}),
       };
@@ -3748,84 +3796,121 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // upstream request, so without this the same line lands in the work log
       // after every tool call.
       let lastTokenOptimizerSummary: string | undefined;
-      const tokenOptimizerProxy =
-        input.tokenOptimizerEnabled === true
-          ? yield* Effect.tryPromise({
-              try: () =>
-                startClaudeTokenOptimizerProxy({
-                  threadId,
-                  attachmentsDir: serverConfig.attachmentsDir,
-                  upstream: claudeEnvironment.ANTHROPIC_BASE_URL,
-                  state: tokenOptimizerState,
-                  onError: (cause) =>
-                    runPromise(
-                      Effect.logWarning("claude.token-optimizer.telemetry-failed", {
-                        threadId,
-                        cause,
-                      }),
-                    ),
-                  onApplied: async (optimized) => {
-                    const context = await runPromise(Ref.get(contextRef));
-                    if (!context || context.stopped) return;
-                    const saved = optimized.estimatedTokensSaved;
-                    const pageLabel = `${optimized.pageCount} ${optimized.pageCount === 1 ? "page" : "pages"}`;
-                    const summary =
-                      saved !== undefined && saved > 0
-                        ? `Optimized ${pageLabel} · saved ~${saved.toLocaleString()} tokens`
-                        : `Optimized ${pageLabel}`;
-                    if (!shouldReportTokenOptimizerSummary(lastTokenOptimizerSummary, summary)) {
-                      return;
-                    }
-                    lastTokenOptimizerSummary = summary;
-                    // Background-only: the per-turn "Optimized …" line overwhelmed the
-                    // visible work log, so keep it out of runtime events entirely.
-                    await runPromise(
-                      Effect.logInfo("claude.token-optimizer.applied", {
-                        threadId: context.session.threadId,
-                        ...(optimized.turnId ? { turnId: optimized.turnId } : {}),
-                        summary,
-                        model: optimized.model,
-                        compressedChars: optimized.compressedChars,
-                        pageCount: optimized.pageCount,
-                        estimatedTextTokens: optimized.estimatedTextTokens,
-                        estimatedImageTokens: optimized.estimatedImageTokens,
-                        estimatedNativeTokens: optimized.estimatedNativeTokens,
-                        estimatedTokensSaved: optimized.estimatedTokensSaved,
-                        attachmentCount: optimized.attachments.length,
-                      }),
-                    );
-                  },
-                }),
-              catch: (cause) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId,
-                  detail: "Failed to start the Token Optimizer proxy.",
-                  cause,
-                }),
-            }).pipe(
-              Effect.tapError((cause) =>
-                Effect.logWarning("claude.token-optimizer.start-failed", {
+      // This proxy is the Claude transport boundary, not merely an optimizer:
+      // it owns retryable upstream failures indefinitely and only lets a final
+      // response reach the SDK. Keeping the original request below the SDK is
+      // what makes retries invisible: no synthetic user prompt, assistant
+      // error item, failed turn, or agent-loop nudge is ever manufactured.
+      const tokenOptimizerProxy = yield* Effect.tryPromise({
+        try: () =>
+          startClaudeTokenOptimizerProxy({
+            threadId,
+            attachmentsDir: serverConfig.attachmentsDir,
+            upstream: claudeEnvironment.ANTHROPIC_BASE_URL,
+            state: tokenOptimizerState,
+            onError: (cause) =>
+              runPromise(
+                Effect.logWarning("claude.token-optimizer.telemetry-failed", {
                   threadId,
                   cause,
                 }),
               ),
-              // The feature must fail open: Claude continues directly if the
-              // transport cannot bind or initialize.
-              Effect.orElseSucceed(() => undefined),
-            )
-          : undefined;
-      const queryEnvironment = tokenOptimizerProxy
-        ? {
-            ...claudeEnvironment,
-            ANTHROPIC_BASE_URL: tokenOptimizerProxy.baseUrl,
-          }
-        : claudeEnvironment;
+            onUpstreamFailure: (failure) =>
+              runPromise(
+                Effect.logWarning("claude.transport-proxy.upstream-failed", {
+                  threadId,
+                  ...failure,
+                }),
+              ),
+            onApplied: async (optimized) => {
+              const context = await runPromise(Ref.get(contextRef));
+              if (!context || context.stopped) return;
+              const saved = optimized.estimatedTokensSaved;
+              const pageLabel = `${optimized.pageCount} ${optimized.pageCount === 1 ? "page" : "pages"}`;
+              const summary =
+                saved !== undefined && saved > 0
+                  ? `Optimized ${pageLabel} · saved ~${saved.toLocaleString()} tokens`
+                  : `Optimized ${pageLabel}`;
+              if (!shouldReportTokenOptimizerSummary(lastTokenOptimizerSummary, summary)) {
+                return;
+              }
+              lastTokenOptimizerSummary = summary;
+              // Background-only: the per-turn "Optimized …" line overwhelmed the
+              // visible work log, so keep it out of runtime events entirely.
+              await runPromise(
+                Effect.logInfo("claude.token-optimizer.applied", {
+                  threadId: context.session.threadId,
+                  ...(optimized.turnId ? { turnId: optimized.turnId } : {}),
+                  summary,
+                  model: optimized.model,
+                  compressedChars: optimized.compressedChars,
+                  pageCount: optimized.pageCount,
+                  estimatedTextTokens: optimized.estimatedTextTokens,
+                  estimatedImageTokens: optimized.estimatedImageTokens,
+                  estimatedNativeTokens: optimized.estimatedNativeTokens,
+                  estimatedTokensSaved: optimized.estimatedTokensSaved,
+                  attachmentCount: optimized.attachments.length,
+                }),
+              );
+            },
+          }),
+        catch: (cause) =>
+          new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Failed to start the Claude transport proxy.",
+            cause,
+          }),
+      }).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("claude.transport-proxy.start-failed", {
+            threadId,
+            cause,
+          }),
+        ),
+      );
+      const closeTokenOptimizerProxyAfterStartupFailure = Effect.promise(() =>
+        tokenOptimizerProxy.close(),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("claude.transport-proxy.startup-cleanup-failed", {
+            threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+      const mcpProxy = mcpSession
+        ? yield* Effect.tryPromise({
+            try: () =>
+              createMcpProxy({
+                endpoint: mcpSession.endpoint,
+                authorizationHeader: mcpSession.authorizationHeader,
+              }),
+            catch: (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId,
+                detail: "Failed to initialize Solla's Claude MCP bridge.",
+                cause,
+              }),
+          }).pipe(Effect.tapError(() => closeTokenOptimizerProxyAfterStartupFailure))
+        : undefined;
+      const queryEnvironment = {
+        ...claudeEnvironment,
+        // Solla owns retries below the SDK. Disabling the CLI's bounded retry
+        // batch prevents its 10-attempt exhaustion result from entering chat.
+        CLAUDE_CODE_MAX_RETRIES: "0",
+        ANTHROPIC_BASE_URL: tokenOptimizerProxy.baseUrl,
+      };
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          ...(mcpSession ? { append: SOLLA_MCP_AGENT_CONTEXT } : {}),
+        },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
@@ -3849,16 +3934,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: queryEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-        ...(mcpSession
+        ...(mcpProxy
           ? {
               mcpServers: {
-                "t3-code": {
-                  type: "http",
-                  url: mcpSession.endpoint,
-                  headers: {
-                    Authorization: mcpSession.authorizationHeader,
-                  },
-                },
+                "t3-code": mcpProxy.serverConfig,
               },
             }
           : {}),
@@ -3889,9 +3968,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
-      const queryRuntime = yield* Effect.try({
-        try: () =>
-          createQuery({
+      const queryRuntime = yield* Effect.tryPromise({
+        try: async () =>
+          await createQuery({
             prompt,
             options: queryOptions,
           }),
@@ -3902,7 +3981,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             detail: "Failed to start Claude runtime session.",
             cause,
           }),
-      });
+      }).pipe(
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            if (mcpProxy) {
+              yield* Effect.promise(() => mcpProxy.close()).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("claude.mcp-bridge.startup-cleanup-failed", {
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              );
+            }
+            yield* closeTokenOptimizerProxyAfterStartupFailure;
+          }),
+        ),
+      );
 
       const session: ProviderSession = {
         threadId,
@@ -3927,6 +4022,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         session,
         promptQueue,
         query: queryRuntime,
+        mcpProxy,
         tokenOptimizerProxy,
         tokenOptimizerState,
         streamFiber: undefined,
@@ -3977,7 +4073,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(input.cwd ? { cwd: input.cwd } : {}),
             ...(effectiveEffort ? { effort: effectiveEffort } : {}),
             ...(permissionMode ? { permissionMode } : {}),
-            ...(fastMode ? { fastMode: true } : {}),
+            ...(fastMode !== undefined ? { fastMode } : {}),
           },
         },
         providerRefs: {},
@@ -4027,6 +4123,64 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  const forkSession: NonNullable<ClaudeAdapterShape["forkSession"]> = Effect.fn("forkSession")(
+    function* (input) {
+      if (input.providerInstanceId !== boundInstanceId) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "forkSession",
+          issue: `Expected provider instance '${boundInstanceId}' but received '${input.providerInstanceId}'.`,
+        });
+      }
+
+      const resumeState = readClaudeResumeState(input.sourceResumeCursor);
+      if (resumeState?.resume === undefined) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "forkSession",
+          issue: `Cannot fork thread '${input.sourceThreadId}' without a durable Claude session id.`,
+        });
+      }
+
+      const sourceSessionId = resumeState.resume;
+      const forked = yield* Effect.tryPromise({
+        try: () => materializeFork(sourceSessionId, input.cwd ? { dir: input.cwd } : undefined),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session/fork",
+            detail: `Failed to materialize Claude fork '${input.targetThreadId}' from '${input.sourceThreadId}'.`,
+            cause,
+          }),
+      });
+      if (!isUuid(forked.sessionId)) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "forkSession",
+          issue: "Claude returned an invalid session id for the materialized fork.",
+        });
+      }
+
+      const createdAt = yield* nowIso;
+      return {
+        threadId: input.targetThreadId,
+        provider: PROVIDER,
+        providerInstanceId: boundInstanceId,
+        status: "closed",
+        runtimeMode: input.runtimeMode,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.modelSelection?.model ? { model: input.modelSelection.model } : {}),
+        resumeCursor: {
+          threadId: input.targetThreadId,
+          resume: forked.sessionId,
+          turnCount: resumeState.turnCount ?? 0,
+        },
+        createdAt,
+        updatedAt: createdAt,
+      } satisfies ProviderSession;
+    },
+  );
+
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
     context.tokenOptimizerState.enabled = input.tokenOptimizerEnabled === true;
@@ -4034,6 +4188,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       input.modelSelection !== undefined && input.modelSelection.instanceId === boundInstanceId
         ? input.modelSelection
         : undefined;
+    const fastModeSupported = getProviderOptionDescriptors({
+      caps: getClaudeModelCapabilities(modelSelection?.model),
+    }).some((descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode");
+    const selectedFastMode = getModelSelectionBooleanOptionValue(modelSelection, "fastMode");
+    const fastMode =
+      fastModeSupported && typeof selectedFastMode === "boolean" ? selectedFastMode : undefined;
 
     // A sendTurn while a real turn is running is a steer: the message is
     // queued into the live SDK agent loop and the work continues as the same
@@ -4074,14 +4234,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context.lastKnownContextWindow,
       thresholdPercentage: input.autoCompactionThresholdPercentage,
     });
-    if (autoCompactWindow !== undefined) {
-      yield* Effect.tryPromise({
-        try: () =>
-          context.query.applyFlagSettings({
+    const nextFlagSettings = {
+      ...(fastMode !== undefined ? { fastMode } : {}),
+      ...(autoCompactWindow !== undefined
+        ? {
             autoCompactEnabled: true,
             autoCompactWindow,
-          }),
-        catch: (cause) => toRequestError(input.threadId, "turn/applyAutoCompactionSettings", cause),
+          }
+        : {}),
+    };
+    if (Object.keys(nextFlagSettings).length > 0) {
+      yield* Effect.tryPromise({
+        try: () => context.query.applyFlagSettings(nextFlagSettings),
+        catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
       });
     }
 
@@ -4243,25 +4408,27 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return context !== undefined && !context.stopped;
     });
 
-  const stopAll: ClaudeAdapterShape["stopAll"] = () =>
-    Effect.forEach(
-      sessions,
-      ([, context]) =>
-        stopSessionInternal(context, {
-          emitExitEvent: true,
+  const stopAllInternal = Effect.fn("ClaudeAdapter.stopAllInternal")(function* (
+    emitExitEvent: boolean,
+  ) {
+    stoppingAll = true;
+    yield* Effect.forEach(
+      Array.from(sessions.values()),
+      (context) => stopSessionInternal(context, { emitExitEvent }),
+      { concurrency: "unbounded", discard: true },
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          stoppingAll = false;
         }),
-      { discard: true },
+      ),
     );
+  });
+
+  const stopAll: ClaudeAdapterShape["stopAll"] = () => stopAllInternal(true);
 
   yield* Effect.addFinalizer(() =>
-    Effect.forEach(
-      sessions,
-      ([, context]) =>
-        stopSessionInternal(context, {
-          emitExitEvent: false,
-        }),
-      { discard: true },
-    ).pipe(
+    stopAllInternal(false).pipe(
       Effect.catch((cause) =>
         Effect.logError("Failed to emit Claude session shutdown event.", { cause }),
       ),
@@ -4276,6 +4443,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       sessionModelSwitch: "in-session",
     },
     startSession,
+    forkSession,
     sendTurn,
     interruptTurn,
     readThread,

@@ -18,8 +18,8 @@ import * as ConnectionDriver from "./driver.ts";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
+  BearerConnectionTarget,
   PrimaryConnectionTarget,
-  RelayConnectionTarget,
   type ConnectionAttemptError,
   type ConnectionTarget,
   type NetworkStatus,
@@ -37,9 +37,10 @@ const TARGET = new PrimaryConnectionTarget({
   wsBaseUrl: "wss://environment.example.test",
 });
 
-const RELAY_TARGET = new RelayConnectionTarget({
+const RELAY_TARGET = new BearerConnectionTarget({
   environmentId: TARGET.environmentId,
   label: TARGET.label,
+  connectionId: "connection-1",
 });
 
 const TARGET_ENTRY: ConnectionCatalogEntry = {
@@ -701,7 +702,7 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("times out a stalled foreground liveness probe and reconnects", () =>
+  it.effect("tolerates a slow low-power wake before timing out a stalled probe", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
         probe: (attempt) => (attempt === 1 ? Effect.never : Effect.void),
@@ -712,6 +713,10 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
+      yield* TestClock.adjust("15 seconds");
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+
       yield* TestClock.adjust("15 seconds");
       yield* awaitState(
         supervisor.state,

@@ -30,7 +30,8 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
-  hasProviderOverloadStatus,
+  hasRetryableUpstreamStatus,
+  isRetryableUpstreamStatus,
   providerOverloadExhaustedMessage,
   providerOverloadRetryReason,
 } from "../providerOverloadRetry.ts";
@@ -264,6 +265,9 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
     provider: PROVIDER,
     method: cause.operation,
     detail: cause.detail,
+    ...(hasRetryableUpstreamStatus(cause.cause)
+      ? { failureKind: "retryable-upstream" as const }
+      : {}),
     cause: cause.cause,
   });
 
@@ -524,7 +528,7 @@ export function openCodeOverloadRetryReason(input: {
     readonly statusCode?: number | undefined;
   };
 }): string | undefined {
-  return input.error.statusCode === 529
+  return isRetryableUpstreamStatus(input.error.statusCode)
     ? providerOverloadRetryReason({ attempt: input.attempt })
     : undefined;
 }
@@ -1115,7 +1119,8 @@ export function makeOpenCodeAdapter(
 
         case "session.error": {
           const providerMessage = sessionErrorMessage(event.properties.error);
-          const message = hasProviderOverloadStatus(event.properties.error)
+          const retryableUpstream = hasRetryableUpstreamStatus(event.properties.error);
+          const message = retryableUpstream
             ? providerOverloadExhaustedMessage(providerMessage)
             : providerMessage;
           const activeTurnId = context.activeTurnId;
@@ -1139,6 +1144,7 @@ export function makeOpenCodeAdapter(
               payload: {
                 state: "failed",
                 errorMessage: message,
+                ...(retryableUpstream ? { failureKind: "retryable-upstream" as const } : {}),
               },
             });
           }
@@ -1152,6 +1158,7 @@ export function makeOpenCodeAdapter(
               message,
               class: "provider_error",
               detail: event.properties.error,
+              ...(retryableUpstream ? { failureKind: "retryable-upstream" as const } : {}),
             },
           });
           break;

@@ -30,12 +30,14 @@ import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/Pr
 import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
+import { ThreadWorkObligationRepositoryLive } from "../src/persistence/Layers/ThreadWorkObligations.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
+import { ThreadSubscriptionRegistryLive } from "../src/orchestration/Layers/ThreadSubscriptionRegistry.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
 import { makeCodexAdapter } from "../src/provider/Layers/CodexAdapter.ts";
@@ -53,7 +55,9 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/L
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
+import { makeThreadWorkSchedulerLive } from "../src/orchestration/Layers/ThreadWorkScheduler.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { RuntimeLeaseRegistryLive } from "../src/provider/Layers/RuntimeLeaseRegistry.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -61,6 +65,7 @@ import {
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkScheduler } from "../src/orchestration/Services/ThreadWorkScheduler.ts";
 import {
   RuntimeReceiptBus,
   type OrchestrationRuntimeReceipt,
@@ -276,7 +281,7 @@ export const makeOrchestrationIntegrationHarness = (
     ).pipe(
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(NodeServices.layer),
-      Layer.provideMerge(providerSessionDirectoryLayer),
+      Layer.provideMerge(providerSessionDirectoryLayer.pipe(Layer.provide(persistenceLayer))),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers);
     const providerLayer = useRealCodex
@@ -293,6 +298,17 @@ export const makeOrchestrationIntegrationHarness = (
           Layer.provide(providerEventLoggersLayer),
         );
     const providerRegistryLayer = makeProviderRegistryLayer();
+    const threadWorkPersistenceLayer = ThreadWorkObligationRepositoryLive.pipe(
+      Layer.provideMerge(persistenceLayer),
+    );
+    const threadWorkSchedulerLayer = makeThreadWorkSchedulerLive({
+      pollIntervalMs: 60_000,
+      claimLeaseMs: 60_000,
+      heartbeatIntervalMs: 30_000,
+    }).pipe(
+      Layer.provideMerge(threadWorkPersistenceLayer),
+      Layer.provideMerge(RuntimeLeaseRegistryLive),
+    );
 
     const checkpointStoreLayer = CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer));
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
@@ -327,6 +343,8 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(threadWorkPersistenceLayer),
+      Layer.provideMerge(threadWorkSchedulerLayer),
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
@@ -375,6 +393,8 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(RepositoryIdentityResolver.layer),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
+      Layer.provideMerge(ThreadSubscriptionRegistryLive),
+      Layer.provideMerge(providerSessionDirectoryLayer.pipe(Layer.provide(persistenceLayer))),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -384,6 +404,9 @@ export const makeOrchestrationIntegrationHarness = (
     ).pipe(Effect.orDie);
     const reactor = yield* tryRuntimePromise("load OrchestrationReactor service", () =>
       runtime.runPromise(Effect.service(OrchestrationReactor)),
+    ).pipe(Effect.orDie);
+    const threadWorkScheduler = yield* tryRuntimePromise("load ThreadWorkScheduler service", () =>
+      runtime.runPromise(Effect.service(ThreadWorkScheduler)),
     ).pipe(Effect.orDie);
     const snapshotQuery = yield* tryRuntimePromise("load ProjectionSnapshotQuery service", () =>
       runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
@@ -409,6 +432,9 @@ export const makeOrchestrationIntegrationHarness = (
     const scope = yield* Scope.make("sequential");
     yield* tryRuntimePromise("start OrchestrationReactor", () =>
       runtime.runPromise(reactor.start().pipe(Scope.provide(scope))),
+    ).pipe(Effect.orDie);
+    yield* tryRuntimePromise("start ThreadWorkScheduler", () =>
+      runtime.runPromise(threadWorkScheduler.start().pipe(Scope.provide(scope))),
     ).pipe(Effect.orDie);
     const receiptHistory = yield* Ref.make<ReadonlyArray<OrchestrationRuntimeReceipt>>([]);
     yield* Stream.runForEach(runtimeReceiptBus.streamEventsForTest, (receipt) =>

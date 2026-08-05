@@ -62,6 +62,63 @@ export function manualServerUpdateCommand(targetVersion: string): string {
   return `npx t3@${targetVersion}`;
 }
 
+/** Which side of a version mismatch is the stale one. */
+export type VersionSkewDirection = "client-behind" | "server-behind" | "unknown";
+
+/**
+ * Numeric compare of two dotted versions: -1, 0, 1, or null when either is not
+ * plainly numeric. String compare will not do — "0.1.11" sorts *before* "0.1.8"
+ * lexically, which inverts the advice on exactly the releases where it matters.
+ */
+export function compareVersions(left: string, right: string): number | null {
+  const parse = (version: string): number[] | null => {
+    const core = version.trim().split(/[-+]/)[0] ?? "";
+    const parts = core.split(".");
+    const numbers: number[] = [];
+    for (const part of parts) {
+      if (!/^\d+$/.test(part)) return null;
+      numbers.push(Number(part));
+    }
+    return numbers.length > 0 ? numbers : null;
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const x = a[index] ?? 0;
+    const y = b[index] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+export function resolveVersionSkewDirection(
+  mismatch: Pick<VersionMismatch, "clientVersion" | "serverVersion">,
+): VersionSkewDirection {
+  const comparison = compareVersions(mismatch.clientVersion, mismatch.serverVersion);
+  if (comparison === null || comparison === 0) return "unknown";
+  return comparison < 0 ? "client-behind" : "server-behind";
+}
+
+/**
+ * How to actually resolve the skew, given which side is stale.
+ *
+ * The server-update wording is only correct when the *server* is the old one.
+ * Telling someone on a stale client to go update a server that is already ahead
+ * describes work that cannot change the outcome, so the banner never clears no
+ * matter how many times they follow it.
+ */
+export function versionSkewGuidance(input: {
+  readonly direction: VersionSkewDirection;
+  readonly capability: ServerSelfUpdateCapability | null;
+  readonly serverLabel: string;
+}): string {
+  if (input.direction === "client-behind") {
+    return `This client is older than the ${input.serverLabel}. Reload to pick up the matching version, or update Solla Code on this device if it persists.`;
+  }
+  return serverUpdateGuidance(input.capability, input.serverLabel);
+}
+
 /** One sentence telling the user how to resolve version skew for a server,
     matched to the update path it offers. */
 export function serverUpdateGuidance(

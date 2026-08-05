@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  clearInMemoryComposerTransfersForTest,
   composerTransferHtml,
   discardComposerTransfer,
+  hasPersistedComposerTransfer,
   hasTransferableComposerContent,
+  persistComposerTransfer,
   planComposerPaste,
   readComposerTransferFromClipboard,
+  resolveComposerTransferFromClipboard,
+  setComposerTransferPersistenceForTest,
   stageComposerTransfer,
   writeComposerTransferToClipboard,
 } from "./composerTransferClipboard";
+import type {
+  ComposerTransferPersistence,
+  PersistedComposerTransfer,
+} from "./composerTransferPersistence";
 
 function clipboardData(values: Record<string, string>): Pick<DataTransfer, "getData"> {
   return {
@@ -16,8 +25,59 @@ function clipboardData(values: Record<string, string>): Pick<DataTransfer, "getD
   };
 }
 
+function createMetadataStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    setItem: (key, value) => {
+      values.set(key, value);
+    },
+  };
+}
+
+function clonePersistedTransfer(transfer: PersistedComposerTransfer): PersistedComposerTransfer {
+  return {
+    ...transfer,
+    files: transfer.files.map((file) => ({
+      ...file,
+      blob: new Blob([file.blob], { type: file.mimeType }),
+    })),
+  };
+}
+
+function createTransferPersistence(): {
+  readonly persistence: ComposerTransferPersistence;
+  readonly values: Map<string, PersistedComposerTransfer>;
+} {
+  const values = new Map<string, PersistedComposerTransfer>();
+  return {
+    values,
+    persistence: {
+      write: (transfer) => {
+        values.set(transfer.token, clonePersistedTransfer(transfer));
+        return Promise.resolve();
+      },
+      read: (token) => Promise.resolve(values.get(token) ?? null),
+      remove: (token) => {
+        values.delete(token);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
 describe("composer transfer clipboard", () => {
   afterEach(() => {
+    clearInMemoryComposerTransfersForTest();
+    setComposerTransferPersistenceForTest({ persistence: null, metadataStorage: null });
     vi.unstubAllGlobals();
   });
 
@@ -116,6 +176,141 @@ describe("composer transfer clipboard", () => {
       readComposerTransferFromClipboard(clipboardData({ "text/plain": "different text" })),
     ).toBeNull();
     discardComposerTransfer(staged.token);
+  });
+
+  it("restores every image after the renderer-local transfer map is lost", async () => {
+    const metadataStorage = createMetadataStorage();
+    const { persistence } = createTransferPersistence();
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const first = new File(["first bytes"], "first.png", {
+      type: "image/png",
+      lastModified: 10,
+    });
+    const second = new File(["second bytes"], "second.webp", {
+      type: "image/webp",
+      lastModified: 20,
+    });
+    const staged = stageComposerTransfer("survive a renderer reload", [first, second]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(true);
+    clearInMemoryComposerTransfersForTest();
+
+    const strippedClipboard = clipboardData({ "text/plain": "survive a renderer reload" });
+    expect(readComposerTransferFromClipboard(strippedClipboard)).toBeNull();
+    expect(hasPersistedComposerTransfer(strippedClipboard)).toBe(true);
+    const restored = await resolveComposerTransferFromClipboard(strippedClipboard);
+
+    expect(restored?.prompt).toBe("survive a renderer reload");
+    expect(restored?.files.map((file) => [file.name, file.type, file.lastModified])).toEqual([
+      ["first.png", "image/png", 10],
+      ["second.webp", "image/webp", 20],
+    ]);
+    expect(await restored?.files[0]?.text()).toBe("first bytes");
+    expect(await restored?.files[1]?.text()).toBe("second bytes");
+    discardComposerTransfer(staged.token);
+  });
+
+  it("restores an attachment-only cut after a renderer reload", async () => {
+    const metadataStorage = createMetadataStorage();
+    const { persistence } = createTransferPersistence();
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const staged = stageComposerTransfer("", [
+      new File(["image"], "attachment-only.png", { type: "image/png" }),
+    ]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(true);
+    clearInMemoryComposerTransfersForTest();
+    const emptyClipboard = clipboardData({ "text/plain": "" });
+
+    expect(hasPersistedComposerTransfer(emptyClipboard)).toBe(true);
+    await expect(resolveComposerTransferFromClipboard(emptyClipboard)).resolves.toMatchObject({
+      prompt: "",
+      files: [{ name: "attachment-only.png" }],
+    });
+    discardComposerTransfer(staged.token);
+  });
+
+  it("uses the durable token after reload when HTML survives", async () => {
+    const metadataStorage = createMetadataStorage();
+    const { persistence } = createTransferPersistence();
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const staged = stageComposerTransfer("marked", [
+      new File(["image"], "marked.png", { type: "image/png" }),
+    ]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(true);
+    clearInMemoryComposerTransfersForTest();
+    const markedClipboard = clipboardData({
+      "text/plain": "a platform may alter this representation",
+      "text/html": composerTransferHtml(staged),
+    });
+
+    const restored = await resolveComposerTransferFromClipboard(markedClipboard);
+    expect(restored?.prompt).toBe("marked");
+    expect(restored?.files.map((file) => file.name)).toEqual(["marked.png"]);
+    discardComposerTransfer(staged.token);
+  });
+
+  it("normalizes line endings and Unicode before matching a stripped clipboard", async () => {
+    const metadataStorage = createMetadataStorage();
+    const { persistence } = createTransferPersistence();
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const staged = stageComposerTransfer("Cafe\u0301\nsecond line", [
+      new File(["image"], "normalized.png", { type: "image/png" }),
+    ]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(true);
+    clearInMemoryComposerTransfersForTest();
+    const normalizedClipboard = clipboardData({ "text/plain": "Caf\u00e9\r\nsecond line" });
+
+    expect(hasPersistedComposerTransfer(normalizedClipboard)).toBe(true);
+    expect(
+      (await resolveComposerTransferFromClipboard(normalizedClipboard))?.files.map(
+        (file) => file.name,
+      ),
+    ).toEqual(["normalized.png"]);
+    discardComposerTransfer(staged.token);
+  });
+
+  it("refuses to clear on the strength of an attachment stage that did not persist", async () => {
+    const metadataStorage = createMetadataStorage();
+    const removed: string[] = [];
+    setComposerTransferPersistenceForTest({
+      metadataStorage,
+      persistence: {
+        write: () => Promise.reject(new Error("disk full")),
+        read: () => Promise.resolve(null),
+        remove: (token) => {
+          removed.push(token);
+          return Promise.resolve();
+        },
+      },
+    });
+    const staged = stageComposerTransfer("keep the source", [
+      new File(["image"], "safe.png", { type: "image/png" }),
+    ]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(false);
+    clearInMemoryComposerTransfersForTest();
+    expect(hasPersistedComposerTransfer(clipboardData({ "text/plain": "keep the source" }))).toBe(
+      false,
+    );
+    expect(removed).toEqual([]);
+  });
+
+  it("removes persisted bytes if the small lookup record cannot be written", async () => {
+    const { persistence, values } = createTransferPersistence();
+    const metadataStorage = createMetadataStorage();
+    metadataStorage.setItem = () => {
+      throw new Error("quota rejected");
+    };
+    setComposerTransferPersistenceForTest({ persistence, metadataStorage });
+    const staged = stageComposerTransfer("keep this too", [
+      new File(["image"], "safe.png", { type: "image/png" }),
+    ]);
+
+    await expect(persistComposerTransfer(staged)).resolves.toBe(false);
+    expect(values.has(staged.token)).toBe(false);
   });
 
   it("writes plain text, HTML marker, and the internal token in the button gesture", async () => {

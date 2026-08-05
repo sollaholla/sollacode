@@ -1,9 +1,15 @@
 import { randomUUID } from "~/lib/utils";
+import {
+  type ComposerTransferPersistence,
+  indexedDbComposerTransferPersistence,
+  type PersistedComposerTransfer,
+} from "./composerTransferPersistence";
 
 const COMPOSER_TRANSFER_MIME = "application/x-solla-composer-transfer";
 const MAX_STAGED_TRANSFERS = 8;
 const STAGED_TRANSFER_TTL_MS = 30 * 60 * 1000;
 const TRANSFER_TOKEN_PATTERN = /^[a-zA-Z0-9_-]{12,160}$/u;
+const TRANSFER_METADATA_STORAGE_KEY = "t3code:composer-transfers:v1";
 
 type StagedComposerTransfer = {
   readonly token: string;
@@ -18,6 +24,22 @@ export type ComposerTransfer = {
 };
 
 const stagedTransfers = new Map<string, StagedComposerTransfer>();
+type ComposerTransferMetadata = {
+  readonly token: string;
+  readonly promptFingerprint: string;
+  readonly fileCount: number;
+  readonly stagedAt: number;
+};
+
+type ComposerTransferMetadataDocument = {
+  readonly version: 1;
+  readonly transfers: ReadonlyArray<ComposerTransferMetadata>;
+};
+
+type ComposerTransferMetadataStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+let persistenceOverride: ComposerTransferPersistence | null = null;
+let metadataStorageOverride: ComposerTransferMetadataStorage | null = null;
 
 function cloneFile(file: File): File {
   return new File([file], file.name, {
@@ -52,7 +74,135 @@ function trimStagedTransfers(now = Date.now()): void {
 }
 
 function normalizeClipboardText(value: string): string {
-  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  return value.normalize("NFC").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+}
+
+function clipboardTextFingerprint(value: string): string {
+  const normalized = normalizeClipboardText(value);
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const code = normalized.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
+    second = ((second << 13) | (second >>> 19)) >>> 0;
+  }
+  return `${normalized.length}:${first.toString(16).padStart(8, "0")}:${second
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
+function resolveMetadataStorage(): ComposerTransferMetadataStorage | null {
+  if (metadataStorageOverride) return metadataStorageOverride;
+  try {
+    if (
+      typeof localStorage !== "undefined" &&
+      typeof localStorage.getItem === "function" &&
+      typeof localStorage.setItem === "function" &&
+      typeof localStorage.removeItem === "function"
+    ) {
+      return localStorage;
+    }
+  } catch {
+    // Storage access can itself throw in sandboxed or policy-blocked contexts.
+  }
+  return null;
+}
+
+function normalizeTransferMetadata(value: unknown, now = Date.now()): ComposerTransferMetadata[] {
+  if (!value || typeof value !== "object") return [];
+  const candidate = value as Partial<ComposerTransferMetadataDocument>;
+  if (candidate.version !== 1 || !Array.isArray(candidate.transfers)) return [];
+  return candidate.transfers.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const transfer = raw as Partial<ComposerTransferMetadata>;
+    if (
+      typeof transfer.token !== "string" ||
+      !TRANSFER_TOKEN_PATTERN.test(transfer.token) ||
+      typeof transfer.promptFingerprint !== "string" ||
+      typeof transfer.fileCount !== "number" ||
+      !Number.isInteger(transfer.fileCount) ||
+      transfer.fileCount <= 0 ||
+      typeof transfer.stagedAt !== "number" ||
+      !Number.isFinite(transfer.stagedAt) ||
+      now - transfer.stagedAt > STAGED_TRANSFER_TTL_MS
+    ) {
+      return [];
+    }
+    return [
+      {
+        token: transfer.token,
+        promptFingerprint: transfer.promptFingerprint,
+        fileCount: transfer.fileCount,
+        stagedAt: transfer.stagedAt,
+      },
+    ];
+  });
+}
+
+function readTransferMetadata(): ComposerTransferMetadata[] {
+  const storage = resolveMetadataStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(TRANSFER_METADATA_STORAGE_KEY);
+    if (!raw) return [];
+    return normalizeTransferMetadata(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+function writeTransferMetadata(transfers: ReadonlyArray<ComposerTransferMetadata>): boolean {
+  const storage = resolveMetadataStorage();
+  if (!storage) return false;
+  try {
+    if (transfers.length === 0) {
+      storage.removeItem(TRANSFER_METADATA_STORAGE_KEY);
+    } else {
+      storage.setItem(
+        TRANSFER_METADATA_STORAGE_KEY,
+        JSON.stringify({ version: 1, transfers } satisfies ComposerTransferMetadataDocument),
+      );
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function currentPersistence(): ComposerTransferPersistence {
+  return persistenceOverride ?? indexedDbComposerTransferPersistence;
+}
+
+function safeClipboardData(clipboardData: Pick<DataTransfer, "getData">, type: string): string {
+  try {
+    return clipboardData.getData(type);
+  } catch {
+    return "";
+  }
+}
+
+function persistedTransferCandidate(input: {
+  readonly directToken: string;
+  readonly html: string;
+  readonly plainText: string;
+}): { readonly metadata: ComposerTransferMetadata; readonly matchedByPlainText: boolean } | null {
+  const markerToken = TRANSFER_TOKEN_PATTERN.test(input.directToken)
+    ? input.directToken
+    : transferTokenFromHtml(input.html);
+  const metadata = readTransferMetadata();
+  if (markerToken) {
+    const directMatch = metadata.find((transfer) => transfer.token === markerToken);
+    return directMatch ? { metadata: directMatch, matchedByPlainText: false } : null;
+  }
+  const fingerprint = clipboardTextFingerprint(input.plainText);
+  for (let index = metadata.length - 1; index >= 0; index -= 1) {
+    const candidate = metadata[index];
+    if (candidate?.promptFingerprint === fingerprint) {
+      return { metadata: candidate, matchedByPlainText: true };
+    }
+  }
+  return null;
 }
 
 function latestTransferMatchingPlainText(plainText: string): StagedComposerTransfer | null {
@@ -127,6 +277,62 @@ export function stageComposerTransfer(
 
 export function discardComposerTransfer(token: string): void {
   stagedTransfers.delete(token);
+  const nextMetadata = readTransferMetadata().filter((transfer) => transfer.token !== token);
+  writeTransferMetadata(nextMetadata);
+  void currentPersistence()
+    .remove(token)
+    .catch(() => undefined);
+}
+
+/**
+ * Commits every attachment to IndexedDB before the source composer is cleared.
+ * The small localStorage record contains only a text fingerprint and token;
+ * image bytes stay in IndexedDB, where large multi-image drafts fit without
+ * consuming the origin's small localStorage quota.
+ */
+export async function persistComposerTransfer(transfer: StagedComposerTransfer): Promise<boolean> {
+  if (transfer.files.length === 0) return true;
+  const persisted: PersistedComposerTransfer = {
+    token: transfer.token,
+    prompt: transfer.prompt,
+    stagedAt: transfer.stagedAt,
+    files: transfer.files.map((file) => ({
+      name: file.name,
+      mimeType: file.type,
+      lastModified: file.lastModified,
+      blob: file,
+    })),
+  };
+  try {
+    await currentPersistence().write(persisted);
+    const existing = readTransferMetadata().filter((entry) => entry.token !== transfer.token);
+    const next = [
+      ...existing,
+      {
+        token: transfer.token,
+        promptFingerprint: clipboardTextFingerprint(transfer.prompt),
+        fileCount: transfer.files.length,
+        stagedAt: transfer.stagedAt,
+      },
+    ].slice(-MAX_STAGED_TRANSFERS);
+    if (!writeTransferMetadata(next)) {
+      await currentPersistence()
+        .remove(transfer.token)
+        .catch(() => undefined);
+      return false;
+    }
+    const retainedTokens = new Set(next.map((entry) => entry.token));
+    for (const entry of existing) {
+      if (!retainedTokens.has(entry.token)) {
+        void currentPersistence()
+          .remove(entry.token)
+          .catch(() => undefined);
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function composerTransferHtml(transfer: Pick<StagedComposerTransfer, "token" | "prompt">) {
@@ -230,19 +436,100 @@ export async function writeComposerTransferToClipboard(
 export function readComposerTransferFromClipboard(
   clipboardData: Pick<DataTransfer, "getData">,
 ): ComposerTransfer | null {
-  const directToken = clipboardData.getData(COMPOSER_TRANSFER_MIME).trim();
+  const directToken = safeClipboardData(clipboardData, COMPOSER_TRANSFER_MIME).trim();
   const token = TRANSFER_TOKEN_PATTERN.test(directToken)
     ? directToken
-    : transferTokenFromHtml(clipboardData.getData("text/html"));
+    : transferTokenFromHtml(safeClipboardData(clipboardData, "text/html"));
   trimStagedTransfers();
   const transfer = token
     ? (stagedTransfers.get(token) ?? null)
-    : latestTransferMatchingPlainText(clipboardData.getData("text/plain"));
+    : latestTransferMatchingPlainText(safeClipboardData(clipboardData, "text/plain"));
   if (!transfer) return null;
   return {
     prompt: transfer.prompt,
     files: transfer.files.map(cloneFile),
   };
+}
+
+/** True when paste must be held while an IndexedDB transfer is restored. */
+export function hasPersistedComposerTransfer(
+  clipboardData: Pick<DataTransfer, "getData">,
+): boolean {
+  return (
+    persistedTransferCandidate({
+      directToken: safeClipboardData(clipboardData, COMPOSER_TRANSFER_MIME).trim(),
+      html: safeClipboardData(clipboardData, "text/html"),
+      plainText: safeClipboardData(clipboardData, "text/plain"),
+    }) !== null
+  );
+}
+
+/**
+ * Restores a transfer after a renderer reload or from another same-origin
+ * Solla window. Clipboard strings are captured before the first await because
+ * browser clipboard event objects are only guaranteed during the event turn.
+ */
+export async function resolveComposerTransferFromClipboard(
+  clipboardData: Pick<DataTransfer, "getData">,
+): Promise<ComposerTransfer | null> {
+  const inMemory = readComposerTransferFromClipboard(clipboardData);
+  if (inMemory) return inMemory;
+
+  const plainText = safeClipboardData(clipboardData, "text/plain");
+  const candidate = persistedTransferCandidate({
+    directToken: safeClipboardData(clipboardData, COMPOSER_TRANSFER_MIME).trim(),
+    html: safeClipboardData(clipboardData, "text/html"),
+    plainText,
+  });
+  if (!candidate) return null;
+
+  try {
+    const persisted = await currentPersistence().read(candidate.metadata.token);
+    if (!persisted || Date.now() - persisted.stagedAt > STAGED_TRANSFER_TTL_MS) {
+      discardComposerTransfer(candidate.metadata.token);
+      return null;
+    }
+    if (
+      candidate.matchedByPlainText &&
+      normalizeClipboardText(persisted.prompt) !== normalizeClipboardText(plainText)
+    ) {
+      return null;
+    }
+    const transfer: StagedComposerTransfer = {
+      token: persisted.token,
+      prompt: persisted.prompt,
+      stagedAt: persisted.stagedAt,
+      files: persisted.files.map(
+        (file) =>
+          new File([file.blob], file.name, {
+            type: file.mimeType,
+            lastModified: file.lastModified,
+          }),
+      ),
+    };
+    if (transfer.files.length !== candidate.metadata.fileCount) return null;
+    stagedTransfers.set(transfer.token, transfer);
+    trimStagedTransfers();
+    return {
+      prompt: transfer.prompt,
+      files: transfer.files.map(cloneFile),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Test seam for simulating a fresh renderer without depending on real IndexedDB. */
+export function setComposerTransferPersistenceForTest(input: {
+  readonly persistence: ComposerTransferPersistence | null;
+  readonly metadataStorage: ComposerTransferMetadataStorage | null;
+}): void {
+  persistenceOverride = input.persistence;
+  metadataStorageOverride = input.metadataStorage;
+}
+
+export function clearInMemoryComposerTransfersForTest(): void {
+  stagedTransfers.clear();
 }
 
 /**

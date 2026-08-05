@@ -18,6 +18,21 @@ export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
 // Visible sidebar rows are prewarmed into the thread-detail cache so opening a
 // nearby thread usually reuses an already-hot subscription.
 export const SIDEBAR_THREAD_PREWARM_LIMIT = 10;
+
+export function buildSettleThreadsConfirmationMessage(threadTitles: readonly string[]): string {
+  if (threadTitles.length === 1) {
+    return [
+      `Settle thread "${threadTitles[0]}"?`,
+      "This moves it out of the active list and into Settled.",
+      "You can un-settle it later.",
+    ].join("\n");
+  }
+  return [
+    `Settle ${threadTitles.length} threads?`,
+    "This moves them out of the active list and into Settled.",
+    "You can un-settle them later.",
+  ].join("\n");
+}
 type SidebarProject = {
   id: string;
   title: string;

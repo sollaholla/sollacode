@@ -28,6 +28,7 @@ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRe
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
+import { RuntimeLeaseRegistryLive } from "./provider/Layers/RuntimeLeaseRegistry.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
@@ -50,6 +51,8 @@ import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
+import { ThreadWorkSchedulerLive } from "./orchestration/Layers/ThreadWorkScheduler.ts";
+import { ThreadSubscriptionRegistryLive } from "./orchestration/Layers/ThreadSubscriptionRegistry.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
@@ -88,6 +91,7 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { ThreadWorkObligationRepositoryLive } from "./persistence/Layers/ThreadWorkObligations.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -215,6 +219,16 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
 
 const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
+const ThreadWorkPersistenceLayerLive = ThreadWorkObligationRepositoryLive.pipe(
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
+const BackgroundThreadWorkLayerLive = ThreadWorkSchedulerLive.pipe(
+  Layer.provideMerge(ThreadWorkPersistenceLayerLive),
+  Layer.provideMerge(RuntimeLeaseRegistryLive),
+  Layer.provideMerge(ThreadSubscriptionRegistryLive),
+);
+
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
 );
@@ -305,6 +319,7 @@ const AuthLayerLive = EnvironmentAuth.layer.pipe(
 );
 
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
+  Layer.provideMerge(BackgroundThreadWorkLayerLive),
   Layer.provideMerge(ProviderLayerLive),
   Layer.provideMerge(OrchestrationLayerLive),
 );

@@ -83,6 +83,34 @@
         height: 64px;
         object-fit: contain;
       }
+
+      #boot-shell.boot-shell-failed #boot-shell-card {
+        width: min(360px, calc(100vw - 48px));
+        height: auto;
+        flex-direction: column;
+        gap: 12px;
+        text-align: center;
+      }
+
+      #boot-shell-status {
+        margin: 0;
+        color: inherit;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      #boot-shell-retry {
+        appearance: none;
+        border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+        border-radius: 10px;
+        padding: 8px 14px;
+        background: color-mix(in srgb, currentColor 8%, transparent);
+        color: inherit;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
     </style>
     <title>Solla Code</title>
   </head>
@@ -95,5 +123,87 @@
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (() => {
+        const BOOT_TIMEOUT_MS = 8000;
+        const RETRY_QUERY_KEY = "solla_boot_retry";
+        const RETRY_STORAGE_KEY = "solla:boot-recovery:v1";
+        const bootShell = document.getElementById("boot-shell");
+        const bootShellCard = document.getElementById("boot-shell-card");
+        if (!bootShell || !bootShellCard) return;
+
+        const removeRetryMarker = () => {
+          try {
+            window.sessionStorage.removeItem(RETRY_STORAGE_KEY);
+            const url = new URL(window.location.href);
+            if (!url.searchParams.has(RETRY_QUERY_KEY)) return;
+            url.searchParams.delete(RETRY_QUERY_KEY);
+            window.history.replaceState(window.history.state, "", url);
+          } catch {
+            // Storage and history can be unavailable in strict private modes.
+          }
+        };
+
+        const appBooted = () => !document.getElementById("boot-shell");
+        const observer = new MutationObserver(() => {
+          if (!appBooted()) return;
+          observer.disconnect();
+          removeRetryMarker();
+        });
+        observer.observe(document.getElementById("root"), { childList: true, subtree: true });
+
+        const retryWithFreshShell = () => {
+          try {
+            window.sessionStorage.setItem(RETRY_STORAGE_KEY, "attempted");
+            const url = new URL(window.location.href);
+            url.searchParams.set(RETRY_QUERY_KEY, Date.now().toString());
+            window.location.replace(url.toString());
+          } catch {
+            window.location.reload();
+          }
+        };
+
+        const showRecovery = () => {
+          bootShell.classList.add("boot-shell-failed");
+          bootShellCard.replaceChildren();
+
+          const logo = document.createElement("img");
+          logo.id = "boot-shell-logo";
+          logo.src = "/apple-touch-icon.png";
+          logo.alt = "Solla Code";
+
+          const status = document.createElement("p");
+          status.id = "boot-shell-status";
+          status.textContent = "Solla Code did not finish loading.";
+
+          const retry = document.createElement("button");
+          retry.id = "boot-shell-retry";
+          retry.type = "button";
+          retry.textContent = "Retry";
+          retry.addEventListener("click", retryWithFreshShell);
+
+          bootShellCard.append(logo, status, retry);
+        };
+
+        window.setTimeout(() => {
+          if (appBooted()) {
+            removeRetryMarker();
+            return;
+          }
+
+          let alreadyRetried = false;
+          try {
+            alreadyRetried = window.sessionStorage.getItem(RETRY_STORAGE_KEY) === "attempted";
+          } catch {
+            // A cache-busting retry is still safe when storage is unavailable.
+          }
+          if (alreadyRetried) {
+            showRecovery();
+            return;
+          }
+          retryWithFreshShell();
+        }, BOOT_TIMEOUT_MS);
+      })();
+    </script>
   </body>
 </html>

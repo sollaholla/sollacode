@@ -77,6 +77,8 @@ describe("orchestration projector", () => {
         id: "thread-1",
         projectId: "project-1",
         title: "demo",
+        isSideChat: false,
+        sideChatParentThreadId: null,
         modelSelection: {
           instanceId: "codex",
           model: "gpt-5-codex",
@@ -168,11 +170,38 @@ describe("orchestration projector", () => {
       ),
     );
 
-    const forked = await Effect.runPromise(
+    const afterRunning = await Effect.runPromise(
       projectEvent(
         afterMessage,
         makeEvent({
           sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-source",
+          occurredAt: createdAt,
+          commandId: "cmd-running",
+          payload: {
+            threadId: "thread-source",
+            session: {
+              threadId: "thread-source",
+              status: "running",
+              providerName: "codex",
+              providerInstanceId: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: "turn-source-running",
+              lastError: null,
+              updatedAt: createdAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const forked = await Effect.runPromise(
+      projectEvent(
+        afterRunning,
+        makeEvent({
+          sequence: 4,
           type: "thread.forked",
           aggregateKind: "thread",
           aggregateId: "thread-fork",
@@ -201,6 +230,11 @@ describe("orchestration projector", () => {
     const source = forked.threads.find((thread) => thread.id === "thread-source");
     const target = forked.threads.find((thread) => thread.id === "thread-fork");
     expect(source?.messages[0]?.id).toBe("message-source");
+    expect(source?.session?.status).toBe("running");
+    expect(source?.latestTurn?.state).toBe("running");
+    expect(target?.isSideChat).toBe(false);
+    expect(target?.sideChatParentThreadId).toBeNull();
+    expect(target?.latestTurn?.state).toBe("incomplete");
     expect(target?.messages[0]).toMatchObject({
       id: "thread-fork:fork:message-source",
       text: "Keep this context",
@@ -210,6 +244,129 @@ describe("orchestration projector", () => {
       "thread-fork-11111111-2222-4333-8444-555555555555",
     );
     expect(target?.session).toBeNull();
+
+    const withSideChat = await Effect.runPromise(
+      projectEvent(
+        forked,
+        makeEvent({
+          sequence: 5,
+          type: "thread.forked",
+          aggregateKind: "thread",
+          aggregateId: "thread-side",
+          occurredAt: forkedAt,
+          commandId: "cmd-side-chat",
+          payload: {
+            threadId: "thread-side",
+            sourceThreadId: "thread-source",
+            projectId: "project-1",
+            title: "Side chat",
+            isSideChat: true,
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: forkedAt,
+            updatedAt: forkedAt,
+          },
+        }),
+      ),
+    );
+    const sideChat = withSideChat.threads.find((thread) => thread.id === "thread-side");
+    expect(sideChat).toMatchObject({
+      isSideChat: true,
+      sideChatParentThreadId: "thread-source",
+      latestTurn: null,
+      messages: [],
+      activities: [],
+      checkpoints: [],
+      proposedPlans: [],
+      session: null,
+    });
+
+    const withSiblingSideChat = await Effect.runPromise(
+      projectEvent(
+        withSideChat,
+        makeEvent({
+          sequence: 6,
+          type: "thread.forked",
+          aggregateKind: "thread",
+          aggregateId: "thread-side-sibling",
+          occurredAt: forkedAt,
+          commandId: "cmd-side-chat-sibling",
+          payload: {
+            threadId: "thread-side-sibling",
+            sourceThreadId: "thread-side",
+            projectId: "project-1",
+            title: "Sibling side chat",
+            isSideChat: true,
+            sideChatParentThreadId: "thread-source",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "agent",
+            branch: null,
+            worktreePath: null,
+            createdAt: forkedAt,
+            updatedAt: forkedAt,
+          },
+        }),
+      ),
+    );
+    expect(
+      withSiblingSideChat.threads.find((thread) => thread.id === "thread-side-sibling"),
+    ).toMatchObject({
+      isSideChat: true,
+      sideChatParentThreadId: "thread-source",
+      latestTurn: null,
+      messages: [],
+    });
+
+    const deletedSideChat = await Effect.runPromise(
+      projectEvent(
+        withSiblingSideChat,
+        makeEvent({
+          sequence: 7,
+          type: "thread.deleted",
+          aggregateKind: "thread",
+          aggregateId: "thread-side",
+          occurredAt: "2026-01-01T00:00:02.000Z",
+          commandId: "cmd-side-chat-delete",
+          payload: {
+            threadId: "thread-side",
+            deletedAt: "2026-01-01T00:00:02.000Z",
+          },
+        }),
+      ),
+    );
+    const promotedSideChat = await Effect.runPromise(
+      projectEvent(
+        deletedSideChat,
+        makeEvent({
+          sequence: 8,
+          type: "thread.meta-updated",
+          aggregateKind: "thread",
+          aggregateId: "thread-side",
+          occurredAt: "2026-01-01T00:00:03.000Z",
+          commandId: "cmd-side-chat-promote",
+          payload: {
+            threadId: "thread-side",
+            isSideChat: false,
+            updatedAt: "2026-01-01T00:00:03.000Z",
+          },
+        }),
+      ),
+    );
+    expect(promotedSideChat.threads.find((thread) => thread.id === "thread-side")).toMatchObject({
+      isSideChat: false,
+      sideChatParentThreadId: null,
+      deletedAt: null,
+    });
   });
 
   it("fails when event payload cannot be decoded by runtime schema", async () => {
@@ -450,6 +607,118 @@ describe("orchestration projector", () => {
     expect(settledThread?.latestTurn?.turnId).toBe("turn-1");
     expect(settledThread?.latestTurn?.state).toBe("completed");
     expect(settledThread?.latestTurn?.completedAt).toBe(settledAt);
+
+    const stoppedAt = "2026-02-23T08:01:30.000Z";
+    const afterStopped = await Effect.runPromise(
+      projectEvent(
+        afterRunning,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: stoppedAt,
+          commandId: "cmd-stopped",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "stopped",
+              providerName: "codex",
+              providerSessionId: "session-1",
+              providerThreadId: "provider-thread-1",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: stoppedAt,
+            },
+          },
+        }),
+      ),
+    );
+    expect(afterStopped.threads[0]?.latestTurn?.state).toBe("incomplete");
+    expect(afterStopped.threads[0]?.latestTurn?.completedAt).toBe(stoppedAt);
+  });
+
+  it("does not regress the latest turn when an older checkpoint arrives late", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const newerTurnStartedAt = "2026-02-23T08:02:00.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-late-checkpoint",
+          occurredAt: createdAt,
+          commandId: "cmd-late-create",
+          payload: {
+            threadId: "thread-late-checkpoint",
+            projectId: "project-1",
+            title: "Late checkpoint",
+            modelSelection: { provider: "codex", model: "gpt-5.3-codex" },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const afterNewerTurn = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-late-checkpoint",
+          occurredAt: newerTurnStartedAt,
+          commandId: "cmd-newer-running",
+          payload: {
+            threadId: "thread-late-checkpoint",
+            session: {
+              threadId: "thread-late-checkpoint",
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: "turn-newer",
+              lastError: null,
+              updatedAt: newerTurnStartedAt,
+            },
+          },
+        }),
+      ),
+    );
+    const afterLateCheckpoint = await Effect.runPromise(
+      projectEvent(
+        afterNewerTurn,
+        makeEvent({
+          sequence: 3,
+          type: "thread.turn-diff-completed",
+          aggregateKind: "thread",
+          aggregateId: "thread-late-checkpoint",
+          occurredAt: "2026-02-23T08:02:01.000Z",
+          commandId: "cmd-older-checkpoint",
+          payload: {
+            threadId: "thread-late-checkpoint",
+            turnId: "turn-older",
+            checkpointTurnCount: 1,
+            checkpointRef: "refs/t3/checkpoints/thread-late-checkpoint/turn/1",
+            status: "ready",
+            files: [],
+            assistantMessageId: "assistant-older",
+            completedAt: "2026-02-23T08:01:00.000Z",
+          },
+        }),
+      ),
+    );
+
+    expect(afterLateCheckpoint.threads[0]?.checkpoints[0]?.turnId).toBe("turn-older");
+    expect(afterLateCheckpoint.threads[0]?.latestTurn?.turnId).toBe("turn-newer");
+    expect(afterLateCheckpoint.threads[0]?.latestTurn?.state).toBe("running");
   });
 
   it("updates canonical thread runtime mode from thread.runtime-mode-set", async () => {

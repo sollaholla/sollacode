@@ -2,6 +2,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
@@ -18,10 +19,18 @@ import { ModelSelection } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
+    isSideChat: Schema.Number,
     modelSelection: Schema.fromJsonString(ModelSelection),
   }),
 );
 type ProjectionThreadDbRow = typeof ProjectionThreadDbRow.Type;
+
+function toProjectionThread(row: ProjectionThreadDbRow): ProjectionThread {
+  return {
+    ...row,
+    isSideChat: row.isSideChat === 1,
+  };
+}
 
 const makeProjectionThreadRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -34,6 +43,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           thread_id,
           project_id,
           title,
+          is_side_chat,
+          side_chat_parent_thread_id,
           model_selection_json,
           runtime_mode,
           interaction_mode,
@@ -57,6 +68,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.threadId},
           ${row.projectId},
           ${row.title},
+          ${row.isSideChat === true ? 1 : 0},
+          ${row.sideChatParentThreadId ?? null},
           ${JSON.stringify(row.modelSelection)},
           ${row.runtimeMode},
           ${row.interactionMode},
@@ -80,6 +93,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         DO UPDATE SET
           project_id = excluded.project_id,
           title = excluded.title,
+          is_side_chat = excluded.is_side_chat,
+          side_chat_parent_thread_id = excluded.side_chat_parent_thread_id,
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
           interaction_mode = excluded.interaction_mode,
@@ -110,6 +125,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          is_side_chat AS "isSideChat",
+          side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
@@ -142,6 +159,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          is_side_chat AS "isSideChat",
+          side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
@@ -183,11 +202,13 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
   const getById: ProjectionThreadRepositoryShape["getById"] = (input) =>
     getProjectionThreadRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.getById:query")),
+      Effect.map((row) => row.pipe(Option.map(toProjectionThread))),
     );
 
   const listByProjectId: ProjectionThreadRepositoryShape["listByProjectId"] = (input) =>
     listProjectionThreadRows(input).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.listByProjectId:query")),
+      Effect.map((rows) => rows.map(toProjectionThread)),
     );
 
   const deleteById: ProjectionThreadRepositoryShape["deleteById"] = (input) =>

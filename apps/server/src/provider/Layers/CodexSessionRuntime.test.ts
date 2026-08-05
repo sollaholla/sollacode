@@ -16,9 +16,11 @@ import {
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
+  resolveCodexAutoCompactionTokenLimit,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
@@ -393,6 +395,12 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it("derives the native limit from the user-visible effective context window", () => {
+    NodeAssert.equal(CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS, 258_400);
+    NodeAssert.equal(resolveCodexAutoCompactionTokenLimit(80), 206_720);
+    NodeAssert.equal(resolveCodexAutoCompactionTokenLimit(49), undefined);
+  });
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{
@@ -425,6 +433,7 @@ describe("openCodexThread", () => {
         cwd: "/tmp/project",
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
+        autoCompactionTokenLimit: 206_720,
         resumeThreadId: "stale-thread",
         forkThread: false,
       });
@@ -434,6 +443,12 @@ describe("openCodexThread", () => {
         calls.map((call) => call.method),
         ["thread/resume", "thread/start"],
       );
+      for (const call of calls) {
+        NodeAssert.deepStrictEqual((call.payload as { config?: unknown }).config, {
+          model_auto_compact_token_limit: 206_720,
+          model_auto_compact_token_limit_scope: "total",
+        });
+      }
     }),
   );
 
@@ -495,6 +510,7 @@ describe("openCodexThread", () => {
         cwd: "/tmp/project",
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
+        autoCompactionTokenLimit: 206_720,
         resumeThreadId: "source-thread",
         forkThread: true,
       });
@@ -505,6 +521,10 @@ describe("openCodexThread", () => {
         ["thread/fork"],
       );
       NodeAssert.equal((calls[0]?.payload as { threadId?: string }).threadId, "source-thread");
+      NodeAssert.deepStrictEqual((calls[0]?.payload as { config?: unknown }).config, {
+        model_auto_compact_token_limit: 206_720,
+        model_auto_compact_token_limit_scope: "total",
+      });
     }),
   );
 });

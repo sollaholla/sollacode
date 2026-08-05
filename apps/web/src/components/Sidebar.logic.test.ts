@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   archiveSelectedThreadEntries,
+  buildSettleThreadsConfirmationMessage,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
@@ -45,6 +46,22 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("buildSettleThreadsConfirmationMessage", () => {
+  it("names a single thread and explains where it goes", () => {
+    expect(buildSettleThreadsConfirmationMessage(["Release polish"])).toBe(
+      [
+        'Settle thread "Release polish"?',
+        "This moves it out of the active list and into Settled.",
+        "You can un-settle it later.",
+      ].join("\n"),
+    );
+  });
+
+  it("uses one confirmation for a multi-select settle", () => {
+    expect(buildSettleThreadsConfirmationMessage(["One", "Two"])).toContain("Settle 2 threads?");
+  });
+});
 
 describe("shouldNavigateAfterProjectRemoval", () => {
   const projectThreads = [{ environmentId: "environment-local", id: "thread-1" }];

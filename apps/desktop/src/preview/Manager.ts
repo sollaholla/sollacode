@@ -39,6 +39,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
@@ -49,6 +50,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
+import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
@@ -109,6 +111,9 @@ const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
+const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
+  description: "Current desktop preview activity leases grouped by consumer type.",
+});
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
   colorScheme: "light",
@@ -485,6 +490,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
   >(new Map());
+  const activityLeases = new PreviewActivityLeases();
+  const recordActivityLeaseMetrics = Effect.fn("PreviewManager.recordActivityLeaseMetrics")(
+    function* () {
+      const snapshot = activityLeases.snapshot();
+      for (const consumer of Object.values(PreviewActivityConsumer)) {
+        yield* Metric.update(
+          Metric.withAttributes(previewActivityLeasesCurrent, [["consumer", consumer]]),
+          snapshot.byConsumer.get(consumer) ?? 0,
+        );
+      }
+    },
+  );
   const pictureInPictureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, PictureInPictureSession>
   >(new Map());
@@ -577,6 +594,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (captureScope) {
       yield* Scope.close(captureScope, Exit.void).pipe(Effect.ignore);
     }
+    activityLeases.release(tabId, `frame-capture:${consumer}`);
+    yield* recordActivityLeaseMetrics();
   });
 
   const deliverEvent = (
@@ -820,14 +839,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ]);
     if (control) {
       yield* Scope.close(control.scope, Exit.void).pipe(Effect.ignore);
-      return;
     }
-    yield* Ref.update(diagnosticsRef, (diagnostics) =>
+  });
+
+  const clearWebContentsDiagnostics = (webContentsId: number) =>
+    Ref.update(diagnosticsRef, (diagnostics) =>
       replaceMap(diagnostics, (copy) => {
         copy.delete(webContentsId);
       }),
     );
-  });
+
+  const hasControlActivity = (tabId: string): boolean =>
+    activityLeases.has(tabId, PreviewActivityConsumer.Automation) ||
+    activityLeases.has(tabId, PreviewActivityConsumer.Diagnostics);
+
+  const detachControlSessionIfIdle = Effect.fn("PreviewManager.detachControlSessionIfIdle")(
+    function* (tabId: string, webContentsId: number) {
+      if (hasControlActivity(tabId)) return;
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (tab?.webContentsId !== webContentsId || tab.colorScheme !== "system") return;
+      yield* detachControlSession(webContentsId);
+    },
+  );
 
   const ensureControlSession = Effect.fn("PreviewManager.ensureControlSession")(function* (
     wc: Electron.WebContents,
@@ -911,20 +944,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           };
           yield* Scope.addFinalizer(
             scope,
-            Effect.all(
-              [
-                Ref.update(diagnosticsRef, (diagnostics) =>
-                  replaceMap(diagnostics, (copy) => {
-                    copy.delete(wc.id);
-                  }),
-                ),
-                attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
-                  wc.debugger.off("message", onMessage);
-                  if (wc.debugger.isAttached()) wc.debugger.detach();
-                }).pipe(Effect.ignore),
-              ],
-              { discard: true },
-            ),
+            attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
+              wc.debugger.off("message", onMessage);
+              if (wc.debugger.isAttached()) wc.debugger.detach();
+            }).pipe(Effect.ignore),
           );
           const control: BrowserControlSession = {
             webContentsId: wc.id,
@@ -935,11 +958,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
             yield* Ref.update(diagnosticsRef, (diagnostics) =>
               replaceMap(diagnostics, (copy) => {
-                copy.set(wc.id, {
-                  consoleEntries: [],
-                  networkEntries: [],
-                  requests: new Map(),
-                });
+                if (!copy.has(wc.id)) {
+                  copy.set(wc.id, {
+                    consoleEntries: [],
+                    networkEntries: [],
+                    requests: new Map(),
+                  });
+                }
               }),
             );
             yield* attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
@@ -1025,51 +1050,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     yield* pushAction(tabId, actionEvent);
     const epoch = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
-    const control = yield* ensureControlSession(wc);
-    const execute = Effect.fn("PreviewManager.executeControlAction")(function* () {
-      yield* update(tabId, { controller: "agent" });
-      const send: SendCommand = Effect.fn("PreviewManager.sendCommand")(
-        function* (method, commandParams) {
-          const before = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
-          if (before !== epoch) {
-            return yield* new PreviewAutomationControlInterruptedError({
-              operation: action,
-              tabId,
-              webContentsId: wc.id,
-            });
-          }
-          const result = yield* attemptPromise(
-            { operation: `${action}.${method}`, tabId, webContentsId: wc.id },
-            () => wc.debugger.sendCommand(method, commandParams),
-          );
-          const after = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
-          if (after !== epoch) {
-            return yield* new PreviewAutomationControlInterruptedError({
-              operation: action,
-              tabId,
-              webContentsId: wc.id,
-            });
-          }
-          return result;
-        },
-      );
-      // Cleanup commands must still run after human input invalidates the action's
-      // control epoch. Otherwise a partially dispatched input can leave Chromium
-      // with a held key or focus emulation enabled for subsequent actions.
-      const sendCleanup: SendCommand = Effect.fn("PreviewManager.sendCleanupCommand")(
-        function* (method, commandParams) {
-          return yield* attemptPromise(
-            {
-              operation: `${action}.cleanup.${method}`,
-              tabId,
-              webContentsId: wc.id,
-            },
-            () => wc.debugger.sendCommand(method, commandParams),
-          );
-        },
-      );
-      return yield* use(send, sendCleanup);
-    });
+    activityLeases.acquire(tabId, actionEvent.id, PreviewActivityConsumer.Automation);
+    yield* recordActivityLeaseMetrics();
     const finalize = Effect.fn("PreviewManager.finalizeControlAction")(function* (
       exit: Exit.Exit<A, PreviewManagerError>,
     ) {
@@ -1102,7 +1084,62 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const tabs = yield* SynchronizedRef.get(tabsRef);
       if (tabs.has(tabId)) yield* update(tabId, { controller: "none" });
     });
-    return yield* control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
+    return yield* Effect.gen(function* () {
+      const control = yield* ensureControlSession(wc);
+      const execute = Effect.fn("PreviewManager.executeControlAction")(function* () {
+        yield* update(tabId, { controller: "agent" });
+        const send: SendCommand = Effect.fn("PreviewManager.sendCommand")(
+          function* (method, commandParams) {
+            const before = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+            if (before !== epoch) {
+              return yield* new PreviewAutomationControlInterruptedError({
+                operation: action,
+                tabId,
+                webContentsId: wc.id,
+              });
+            }
+            const result = yield* attemptPromise(
+              { operation: `${action}.${method}`, tabId, webContentsId: wc.id },
+              () => wc.debugger.sendCommand(method, commandParams),
+            );
+            const after = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+            if (after !== epoch) {
+              return yield* new PreviewAutomationControlInterruptedError({
+                operation: action,
+                tabId,
+                webContentsId: wc.id,
+              });
+            }
+            return result;
+          },
+        );
+        // Cleanup commands must still run after human input invalidates the action's
+        // control epoch. Otherwise a partially dispatched input can leave Chromium
+        // with a held key or focus emulation enabled for subsequent actions.
+        const sendCleanup: SendCommand = Effect.fn("PreviewManager.sendCleanupCommand")(
+          function* (method, commandParams) {
+            return yield* attemptPromise(
+              {
+                operation: `${action}.cleanup.${method}`,
+                tabId,
+                webContentsId: wc.id,
+              },
+              () => wc.debugger.sendCommand(method, commandParams),
+            );
+          },
+        );
+        return yield* use(send, sendCleanup);
+      });
+      return yield* control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          activityLeases.release(tabId, actionEvent.id);
+          yield* recordActivityLeaseMetrics();
+          yield* detachControlSessionIfIdle(tabId, wc.id);
+        }),
+      ),
+    );
   });
 
   const evaluateWithDebugger = <A = unknown>(
@@ -1489,10 +1526,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const closedTab = tab.value;
     if (closedTab.webContentsId != null) {
       yield* Effect.all(
-        [detachControlSession(closedTab.webContentsId), detachListeners(closedTab.webContentsId)],
+        [
+          detachControlSession(closedTab.webContentsId),
+          detachListeners(closedTab.webContentsId),
+          clearWebContentsDiagnostics(closedTab.webContentsId),
+        ],
         { concurrency: 2, discard: true },
       );
     }
+    activityLeases.clearTab(tabId);
+    yield* recordActivityLeaseMetrics();
     const updatedAt = yield* currentIso;
     const closed: PreviewTabState = {
       ...closedTab,
@@ -1569,9 +1612,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         [
           detachControlSession(replacedWebContentsId),
           detachListeners(replacedWebContentsId),
+          clearWebContentsDiagnostics(replacedWebContentsId),
           cancelPickElement(tabId),
         ],
-        { concurrency: 3, discard: true },
+        { concurrency: 4, discard: true },
       );
     }
     const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
@@ -1631,10 +1675,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }),
     );
     if (Option.isNone(registration)) {
-      yield* Effect.all([detachControlSession(webContentsId), detachListeners(webContentsId)], {
-        concurrency: 2,
-        discard: true,
-      });
+      yield* Effect.all(
+        [
+          detachControlSession(webContentsId),
+          detachListeners(webContentsId),
+          clearWebContentsDiagnostics(webContentsId),
+        ],
+        {
+          concurrency: 3,
+          discard: true,
+        },
+      );
       return yield* new PreviewTabNotFoundError({ tabId });
     }
     const { state: registered, pendingUrl } = registration.value;
@@ -1667,6 +1718,23 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       registerWebviewUnlocked(tabId, webContentsId, expectedGeneration),
     );
+  });
+
+  const setUiActivity = Effect.fn("PreviewManager.setUiActivity")(function* (
+    tabId: string,
+    leaseId: string,
+    active: boolean,
+  ) {
+    const stableLeaseId = `ui:${leaseId}`;
+    if (active) {
+      if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) {
+        return yield* new PreviewTabNotFoundError({ tabId });
+      }
+      activityLeases.acquire(tabId, stableLeaseId, PreviewActivityConsumer.Ui);
+    } else {
+      activityLeases.release(tabId, stableLeaseId);
+    }
+    yield* recordActivityLeaseMetrics();
   });
 
   const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
@@ -1946,6 +2014,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     Effect.gen(function* () {
       const beforeAttach = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
       if (beforeAttach?.webContentsId !== wc.id) return;
+      if (beforeAttach.colorScheme === "system" && !hasControlActivity(tabId)) return;
       yield* ensureControlSession(wc);
       const afterAttach = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
       if (afterAttach?.webContentsId !== wc.id) {
@@ -1987,6 +2056,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const wc = webContents.fromId(webContentsId);
     if (!wc || wc.isDestroyed()) return;
     yield* applyColorScheme(tabId, wc, colorScheme);
+    if (colorScheme === "system") {
+      yield* detachControlSessionIfIdle(tabId, wc.id);
+    }
   });
 
   const captureScreenshot = Effect.fn("PreviewManager.captureScreenshot")(function* (
@@ -2229,6 +2301,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ] as const;
       });
     });
+    activityLeases.acquire(
+      tabId,
+      `frame-capture:${consumer}`,
+      consumer === "recording"
+        ? PreviewActivityConsumer.Recording
+        : PreviewActivityConsumer.PictureInPicture,
+    );
+    yield* recordActivityLeaseMetrics();
     if (!created) return;
     yield* capturePreviewFrame(tabId).pipe(
       Effect.catch((error) =>
@@ -3276,6 +3356,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     pickElement,
     refresh,
     registerWebview,
+    setUiActivity,
     resetZoom: (tabId: string) => applyZoom(tabId, () => DEFAULT_ZOOM_FACTOR),
     revealArtifact,
     saveRecording,
@@ -3565,6 +3646,11 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       webContentsId: number,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly setUiActivity: (
+      tabId: string,
+      leaseId: string,
+      active: boolean,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly navigate: (tabId: string, url: string) => Effect.Effect<void, PreviewManagerError>;
     readonly goBack: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly goForward: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
@@ -3665,6 +3751,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     createTab: operations.createTab,
     closeTab: operations.closeTab,
     registerWebview: operations.registerWebview,
+    setUiActivity: operations.setUiActivity,
     navigate: operations.navigate,
     goBack: operations.goBack,
     goForward: operations.goForward,

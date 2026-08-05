@@ -7,6 +7,7 @@ import {
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -16,9 +17,8 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
 
 import { EnvironmentRegistry } from "../connection/registry.ts";
-import { connectionProjectionPhase } from "../connection/model.ts";
+import { connectionProjectionPhase, type PreparedConnection } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
-import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
 import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
@@ -43,6 +43,15 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
     : "Could not synchronize the thread.";
 }
 
+/**
+ * Ceiling on how long a subscription will wait for a prepared connection before
+ * giving up on the HTTP snapshot. The snapshot is only an optimisation — the
+ * server embeds one in the subscription's first frame when the client cannot
+ * resume — so waiting indefinitely trades a fast path for a thread that never
+ * renders at all.
+ */
+const PREPARED_CONNECTION_WAIT = Duration.seconds(5);
+
 function shouldPersistThread(thread: OrchestrationThread): boolean {
   const status = thread.session?.status;
   return status !== "starting" && status !== "running";
@@ -54,7 +63,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ThreadSnapshotLoader;
-  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cached = yield* cache.loadThread(environmentId, threadId).pipe(
     Effect.catch((error) =>
@@ -80,6 +88,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
   );
   const awaitingCompletion = yield* Ref.make(false);
+  const forceSnapshot = yield* Ref.make(false);
+  const resubscribeRequests = yield* Queue.sliding<void>(1);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
@@ -182,6 +192,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
+    if (item.kind === "resync-required") {
+      yield* Ref.set(forceSnapshot, true);
+      yield* setSynchronizing;
+      yield* Queue.offer(resubscribeRequests, undefined);
+      return;
+    }
+
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -193,6 +210,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     if (item.kind === "snapshot") {
+      yield* Ref.set(forceSnapshot, false);
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
       return;
@@ -233,12 +251,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
-  const foregroundResubscriptions = Option.match(wakeups, {
-    onNone: () => Stream.never,
-    onSome: (service) =>
-      service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
-  });
-
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
@@ -252,30 +264,42 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* setSynchronizing;
 
         let current = yield* SubscriptionRef.get(state);
-        if (Option.isNone(current.data) && current.status !== "deleted") {
+        const mustLoadSnapshot = yield* Ref.get(forceSnapshot);
+        if ((mustLoadSnapshot || Option.isNone(current.data)) && current.status !== "deleted") {
+          // Bounded, and never fatal. `Stream.runHead` yields `None` when the
+          // supervisor's scope closes mid-reconnect, and `Option.getOrThrow`
+          // turned that into a defect that killed this fiber for good — leaving
+          // the thread in `synchronizing` with no request ever reaching the
+          // server, which the UI renders as a permanent "Syncing messages...".
+          // Falling back to `None` just skips the optimisation and lets the
+          // subscription's first frame carry the snapshot instead.
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({
-                onSome: Effect.succeed,
+                onSome: (value) => Effect.succeed(Option.some(value)),
                 onNone: () =>
                   SubscriptionRef.changes(supervisor.prepared).pipe(
                     Stream.filter(Option.isSome),
                     Stream.map((value) => value.value),
                     Stream.runHead,
-                    Effect.map(Option.getOrThrow),
                   ),
               }),
             ),
+            Effect.timeoutOption(PREPARED_CONNECTION_WAIT),
+            Effect.map(Option.flatten),
+            Effect.orElseSucceed(() => Option.none<PreparedConnection>()),
           );
-          const httpSnapshot = yield* snapshotLoader.load(prepared, threadId);
-          if (Option.isSome(httpSnapshot)) {
-            yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
-            current = yield* SubscriptionRef.get(state);
+          if (Option.isSome(prepared)) {
+            const httpSnapshot = yield* snapshotLoader.load(prepared.value, threadId);
+            if (Option.isSome(httpSnapshot)) {
+              yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+              current = yield* SubscriptionRef.get(state);
+            }
           }
         }
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data);
+        const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
         if (!supportsCompletionMarker && canResume) {
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
@@ -293,7 +317,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       {
         onExpectedFailure: setStreamError,
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: foregroundResubscriptions,
+        resubscribe: Stream.fromQueue(resubscribeRequests),
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

@@ -264,6 +264,28 @@ export class CodexAppServerInputStreamEndedError extends Schema.TaggedErrorClass
   }
 }
 
+/**
+ * A request the app server accepted but never answered.
+ *
+ * Distinct from {@link CodexAppServerInputStreamEndedError}: there the process
+ * is gone and every pending request fails at once. Here the process is alive
+ * and holding the pipe open, so nothing else notices — without this error the
+ * caller waits on a response that is never coming, which reads to the user as
+ * a message the agent silently ignored.
+ */
+export class CodexAppServerRequestTimeoutError extends Schema.TaggedErrorClass<CodexAppServerRequestTimeoutError>()(
+  "CodexAppServerRequestTimeoutError",
+  {
+    method: Schema.String,
+    requestId: Schema.optionalKey(Schema.String),
+    timeoutMillis: Schema.Number,
+  },
+) {
+  override get message() {
+    return `Codex App Server did not respond to '${this.method}' within ${this.timeoutMillis}ms.`;
+  }
+}
+
 export class CodexAppServerRequestError extends Schema.TaggedErrorClass<CodexAppServerRequestError>()(
   "CodexAppServerRequestError",
   {
@@ -422,6 +444,7 @@ export const CodexAppServerError = Schema.Union([
   CodexAppServerTransportError,
   CodexAppServerIdentifierGenerationError,
   CodexAppServerInputStreamEndedError,
+  CodexAppServerRequestTimeoutError,
 ]);
 
 export type CodexAppServerError = typeof CodexAppServerError.Type;

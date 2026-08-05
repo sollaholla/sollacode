@@ -1,4 +1,5 @@
 import { CircleHelp, LoaderCircle } from "lucide-react";
+import { cn } from "~/lib/utils";
 
 import {
   countActiveProviderTasks,
@@ -20,6 +21,7 @@ import {
 export function ProviderTaskChip(props: {
   readonly tasks: ReadonlyArray<ProviderTask>;
   readonly onOpen: () => void;
+  readonly positioned?: boolean;
 }) {
   const label = providerTaskChipLabel(props.tasks);
   if (label === null) return null;
@@ -28,7 +30,10 @@ export function ProviderTaskChip(props: {
   return (
     <button
       aria-label={`${label}. Show agents and tasks.`}
-      className="absolute -top-8 right-3 flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:text-foreground"
+      className={cn(
+        "flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:text-foreground",
+        props.positioned !== false && "absolute -top-8 right-3",
+      )}
       onClick={props.onOpen}
       title="Show agents and tasks"
       type="button"

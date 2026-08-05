@@ -2,6 +2,7 @@ import { MessageId, TurnId, type OrchestrationLatestTurn } from "@t3tools/contra
 import { describe, expect, it, vi } from "vite-plus/test";
 import { runResumeIncompleteTurn } from "../ChatView.logic";
 import type { ChatMessage } from "../../types";
+import { RESUME_PROMPT } from "../../resumePrompt";
 import { deriveResumableAssistantMessageId } from "./MessagesTimeline.logic";
 
 const TURN_ID = TurnId.make("turn-resumable-incomplete-turn");
@@ -60,7 +61,11 @@ describe("resumable incomplete turns", () => {
       }),
     ).toBe(ASSISTANT_MESSAGE_ID);
 
-    expect(deriveCandidate()).toBe(ASSISTANT_MESSAGE_ID);
+    expect(
+      deriveCandidate({
+        latestTurn: buildLatestTurn({ state: "incomplete" }),
+      }),
+    ).toBe(ASSISTANT_MESSAGE_ID);
 
     expect(
       deriveCandidate({
@@ -86,6 +91,12 @@ describe("resumable incomplete turns", () => {
       latestTurn: buildLatestTurn(),
       message: buildAssistantMessage({ streaming: false }),
       sessionStatus: "ready" as const,
+    },
+    {
+      name: "completed with a stale streaming bit",
+      latestTurn: buildLatestTurn(),
+      message: buildAssistantMessage(),
+      sessionStatus: "stopped" as const,
     },
     {
       name: "still running",
@@ -119,7 +130,7 @@ describe("resumable incomplete turns", () => {
     ).toBeNull();
   });
 
-  it("sends exactly one literal resume message while an attempt is pending", async () => {
+  it("sends exactly one contextual resume prompt while an attempt is pending", async () => {
     let releaseSend: (() => void) | undefined;
     const send = vi.fn(
       () =>
@@ -134,7 +145,7 @@ describe("resumable incomplete turns", () => {
 
     expect(duplicateAttempt).toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("resume");
+    expect(send).toHaveBeenCalledWith(RESUME_PROMPT);
     expect(inFlightRef.current).toBe(true);
 
     releaseSend?.();
@@ -144,7 +155,7 @@ describe("resumable incomplete turns", () => {
 
   it("resets idempotency state after a failed send so the user can retry", async () => {
     const send = vi
-      .fn<(message: "resume") => Promise<void>>()
+      .fn<(message: typeof RESUME_PROMPT) => Promise<void>>()
       .mockRejectedValueOnce(new Error("temporary failure"))
       .mockResolvedValueOnce();
     const inFlightRef = { current: false };
@@ -155,8 +166,8 @@ describe("resumable incomplete turns", () => {
     expect(inFlightRef.current).toBe(false);
 
     await expect(runResumeIncompleteTurn({ inFlightRef, send })).resolves.toBe(true);
-    expect(send).toHaveBeenNthCalledWith(1, "resume");
-    expect(send).toHaveBeenNthCalledWith(2, "resume");
+    expect(send).toHaveBeenNthCalledWith(1, RESUME_PROMPT);
+    expect(send).toHaveBeenNthCalledWith(2, RESUME_PROMPT);
     expect(inFlightRef.current).toBe(false);
   });
 });

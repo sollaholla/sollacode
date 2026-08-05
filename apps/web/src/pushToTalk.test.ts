@@ -5,6 +5,7 @@ import {
   isPushToTalkShortcut,
   raceWithTranscriptionCancellation,
   resolveVisiblePushToTalkStatus,
+  shouldHandlePushToTalkForSurface,
   startRecorderWithCue,
   withTranscriptionDeadline,
 } from "./pushToTalk";
@@ -41,6 +42,42 @@ describe("isPushToTalkShortcut", () => {
     expect(isPushToTalkReleaseEvent({ code: "MetaLeft", key: "Meta" }, "MacIntel")).toBe(true);
     expect(isPushToTalkReleaseEvent({ code: "ControlRight", key: "Control" }, "Win32")).toBe(true);
     expect(isPushToTalkReleaseEvent({ code: "KeyE", key: "e" }, "MacIntel")).toBe(false);
+  });
+});
+
+describe("shouldHandlePushToTalkForSurface", () => {
+  it("routes a side-chat shortcut only to that embedded surface", () => {
+    expect(
+      shouldHandlePushToTalkForSurface({
+        embeddedSideChat: false,
+        targetWithinOwnSurface: true,
+        targetWithinEmbeddedSideChat: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHandlePushToTalkForSurface({
+        embeddedSideChat: true,
+        targetWithinOwnSurface: true,
+        targetWithinEmbeddedSideChat: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps main-chat and unrelated shortcuts out of an embedded side chat", () => {
+    expect(
+      shouldHandlePushToTalkForSurface({
+        embeddedSideChat: false,
+        targetWithinOwnSurface: true,
+        targetWithinEmbeddedSideChat: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHandlePushToTalkForSurface({
+        embeddedSideChat: true,
+        targetWithinOwnSurface: false,
+        targetWithinEmbeddedSideChat: false,
+      }),
+    ).toBe(false);
   });
 });
 

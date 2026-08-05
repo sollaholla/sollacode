@@ -17,7 +17,6 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
-import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
@@ -52,7 +51,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ShellSnapshotLoader;
-  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cachedSnapshot = yield* cache.loadShell(environmentId).pipe(
     Effect.catch((error) =>
@@ -71,6 +69,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     error: Option.none(),
   });
   const awaitingCompletion = yield* Ref.make(false);
+  const forceSnapshot = yield* Ref.make(false);
+  const resubscribeRequests = yield* Queue.sliding<void>(1);
   const persistence = yield* Queue.sliding<OrchestrationShellSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentShellState.persist")(function* (
@@ -135,6 +135,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const applyItem = Effect.fn("EnvironmentShellState.applyItem")(function* (
     item: OrchestrationShellStreamItem,
   ) {
+    if (item.kind === "resync-required") {
+      yield* Ref.set(forceSnapshot, true);
+      yield* setSynchronizing;
+      yield* Queue.offer(resubscribeRequests, undefined);
+      return;
+    }
+
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -146,6 +153,9 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     }
 
     const current = yield* SubscriptionRef.get(state);
+    if (item.kind === "snapshot") {
+      yield* Ref.set(forceSnapshot, false);
+    }
     const nextSnapshot =
       item.kind === "snapshot"
         ? item.snapshot
@@ -167,12 +177,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       error: Option.none(),
     });
     yield* Queue.offer(persistence, nextSnapshot);
-  });
-
-  const foregroundResubscriptions = Option.match(wakeups, {
-    onNone: () => Stream.never,
-    onSome: (service) =>
-      service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
   });
 
   yield* setSynchronizing;
@@ -215,7 +219,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: foregroundResubscriptions,
+        resubscribe: Stream.fromQueue(resubscribeRequests),
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

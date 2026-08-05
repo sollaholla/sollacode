@@ -2873,14 +2873,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
         },
         addImage: (threadRef, image) => {
-          const threadKey = resolveComposerDraftKey(get(), threadRef);
-          const threadId = resolveComposerThreadId(get(), threadRef);
-          if (!threadKey || !threadId) {
-            return;
-          }
-          get().addImages(typeof threadRef === "string" ? DraftId.make(threadKey) : threadRef, [
-            image,
-          ]);
+          // A new-chat composer has a DraftId before it has a server ThreadId.
+          // Requiring promotion here made every single-image paste/attachment
+          // silently disappear on that draft, even though the batch path can
+          // already store images against the draft key directly.
+          get().addImages(threadRef, [image]);
         },
         addImages: (threadRef, images) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";

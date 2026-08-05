@@ -6,11 +6,15 @@ import {
   RemoteControlCapabilityDeniedError,
   RemoteControlNoHostError,
   RemoteControlSessionAccessDeniedError,
+  RemoteControlSessionNotFoundError,
   type RemoteControlHost,
   type RemoteControlHostStreamEvent,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as RemoteControlBroker from "./RemoteControlBroker.ts";
 
@@ -421,6 +425,147 @@ it.effect("streams video chunks in order and replays the init segment to late wa
       yield* broker.publishVideoChunk(chunk(1, false, "c3RhbGU="), hostSessionId);
       yield* Effect.yieldNow;
       expect(events).toEqual(["aW5pdA==", "b25l", "dHdv"]);
+    }),
+  ),
+);
+
+it.effect("does not commit a video sequence until bounded delivery succeeds", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const waiting = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find((event) => event.type === "access-requested");
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+      yield* broker.respondToRequest(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "approve",
+          grantedCapabilities: ["screen"],
+        },
+        hostSessionId,
+      );
+
+      const releaseConsumer = yield* Deferred.make<void>();
+      const receivedSequences: number[] = [];
+      const receivedFinal = yield* Deferred.make<void>();
+      const stream = yield* broker.watch({ sessionId: waiting.sessionId }, controllerSessionId);
+      yield* Stream.runForEach(stream, (event) =>
+        event.type === "session-updated"
+          ? Deferred.await(releaseConsumer)
+          : event.type === "video-chunk"
+            ? Effect.sync(() => {
+                receivedSequences.push(event.chunk.sequence);
+              }).pipe(
+                Effect.andThen(
+                  event.chunk.sequence === 8
+                    ? Deferred.succeed(receivedFinal, undefined)
+                    : Effect.void,
+                ),
+              )
+            : Effect.void,
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const chunk = (sequence: number) => ({
+        clientId: interactiveHost.clientId,
+        connectionId: connected.connectionId,
+        chunk: {
+          sessionId: waiting.sessionId,
+          sequence,
+          capturedAt: "2026-01-01T00:00:00.000Z",
+          mimeType: "video/webm;codecs=vp8",
+          isInit: sequence === 0,
+          data: `Y2h1bmst${sequence}`,
+        },
+      });
+
+      // The controller subscription exists but its consumer is deliberately
+      // stalled, so eight chunks fill the broker's bounded media queue.
+      for (let sequence = 0; sequence < 8; sequence += 1) {
+        yield* broker.publishVideoChunk(chunk(sequence), hostSessionId);
+      }
+
+      // The next delivery must wait without claiming its sequence. Interrupting
+      // it simulates a disconnected host request while backpressure is active.
+      const blocked = yield* broker
+        .publishVideoChunk(chunk(8), hostSessionId)
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      expect(blocked.pollUnsafe()).toBeUndefined();
+      yield* Fiber.interrupt(blocked);
+
+      // Once the controller catches up, retrying the exact same sequence must
+      // succeed. Committing before the bounded publish would drop it as stale.
+      yield* Deferred.succeed(releaseConsumer, undefined);
+      yield* Effect.yieldNow;
+      yield* broker.publishVideoChunk(chunk(8), hostSessionId);
+      yield* Deferred.await(receivedFinal);
+      expect(receivedSequences).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }),
+  ),
+);
+
+it.effect("prunes expired terminal sessions and their retained media state", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(host, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const session = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find(
+        (event) =>
+          event.type === "access-requested" && event.session.sessionId === session.sessionId,
+      );
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+
+      yield* broker.respondToRequest(
+        {
+          clientId: host.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "decline",
+        },
+        hostSessionId,
+      );
+      yield* TestClock.adjust("10 minutes");
+
+      // Any later lifecycle operation performs the bounded retention sweep.
+      yield* broker.requestAccess(
+        { clientId: "second-controller", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      const error = yield* broker
+        .watch({ sessionId: session.sessionId }, controllerSessionId)
+        .pipe(Effect.flip);
+      expect(error).toBeInstanceOf(RemoteControlSessionNotFoundError);
     }),
   ),
 );

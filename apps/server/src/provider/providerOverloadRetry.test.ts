@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   hasProviderOverloadStatus,
+  hasRetryableUpstreamStatus,
+  isRetryableUpstreamStatus,
   providerOverloadExhaustedMessage,
   providerOverloadRetryReason,
 } from "./providerOverloadRetry.ts";
@@ -33,5 +35,58 @@ describe("provider overload retry normalization", () => {
     expect(providerOverloadExhaustedMessage("upstream request failed")).toContain(
       "upstream request failed",
     );
+  });
+});
+
+describe("isRetryableUpstreamStatus", () => {
+  it("covers the gateway failures the CLI already retries, not just 529", () => {
+    // Treating only 529 as a retry left a 502 storm retrying in silence and then
+    // arriving as an error message, with no sign the provider had been trying.
+    for (const status of [502, 503, 504, 529]) {
+      expect(isRetryableUpstreamStatus(status)).toBe(true);
+    }
+  });
+
+  it("leaves client errors and successes alone", () => {
+    for (const status of [200, 400, 401, 403, 404, 429, 500, 501]) {
+      expect(isRetryableUpstreamStatus(status)).toBe(false);
+    }
+  });
+
+  it("ignores anything that is not a number", () => {
+    // The status arrives on a structured retry heartbeat; free text must never
+    // reach turn lifecycle.
+    for (const status of ["502", null, undefined, {}, Number.NaN]) {
+      expect(isRetryableUpstreamStatus(status)).toBe(false);
+    }
+  });
+});
+
+describe("hasRetryableUpstreamStatus", () => {
+  it("recognizes only structured 502/503/504/529 fields at bounded depth", () => {
+    for (const status of [502, 503, 504, 529]) {
+      expect(
+        hasRetryableUpstreamStatus({
+          error: { cause: { response: { error_status: status } } },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("follows a native Error's non-enumerable structured cause", () => {
+    const error = new Error("gateway request failed", {
+      cause: { response: { statusCode: 502 } },
+    });
+
+    expect(Object.values(error)).not.toContain(error.cause);
+    expect(hasRetryableUpstreamStatus(error)).toBe(true);
+  });
+
+  it("never derives lifecycle from free text or stringified status codes", () => {
+    expect(hasRetryableUpstreamStatus({ message: "API Error: 502 upstream unreachable" })).toBe(
+      false,
+    );
+    expect(hasRetryableUpstreamStatus({ status: "502" })).toBe(false);
+    expect(hasRetryableUpstreamStatus("529 provider overloaded")).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 
@@ -74,6 +75,17 @@ export interface ProviderRegistryShape {
    * change. The array contains the full current state.
    */
   readonly streamChanges: Stream.Stream<ReadonlyArray<ServerProvider>>;
+
+  /**
+   * Acquire the provider-change subscription before reading a snapshot.
+   * Consumers that build a snapshot-then-live stream must use this form so a
+   * refresh published during the handoff is buffered instead of being lost.
+   */
+  readonly subscribeChanges: Effect.Effect<
+    Stream.Stream<ReadonlyArray<ServerProvider>>,
+    never,
+    Scope.Scope
+  >;
 }
 
 export class ProviderRegistry extends Context.Service<ProviderRegistry, ProviderRegistryShape>()(

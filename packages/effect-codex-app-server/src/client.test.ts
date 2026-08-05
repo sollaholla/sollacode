@@ -1,8 +1,11 @@
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -10,6 +13,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import { makeInMemoryStdio } from "./_internal/stdio.ts";
+
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encoder = new TextEncoder();
+const encodeJsonl = (value: unknown) => encoder.encode(`${encodeUnknownJsonString(value)}\n`);
 
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/codex-app-server-mock-peer.ts"),
@@ -152,6 +160,42 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       );
 
       assert.equal(initialized.userAgent, "mock-codex-app-server");
+    }),
+  );
+
+  // Handlers run inside the transport's reader fiber. One defecting handler
+  // must not kill the stream: later notifications and pending requests have to
+  // keep flowing, otherwise the session goes silently deaf while the app
+  // server keeps working.
+  it.effect("contains a defecting notification handler without killing the stream", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const client = yield* CodexClient.make(stdio);
+      const seen = yield* Ref.make<Array<unknown>>([]);
+
+      yield* client.handleServerNotification("item/agentMessage/delta", () =>
+        Effect.die(new Error("handler blew up")),
+      );
+      yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
+        Ref.update(seen, (current) => [...current, payload]),
+      );
+
+      const delta = {
+        delta: "still alive",
+        itemId: "item-1",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      };
+      yield* Queue.offer(input, encodeJsonl({ method: "item/agentMessage/delta", params: delta }));
+      yield* Queue.offer(input, encodeJsonl({ method: "item/agentMessage/delta", params: delta }));
+
+      const pending = yield* client.raw.request("thread/read", {}).pipe(Effect.forkScoped);
+      yield* Queue.take(output);
+      yield* Queue.offer(input, encodeJsonl({ id: 1, result: { ok: true } }));
+      assert.deepEqual(yield* Fiber.join(pending), { ok: true });
+
+      // Both notifications reached the surviving handler despite its dying peer.
+      assert.deepEqual(yield* Ref.get(seen), [delta, delta]);
     }),
   );
 });

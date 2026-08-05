@@ -23,6 +23,7 @@ import { readLocalApi } from "../localApi";
 import { newThreadId } from "../lib/utils";
 import {
   readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsSideChats,
   readEnvironmentSupportsSnooze,
   readEnvironmentThreadRefs,
   readProject,
@@ -34,6 +35,8 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useClientSettings } from "./useSettings";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useRightPanelStore } from "../rightPanelStore";
+import { sideChatDisplayTitle } from "../sideChat";
 
 export class ThreadArchiveBlockedError extends Schema.TaggedErrorClass<ThreadArchiveBlockedError>()(
   "ThreadArchiveBlockedError",
@@ -95,6 +98,18 @@ export class ThreadSnoozeBlockedError extends Schema.TaggedErrorClass<ThreadSnoo
   }
 }
 
+export class ThreadSideChatUnsupportedError extends Schema.TaggedErrorClass<ThreadSideChatUnsupportedError>()(
+  "ThreadSideChatUnsupportedError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "This environment's server does not support side chats yet. Update the server and try again.";
+  }
+}
+
 export function useThreadActions() {
   const closeTerminal = useAtomCommand(terminalEnvironment.close);
   const archiveThreadMutation = useAtomCommand(threadEnvironment.archive, {
@@ -107,6 +122,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const forkThreadMutation = useAtomCommand(threadEnvironment.fork, {
+    reportFailure: false,
+  });
+  const updateThreadMetadataMutation = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const settleThreadMutation = useAtomCommand(threadEnvironment.settle, {
@@ -219,7 +237,14 @@ export function useThreadActions() {
   );
 
   const forkThread = useCallback(
-    async (target: ScopedThreadRef) => {
+    async (
+      target: ScopedThreadRef,
+      options: {
+        asSideChat?: boolean;
+        navigate?: boolean;
+        threadId?: ThreadId;
+      } = {},
+    ) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
         return AsyncResult.failure(
@@ -227,16 +252,46 @@ export function useThreadActions() {
         );
       }
 
-      const forkedThreadId = newThreadId();
+      if (options.asSideChat && !readEnvironmentSupportsSideChats(target.environmentId)) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadSideChatUnsupportedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+
+      const forkedThreadId = options.threadId ?? newThreadId();
       const result = await forkThreadMutation({
         environmentId: target.environmentId,
         input: {
           threadId: forkedThreadId,
           sourceThreadId: target.threadId,
-          title: `${resolved.thread.title} (fork)`,
+          title: `${resolved.thread.title}${options.asSideChat ? " (side chat)" : " (fork)"}`,
+          ...(options.asSideChat ? { isSideChat: true } : {}),
         },
       });
       if (result._tag === "Failure") {
+        return result;
+      }
+
+      if (options.asSideChat) {
+        useRightPanelStore
+          .getState()
+          .openSideChat(target, forkedThreadId, sideChatDisplayTitle(resolved.thread.title));
+        if (options.navigate === false) return result;
+        const sourceNavigationResult = await settlePromise(() =>
+          router.navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(target),
+          }),
+        );
+        return sourceNavigationResult._tag === "Failure" ? sourceNavigationResult : result;
+      }
+
+      if (options.navigate === false) {
         return result;
       }
 
@@ -251,8 +306,40 @@ export function useThreadActions() {
     [forkThreadMutation, resolveThreadTarget, router],
   );
 
+  const promoteSideChat = useCallback(
+    async (target: ScopedThreadRef) => {
+      if (!readEnvironmentSupportsSideChats(target.environmentId)) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadSideChatUnsupportedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+      const resolved = resolveThreadTarget(target);
+      const title = resolved?.thread.title.replace(/ \(side chat\)$/i, "");
+      return updateThreadMetadataMutation({
+        environmentId: target.environmentId,
+        input: {
+          threadId: target.threadId,
+          isSideChat: false,
+          ...(title && title !== resolved?.thread.title ? { title } : {}),
+        },
+      });
+    },
+    [resolveThreadTarget, updateThreadMetadataMutation],
+  );
+
   const deleteThread = useCallback(
-    async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
+    async (
+      target: ScopedThreadRef,
+      opts: {
+        deletedThreadKeys?: ReadonlySet<string>;
+        preserveWorktree?: boolean;
+      } = {},
+    ) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
         // Thread not in main store (e.g. archived thread) — dispatch delete directly.
@@ -294,7 +381,8 @@ export function useThreadActions() {
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
-      const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== null;
+      const canDeleteWorktree =
+        opts.preserveWorktree !== true && orphanedWorktreePath !== null && threadProject !== null;
       const localApi = readLocalApi();
       let shouldDeleteWorktree = false;
       if (canDeleteWorktree && localApi) {
@@ -597,6 +685,7 @@ export function useThreadActions() {
       archiveThread,
       unarchiveThread,
       forkThread,
+      promoteSideChat,
       deleteThread,
       confirmAndDeleteThread,
       settleThread,
@@ -609,6 +698,7 @@ export function useThreadActions() {
       confirmAndDeleteThread,
       deleteThread,
       forkThread,
+      promoteSideChat,
       settleThread,
       snoozeThread,
       unarchiveThread,
