@@ -12,6 +12,8 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
 
+import { RelayClientTracer } from "@t3tools/shared/relayTracing";
+
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
 import * as ConnectionDriver from "./driver.ts";
@@ -211,6 +213,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
 > {
   const target = entry.target;
   const credentialBacked = target._tag !== "PrimaryConnectionTarget";
+  const relayTracer = credentialBacked ? yield* RelayClientTracer : Option.none<Tracer.Tracer>();
   yield* annotateTarget(target);
 
   const connectivity = yield* Connectivity.Connectivity;
@@ -279,18 +282,58 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     lastFailure: ConnectionAttemptError | null,
     pendingRetry: Option.Option<PendingRetryTrace>,
   ) {
-    return yield* establishConnection(attempt, generation, lastFailure).pipe(
-      Effect.map((lease) => ({
-        attemptSpan: Option.none<Tracer.Span>(),
-        lease,
-      })),
-      Effect.mapError(
-        (error): TracedAttemptFailure => ({
-          error,
-          attemptSpan: Option.none(),
-        }),
-      ),
-    );
+    if (Option.isNone(relayTracer)) {
+      return yield* establishConnection(attempt, generation, lastFailure).pipe(
+        Effect.map((lease) => ({
+          attemptSpan: Option.none<Tracer.Span>(),
+          lease,
+        })),
+        Effect.mapError(
+          (error): TracedAttemptFailure => ({
+            error,
+            attemptSpan: Option.none(),
+          }),
+        ),
+      );
+    }
+    const links = Option.match(pendingRetry, {
+      onNone: () => [] as ReadonlyArray<Tracer.SpanLink>,
+      onSome: (retry): ReadonlyArray<Tracer.SpanLink> => [
+        {
+          span: retry.previousAttempt,
+          attributes: {
+            "relay.retry.failure_count": retry.failureCount,
+            "relay.retry.delay_ms": retry.delayMs,
+            "relay.retry.reason": retry.reason,
+          },
+        },
+      ],
+    });
+    return yield* Effect.useSpan(
+      "relay.connection.attempt",
+      {
+        root: true,
+        links,
+        attributes: {
+          "environment.id": target.environmentId,
+          "environment.label": target.label,
+          "connection.attempt": attempt,
+        },
+      },
+      (span) =>
+        establishConnection(attempt, generation, lastFailure).pipe(
+          Effect.map((lease) => ({
+            attemptSpan: Option.some(span),
+            lease,
+          })),
+          Effect.mapError(
+            (error): TracedAttemptFailure => ({
+              error,
+              attemptSpan: Option.some(span),
+            }),
+          ),
+        ),
+    ).pipe(Effect.provideService(Tracer.Tracer, relayTracer.value));
   });
 
   const waitForEstablishmentInterrupt = Effect.fnUntraced(function* () {

@@ -1,20 +1,14 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import * as TokenStore from "../authorization/tokenStore.ts";
 import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   BearerConnectionRegistration,
-  RelayConnectionRegistration,
   SshConnectionProfile,
   SshConnectionRegistration,
 } from "../connection/catalog.ts";
-import {
-  BearerConnectionTarget,
-  RelayConnectionTarget,
-  SshConnectionTarget,
-} from "../connection/model.ts";
+import { BearerConnectionTarget, SshConnectionTarget } from "../connection/model.ts";
 import {
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
   registerConnectionInCatalog,
@@ -38,18 +32,15 @@ const BEARER_PROFILE = new BearerConnectionProfile({
 const BEARER_CREDENTIAL = new BearerConnectionCredential({
   token: "bearer-token",
 });
-const REMOTE_TOKEN = new TokenStore.RemoteDpopAccessToken({
+// Opaque legacy record: the DPoP token feature was removed, but persisted
+// catalogs may still carry these blobs and they must survive rewrites.
+const REMOTE_TOKEN: unknown = {
   environmentId: ENVIRONMENT_ID,
   label: "Remote",
-  endpoint: {
-    httpBaseUrl: "https://remote.example.test",
-    wsBaseUrl: "wss://remote.example.test",
-    providerKind: "cloudflare_tunnel",
-  },
   accessToken: "dpop-token",
   expiresAtEpochMs: 1_000_000,
   dpopThumbprint: "thumbprint",
-});
+};
 
 describe("ConnectionCatalogDocument", () => {
   it("registers a bearer connection as one catalog mutation", () => {
@@ -72,7 +63,7 @@ describe("ConnectionCatalogDocument", () => {
     ]);
   });
 
-  it("replaces obsolete connection metadata without discarding a reusable DPoP token", () => {
+  it("replaces obsolete connection metadata without discarding legacy token blobs", () => {
     const bearer = registerConnectionInCatalog(
       {
         ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
@@ -84,19 +75,31 @@ describe("ConnectionCatalogDocument", () => {
         credential: BEARER_CREDENTIAL,
       }),
     );
-    const relayTarget = new RelayConnectionTarget({
+    const sshTarget = new SshConnectionTarget({
       environmentId: ENVIRONMENT_ID,
       label: "Remote",
+      connectionId: "ssh-replacement",
     });
-    const relay = registerConnectionInCatalog(
+    const sshProfile = new SshConnectionProfile({
+      connectionId: sshTarget.connectionId,
+      environmentId: sshTarget.environmentId,
+      label: sshTarget.label,
+      target: {
+        alias: "devbox",
+        hostname: "devbox.example.test",
+        username: "developer",
+        port: 22,
+      },
+    });
+    const replaced = registerConnectionInCatalog(
       bearer,
-      new RelayConnectionRegistration({ target: relayTarget }),
+      new SshConnectionRegistration({ target: sshTarget, profile: sshProfile }),
     );
 
-    expect(relay.targets).toEqual([relayTarget]);
-    expect(relay.profiles).toEqual([]);
-    expect(relay.credentials).toEqual([]);
-    expect(relay.remoteDpopTokens).toEqual([REMOTE_TOKEN]);
+    expect(replaced.targets).toEqual([sshTarget]);
+    expect(replaced.profiles).toEqual([sshProfile]);
+    expect(replaced.credentials).toEqual([]);
+    expect(replaced.remoteDpopTokens).toEqual([REMOTE_TOKEN]);
   });
 
   it("removes every catalog record owned by an explicit disconnect", () => {
