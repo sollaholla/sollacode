@@ -340,7 +340,15 @@ describe("ClaudeTokenOptimizerProxy", () => {
     expect(result.estimatedTokensSaved).toBeGreaterThan(0);
     expect(result.attachments).toHaveLength(result.pageCount);
     for (const attachment of result.attachments) {
-      expect(NodeFS.existsSync(NodePath.join(attachmentsDir, `${attachment.id}.png`))).toBe(true);
+      const pagePath = NodePath.join(attachmentsDir, `${attachment.id}.png`);
+      expect(NodeFS.existsSync(pagePath)).toBe(true);
+      // FABLE_RENDER_COLS density cap: pages must render at the reduced
+      // 280-col width (2×4 px pad + 280 × 5 px cells = 1408 px), not pxpipe's
+      // 312-col / 1568 px Claude profile default. PNG width lives in the IHDR
+      // chunk at byte offset 16.
+      const width = NodeFS.readFileSync(pagePath).readUInt32BE(16);
+      expect(width).toBeGreaterThan(0);
+      expect(width).toBeLessThanOrEqual(1408);
     }
   });
 

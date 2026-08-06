@@ -17,6 +17,21 @@ import { attachmentRelativePath, createAttachmentId } from "../../attachmentStor
 import { isRetryableUpstreamStatus } from "../providerOverloadRetry.ts";
 
 const FABLE_MODEL_ID = "claude-fable-5";
+/**
+ * Rendered-page wrap width in monospace cells, overriding pxpipe's Claude
+ * profile default (312 cols ≈ 28,080 chars/page). In production Fable flagged
+ * those pages as "too dense" and fell back to re-reading the raw image, which
+ * burns the tokens the optimizer was supposed to save. 280 cols caps a page at
+ * 280 × 90 rows = 25,200 chars (~10% less dense) while staying under
+ * Anthropic's 1568 px no-resize edge (280 × 5 px + 8 px pad = 1408 px).
+ *
+ * No other budget math needs touching: pxpipe threads an explicit `cols`
+ * through the slab, tool_result, reminder, and history-collapse paths AND
+ * through the profitability gate + image-cost pricing (`denseGateGeometry`,
+ * `maxCharsPerImage`), so paging and break-even economics follow this single
+ * knob automatically.
+ */
+export const FABLE_RENDER_COLS = 280;
 const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
 // Keep ordinary Claude responses replayable until the upstream stream closes.
 // This prevents a mid-response ECONNRESET from committing a truncated response
@@ -317,6 +332,8 @@ export async function startClaudeTokenOptimizerProxy(input: {
       compressTools: true,
       compressToolResults: true,
       emitRecoverable: true,
+      // See FABLE_RENDER_COLS: ~10% fewer chars/page than the profile default.
+      cols: FABLE_RENDER_COLS,
       // Judge a stable prefix over several turns instead of claiming savings
       // from a single cold request that may destroy a warm text cache.
       historyAmortizationHorizon: 5,
