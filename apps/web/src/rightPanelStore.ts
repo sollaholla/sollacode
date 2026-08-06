@@ -59,6 +59,14 @@ export interface ThreadRightPanelState {
 
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
+  /**
+   * Side chats opened locally that the server shell list has not confirmed
+   * yet, keyed by thread key then side-chat thread id → spawn timestamp (ms).
+   * Reconciliation keeps these surfaces alive during the projection gap so a
+   * freshly spawned tab is not dropped (and its activation reverted) by a
+   * reconcile pass that runs off a stale shell list. Not persisted.
+   */
+  pendingSideChatSpawnsByThreadKey: Record<string, Record<string, number>>;
   open: (
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat">,
@@ -91,6 +99,7 @@ interface RightPanelStoreState {
   reconcileSideChatSurfaces: (
     ref: ScopedThreadRef,
     sideChats: ReadonlyArray<{ threadId: string; title: string }>,
+    now?: number,
   ) => void;
   show: (ref: ScopedThreadRef) => void;
   close: (ref: ScopedThreadRef) => void;
@@ -147,6 +156,16 @@ const terminalSurface = (terminalId: string): RightPanelSurface => ({
 });
 
 type SideChatSurface = Extract<RightPanelSurface, { kind: "side-chat" }>;
+
+/**
+ * How long a locally opened side chat may stay unconfirmed by the server
+ * shell list before reconciliation is allowed to drop its surface. The fork
+ * mutation ack races the thread-shell projection, and the reconcile effect
+ * re-runs on every unrelated shell update, so without this grace window a
+ * freshly spawned side chat is routinely removed (and its tab deactivated)
+ * before its own shell event lands.
+ */
+export const SIDE_CHAT_SPAWN_CONFIRMATION_GRACE_MS = 30_000;
 
 const sideChatSurface = (threadId: string, title: string): SideChatSurface => ({
   id: `side-chat:${threadId}`,
@@ -286,6 +305,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
   persist(
     (set) => ({
       byThreadKey: {},
+      pendingSideChatSpawnsByThreadKey: {},
       open: (ref, kind) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
@@ -345,12 +365,21 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             upsertSurface(current, terminalSurface(terminalId)),
           ),
         })),
-      openSideChat: (ref, sideChatThreadId, title) =>
+      openSideChat: (ref, sideChatThreadId, title) => {
+        const threadKey = scopedThreadKey(ref);
         set((state) => ({
-          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+          byThreadKey: updateThread(state.byThreadKey, threadKey, (current) =>
             upsertSurface(current, sideChatSurface(sideChatThreadId, title)),
           ),
-        })),
+          pendingSideChatSpawnsByThreadKey: {
+            ...state.pendingSideChatSpawnsByThreadKey,
+            [threadKey]: {
+              ...state.pendingSideChatSpawnsByThreadKey[threadKey],
+              [sideChatThreadId]: Date.now(),
+            },
+          },
+        }));
+      },
       splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => ({
@@ -540,22 +569,42 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             };
           }),
         })),
-      reconcileSideChatSurfaces: (ref, sideChats) =>
-        set((state) => ({
-          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
-            const expectedById = new Map<SideChatSurface["id"], SideChatSurface>(
-              sideChats.map((sideChat) => [
-                `side-chat:${sideChat.threadId}` as const,
-                sideChatSurface(sideChat.threadId, sideChat.title),
-              ]),
-            );
-            // The server shell list is authoritative. Keeping a missing side
-            // chat here turns a completed delete into a zombie composer: the
-            // stale surface can still dispatch commands to a tombstoned
-            // thread, but no provider reactor can ever adopt that turn.
-            // Opening a new side chat is safe without a grace exception: the
-            // store update itself does not change this reconciliation effect's
-            // shell dependency, and the eventual shell event confirms it.
+      reconcileSideChatSurfaces: (ref, sideChats, now = Date.now()) =>
+        set((state) => {
+          const threadKey = scopedThreadKey(ref);
+          const expectedById = new Map<SideChatSurface["id"], SideChatSurface>(
+            sideChats.map((sideChat) => [
+              `side-chat:${sideChat.threadId}` as const,
+              sideChatSurface(sideChat.threadId, sideChat.title),
+            ]),
+          );
+          // Locally spawned side chats stay pending until the server shell
+          // list confirms them (or the grace window lapses). The reconcile
+          // effect re-runs on every unrelated shell update, so without this
+          // a fresh spawn is dropped — and its activation reverted — while
+          // its shell event is still in flight.
+          const pending = state.pendingSideChatSpawnsByThreadKey[threadKey] ?? {};
+          const nextPending: Record<string, number> = {};
+          for (const [threadId, spawnedAt] of Object.entries(pending)) {
+            if (expectedById.has(`side-chat:${threadId}`)) continue; // confirmed
+            if (now - spawnedAt > SIDE_CHAT_SPAWN_CONFIRMATION_GRACE_MS) continue; // expired
+            nextPending[threadId] = spawnedAt;
+          }
+          const pendingChanged = Object.keys(pending).length !== Object.keys(nextPending).length;
+          const pendingSideChatSpawnsByThreadKey = pendingChanged
+            ? Object.keys(nextPending).length > 0
+              ? { ...state.pendingSideChatSpawnsByThreadKey, [threadKey]: nextPending }
+              : (({ [threadKey]: _removed, ...rest }) => rest)(
+                  state.pendingSideChatSpawnsByThreadKey,
+                )
+            : state.pendingSideChatSpawnsByThreadKey;
+          const byThreadKey = updateThread(state.byThreadKey, threadKey, (current) => {
+            // The server shell list is authoritative for confirmed side
+            // chats. Keeping a missing confirmed side chat turns a completed
+            // delete into a zombie composer: the stale surface can still
+            // dispatch commands to a tombstoned thread, but no provider
+            // reactor can ever adopt that turn. Unconfirmed pending spawns
+            // are the one exception, bounded by the grace window above.
             const surfaces: RightPanelSurface[] = [];
             for (const surface of current.surfaces) {
               if (surface.kind !== "side-chat") {
@@ -563,7 +612,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                 continue;
               }
               const expected = expectedById.get(surface.id);
-              if (!expected) continue;
+              if (!expected) {
+                if (nextPending[surface.resourceId] !== undefined) surfaces.push(surface);
+                continue;
+              }
               surfaces.push(expected.title === surface.title ? surface : expected);
             }
             const knownIds = new Set(surfaces.map((surface) => surface.id));
@@ -587,8 +639,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                 ? current.activeSurfaceId
                 : (surfaces.at(-1)?.id ?? null),
             };
-          }),
-        })),
+          });
+          return { byThreadKey, pendingSideChatSpawnsByThreadKey };
+        }),
       show: (ref) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>

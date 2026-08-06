@@ -278,14 +278,23 @@ export function useThreadActions() {
       }
 
       if (options.asSideChat) {
+        // Side chats render in the owning root chat's right panel. When the
+        // fork source is itself a side chat, the server hoists the new
+        // thread's parent to the root — open (and focus) the surface under
+        // that same scope, or it lands in a panel that is never rendered.
+        const owningParentThreadId =
+          resolved.thread.isSideChat === true
+            ? (resolved.thread.sideChatParentThreadId ?? target.threadId)
+            : target.threadId;
+        const owningRef = scopeThreadRef(target.environmentId, owningParentThreadId);
         useRightPanelStore
           .getState()
-          .openSideChat(target, forkedThreadId, sideChatDisplayTitle(resolved.thread.title));
+          .openSideChat(owningRef, forkedThreadId, sideChatDisplayTitle(resolved.thread.title));
         if (options.navigate === false) return result;
         const sourceNavigationResult = await settlePromise(() =>
           router.navigate({
             to: "/$environmentId/$threadId",
-            params: buildThreadRouteParams(target),
+            params: buildThreadRouteParams(owningRef),
           }),
         );
         return sourceNavigationResult._tag === "Failure" ? sourceNavigationResult : result;
