@@ -18,12 +18,39 @@ import { isRetryableUpstreamStatus } from "../providerOverloadRetry.ts";
 
 const FABLE_MODEL_ID = "claude-fable-5";
 /**
+ * Rendered-page glyph font. pxpipe's Claude profile default is the 5×8
+ * `spleen-5x8` bitmap atlas, which puts ~5 px glyphs in front of the vision
+ * encoder. Production Fable kept flagging those pages as "too dense" and fell
+ * back to re-reading the raw image even after the 312→280 column reduction, so
+ * raise the effective DPI instead of shaving more columns: `jetbrains-mono-10`
+ * is a 6×11 cell (+65% glyph area) rasterized from a real typeface with a
+ * grayscale-antialiased atlas, not a 1-bit frame-buffer font.
+ *
+ * Installed through pxpipe's documented `PXPIPE_GPT_PROFILES` override channel
+ * (see installFableRenderProfile below) rather than by patching the package:
+ * the resolved profile is the single source that feeds rendering
+ * (`renderTextToPngs`), pagination, the profitability gate, and patch-grid
+ * pricing (`denseGateGeometry` → `renderCellWidth`/`renderCellHeight`), so
+ * every token estimate tracks the new cell geometry automatically.
+ */
+export const FABLE_RENDER_FONT = "jetbrains-mono-10";
+/**
  * Rendered-page wrap width in monospace cells, overriding pxpipe's Claude
- * profile default (312 cols ≈ 28,080 chars/page). In production Fable flagged
- * those pages as "too dense" and fell back to re-reading the raw image, which
- * burns the tokens the optimizer was supposed to save. 280 cols caps a page at
- * 280 × 90 rows = 25,200 chars (~10% less dense) while staying under
- * Anthropic's 1568 px no-resize edge (280 × 5 px + 8 px pad = 1408 px).
+ * profile default (312 cols ≈ 28,080 chars/page). With the 6 px-wide
+ * FABLE_RENDER_FONT cells, 240 cols caps the page at 240 × 6 px + 8 px pad =
+ * 1448 px — inside the measured no-resample envelope (long edge ≤ 1568 px AND
+ * ≤ ~1.15 MP; 1448 × 728 = 1.054 MP), so pages stay WYSIWYG for the encoder.
+ * We deliberately do NOT stretch into the high-res tier's documented
+ * 2576 px / 4784-token bounds: the no-resample envelope was measured at the
+ * standard tier (/tmp/pxexp/LEVER1-findings.md) and an unmeasured 2576 px page
+ * that DID get resampled would blur every glyph — the exact failure mode this
+ * change exists to fix.
+ *
+ * Economics: a full page is 240 cols × 65 rows = 15,600 chars for
+ * ⌈1448/28⌉ × ⌈728/28⌉ = 1352 patch tokens ≈ 11.5 chars/token — less headroom
+ * than the old 5×8 geometry (~19 chars/token) but still ~2.9× denser than
+ * ~4 chars/token text, and the profitability gate re-evaluates against the
+ * real geometry, so unprofitable blocks simply stay text.
  *
  * No other budget math needs touching: pxpipe threads an explicit `cols`
  * through the slab, tool_result, reminder, and history-collapse paths AND
@@ -31,7 +58,7 @@ const FABLE_MODEL_ID = "claude-fable-5";
  * `maxCharsPerImage`), so paging and break-even economics follow this single
  * knob automatically.
  */
-export const FABLE_RENDER_COLS = 280;
+export const FABLE_RENDER_COLS = 240;
 const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
 // Keep ordinary Claude responses replayable until the upstream stream closes.
 // This prevents a mid-response ECONNRESET from committing a truncated response
@@ -40,6 +67,38 @@ const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
 const MAX_RETRYABLE_RESPONSE_BUFFER_BYTES = 8 * 1024 * 1024;
 const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
 export const CLAUDE_UPSTREAM_RETRY_DELAY_CAP_MS = 15_000;
+
+/**
+ * Point the Fable profile at FABLE_RENDER_FONT via pxpipe's documented
+ * `PXPIPE_GPT_PROFILES` env override. pxpipe re-parses the variable lazily
+ * whenever the raw string changes, so install order versus module load does
+ * not matter. An operator-provided entry for the same model id wins field by
+ * field (their object is spread last); unrelated model entries are preserved
+ * verbatim. Unset fields inherit from the built-in Claude profile, so this
+ * only changes the glyph atlas — geometry, pricing, and history behavior stay
+ * on the shipped defaults.
+ */
+function installFableRenderProfile(): void {
+  let profiles: Record<string, unknown> = {};
+  const raw = process.env["PXPIPE_GPT_PROFILES"];
+  if (raw !== undefined && raw !== "") {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        profiles = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed JSON is ignored by pxpipe as well; replace it wholesale.
+    }
+  }
+  const operatorEntry = profiles[FABLE_MODEL_ID];
+  profiles[FABLE_MODEL_ID] = {
+    style: { font: FABLE_RENDER_FONT },
+    ...(operatorEntry !== null && typeof operatorEntry === "object" ? operatorEntry : {}),
+  };
+  process.env["PXPIPE_GPT_PROFILES"] = JSON.stringify(profiles);
+}
+installFableRenderProfile();
 
 // pxpipe has profiles for other providers/models, but Solla's beta deliberately
 // starts with the reader that was measured for this transport.
@@ -332,7 +391,8 @@ export async function startClaudeTokenOptimizerProxy(input: {
       compressTools: true,
       compressToolResults: true,
       emitRecoverable: true,
-      // See FABLE_RENDER_COLS: ~10% fewer chars/page than the profile default.
+      // See FABLE_RENDER_COLS/FABLE_RENDER_FONT: larger 6×11 glyphs wrapped
+      // at 240 cols instead of the profile's 5×8 glyphs at 312 cols.
       cols: FABLE_RENDER_COLS,
       // Judge a stable prefix over several turns instead of claiming savings
       // from a single cold request that may destroy a warm text cache.
