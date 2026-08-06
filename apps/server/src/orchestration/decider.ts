@@ -393,12 +393,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       let sideChatParentThreadId: ThreadId | undefined;
       if (command.isSideChat === true) {
-        sideChatParentThreadId = command.sideChatParentThreadId ?? sourceThread.id;
+        // Side chats always hang off the owning root chat. Forking from a
+        // side chat must hoist to that side chat's parent — otherwise the new
+        // thread is invisible to the root panel's child filter and the spawn
+        // silently never surfaces in the UI.
+        const owningParentThreadId =
+          sourceThread.isSideChat === true
+            ? (sourceThread.sideChatParentThreadId ?? sourceThread.id)
+            : sourceThread.id;
+        sideChatParentThreadId = command.sideChatParentThreadId ?? owningParentThreadId;
         if (command.sideChatParentThreadId !== undefined) {
-          const allowedParentThreadId =
-            sourceThread.isSideChat === true
-              ? (sourceThread.sideChatParentThreadId ?? sourceThread.id)
-              : sourceThread.id;
+          const allowedParentThreadId = owningParentThreadId;
           if (command.sideChatParentThreadId !== allowedParentThreadId) {
             return yield* new OrchestrationCommandInvariantError({
               commandType: command.type,

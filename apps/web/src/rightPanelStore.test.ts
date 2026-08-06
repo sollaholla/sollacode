@@ -7,6 +7,7 @@ import {
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
   selectThreadRightPanelState,
+  SIDE_CHAT_SPAWN_CONFIRMATION_GRACE_MS,
   useRightPanelStore,
 } from "./rightPanelStore";
 
@@ -14,7 +15,7 @@ const refA = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-A"))
 const refB = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-B"));
 
 beforeEach(() => {
-  useRightPanelStore.setState({ byThreadKey: {} });
+  useRightPanelStore.setState({ byThreadKey: {}, pendingSideChatSpawnsByThreadKey: {} });
 });
 
 describe("rightPanelStore", () => {
@@ -317,7 +318,11 @@ describe("rightPanelStore", () => {
 
     useRightPanelStore
       .getState()
-      .reconcileSideChatSurfaces(refA, [{ threadId: "side-2", title: "Check scroll anchoring" }]);
+      .reconcileSideChatSurfaces(
+        refA,
+        [{ threadId: "side-2", title: "Check scroll anchoring" }],
+        Date.now() + SIDE_CHAT_SPAWN_CONFIRMATION_GRACE_MS + 1,
+      );
 
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
       isOpen: true,
@@ -331,6 +336,53 @@ describe("rightPanelStore", () => {
         },
       ],
     });
+  });
+
+  it("keeps a freshly spawned side chat through reconcile until the server confirms it", () => {
+    const spawnedAt = Date.now();
+    useRightPanelStore.getState().openSideChat(refA, "side-1", "Investigate auth");
+
+    // Server shell projection has not caught up yet: reconcile within the
+    // grace window must not drop (or deactivate) the just-spawned surface.
+    useRightPanelStore.getState().reconcileSideChatSurfaces(refA, [], spawnedAt + 5);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "side-chat:side-1",
+      surfaces: [
+        {
+          id: "side-chat:side-1",
+          kind: "side-chat",
+          resourceId: "side-1",
+          title: "Investigate auth",
+        },
+      ],
+    });
+
+    // Once the server confirms the child, the pending marker is cleared and a
+    // later authoritative removal is honored immediately.
+    useRightPanelStore
+      .getState()
+      .reconcileSideChatSurfaces(
+        refA,
+        [{ threadId: "side-1", title: "Investigate auth" }],
+        spawnedAt + 10,
+      );
+    useRightPanelStore.getState().reconcileSideChatSurfaces(refA, [], spawnedAt + 15);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([]);
+  });
+
+  it("drops an unconfirmed side chat after the spawn grace window expires", () => {
+    const spawnedAt = Date.now();
+    useRightPanelStore.getState().openSideChat(refA, "side-1", "Investigate auth");
+
+    useRightPanelStore
+      .getState()
+      .reconcileSideChatSurfaces(refA, [], spawnedAt + SIDE_CHAT_SPAWN_CONFIRMATION_GRACE_MS + 1);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([]);
   });
 
   it("tracks one surface per terminal session", () => {
