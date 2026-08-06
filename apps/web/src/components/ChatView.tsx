@@ -116,7 +116,7 @@ import {
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
-import { buildAgentAnswers, isAgentMode, shouldShowAgentAutoResumePending } from "../agentMode";
+import { buildAgentAnswers, isAgentMode, isAutoResumePendingWork } from "../agentMode";
 import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest";
 import {
   applyProviderTaskDismissals,
@@ -2585,6 +2585,9 @@ function ChatViewContent(props: ChatViewProps) {
         hasConversation: thread.latestUserMessageAt !== null,
         isWorking:
           isSideChatActivelyWorking(thread) ||
+          // Server-reported queued work (continuations, resumes) counts as
+          // working; the local marker only bridges dispatch on older servers.
+          isAutoResumePendingWork(thread.pendingWork) ||
           startupResumePendingByThreadKey[
             sideChatParentActivityKey(thread.environmentId, thread.id)
           ] !== undefined,
@@ -3114,75 +3117,50 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [attachmentPreviewHandoffByMessageId, displayServerMessages, optimisticUserMessages]);
-  const agentAutoResumePredicted = useMemo(
-    () =>
-      !activeProviderAuthenticationPaused &&
-      shouldShowAgentAutoResumePending({
-        interactionMode: appliedInteractionMode,
-        turnId: activeLatestTurn?.turnId ?? null,
-        turnState: activeLatestTurn?.state ?? null,
-        latestTurnSettled,
-        hasPendingApproval: pendingApprovals.length > 0,
-        hasPendingUserInput: pendingUserInputs.length > 0,
-        sessionStatus: activeThread?.session?.status ?? null,
-        messages: timelineMessages,
-      }),
-    [
-      activeLatestTurn?.state,
-      activeLatestTurn?.turnId,
-      activeProviderAuthenticationPaused,
-      activeThread?.session?.status,
-      appliedInteractionMode,
-      latestTurnSettled,
-      pendingApprovals.length,
-      pendingUserInputs.length,
-      timelineMessages,
-    ],
-  );
+  // The server exposes its own decision now: `pendingWork` on the thread shell
+  // is projected straight from thread_work_obligations, so the agent chip and
+  // the startup spinner assert queued work exactly while the scheduler holds
+  // it. The old text heuristic (shouldShowAgentAutoResumePending) that guessed
+  // the projector's continuation gate from the final reply is gone with it.
+  const serverPendingWork = routeServerThreadShell?.pendingWork;
+  const agentAutoResumePending =
+    !activeProviderAuthenticationPaused &&
+    isAutoResumePendingWork(serverPendingWork, "agent-continuation");
   const startupAutoResumeStartedAt =
     activeThreadKey === null ? null : (startupResumePendingByThreadKey[activeThreadKey] ?? null);
-  // A resume that has not produced a turn by now is not going to. The dispatch
-  // can be swallowed outright — the projector declines to enqueue when any row
-  // for that key exists, including a terminal one — and nothing then clears
-  // this flag, so the thread showed "Auto-resuming thread…" indefinitely with
-  // no CLI process behind it. An indefinite spinner is worse than an error: it
-  // reads as progress. Past the deadline we stop claiming it, which reveals
-  // the Resume control the user can actually act on.
+  // The local marker bridges this client's own resume dispatch until the
+  // server echoes the obligation — and is the only signal at all against
+  // servers that predate `pendingWork`. It stays bounded by the 90s stall
+  // deadline: on an old server nothing else ever clears it when the dispatch
+  // is swallowed, and an indefinite spinner reads as progress. Past the
+  // deadline we stop claiming it, which reveals the Resume control the user
+  // can actually act on.
   const [autoResumeNowMs, setAutoResumeNowMs] = useState(() => Date.now());
   useEffect(() => {
-    if (startupAutoResumeStartedAt === null && !agentAutoResumePredicted) return;
+    if (startupAutoResumeStartedAt === null) return;
     setAutoResumeNowMs(Date.now());
     const timer = setInterval(() => setAutoResumeNowMs(Date.now()), 5_000);
     return () => clearInterval(timer);
-  }, [startupAutoResumeStartedAt, agentAutoResumePredicted]);
+  }, [startupAutoResumeStartedAt]);
+  const serverStartupAutoResumePending = isAutoResumePendingWork(
+    serverPendingWork,
+    "startup-resume",
+  );
   const startupAutoResumePending =
-    startupAutoResumeStartedAt !== null &&
-    !isStartupAutoResumeStalled({
-      startedAt: startupAutoResumeStartedAt,
-      nowMs: autoResumeNowMs,
-    });
-  const visibleStartupAutoResumePending =
-    startupAutoResumePending && !activeProviderAuthenticationPaused;
-  // The agent chip is the same client-side prediction of a server decision as
-  // the startup spinner, with the same failure mode: when the server declines
-  // to queue a continuation (or cancels it), nothing on the client ever
-  // learns, and the chip asserted progress forever. Bound it with the same
-  // deadline; the turn's settle time is the moment the prediction was made.
-  const agentAutoResumeStartedAt = agentAutoResumePredicted
-    ? (activeLatestTurn?.completedAt ?? null)
-    : null;
-  const agentAutoResumePending =
-    agentAutoResumePredicted &&
-    (agentAutoResumeStartedAt === null ||
+    serverStartupAutoResumePending ||
+    (startupAutoResumeStartedAt !== null &&
       !isStartupAutoResumeStalled({
-        startedAt: agentAutoResumeStartedAt,
+        startedAt: startupAutoResumeStartedAt,
         nowMs: autoResumeNowMs,
       }));
+  const visibleStartupAutoResumePending =
+    startupAutoResumePending && !activeProviderAuthenticationPaused;
   const timelineIsWorking = isWorking || agentAutoResumePending || visibleStartupAutoResumePending;
   const timelineWorkStartedAt = visibleStartupAutoResumePending
-    ? startupAutoResumeStartedAt
+    ? (startupAutoResumeStartedAt ??
+      (serverStartupAutoResumePending ? (serverPendingWork?.since ?? null) : null))
     : agentAutoResumePending
-      ? (activeLatestTurn?.completedAt ?? activeWorkStartedAt)
+      ? (serverPendingWork?.since ?? activeLatestTurn?.completedAt ?? activeWorkStartedAt)
       : activeWorkStartedAt;
   const timelineEntries = useMemo(
     () =>

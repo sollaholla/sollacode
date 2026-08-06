@@ -492,6 +492,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pendingWork: null,
           deletedAt: null,
           messages: [
             {
@@ -608,6 +609,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pendingWork: null,
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",

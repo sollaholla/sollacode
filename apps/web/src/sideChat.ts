@@ -17,6 +17,15 @@ interface SideChatActivityThread {
     readonly status: string;
     readonly updatedAt: string;
   } | null;
+  /** Server-reported queued work; absent on shells from older servers. */
+  readonly pendingWork?:
+    | {
+        readonly kind: string;
+        readonly state: string;
+        readonly since: string;
+      }
+    | null
+    | undefined;
 }
 
 export interface WorkingSideChatActivity {
@@ -31,6 +40,16 @@ export function sideChatParentActivityKey(environmentId: string, parentThreadId:
 
 export function isSideChatActivelyWorking(thread: SideChatActivityThread): boolean {
   return thread.session?.status === "starting" || thread.session?.status === "running";
+}
+
+/**
+ * Server-reported queued work in a state the scheduler will act on by itself.
+ * Mirrors isAutoResumePendingWork in agentMode.ts: executing work is already
+ * visible as a running session, and blocked/waiting states are the user's.
+ */
+function hasAutoResumePendingWork(thread: SideChatActivityThread): boolean {
+  const state = thread.pendingWork?.state;
+  return state === "pending" || state === "sleeping" || state === "claimed";
 }
 
 function firstValidIso(...candidates: ReadonlyArray<string | null | undefined>): string | null {
@@ -59,12 +78,13 @@ export function deriveWorkingSideChatsByParent(
     const pendingStartedAt =
       pendingStartedAtByThreadKey[sideChatParentActivityKey(thread.environmentId, thread.id)] ??
       null;
+    const serverPendingWork = hasAutoResumePendingWork(thread);
     if (
       thread.isSideChat !== true ||
       parentThreadId === null ||
       parentThreadId === undefined ||
       thread.archivedAt !== null ||
-      (!isSideChatActivelyWorking(thread) && pendingStartedAt === null)
+      (!isSideChatActivelyWorking(thread) && !serverPendingWork && pendingStartedAt === null)
     ) {
       continue;
     }
@@ -76,7 +96,11 @@ export function deriveWorkingSideChatsByParent(
       thread.updatedAt,
     );
     const startedAt =
-      [runtimeStartedAt, pendingStartedAt]
+      [
+        runtimeStartedAt,
+        pendingStartedAt,
+        serverPendingWork ? (thread.pendingWork?.since ?? null) : null,
+      ]
         .filter((value): value is string => value !== null && !Number.isNaN(Date.parse(value)))
         .toSorted((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
     const existing = mutable.get(key);

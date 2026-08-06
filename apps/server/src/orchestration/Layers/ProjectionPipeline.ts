@@ -24,6 +24,7 @@ import {
 } from "@t3tools/shared/agentMode";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { refreshProjectionThreadPendingWork } from "../../persistence/PendingWorkProjection.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ThreadWorkObligationRepository } from "../../persistence/Services/ThreadWorkObligations.ts";
@@ -673,6 +674,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     );
 
+    // The obligation repository refreshes these columns on every mutation, so
+    // this is the safety net for shell reads that follow event application:
+    // it re-derives the same denormalized pending-work columns in the same
+    // transaction as the rest of the shell summary.
+    const refreshPendingWorkSummary = Effect.fn("refreshPendingWorkSummary")(function* (
+      threadId: ThreadId,
+    ) {
+      yield* refreshProjectionThreadPendingWork(sql, threadId).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPipeline.refreshPendingWorkSummary:query"),
+        ),
+      );
+    });
+
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
     ) {
@@ -693,6 +708,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* refreshPendingApprovalSummary(threadId);
       yield* refreshPendingUserInputSummary(threadId);
       yield* refreshActionableProposedPlanSummary(threadId);
+      yield* refreshPendingWorkSummary(threadId);
     });
 
     const applyThreadsProjection = Effect.fn("applyThreadsProjection")(function* (

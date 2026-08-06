@@ -805,4 +805,120 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       );
     }),
   );
+
+  it.effect("keeps the projection_threads pending-work columns in sync with the lifecycle", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-work-pending-columns");
+      yield* insertThread(threadId);
+
+      const readPendingWork = Effect.gen(function* () {
+        const rows = yield* sql<{
+          readonly kind: string | null;
+          readonly state: string | null;
+          readonly since: string | null;
+        }>`
+          SELECT
+            pending_work_kind AS "kind",
+            pending_work_state AS "state",
+            pending_work_since AS "since"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        return rows[0];
+      });
+
+      const base = {
+        threadId,
+        providerInstanceId,
+        attempt: 0,
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: null,
+        createdAt: now,
+        updatedAt: now,
+      } as const;
+
+      yield* repository.insert({
+        ...base,
+        obligationId: "pw-continuation",
+        sourceTurnId: TurnId.make("turn-pw-1"),
+        kind: "agent-continuation",
+        state: "pending",
+      });
+      assert.deepStrictEqual(yield* readPendingWork, {
+        kind: "agent-continuation",
+        state: "pending",
+        since: now,
+      });
+
+      yield* repository.claim({ obligationId: "pw-continuation", now, leaseExpiresAt: later });
+      assert.strictEqual((yield* readPendingWork)?.state, "claimed");
+
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "pw-continuation",
+          expectedState: "claimed",
+          expectedAttempt: 1,
+          state: "executing",
+          nextAttemptAt: null,
+          claimedAt: now,
+          leaseExpiresAt: later,
+          blockedReason: null,
+          updatedAt: now,
+        }),
+      );
+      assert.strictEqual((yield* readPendingWork)?.state, "executing");
+
+      // A freshly queued successor outranks the executing supervisor: the
+      // executing row is already represented by the running turn, while the
+      // pending row is what the thread does next.
+      yield* repository.insert({
+        ...base,
+        obligationId: "pw-next",
+        sourceTurnId: TurnId.make("turn-pw-2"),
+        kind: "agent-continuation",
+        state: "pending",
+        createdAt: later,
+        updatedAt: later,
+      });
+      assert.deepStrictEqual(yield* readPendingWork, {
+        kind: "agent-continuation",
+        state: "pending",
+        since: later,
+      });
+
+      // Retiring the supervisor leaves the successor surfaced.
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "pw-continuation",
+          expectedState: "executing",
+          expectedAttempt: 1,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: later,
+        }),
+      );
+      assert.deepStrictEqual(yield* readPendingWork, {
+        kind: "agent-continuation",
+        state: "pending",
+        since: later,
+      });
+
+      // Terminal for the whole thread: the columns clear rather than pointing
+      // at cancelled work.
+      yield* repository.cancelByThread({
+        threadId,
+        updatedAt: later,
+        blockedReason: "thread settled",
+        mode: "thread-terminal",
+      });
+      assert.deepStrictEqual(yield* readPendingWork, { kind: null, state: null, since: null });
+    }),
+  );
 });

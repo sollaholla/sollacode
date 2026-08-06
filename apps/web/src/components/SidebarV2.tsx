@@ -159,6 +159,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { startThreadExportBackgroundTask } from "../backgroundTasks";
+import { isAutoResumePendingWork } from "../agentMode";
 import {
   deriveWorkingSideChatsByParent,
   sideChatParentActivityKey,
@@ -1453,6 +1454,9 @@ export default function SidebarV2() {
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       if (
         workingSideChatsByParent.has(threadKey) ||
+        // Server-reported queued work keeps a thread in the active section
+        // even while its session is idle between turns.
+        isAutoResumePendingWork(thread.pendingWork) ||
         startupResumePendingByThreadKey[threadKey] !== undefined
       ) {
         active.push(thread);
@@ -2657,7 +2661,17 @@ export default function SidebarV2() {
                           sideChatParentActivityKey(thread.environmentId, thread.id),
                         ) ?? null
                       }
-                      startupResumeStartedAt={startupResumePendingByThreadKey[threadKey] ?? null}
+                      startupResumeStartedAt={
+                        // The server's own startup-resume obligation is the
+                        // durable signal; the local marker bridges this
+                        // client's dispatch and is the only signal against
+                        // servers that predate pendingWork.
+                        isAutoResumePendingWork(thread.pendingWork, "startup-resume")
+                          ? (thread.pendingWork?.since ??
+                            startupResumePendingByThreadKey[threadKey] ??
+                            null)
+                          : (startupResumePendingByThreadKey[threadKey] ?? null)
+                      }
                     />
                   );
                 };

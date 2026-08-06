@@ -85,4 +85,39 @@ describe("side-chat activity", () => {
       startedAt: "2026-08-03T11:57:00.000Z",
     });
   });
+
+  it("treats server-reported queued work on an idle child as work", () => {
+    const idleChild = {
+      ...child,
+      session: { status: "ready", updatedAt: child.updatedAt },
+      pendingWork: {
+        kind: "agent-continuation",
+        state: "pending",
+        since: "2026-08-03T11:56:00.000Z",
+      },
+    };
+    const activity = deriveWorkingSideChatsByParent([idleChild]).get("env-1:parent-1");
+    expect(activity).toMatchObject({
+      count: 1,
+      threadIds: ["child-1"],
+      startedAt: "2026-08-03T11:56:00.000Z",
+    });
+  });
+
+  it("ignores executing and user-blocked pending work on an idle child", () => {
+    // Executing work is represented by a running session, which this child
+    // does not have — a stale executing value must not claim activity. Work
+    // waiting on the user is the user's, not progress.
+    for (const state of ["executing", "blocked-authentication", "waiting-user-input"]) {
+      expect(
+        deriveWorkingSideChatsByParent([
+          {
+            ...child,
+            session: { status: "ready", updatedAt: child.updatedAt },
+            pendingWork: { kind: "agent-continuation", state, since: child.updatedAt },
+          },
+        ]).size,
+      ).toBe(0);
+    }
+  });
 });
