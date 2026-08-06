@@ -19,6 +19,7 @@ import type {
   ProviderSessionStartInput,
   ModelSelection,
   RuntimeMode,
+  RuntimeTaskId,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -33,6 +34,16 @@ export interface ProviderAdapterCapabilities {
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+
+  /**
+   * Whether one background task or sub-agent can be stopped by id without
+   * cancelling the whole turn.
+   *
+   * The task panel gates its stop control on this: a button that claims to
+   * kill work it cannot reach is worse than no button, which is why the panel
+   * previously only offered "dismiss".
+   */
+  readonly taskStop?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -89,6 +100,14 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /**
+   * Stop one background task or sub-agent by id, leaving the turn running.
+   *
+   * Optional: adapters whose runtime exposes no per-task kill omit it and
+   * declare `taskStop: false`.
+   */
+  readonly stopTask?: (threadId: ThreadId, taskId: RuntimeTaskId) => Effect.Effect<void, TError>;
 
   /**
    * Respond to an interactive approval request.

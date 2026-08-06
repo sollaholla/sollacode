@@ -16,6 +16,7 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderItemId,
+  RuntimeTaskId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -798,6 +799,22 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Stop one background task or sub-agent the provider started, by task id.
+ *
+ * Deliberately separate from `thread.turn.interrupt`: interrupting cancels the
+ * whole turn, while this kills a single runaway task and leaves the turn alive.
+ * Before this existed the task panel's only control hid the row, so a task the
+ * user wanted dead kept running with no way to reach it.
+ */
+const ThreadTaskStopCommand = Schema.Struct({
+  type: Schema.Literal("thread.task.stop"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  taskId: RuntimeTaskId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadApprovalRespondCommand = Schema.Struct({
   type: Schema.Literal("thread.approval.respond"),
   commandId: CommandId,
@@ -863,6 +880,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -890,6 +908,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
@@ -999,6 +1018,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.task-stop-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
@@ -1174,6 +1194,12 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadTaskStopRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  taskId: RuntimeTaskId,
+  createdAt: IsoDateTime,
+});
+
 export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
@@ -1241,6 +1267,7 @@ export const OrchestrationEventMetadata = Schema.Struct({
   providerItemId: Schema.optional(ProviderItemId),
   adapterKey: Schema.optional(TrimmedNonEmptyString),
   requestId: Schema.optional(ApprovalRequestId),
+  taskId: Schema.optional(RuntimeTaskId),
   ingestedAt: Schema.optional(IsoDateTime),
 });
 export type OrchestrationEventMetadata = typeof OrchestrationEventMetadata.Type;
@@ -1347,6 +1374,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.task-stop-requested"),
+    payload: ThreadTaskStopRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

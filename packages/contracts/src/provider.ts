@@ -6,6 +6,7 @@ import {
   IsoDateTime,
   MessageId,
   ProviderItemId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "./baseSchemas.ts";
@@ -107,6 +108,12 @@ export const ProviderInterruptTurnInput = Schema.Struct({
   turnId: Schema.optional(TurnId),
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
+
+export const ProviderStopTaskInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: RuntimeTaskId,
+});
+export type ProviderStopTaskInput = typeof ProviderStopTaskInput.Type;
 
 export const ProviderStopSessionInput = Schema.Struct({
   threadId: ThreadId,

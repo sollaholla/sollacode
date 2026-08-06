@@ -9,6 +9,7 @@ import {
   ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeTaskId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -356,6 +357,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const stopTask = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -458,6 +460,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      stopTask: stopTask as ProviderServiceShape["stopTask"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
@@ -617,6 +620,7 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       interruptTurn,
+      stopTask,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -3802,6 +3806,99 @@ describe("ProviderCommandReactor", () => {
       status: "stopped",
       activeTurnId: null,
     });
+  });
+
+  it("reacts to thread.task.stop by killing that task and leaving the session alone", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.runtimeSessions.push({
+      threadId: ThreadId.make("thread-1"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      activeTurnId: asTurnId("provider-turn-1"),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "claudeAgent",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.task.stop",
+        commandId: CommandId.make("cmd-task-stop"),
+        threadId: ThreadId.make("thread-1"),
+        taskId: RuntimeTaskId.make("task-7"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.stopTask.mock.calls.length === 1);
+    expect(harness.stopTask.mock.calls[0]?.[0]).toEqual({
+      threadId: "thread-1",
+      taskId: "task-7",
+    });
+    // A per-task kill must never take the turn or the session with it.
+    expect(harness.interruptTurn.mock.calls.length).toBe(0);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({ status: "running" });
+    // Without a synthesised terminal activity the row keeps claiming to run.
+    expect(
+      thread?.activities.some(
+        (entry) =>
+          entry.kind === "task.completed" &&
+          (entry.payload as { taskId?: string; status?: string } | null)?.taskId === "task-7" &&
+          (entry.payload as { status?: string } | null)?.status === "stopped",
+      ),
+    ).toBe(true);
+  });
+
+  it("settles the task row without calling the provider when no session is live", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.task.stop",
+        commandId: CommandId.make("cmd-task-stop-dead"),
+        threadId: ThreadId.make("thread-1"),
+        taskId: RuntimeTaskId.make("task-9"),
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    expect(harness.stopTask.mock.calls.length).toBe(0);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.activities.some(
+        (entry) =>
+          entry.kind === "task.completed" &&
+          (entry.payload as { taskId?: string } | null)?.taskId === "task-9",
+      ),
+    ).toBe(true);
   });
 
   it("starts a fresh session when only projected session state exists", async () => {

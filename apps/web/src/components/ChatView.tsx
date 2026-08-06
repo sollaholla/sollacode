@@ -20,6 +20,7 @@ import {
   type OrchestrationMessageInputOrigin,
   ProviderInteractionMode,
   ProviderDriverKind,
+  RuntimeTaskId,
   RuntimeMode,
   TerminalOpenInput,
 } from "@t3tools/contracts";
@@ -1508,6 +1509,7 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const stopThreadTask = useAtomCommand(threadEnvironment.stopTask, { reportFailure: false });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -2773,9 +2775,33 @@ function ChatViewContent(props: ChatViewProps) {
     if (activeThreadRef) setRightPanelOpen(activeThreadRef, true);
     setProviderTasksHighlighted(true);
   }, [activeThreadRef, setRightPanelOpen]);
+  // Read off the *session* rather than the composer's selection: the stop
+  // control has to describe the runtime that owns the running tasks, not the
+  // provider the next turn would go to.
+  const providerTaskDriverKind =
+    providerStatuses.find(
+      (status) => status.instanceId === activeThread?.session?.providerInstanceId,
+    )?.driver ??
+    activeThread?.session?.providerName ??
+    null;
+  const onStopProviderTask = useCallback(
+    (taskId: string) => {
+      if (!activeThreadId) return;
+      void stopThreadTask({
+        environmentId,
+        input: { threadId: activeThreadId, taskId: RuntimeTaskId.make(taskId) },
+      });
+    },
+    [activeThreadId, environmentId, stopThreadTask],
+  );
   const providerTaskPanel =
     providerTaskPanelPlacement === "hidden" ? null : (
-      <ProviderTaskPanel tasks={providerTasks} highlighted={providerTasksHighlighted} />
+      <ProviderTaskPanel
+        driverKind={providerTaskDriverKind}
+        highlighted={providerTasksHighlighted}
+        onStopTask={onStopProviderTask}
+        tasks={providerTasks}
+      />
     );
   const providerTaskPanelFooter =
     providerTaskPanelPlacement === "stacked" ? providerTaskPanel : null;

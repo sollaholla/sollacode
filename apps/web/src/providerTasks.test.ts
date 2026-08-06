@@ -5,6 +5,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import {
   PROVIDER_TASK_FINISHED_MAX_COUNT,
   PROVIDER_TASK_PAGE_SIZE,
+  canStopProviderTask,
   countActiveProviderTasks,
   deriveProviderTasks,
   providerTaskChipLabel,
@@ -13,6 +14,7 @@ import {
   pageProviderTasks,
   resolveProviderTaskPanelPlacement,
   shouldShowProviderTaskPanel,
+  type ProviderTask,
 } from "./providerTasks.ts";
 
 function activity(
@@ -417,5 +419,48 @@ describe("deriveProviderTasks", () => {
     NodeAssert.ok(task);
     NodeAssert.equal(providerTaskTypeLabel(task), "Background command");
     NodeAssert.equal(providerTaskStatusLabel(task), "Running · Bash");
+  });
+});
+
+describe("canStopProviderTask", () => {
+  function task(overrides: Partial<ProviderTask> = {}): ProviderTask {
+    return {
+      taskId: "a1",
+      taskType: "local_bash",
+      title: "Poll the box",
+      summary: null,
+      lastToolName: null,
+      status: "running",
+      startedAt: "2026-08-01T10:00:00Z",
+      updatedAt: "2026-08-01T10:00:00Z",
+      toolUses: null,
+      ...overrides,
+    };
+  }
+
+  it("allows stopping a running task on a runtime with a per-task kill", () => {
+    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "claudeAgent" }), true);
+  });
+
+  it("refuses when the driver has no per-task stop channel", () => {
+    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "codex" }), false);
+    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: null }), false);
+  });
+
+  it("refuses on anything not confidently running", () => {
+    for (const status of ["stale", "completed", "failed", "stopped"] as const) {
+      NodeAssert.equal(
+        canStopProviderTask({ task: task({ status }), driverKind: "claudeAgent" }),
+        false,
+        status,
+      );
+    }
+  });
+
+  it("refuses on server-side plan refreshes, which have no provider task behind them", () => {
+    NodeAssert.equal(
+      canStopProviderTask({ task: task({ taskType: "plan-refresh" }), driverKind: "claudeAgent" }),
+      false,
+    );
   });
 });

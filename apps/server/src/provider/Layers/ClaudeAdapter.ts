@@ -254,6 +254,11 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly applyFlagSettings: Query["applyFlagSettings"];
+  /**
+   * Optional because the fake runtimes used by the adapter tests implement
+   * only the control requests they exercise. A real SDK query always has it.
+   */
+  readonly stopTask?: (taskId: string) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
   readonly close: () => void;
 }
@@ -4339,6 +4344,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     },
   );
 
+  /**
+   * Kill one background task or sub-agent without touching the turn.
+   *
+   * The CLI owns the process, so this is the only channel that can actually
+   * reach it — the task panel's dismiss control only ever hid the row, which
+   * left a runaway task running with nothing the user could do about it.
+   */
+  const stopTask: NonNullable<ClaudeAdapterShape["stopTask"]> = Effect.fn("stopTask")(
+    function* (threadId, taskId) {
+      const context = yield* requireSession(threadId);
+      const stop = context.query.stopTask;
+      if (stop === undefined) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "task/stop",
+          detail: "This Claude session does not support stopping individual tasks.",
+        });
+      }
+      yield* Effect.tryPromise({
+        try: () => stop.call(context.query, taskId),
+        catch: (cause) => toRequestError(threadId, "task/stop", cause),
+      });
+    },
+  );
+
   const readThread: ClaudeAdapterShape["readThread"] = Effect.fn("readThread")(
     function* (threadId) {
       const context = yield* requireSession(threadId);
@@ -4441,11 +4471,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      taskStop: true,
     },
     startSession,
     forkSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     readThread,
     rollbackThread,
     respondToRequest,

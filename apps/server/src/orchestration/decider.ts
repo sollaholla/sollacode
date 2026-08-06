@@ -927,6 +927,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.task.stop": {
+      yield* requireThreadNotDeleted({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Deliberately no check that the task is still known to the read model:
+      // the task list is folded from an append-only activity stream on the
+      // client, and refusing a stop for a task we cannot see would turn a
+      // harmless no-op into a failed command exactly when the user is trying
+      // to kill something that has gone off the rails.
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {
+            taskId: command.taskId,
+          },
+        })),
+        type: "thread.task-stop-requested",
+        payload: {
+          threadId: command.threadId,
+          taskId: command.taskId,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.approval.respond": {
       yield* requireThreadNotDeleted({
         readModel,
