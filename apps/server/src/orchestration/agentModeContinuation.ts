@@ -120,6 +120,15 @@ export function threadWorkObligationId(input: {
   return `thread-work:${input.kind}:${input.threadId}:${input.sourceTurnId}`;
 }
 
+/**
+ * Cancellation reason for a startup resume whose thread already signed off
+ * with AGENT_STOP. The boot re-arm sweep matches on this exact string to keep
+ * such obligations retired across restarts — a signed-off thread must never
+ * self-dispatch a RESUME_PROMPT (observed 2026-08-05: an unattended thread
+ * resumed itself after an explicit AGENT_STOP with no user input).
+ */
+export const STARTUP_RESUME_SIGNED_OFF_REASON = "agent signed off with AGENT_STOP";
+
 export function shouldResumeProviderAuthenticationPausedThread(
   thread: OrchestrationThreadShell,
   provider: ServerProvider,

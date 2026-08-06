@@ -19,6 +19,7 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
+  emittedAgentStop,
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
@@ -70,6 +71,7 @@ import {
 import {
   activeTurnWorkSourceId,
   startupResumeSourceTurnId,
+  STARTUP_RESUME_SIGNED_OFF_REASON,
   threadWorkObligationId,
 } from "../agentModeContinuation.ts";
 import {
@@ -2418,6 +2420,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         WHERE kind = 'startup-resume'
           AND state IN ('cancelled', 'completed')
           AND attempt < 5
+          -- A resume the handler retired because the agent signed off with
+          -- AGENT_STOP is a deliberate terminal verdict, not a transient
+          -- failure. Re-arming it across restarts is what produced the
+          -- 2026-08-05 self-resume; the signed-off thread must stay retired
+          -- until a real user message creates fresh work.
+          AND COALESCE(blocked_reason, '') != ${STARTUP_RESUME_SIGNED_OFF_REASON}
           -- One row per thread. A thread accumulates a retired resume per
           -- restart, and re-arming all of them would queue several redundant
           -- resumes of the same conversation.
@@ -2657,6 +2665,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             !authenticationFailure &&
             !isAgentContinuation &&
             (row.turnState === "incomplete" || row.turnState === "error") &&
+            // An assistant that signed off with AGENT_STOP deliberately ended
+            // its loop; resuming it here contradicts the stop contract the
+            // user saw (observed 2026-08-05: a restart resumed a signed-off
+            // thread with no user input).
+            !(row.assistantText !== null && emittedAgentStop(row.assistantText)) &&
             // A newer user message supersedes the dead turn; that send carries
             // its own recovery obligation.
             (row.latestUserMessageAt === null ||

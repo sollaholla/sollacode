@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import {
   AGENT_CONTINUE_PROMPT,
+  emittedAgentStop,
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
@@ -82,6 +83,7 @@ import {
   agentAutoResumeIds,
   shouldAutoContinueCompletedAgentTurn,
   startupAutoResumeIds,
+  STARTUP_RESUME_SIGNED_OFF_REASON,
 } from "../agentModeContinuation.ts";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
@@ -2375,6 +2377,27 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           Effect.map(Option.getOrUndefined),
         );
         if (syntheticMessage === undefined && context === undefined) {
+          // Last line of defense against a self-inflicted resume: if the
+          // thread's newest settled assistant message signed off with
+          // AGENT_STOP and no real user message has landed since, the agent
+          // deliberately ended its loop — a synthetic RESUME_PROMPT here is
+          // the system contradicting the user-facing stop contract (observed
+          // in production 2026-08-05). Only the not-yet-dispatched branch is
+          // gated: once the resume turn exists we must keep supervising it.
+          const newestAssistant = thread.messages
+            .toReversed()
+            .find((message) => message.role === "assistant" && !message.streaming);
+          if (
+            newestAssistant !== undefined &&
+            emittedAgentStop(newestAssistant.text) &&
+            !hasLaterRealUserMessage({
+              thread,
+              assistantMessageId: newestAssistant.id,
+              syntheticMessageId: messageId,
+            })
+          ) {
+            return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
+          }
           yield* orchestrationEngine.dispatch({
             type: "thread.turn.start",
             commandId,
