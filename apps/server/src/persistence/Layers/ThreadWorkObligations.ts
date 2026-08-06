@@ -8,6 +8,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { increment, threadWorkDuplicateConflictsTotal } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../Errors.ts";
+import { refreshProjectionThreadPendingWork } from "../PendingWorkProjection.ts";
 import {
   CancelThreadWorkByThreadInput,
   ClaimThreadWorkInput,
@@ -33,6 +34,7 @@ class ThreadWorkHandoffConflict extends Schema.TaggedErrorClass<ThreadWorkHandof
 ) {}
 
 const ReturnedId = Schema.Struct({ obligationId: Schema.String });
+const ReturnedThreadRef = Schema.Struct({ obligationId: Schema.String, threadId: Schema.String });
 const ReturnedProviderInstanceId = Schema.Struct({ providerInstanceId: ProviderInstanceId });
 const GetByIdInput = Schema.Struct({ obligationId: Schema.String });
 const SummarizeSchedulableInput = Schema.Struct({ now: IsoDateTime });
@@ -389,7 +391,7 @@ const make = Effect.gen(function* () {
 
   const transitionRow = SqlSchema.findOneOption({
     Request: TransitionThreadWorkInput,
-    Result: ReturnedId,
+    Result: ReturnedThreadRef,
     execute: (input) => sql`
       UPDATE thread_work_obligations
       SET
@@ -402,7 +404,7 @@ const make = Effect.gen(function* () {
       WHERE obligation_id = ${input.obligationId}
         AND state = ${input.expectedState}
         AND attempt = ${input.expectedAttempt}
-      RETURNING obligation_id AS "obligationId"
+      RETURNING obligation_id AS "obligationId", thread_id AS "threadId"
     `,
   });
 
@@ -455,7 +457,7 @@ const make = Effect.gen(function* () {
 
   const recoverOrphanedClaimRows = SqlSchema.findAll({
     Request: RecoverOrphanedThreadWorkInput,
-    Result: ReturnedId,
+    Result: ReturnedThreadRef,
     execute: ({ updatedAt, limit }) => sql`
       UPDATE thread_work_obligations
       SET
@@ -475,7 +477,7 @@ const make = Effect.gen(function* () {
         ORDER BY updated_at ASC, obligation_id ASC
         LIMIT ${Math.max(0, Math.min(256, limit))}
       )
-      RETURNING obligation_id AS "obligationId"
+      RETURNING obligation_id AS "obligationId", thread_id AS "threadId"
     `,
   });
 
@@ -499,6 +501,18 @@ const make = Effect.gen(function* () {
   const mapError = (operation: string) =>
     Effect.mapError(toPersistenceSqlError(`ThreadWorkObligationRepository.${operation}:query`));
 
+  // Every mutation that can change which obligation is a thread's "next work"
+  // re-derives the denormalized pending-work columns on projection_threads, so
+  // shell snapshots and event-driven shell refetches always read current
+  // scheduler state. Lease heartbeats and terminal-row pruning are exempt:
+  // neither changes the surfaced obligation.
+  const refreshPendingWork = (threadId: string) =>
+    refreshProjectionThreadPendingWork(sql, threadId).pipe(
+      Effect.mapError(
+        toPersistenceSqlError("ThreadWorkObligationRepository.refreshPendingWork:query"),
+      ),
+    );
+
   return {
     insert: (obligation) =>
       insertRow(obligation).pipe(
@@ -506,7 +520,7 @@ const make = Effect.gen(function* () {
         Effect.map(Option.isSome),
         Effect.tap((inserted) =>
           inserted
-            ? Effect.void
+            ? refreshPendingWork(obligation.threadId)
             : increment(threadWorkDuplicateConflictsTotal, {
                 provider: obligation.providerInstanceId,
                 kind: obligation.kind,
@@ -525,9 +539,27 @@ const make = Effect.gen(function* () {
     summarize: () => summarizeRows().pipe(mapError("summarize")),
     summarizeSchedulable: (now) =>
       summarizeSchedulableRows({ now }).pipe(mapError("summarizeSchedulable")),
-    claim: (input) => claimRow(input).pipe(mapError("claim")),
+    claim: (input) =>
+      claimRow(input).pipe(
+        mapError("claim"),
+        Effect.tap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (claimed) => refreshPendingWork(claimed.threadId),
+          }),
+        ),
+      ),
     transition: (input) =>
-      transitionRow(input).pipe(mapError("transition"), Effect.map(Option.isSome)),
+      transitionRow(input).pipe(
+        mapError("transition"),
+        Effect.tap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (transitioned) => refreshPendingWork(transitioned.threadId),
+          }),
+        ),
+        Effect.map(Option.isSome),
+      ),
     replaceActive: (input) =>
       sql
         .withTransaction(
@@ -597,6 +629,11 @@ const make = Effect.gen(function* () {
               }
             }
 
+            // The inner statements above are the raw rows, not the wrapped
+            // service methods, so refresh once here; a conflict rolls the
+            // whole transaction back and leaves the columns untouched.
+            yield* refreshProjectionThreadPendingWork(sql, input.replacement.threadId);
+
             return yield* getByKeyRow({
               threadId: input.replacement.threadId,
               sourceTurnId: input.replacement.sourceTurnId,
@@ -615,11 +652,17 @@ const make = Effect.gen(function* () {
     cancelByThread: (input) =>
       cancelRowsByThread(input).pipe(
         mapError("cancelByThread"),
+        Effect.tap((rows) => (rows.length > 0 ? refreshPendingWork(input.threadId) : Effect.void)),
         Effect.map((rows) => rows.length),
       ),
     recoverOrphanedClaims: (input) =>
       recoverOrphanedClaimRows(input).pipe(
         mapError("recoverOrphanedClaims"),
+        Effect.tap((rows) =>
+          Effect.forEach(new Set(rows.map(({ threadId }) => threadId)), refreshPendingWork, {
+            discard: true,
+          }),
+        ),
         Effect.map((rows) => rows.length),
       ),
     pruneTerminal: (input) =>

@@ -57,6 +57,7 @@ import Migration0041 from "./Migrations/041_ThreadWorkObligations.ts";
 import Migration0042 from "./Migrations/042_HardenThreadWorkObligations.ts";
 import Migration0043 from "./Migrations/043_SeedThreadWorkProjector.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadSessionFailureKind.ts";
+import Migration0045 from "./Migrations/045_ProjectionThreadsPendingWork.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -113,6 +114,7 @@ export const migrationEntries = [
   [42, "HardenThreadWorkObligations", Migration0042],
   [43, "SeedThreadWorkProjector", Migration0043],
   [44, "ProjectionThreadSessionFailureKind", Migration0044],
+  [45, "ProjectionThreadsPendingWork", Migration0045],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

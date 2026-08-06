@@ -46,6 +46,13 @@ export const ProjectionThread = Schema.Struct({
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,
   hasActionableProposedPlan: NonNegativeInt,
+  // Denormalized from thread_work_obligations; read-only here. The columns are
+  // written exclusively by refreshProjectionThreadPendingWork (never by
+  // upsert), so writers cannot clobber them with stale values. optionalKey
+  // keeps queries that do not select the columns decodable.
+  pendingWorkKind: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  pendingWorkState: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  pendingWorkSince: Schema.optionalKey(Schema.NullOr(IsoDateTime)),
   deletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectionThread = typeof ProjectionThread.Type;

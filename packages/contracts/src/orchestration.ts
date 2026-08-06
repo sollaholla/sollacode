@@ -360,6 +360,28 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+/**
+ * The thread's most relevant queued server-side work obligation, exposed so
+ * clients can render "auto-resuming" affordances from durable server state
+ * instead of predicting the scheduler's decisions.
+ *
+ * `kind` and `state` are deliberately open strings: a newer server introducing
+ * a work kind must not break older clients' snapshot decoding. Known kinds are
+ * "agent-continuation", "startup-resume", "authentication-resume",
+ * "provider-retry", and "active-turn-recovery"; known states are "pending",
+ * "claimed", "executing", "sleeping", "blocked-authentication",
+ * "waiting-approval", and "waiting-user-input" (terminal obligations are never
+ * exposed). `since` is when the obligation was created. When several
+ * obligations are active, still-waiting states win over claimed/executing so
+ * the surfaced entry is the one that explains what happens next.
+ */
+export const OrchestrationThreadPendingWork = Schema.Struct({
+  kind: TrimmedNonEmptyString,
+  state: TrimmedNonEmptyString,
+  since: IsoDateTime,
+});
+export type OrchestrationThreadPendingWork = typeof OrchestrationThreadPendingWork.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -390,6 +412,9 @@ export const OrchestrationThread = Schema.Struct({
   // Optional so payloads from pre-snooze servers still decode.
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // Optional so payloads from servers predating pending-work exposure still
+  // decode; `undefined` tells clients to fall back to local prediction.
+  pendingWork: Schema.optional(Schema.NullOr(OrchestrationThreadPendingWork)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -444,6 +469,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // Optional so payloads from servers predating pending-work exposure still
+  // decode; `undefined` tells clients to fall back to local prediction.
+  pendingWork: Schema.optional(Schema.NullOr(OrchestrationThreadPendingWork)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
