@@ -100,6 +100,7 @@ type ProviderIntentEvent = Extract<
       | "thread.session-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.task-stop-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.session-stop-requested"
@@ -372,7 +373,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         | "provider.turn.interrupt.failed"
         | "provider.approval.respond.failed"
         | "provider.user-input.respond.failed"
-        | "provider.session.stop.failed";
+        | "provider.session.stop.failed"
+        | "provider.task.stop.failed";
       readonly summary: string;
       readonly detail: string;
       readonly turnId: TurnId | null;
@@ -1385,6 +1387,78 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         event.payload.modelSelection?.instanceId ??
           thread.session?.providerInstanceId ??
           thread.modelSelection.instanceId,
+      );
+    });
+
+    const appendTaskStoppedActivity = (input: {
+      readonly threadId: ThreadId;
+      readonly taskId: RuntimeTaskId;
+      readonly createdAt: string;
+    }) =>
+      Effect.all({
+        commandId: serverCommandId("provider-task-stopped"),
+        eventId: serverEventId(),
+      }).pipe(
+        Effect.flatMap(({ commandId, eventId }) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId,
+            threadId: input.threadId,
+            activity: {
+              id: eventId,
+              tone: "info",
+              kind: "task.completed",
+              summary: "Task stopped",
+              payload: {
+                taskId: input.taskId,
+                status: "stopped",
+                summary: "Stopped by the user",
+              },
+              turnId: null,
+              createdAt: input.createdAt,
+            },
+            createdAt: input.createdAt,
+          }),
+        ),
+      );
+
+    /**
+     * Kill one background task or sub-agent, leaving the turn running.
+     *
+     * Deliberately never touches the session: the whole point of a per-task
+     * stop is that the rest of the turn survives. The panel folds its rows
+     * from `task.*` activities and only leaves `running` on a `task.completed`,
+     * so a successful stop synthesises one — providers that emit their own
+     * terminal notification simply re-fold the same row, and providers that do
+     * not would otherwise leave the killed task claiming to run forever.
+     */
+    const processTaskStopRequested = Effect.fn("processTaskStopRequested")(function* (
+      event: Extract<ProviderIntentEvent, { type: "thread.task-stop-requested" }>,
+    ) {
+      const { threadId, taskId, createdAt } = event.payload;
+      const thread = yield* resolveThread(threadId);
+      if (!thread) return;
+
+      const hasSession = thread.session && thread.session.status !== "stopped";
+      if (!hasSession) {
+        // Nothing is left to kill, but the row still claims to run — settle it
+        // rather than reporting a failure the user cannot act on.
+        yield* appendTaskStoppedActivity({ threadId, taskId, createdAt });
+        return;
+      }
+
+      yield* providerService.stopTask({ threadId, taskId }).pipe(
+        Effect.flatMap(() => appendTaskStoppedActivity({ threadId, taskId, createdAt })),
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId,
+            kind: "provider.task.stop.failed",
+            summary: "Could not stop the task",
+            detail: formatFailureDetail(cause),
+            turnId: thread.session?.activeTurnId ?? null,
+            createdAt,
+          }),
+        ),
       );
     });
 
@@ -3022,6 +3096,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         case "thread.turn-interrupt-requested":
           yield* processTurnInterruptRequested(event);
           return;
+        case "thread.task-stop-requested":
+          yield* processTaskStopRequested(event);
+          return;
         case "thread.approval-response-requested":
           yield* processApprovalResponseRequested(event);
           return;
@@ -3078,6 +3155,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           event.type === "thread.session-set" ||
           event.type === "thread.turn-start-requested" ||
           event.type === "thread.turn-interrupt-requested" ||
+          event.type === "thread.task-stop-requested" ||
           event.type === "thread.approval-response-requested" ||
           event.type === "thread.user-input-response-requested" ||
           event.type === "thread.session-stop-requested" ||

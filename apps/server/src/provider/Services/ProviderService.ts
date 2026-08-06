@@ -13,6 +13,7 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  ProviderStopTaskInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -57,6 +58,15 @@ export interface ProviderServiceShape {
   readonly interruptTurn: (
     input: ProviderInterruptTurnInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Stop one background task or sub-agent by id without cancelling the turn.
+   *
+   * Fails with an unsupported-operation error on adapters that declare
+   * `taskStop: false`, so the caller can report honestly rather than
+   * pretending the kill landed.
+   */
+  readonly stopTask: (input: ProviderStopTaskInput) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Respond to a provider approval request.

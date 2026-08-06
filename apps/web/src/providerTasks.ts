@@ -234,6 +234,31 @@ export function isProviderTaskActive(task: ProviderTask): boolean {
 }
 
 /**
+ * Provider drivers whose runtime can kill one task by id.
+ *
+ * Only the Claude runtime exposes a per-task stop control request; the others
+ * can end a turn but not a single task inside it. The panel's stop control is
+ * gated on this so it never claims to reach work it cannot.
+ */
+const TASK_STOP_CAPABLE_DRIVER_KINDS: ReadonlySet<string> = new Set(["claudeAgent"]);
+
+/**
+ * Whether the panel may offer to actually stop this row.
+ *
+ * `plan-refresh` is excluded deliberately: it is server-side work synthesised
+ * into the same activity stream, so there is no provider task behind the id
+ * and a stop request would fail on a task the user can plainly see running.
+ */
+export function canStopProviderTask(input: {
+  readonly task: ProviderTask;
+  readonly driverKind: string | null;
+}): boolean {
+  if (input.task.status !== "running") return false;
+  if (input.task.taskType === "plan-refresh") return false;
+  return input.driverKind !== null && TASK_STOP_CAPABLE_DRIVER_KINDS.has(input.driverKind);
+}
+
+/**
  * Tasks the user has hidden, as taskId → the timestamp they hid it at.
  *
  * The list is folded from an append-only activity stream, so there is nothing to

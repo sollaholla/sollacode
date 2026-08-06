@@ -395,6 +395,7 @@ function createProviderServiceHarness() {
         };
       }),
     interruptTurn: () => unsupported(),
+    stopTask: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),

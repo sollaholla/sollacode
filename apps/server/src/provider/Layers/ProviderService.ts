@@ -14,6 +14,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderStopTaskInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
@@ -45,7 +46,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderAdapterRequestError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -788,6 +793,37 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const stopTask: ProviderServiceMethod<"stopTask"> = Effect.fn("stopTask")(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.stopTask",
+      schema: ProviderStopTaskInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.stopTask",
+      allowRecovery: true,
+    });
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "stop-task",
+      "provider.kind": routed.adapter.provider,
+      "provider.thread_id": input.threadId,
+      "provider.task_id": input.taskId,
+    });
+    const stop = routed.adapter.stopTask;
+    if (stop === undefined) {
+      // Surfaced rather than swallowed: the caller renders a stop control and
+      // must be able to tell the user the kill did not land, instead of
+      // hiding the row and leaving the task running.
+      return yield* new ProviderAdapterRequestError({
+        provider: routed.adapter.provider,
+        method: "task/stop",
+        detail: `Provider '${routed.adapter.provider}' cannot stop individual tasks.`,
+      });
+    }
+    yield* stop(routed.threadId, input.taskId);
+  });
+
   const respondToRequest: ProviderServiceMethod<"respondToRequest"> = Effect.fn("respondToRequest")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1215,6 +1251,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    stopTask,
     respondToRequest,
     respondToUserInput,
     stopSession,

@@ -12,6 +12,7 @@ import { useState } from "react";
 
 import {
   PROVIDER_TASK_PAGE_SIZE,
+  canStopProviderTask,
   countActiveProviderTasks,
   dismissableProviderTaskIds,
   hasDismissableProviderTasks,
@@ -58,10 +59,21 @@ export function ProviderTaskPanel(props: {
   readonly tasks: ReadonlyArray<ProviderTask>;
   /** Briefly ringed after the composer chip is clicked, to say "over here". */
   readonly highlighted: boolean;
+  /**
+   * Driver behind the thread's session, used to decide whether a running row
+   * can actually be killed. `null` when no session is bound yet.
+   */
+  readonly driverKind?: string | null;
+  /** Sends the per-task stop. Omitted where no stop channel is wired. */
+  readonly onStopTask?: (taskId: string) => void;
 }) {
   const activeCount = countActiveProviderTasks(props.tasks);
   const dismissTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
   const canClear = hasDismissableProviderTasks(props.tasks);
+  const driverKind = props.driverKind ?? null;
+  const onStopTask = props.onStopTask;
+  const canStop = (task: ProviderTask) =>
+    onStopTask !== undefined && canStopProviderTask({ task, driverKind });
   const [requestedPage, setRequestedPage] = useState(0);
   // Clamped inside the helper, so the list ageing out from under a held page
   // index shows the last page rather than nothing.
@@ -125,19 +137,30 @@ export function ProviderTaskPanel(props: {
                 ) : null}
               </div>
               {/*
-               * Hides the row; it does not stop the work, and is labelled that
-               * way rather than "Cancel" because there is no cancel channel for
-               * provider-side tasks and a button claiming otherwise would lie.
-               * Safe on a live task: anything that reports again comes back.
+               * One control, two meanings, decided by whether the work can
+               * actually be reached: on a running task backed by a runtime with
+               * a per-task kill it stops the task and hides the row; otherwise
+               * it only hides the row, and says so. The single-meaning version
+               * of this button hid rows while the task kept running, which read
+               * as a cancel that silently did nothing.
+               *
+               * Hiding a live task is still safe either way: dismissal is
+               * reversed by any later report, so anything that survives the
+               * stop comes back on its own.
                */}
               <button
                 type="button"
-                onClick={() => dismissTasks([task.taskId])}
-                aria-label={`Dismiss ${task.title}`}
+                onClick={() => {
+                  if (canStop(task)) props.onStopTask?.(task.taskId);
+                  dismissTasks([task.taskId]);
+                }}
+                aria-label={canStop(task) ? `Stop ${task.title}` : `Dismiss ${task.title}`}
                 title={
-                  task.status === "running"
-                    ? "Hide this row. It does not stop the task — if it is still alive it will reappear when it next reports."
-                    : "Hide this row."
+                  canStop(task)
+                    ? "Stop this task and hide the row."
+                    : task.status === "running"
+                      ? "Hide this row. This provider cannot stop a single task — if it is still alive it will reappear when it next reports."
+                      : "Hide this row."
                 }
                 className="-me-0.5 -mt-0.5 shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
               >
