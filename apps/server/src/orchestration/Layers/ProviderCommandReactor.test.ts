@@ -1320,7 +1320,7 @@ describe("ProviderCommandReactor", () => {
       Effect.gen(function* () {
         inFlight += 1;
         peakInFlight = Math.max(peakInFlight, inFlight);
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 40)));
+        yield* Effect.sleep(Duration.millis(40));
         inFlight -= 1;
         dispatchedTurns += 1;
         const requestThreadId =
