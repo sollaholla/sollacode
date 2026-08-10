@@ -1497,36 +1497,44 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
-        const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
-          Effect.gen(function* () {
-            yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
-            if (runtimeEvents.length === 0) {
-              yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                method: event.method,
-                threadId: event.threadId,
-                turnId: event.turnId,
-                itemId: event.itemId,
-              });
-              return;
-            }
-            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }).pipe(
-            // This pump is the only route from the session to projections and
-            // logs. If one malformed event were allowed to kill it, the thread
-            // would go silently deaf while the provider kept working — drop the
-            // event loudly and keep pumping instead.
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.failCause(cause)
-                : Effect.logError("codex.session.event-pump.event-failed", {
-                    threadId: event.threadId,
-                    method: event.method,
-                    cause: Cause.pretty(cause),
-                  }),
+        const eventFiber = yield* Stream.runForEach(
+          runtime.events,
+          (event) =>
+            Effect.gen(function* () {
+              yield* writeNativeEvent(event);
+              const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+              if (runtimeEvents.length === 0) {
+                yield* Effect.logDebug("ignoring unhandled Codex provider event", {
+                  method: event.method,
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
+                });
+                return;
+              }
+              yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            }).pipe(
+              // This pump is the only route from the session to projections and
+              // logs. If one malformed event were allowed to kill it, the thread
+              // would go silently deaf while the provider kept working — drop the
+              // event loudly and keep pumping instead.
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logError("codex.session.event-pump.event-failed", {
+                      threadId: event.threadId,
+                      method: event.method,
+                      cause: Cause.pretty(cause),
+                    }),
+              ),
             ),
-          ),
-        ).pipe(Effect.forkChild);
+          // The pump must outlive whichever fiber happened to call
+          // startSession: turn delivery obligations run in short-lived
+          // executor fibers, and a child fork dies with its parent — leaving
+          // the session deaf (requests still succeed, but no runtime event
+          // ever reaches ingestion again). Fork into the session scope so the
+          // pump lives exactly as long as the session.
+        ).pipe(Effect.forkIn(sessionScope));
 
         const started = yield* runtime.start().pipe(
           Effect.mapError(
