@@ -3,6 +3,7 @@ import { describe } from "vite-plus/test";
 
 import {
   assetCacheControlForUrl,
+  assetResponseHeaders,
   isLoopbackHostname,
   MUTABLE_ASSET_CACHE_CONTROL,
   REVISIONED_ASSET_CACHE_CONTROL,
@@ -47,5 +48,52 @@ describe("http dev routing", () => {
     expect(
       assetCacheControlForUrl(new URL("http://remote.test/api/assets/token/preview.png")),
     ).toBe(MUTABLE_ASSET_CACHE_CONTROL);
+  });
+});
+
+describe("assetResponseHeaders", () => {
+  const assetUrl = new URL("http://remote.test/api/assets/token/user-image.svg");
+
+  it("sandboxes SVG assets served from disk", () => {
+    // An SVG runs script and fetches references like any document, so serving a
+    // user-supplied one from the app's own origin is a stored-XSS vector.
+    expect(
+      assetResponseHeaders({ url: assetUrl, path: "/attachments/user-image.svg" }),
+    ).toMatchObject({
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      "X-Content-Type-Options": "nosniff",
+    });
+    expect(
+      assetResponseHeaders({ url: assetUrl, path: "/attachments/user-image.SVG" }),
+    ).toHaveProperty("Content-Security-Policy");
+  });
+
+  it("sandboxes SVG assets served from memory", () => {
+    // The in-memory path carries no filename, so the content type is the only
+    // thing left to recognise it by.
+    expect(assetResponseHeaders({ url: assetUrl, contentType: "image/svg+xml" })).toHaveProperty(
+      "Content-Security-Policy",
+    );
+  });
+
+  it("does not apply document policy to raster images", () => {
+    expect(assetResponseHeaders({ url: assetUrl, path: "/attachments/user-image.png" })).toEqual({
+      "Cache-Control": MUTABLE_ASSET_CACHE_CONTROL,
+      "X-Content-Type-Options": "nosniff",
+    });
+    expect(assetResponseHeaders({ url: assetUrl, contentType: "image/png" })).not.toHaveProperty(
+      "Content-Security-Policy",
+    );
+  });
+
+  it("keeps cache-control derived from the URL, not the file path", () => {
+    // The fork's revision-keyed URLs are what make an asset immutable; a
+    // path-derived header would wrongly pin unversioned workspace files.
+    expect(
+      assetResponseHeaders({
+        url: new URL("http://remote.test/api/assets/token/p.png?solla_revision=msg-42"),
+        path: "/attachments/p.png",
+      })["Cache-Control"],
+    ).toBe(REVISIONED_ASSET_CACHE_CONTROL);
   });
 });

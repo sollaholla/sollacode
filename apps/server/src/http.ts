@@ -56,6 +56,46 @@ export function assetCacheControlForUrl(url: URL): string {
     : MUTABLE_ASSET_CACHE_CONTROL;
 }
 
+const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/**
+ * An SVG is a document, not merely an image: it can carry inline script and
+ * fetch external references. Serving a user-supplied one from the app's own
+ * origin therefore hands an attacker same-origin execution — a stored-XSS
+ * vector through anything that can be attached to a thread.
+ *
+ * Both delivery paths have to be covered. Assets read from disk are recognised
+ * by extension; assets already in memory only carry a content type.
+ */
+function isSvgAsset(path: string | undefined, contentType: string | undefined): boolean {
+  if (path !== undefined && path.toLowerCase().endsWith(".svg")) return true;
+  return contentType !== undefined && contentType.toLowerCase().includes("image/svg+xml");
+}
+
+/**
+ * Headers for one workspace asset.
+ *
+ * Cache-Control stays derived from the URL rather than the file path:
+ * unversioned workspace paths must remain no-store, and only a revision-keyed
+ * URL may be treated as immutable.
+ */
+export function assetResponseHeaders(input: {
+  readonly url: URL;
+  readonly path?: string;
+  readonly contentType?: string;
+}): Record<string, string> {
+  return {
+    // Unversioned workspace paths remain no-store. Remote/client previews
+    // attach the message/activity revision, producing an immutable cache key
+    // that changes when a newer result references the same filename.
+    "Cache-Control": assetCacheControlForUrl(input.url),
+    "X-Content-Type-Options": "nosniff",
+    ...(isSvgAsset(input.path, input.contentType)
+      ? { "Content-Security-Policy": SVG_CONTENT_SECURITY_POLICY }
+      : {}),
+  };
+}
+
 function staticCacheControlForPath(relativePath: string): string {
   if (relativePath === "index.html" || relativePath.endsWith("/index.html")) {
     return STATIC_HTML_CACHE_CONTROL;
@@ -292,13 +332,10 @@ export const assetRouteLayer = HttpRouter.add(
     }
     const responseOptions = {
       status: 200,
-      headers: {
-        // Unversioned workspace paths remain no-store. Remote/client previews
-        // attach the message/activity revision, producing an immutable cache
-        // key that changes when a newer result references the same filename.
-        "Cache-Control": assetCacheControlForUrl(url.value),
-        "X-Content-Type-Options": "nosniff",
-      },
+      headers: assetResponseHeaders({
+        url: url.value,
+        ...(asset.kind === "bytes" ? { contentType: asset.contentType } : { path: asset.path }),
+      }),
     } as const;
     if (asset.kind === "bytes") {
       return HttpServerResponse.uint8Array(asset.bytes, {
