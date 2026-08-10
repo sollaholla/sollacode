@@ -4044,6 +4044,287 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect(
+    "still enqueues Agent continuation when a checkpoint lands after the turn settles",
+    () =>
+      Effect.gen(function* () {
+        // The production race this pins down: codex emits `turn.diff.updated`
+        // mid-turn, which creates a placeholder checkpoint; the CheckpointReactor
+        // then captures the real git state asynchronously and its
+        // `thread.turn.diff.complete` — stamped with the *placeholder's* mid-turn
+        // timestamp — can land between the session-set that settled the turn and
+        // the assistant message finalize. That rewrite used to break the gate's
+        // freshness check permanently, so an agent thread just stopped at its
+        // final output with no continuation and no error.
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project-agent-checkpoint-race");
+        const threadId = ThreadId.make("thread-agent-checkpoint-race");
+        const turnId = TurnId.make("turn-agent-checkpoint-race");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-checkpoint-race-project"),
+          projectId,
+          title: "Checkpoint race",
+          workspaceRoot: "/tmp/project-agent-checkpoint-race",
+          defaultModelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-checkpoint-race-thread"),
+          threadId,
+          projectId,
+          title: "Checkpoint race thread",
+          modelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-checkpoint-race-start"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-checkpoint-race"),
+            role: "user",
+            text: "Continue working autonomously.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-checkpoint-race-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-checkpoint-race-delta"),
+          threadId,
+          messageId: MessageId.make("assistant-checkpoint-race"),
+          delta: "Phase one is done; starting phase two next.",
+          turnId,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+
+        // The turn settles while the final assistant segment is still streaming —
+        // the gate defers to the finalize below, exactly like production.
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-checkpoint-race-ready"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:05.000Z",
+          },
+          createdAt: "2026-01-01T00:00:05.000Z",
+        });
+
+        // The async checkpoint capture lands in the settle→finalize window,
+        // carrying the mid-turn placeholder timestamp it inherited.
+        yield* engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make("cmd-checkpoint-race-diff"),
+          threadId,
+          turnId,
+          completedAt: "2026-01-01T00:00:04.000Z",
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoint-race"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("assistant-checkpoint-race"),
+          checkpointTurnCount: 1,
+          createdAt: "2026-01-01T00:00:05.500Z",
+        });
+
+        // The finalize is the gate's deciding run for this ordering.
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.make("cmd-checkpoint-race-complete"),
+          threadId,
+          messageId: MessageId.make("assistant-checkpoint-race"),
+          turnId,
+          createdAt: "2026-01-01T00:00:06.000Z",
+        });
+
+        // The checkpoint must not rewind the settled turn's completion time…
+        const turnRows = yield* sql<{ readonly completedAt: string | null }>`
+        SELECT completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+        assert.deepEqual(turnRows, [{ completedAt: "2026-01-01T00:00:05.000Z" }]);
+
+        // …and the continuation must exist despite the interleaved checkpoint.
+        const continuationRows = yield* sql<{ readonly state: string }>`
+        SELECT state
+        FROM thread_work_obligations
+        WHERE kind = 'agent-continuation' AND thread_id = ${threadId}
+      `;
+        assert.deepEqual(continuationRows, [{ state: "pending" }]);
+      }),
+  );
+
+  it.effect("enqueues Agent continuation when a post-settle session refresh lands first", () =>
+    Effect.gen(function* () {
+      // Variant of the same stall: a session-set that merely refreshes an
+      // already-ready session (codex `session/ready` notifications, reconnects)
+      // used to advance the session row past the turn's completion time and
+      // fail the gate's strict equality forever.
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-agent-session-refresh");
+      const threadId = ThreadId.make("thread-agent-session-refresh");
+      const turnId = TurnId.make("turn-agent-session-refresh");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-session-refresh-project"),
+        projectId,
+        title: "Session refresh race",
+        workspaceRoot: "/tmp/project-agent-session-refresh",
+        defaultModelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-session-refresh-thread"),
+        threadId,
+        projectId,
+        title: "Session refresh thread",
+        modelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-session-refresh-start"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-session-refresh"),
+          role: "user",
+          text: "Continue working autonomously.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refresh-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-session-refresh-delta"),
+        threadId,
+        messageId: MessageId.make("assistant-session-refresh"),
+        delta: "Phase one is done; starting phase two next.",
+        turnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refresh-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+      // A status refresh with nothing new in it, stamped a moment later.
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-refresh-refresh"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.700Z",
+        },
+        createdAt: "2026-01-01T00:00:05.700Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-session-refresh-complete"),
+        threadId,
+        messageId: MessageId.make("assistant-session-refresh"),
+        turnId,
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+
+      const continuationRows = yield* sql<{ readonly state: string }>`
+        SELECT state
+        FROM thread_work_obligations
+        WHERE kind = 'agent-continuation' AND thread_id = ${threadId}
+      `;
+      assert.deepEqual(continuationRows, [{ state: "pending" }]);
+    }),
+  );
+
   it.effect("atomically replaces active turn work with an authentication pause", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

@@ -1761,7 +1761,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               checkpointFiles: event.payload.files,
               startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
-              completedAt: event.payload.completedAt,
+              // Same principle as the assistant pointer above: checkpoint
+              // capture is asynchronous and stamps the timestamp it inherited
+              // when capture *started* — for a placeholder replacement that is
+              // a mid-turn time. The session-set that settled the turn is the
+              // authoritative end; rewinding it here broke the Agent
+              // continuation gate's freshness check and silently stalled agent
+              // threads at their final output.
+              completedAt: existingTurn.value.completedAt ?? event.payload.completedAt,
             });
             return;
           }
@@ -1983,7 +1990,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           Option.isNone(turn) ||
           turn.value.state !== "completed" ||
           turn.value.completedAt === null ||
-          session.value.updatedAt !== turn.value.completedAt ||
+          // Only a session row OLDER than the completion is disqualifying —
+          // it means the ready state predates this turn ending, so the gate is
+          // reading a stale row and must wait for the settling session-set.
+          // The previous strict equality also rejected every session-set that
+          // arrived AFTER the settle (status refreshes, reconnects) and every
+          // async checkpoint that touched the turn row in the settle→finalize
+          // window, which permanently stalled agent threads: the gate has no
+          // trigger after the assistant finalize, so one interleaved event
+          // meant no continuation, ever.
+          session.value.updatedAt < turn.value.completedAt ||
           (thread.value.latestUserMessageAt !== null &&
             thread.value.latestUserMessageAt > turn.value.completedAt)
         ) {
