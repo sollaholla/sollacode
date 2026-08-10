@@ -281,7 +281,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           workspaceRoot: harness.workspaceDir,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: DEFAULT_MODEL,
           },
           createdAt,
         });
@@ -294,7 +294,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           title: "Integration Thread",
           modelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
+            model: DEFAULT_MODEL,
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
@@ -329,6 +329,17 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
           180_000,
         );
         assert.equal(firstThread.session?.threadId, "thread-1");
+
+        // The client changes runtime mode via the dedicated command before
+        // sending the turn — thread.turn.start's runtimeMode does not update
+        // the thread's mode (see ChatView's setThreadRuntimeMode call).
+        yield* harness.engine.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("cmd-runtime-mode-real-codex"),
+          threadId: THREAD_ID,
+          runtimeMode: "approval-required",
+          createdAt: nowIso(),
+        });
 
         yield* harness.engine.dispatch({
           type: "thread.turn.start",

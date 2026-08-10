@@ -879,7 +879,10 @@ export function makeCursorAdapter(
             Effect.catch((cause) =>
               Effect.logError("Failed to process Cursor runtime notification.", { cause }),
             ),
-            Effect.forkChild,
+            // Session-scoped, not caller-scoped: startSession may run inside a
+            // short-lived obligation executor fiber, and a child fork dies
+            // with its parent — leaving the session deaf to notifications.
+            Effect.forkIn(sessionScope),
           );
 
           ctx.notificationFiber = nf;
