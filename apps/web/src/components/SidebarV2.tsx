@@ -112,6 +112,7 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
+  resolveAutoResumeStartedAt,
   resolveSettledTimestamp,
   resolveSidebarV2Status,
   resolveWorkingStartedAt,
@@ -445,9 +446,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     (props.sideChatActivity !== null || props.startupResumeStartedAt !== null)
       ? "working"
       : ownStatus;
+  // Only a row promoted to working by queued server work may call itself
+  // auto-resuming; a thread running its own turn is just working.
+  const autoResumeStartedAt = resolveAutoResumeStartedAt({
+    ownStatus,
+    startupResumeStartedAt: props.startupResumeStartedAt,
+  });
   const ownWorkingStartedAt = ownStatus === "working" ? resolveWorkingStartedAt(thread) : null;
   const workingStartedAt =
-    [ownWorkingStartedAt, props.sideChatActivity?.startedAt ?? null, props.startupResumeStartedAt]
+    [ownWorkingStartedAt, props.sideChatActivity?.startedAt ?? null, autoResumeStartedAt]
       .filter((value): value is string => value !== null && !Number.isNaN(Date.parse(value)))
       .toSorted((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
   // A woken thread reappears at its original position (the sort is
@@ -475,7 +482,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const topStatus =
     status === "working"
       ? {
-          label: props.startupResumeStartedAt !== null ? "Auto-resuming" : "Working",
+          label: autoResumeStartedAt !== null ? "Auto-resuming" : "Working",
           icon: "working" as const,
           className:
             "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",

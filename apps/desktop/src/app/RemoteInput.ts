@@ -11,6 +11,16 @@ import type { DesktopRemoteControlInput } from "@t3tools/contracts";
 const MACOS_REMOTE_INPUT_SOURCE = String.raw`
 ObjC.import("ApplicationServices");
 ObjC.import("Foundation");
+// Carbon is where IsSecureEventInputEnabled lives. It is not present on every
+// runtime this script can land on, and a failed top-level import would take the
+// whole helper down, so the capability is treated as optional.
+var hasCarbon = false;
+try {
+  ObjC.import("Carbon");
+  hasCarbon = true;
+} catch (error) {
+  hasCarbon = false;
+}
 
 var keyCodes = {
   KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7,
@@ -139,15 +149,69 @@ function resetInput() {
   pressedButtons = {};
 }
 
+/**
+ * Whether some app has taken the cursor.
+ *
+ * A hidden cursor is the observable signal that an app switched to relative
+ * mouse-look: games hide the pointer and read deltas. There is no public API
+ * for "is the pointer captured", but CGCursorIsVisible tracks the hide/show
+ * that always accompanies it.
+ */
+function cursorLocked() {
+  try {
+    return !$.CGCursorIsVisible();
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Why injected input would go nowhere right now, or null when it will land.
+ *
+ * macOS has no secure desktop, but it has the same idea in a narrower form:
+ * a password field or an authorization prompt turns on secure event input,
+ * and the window server then drops synthetic key events outright. Reporting it
+ * is what keeps a session from looking dead while someone is being asked for
+ * their password.
+ */
+function blockReason() {
+  if (!hasCarbon) return null;
+  try {
+    return $.IsSecureEventInputEnabled() ? "secure-input" : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+var wasBlocked = false;
+
 function applyCommand(command) {
   if (command.kind === "reset") {
     resetInput();
-    return;
+    wasBlocked = false;
+    return null;
+  }
+  if (command.kind === "cursor") {
+    // The lock poll doubles as the recovery detector, so it reports the block
+    // state too — otherwise an idle session never learns that input came back.
+    return { locked: cursorLocked(), blocked: blockReason() };
+  }
+  var blocked = blockReason();
+  if (blocked !== null) {
+    wasBlocked = true;
+    return { blocked: blocked };
+  }
+  if (wasBlocked) {
+    // Keys held when secure input took over are still down, and their key-ups
+    // were swallowed; release everything before resuming.
+    resetInput();
+    wasBlocked = false;
   }
   var input = command.input;
   if (input.type === "pointer") postPointer(input);
   else if (input.type === "wheel") postWheel(input);
   else if (input.type === "key") postKey(input);
+  return null;
 }
 
 var handle = $.NSFileHandle.fileHandleWithStandardInput;
@@ -164,8 +228,11 @@ while (true) {
       var command = null;
       try {
         command = JSON.parse(line);
-        applyCommand(command);
-        writeReply({ id: command.id, ok: true });
+        var result = applyCommand(command);
+        var reply = { id: command.id, ok: true };
+        if (result && typeof result.locked === "boolean") reply.locked = result.locked;
+        if (result && typeof result.blocked === "string") reply.blocked = result.blocked;
+        writeReply(reply);
       } catch (error) {
         writeReply({
           id: command && command.id ? command.id : -1,
@@ -195,6 +262,16 @@ public static class SollaRemoteInput {
   // so input aimed at any secondary display lands on the primary one.
   private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
   private const uint KEYEVENTF_KEYUP = 0x0002;
+  // Games are the reason these two exist here.
+  //
+  // A virtual-key SendInput is enough for Win32 windows, which read WM_KEYDOWN,
+  // but DirectInput and Raw Input read the *scan code* off the keyboard packet.
+  // Injecting with scanCode = 0 leaves that field empty, so a game sees a key
+  // that never physically went down: taps sometimes register, holds never do —
+  // exactly the reported "WASD doesn't work while held".
+  private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+  private const uint KEYEVENTF_SCANCODE = 0x0008;
+  private const uint MAPVK_VK_TO_VSC = 0;
 
   [StructLayout(LayoutKind.Sequential)]
   private struct INPUT {
@@ -230,10 +307,232 @@ public static class SollaRemoteInput {
   [DllImport("user32.dll", SetLastError = true)]
   private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
 
+  [DllImport("user32.dll")]
+  private static extern uint MapVirtualKey(uint code, uint mapType);
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct POINT { public int x; public int y; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct CURSORINFO {
+    public int cbSize;
+    public int flags;
+    public IntPtr hCursor;
+    public POINT screenPos;
+  }
+
+  [DllImport("user32.dll")]
+  private static extern bool GetCursorInfo(ref CURSORINFO info);
+
+  private const int CURSOR_SHOWING = 0x0001;
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern bool CloseDesktop(IntPtr desktop);
+
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool GetUserObjectInformationW(
+    IntPtr handle, int index, System.Text.StringBuilder info, uint byteCount, out uint bytesNeeded);
+
+  private const int UOI_NAME = 2;
+  private const uint DESKTOP_READOBJECTS = 0x0001;
+
+  [DllImport("user32.dll")]
+  private static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll")]
+  private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+
+  [DllImport("kernel32.dll")]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+  private const int ERROR_ACCESS_DENIED = 5;
+
+  /**
+   * Name of the desktop currently receiving input, or null when we are not
+   * even allowed to ask.
+   *
+   * Windows runs UAC consent, the lock screen, and Ctrl+Alt+Del on a separate
+   * "secure desktop" that ordinary processes cannot open, enumerate, capture,
+   * or type into. That isolation is the entire point of the feature, so being
+   * refused here is not an error — it is the answer.
+   */
+  private static string InputDesktopName() {
+    var desktop = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+    if (desktop == IntPtr.Zero) return null;
+    try {
+      var buffer = new System.Text.StringBuilder(256);
+      uint needed;
+      if (!GetUserObjectInformationW(desktop, UOI_NAME, buffer, (uint)(buffer.Capacity * 2), out needed)) {
+        return null;
+      }
+      return buffer.ToString();
+    } finally {
+      CloseDesktop(desktop);
+    }
+  }
+
+  private static bool hasCheckedElevation = false;
+  private static int lastElevationCheckTick = 0;
+  private static bool lastElevationResult = false;
+
+  /**
+   * Whether the foreground window belongs to a process we cannot touch.
+   *
+   * UIPI silently discards input sent from a lower integrity level to a higher
+   * one — SendInput still reports success, so there is no failure to observe.
+   * The proxy used here is that opening the owning process for query access is
+   * refused, which is true of an elevated window and false of an ordinary one.
+   * It is a heuristic (a protected-process window answers the same way), so it
+   * only ever shapes the message shown to the user; it never decides whether a
+   * session lives. Rate-limited because it runs on the input path.
+   */
+  private static bool ForegroundOutranksUs() {
+    var now = Environment.TickCount;
+    if (hasCheckedElevation && unchecked(now - lastElevationCheckTick) < 500) {
+      return lastElevationResult;
+    }
+    hasCheckedElevation = true;
+    lastElevationCheckTick = now;
+    lastElevationResult = false;
+
+    var window = GetForegroundWindow();
+    if (window == IntPtr.Zero) return false;
+    uint processId;
+    GetWindowThreadProcessId(window, out processId);
+    if (processId == 0) return false;
+    var handle = OpenProcess(PROCESS_QUERY_INFORMATION, false, processId);
+    if (handle != IntPtr.Zero) {
+      CloseHandle(handle);
+      return false;
+    }
+    lastElevationResult = Marshal.GetLastWin32Error() == ERROR_ACCESS_DENIED;
+    return lastElevationResult;
+  }
+
+  /**
+   * Why injected input would go nowhere right now, or null when it will land.
+   *
+   * Checked before every event rather than inferred from a failure, because
+   * the secure-desktop case produces no failure at all: SendInput happily
+   * succeeds against our own desktop while the user is looking at another one.
+   * Without this the events vanish and the session looks broken for no
+   * visible reason.
+   */
+  public static string BlockReason() {
+    var desktop = InputDesktopName();
+    if (desktop == null) return "secure-desktop";
+    if (!string.Equals(desktop, "Default", StringComparison.OrdinalIgnoreCase)) {
+      return "secure-desktop";
+    }
+    if (ForegroundOutranksUs()) return "elevated-window";
+    return null;
+  }
+
+  [DllImport("user32.dll", EntryPoint = "SystemParametersInfoA")]
+  private static extern bool SystemParametersInfo(uint action, uint param, int[] data, uint winIni);
+
+  private const uint SPI_GETMOUSE = 0x0003;
+  private const uint SPI_SETMOUSE = 0x0004;
+  private static int[] savedMouseAcceleration = null;
+
+  /**
+   * Suspend "Enhance pointer precision" while the pointer is captive.
+   *
+   * Windows applies its acceleration curve to injected relative motion, and the
+   * curve is savage at both ends. Measured on this host with the default
+   * settings (thresholds 6/10, accel on): a 1px delta is swallowed entirely, a
+   * 2px delta is swallowed entirely, and a 120px delta is delivered as 302px —
+   * a 2.5x amplification. Fine aim becomes impossible and every flick overshoots,
+   * which is the "fling" that makes shooters unplayable. Disabled, the same
+   * sweep is 1:1 at every magnitude.
+   *
+   * The winIni argument is deliberately 0: without SPIF_UPDATEINIFILE the change is
+   * runtime-only, so even a hard kill of this helper cannot outlive the session
+   * — the user's saved preference is untouched on disk and returns at next
+   * logon.
+   */
+  private static void SetRelativePointerMode(bool relative) {
+    if (relative) {
+      if (savedMouseAcceleration != null) return;
+      var current = new int[3];
+      if (!SystemParametersInfo(SPI_GETMOUSE, 0, current, 0)) return;
+      savedMouseAcceleration = current;
+      SystemParametersInfo(SPI_SETMOUSE, 0, new int[3] { 0, 0, 0 }, 0);
+      return;
+    }
+    if (savedMouseAcceleration == null) return;
+    SystemParametersInfo(SPI_SETMOUSE, 0, savedMouseAcceleration, 0);
+    savedMouseAcceleration = null;
+  }
+
+  /** Restore the user's pointer settings; safe to call when already restored. */
+  public static void RestorePointerMode() {
+    SetRelativePointerMode(false);
+  }
+
+  /**
+   * Whether some app has taken the cursor.
+   *
+   * Windows exposes no "is the pointer captured" query, but a hidden cursor is
+   * the signal that always accompanies it: a game entering mouse-look hides
+   * the pointer and switches to reading raw deltas. CURSOR_SHOWING clearing is
+   * that transition, and it is what the controller mirrors into pointer lock.
+   */
+  public static bool CursorLocked() {
+    var info = new CURSORINFO();
+    info.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (!GetCursorInfo(ref info)) return false;
+    return (info.flags & CURSOR_SHOWING) == 0;
+  }
+
+  /**
+   * Extended-scan-code keys. These share a scan code with a numpad key and are
+   * only told apart by the E0 prefix, so omitting the flag turns Arrow keys
+   * into numpad digits and right-hand modifiers into their left twins.
+   */
+  private static bool IsExtendedKey(ushort virtualKey) {
+    switch (virtualKey) {
+      case 0x21: // PageUp
+      case 0x22: // PageDown
+      case 0x23: // End
+      case 0x24: // Home
+      case 0x25: // ArrowLeft
+      case 0x26: // ArrowUp
+      case 0x27: // ArrowRight
+      case 0x28: // ArrowDown
+      case 0x2C: // PrintScreen
+      case 0x2D: // Insert
+      case 0x2E: // Delete
+      case 0x5B: // MetaLeft
+      case 0x5C: // MetaRight
+      case 0x6F: // NumpadDivide
+      case 0x90: // NumLock
+      case 0xA3: // ControlRight
+      case 0xA5: // AltRight — also AltGr, which layouts read as Ctrl+Alt
+        return true;
+      default:
+        return false;
+    }
+  }
+
   private static void SendChecked(INPUT input, string description) {
     var sent = SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
     if (sent == 1) return;
     var code = Marshal.GetLastWin32Error();
+    // A refusal means something outranked us between the pre-flight check and
+    // this call — a UAC prompt opening is the usual race. That is a condition
+    // to wait out, not a fault, so it is raised as its own type and the driver
+    // loop reports it as blocked rather than failing the session.
+    if (code == ERROR_ACCESS_DENIED) {
+      throw new UnauthorizedAccessException("Windows blocked remote " + description + ".");
+    }
     var suffix = code == 0 ? "" : " Windows error " + code + ".";
     throw new InvalidOperationException(
       "Windows rejected remote " + description +
@@ -242,6 +541,9 @@ public static class SollaRemoteInput {
   }
 
   public static void Pointer(double normalizedX, double normalizedY, uint flags, int data) {
+    // An absolute move means the cursor is free again, so the user's own
+    // acceleration preference must come back. No-op when already restored.
+    SetRelativePointerMode(false);
     var input = new INPUT {
       type = INPUT_MOUSE,
       data = new InputUnion {
@@ -256,6 +558,35 @@ public static class SollaRemoteInput {
       }
     };
     SendChecked(input, "pointer input");
+  }
+
+  /**
+   * Relative motion, used while the remote app holds the pointer captive.
+   *
+   * An absolute warp is the wrong primitive for a game in mouse-look: the game
+   * reads the delta between successive cursor positions, so a warp across the
+   * screen reads as one enormous flick and the view spins. Sending the delta
+   * itself keeps the magnitude the controller intended, and omitting
+   * MOUSEEVENTF_ABSOLUTE keeps Windows from re-anchoring the cursor.
+   */
+  public static void MoveRelative(int dx, int dy) {
+    // Entering relative motion is the signal that the pointer is captive.
+    SetRelativePointerMode(true);
+    if (dx == 0 && dy == 0) return;
+    var input = new INPUT {
+      type = INPUT_MOUSE,
+      data = new InputUnion {
+        mouse = new MOUSEINPUT {
+          dx = dx,
+          dy = dy,
+          mouseData = 0,
+          flags = MOUSEEVENTF_MOVE,
+          time = 0,
+          extraInfo = UIntPtr.Zero
+        }
+      }
+    };
+    SendChecked(input, "relative pointer input");
   }
 
   public static void Mouse(uint flags, int data) {
@@ -276,13 +607,22 @@ public static class SollaRemoteInput {
   }
 
   public static void Key(ushort virtualKey, bool down) {
+    var scanCode = (ushort)MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC);
+    var flags = down ? 0u : KEYEVENTF_KEYUP;
+    if (scanCode != 0) {
+      // Carry the scan code so DirectInput/Raw Input games see a real key. The
+      // virtual key stays populated: Windows still derives WM_KEYDOWN from it
+      // for ordinary windows, so desktop apps are unaffected.
+      flags |= KEYEVENTF_SCANCODE;
+      if (IsExtendedKey(virtualKey)) flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     var input = new INPUT {
       type = INPUT_KEYBOARD,
       data = new InputUnion {
         keyboard = new KEYBDINPUT {
           virtualKey = virtualKey,
-          scanCode = 0,
-          flags = down ? 0u : KEYEVENTF_KEYUP,
+          scanCode = scanCode,
+          flags = flags,
           time = 0,
           extraInfo = UIntPtr.Zero
         }
@@ -294,8 +634,14 @@ public static class SollaRemoteInput {
 '@
 
 $keyCodes = @{
-  Backspace=0x08; Tab=0x09; Enter=0x0D; ShiftLeft=0x10; ShiftRight=0x10;
-  ControlLeft=0x11; ControlRight=0x11; AltLeft=0x12; AltRight=0x12;
+  Backspace=0x08; Tab=0x09; Enter=0x0D;
+  # Side-specific virtual keys, not the ambiguous VK_SHIFT/CONTROL/MENU. Input
+  # is injected by scan code so DirectInput games see a real key, and the scan
+  # code is derived from the virtual key — so the generic form silently turns
+  # every right-hand modifier into its left twin, and AltGr stops working on
+  # layouts that need it.
+  ShiftLeft=0xA0; ShiftRight=0xA1;
+  ControlLeft=0xA2; ControlRight=0xA3; AltLeft=0xA4; AltRight=0xA5;
   Pause=0x13; CapsLock=0x14; Escape=0x1B; Space=0x20; PageUp=0x21;
   PageDown=0x22; End=0x23; Home=0x24; ArrowLeft=0x25; ArrowUp=0x26;
   ArrowRight=0x27; ArrowDown=0x28; PrintScreen=0x2C; Insert=0x2D;
@@ -306,7 +652,7 @@ $keyCodes = @{
   KeyL=0x4C; KeyM=0x4D; KeyN=0x4E; KeyO=0x4F; KeyP=0x50; KeyQ=0x51;
   KeyR=0x52; KeyS=0x53; KeyT=0x54; KeyU=0x55; KeyV=0x56; KeyW=0x57;
   KeyX=0x58; KeyY=0x59; KeyZ=0x5A; MetaLeft=0x5B; MetaRight=0x5C;
-  PrimaryLeft=0x11; PrimaryRight=0x11; Numpad0=0x60; Numpad1=0x61;
+  PrimaryLeft=0xA2; PrimaryRight=0xA3; Numpad0=0x60; Numpad1=0x61;
   Numpad2=0x62; Numpad3=0x63; Numpad4=0x64; Numpad5=0x65;
   Numpad6=0x66; Numpad7=0x67; Numpad8=0x68; Numpad9=0x69;
   NumpadMultiply=0x6A; NumpadAdd=0x6B; NumpadSubtract=0x6D;
@@ -337,6 +683,23 @@ function Invoke-RemoteInput($eventData) {
       0
     } else {
       Get-MouseFlag $eventData.button $eventData.action
+    }
+    # Relative motion when the controller is in pointer lock. Button events
+    # still ride the relative path so a click never warps the aim point: with
+    # the cursor captive, x/y describe a position the game does not use.
+    $hasDelta = ($null -ne $eventData.dx) -or ($null -ne $eventData.dy)
+    if ($hasDelta) {
+      $dx = 0
+      $dy = 0
+      if ($null -ne $eventData.dx) { $dx = [int][Math]::Round([double]$eventData.dx) }
+      if ($null -ne $eventData.dy) { $dy = [int][Math]::Round([double]$eventData.dy) }
+      [SollaRemoteInput]::MoveRelative($dx, $dy)
+      if ($flag -ne 0) { [SollaRemoteInput]::Mouse([uint32]$flag, 0) }
+      if ($eventData.action -ne 'move') {
+        if ($eventData.action -eq 'down') { $pressedButtons[$eventData.button] = $true }
+        else { $pressedButtons.Remove([string]$eventData.button) }
+      }
+      return
     }
     [SollaRemoteInput]::Pointer(
       [double]$eventData.x,
@@ -377,15 +740,60 @@ function Reset-RemoteInput {
   }
   $pressedKeys.Clear()
   $pressedButtons.Clear()
+  [SollaRemoteInput]::RestorePointerMode()
+}
+
+# True while the host desktop is unreachable, so the first event that gets
+# through again knows it has to clean up after the outage.
+$script:wasBlocked = $false
+
+function Resume-AfterBlock {
+  if (-not $script:wasBlocked) { return }
+  # Anything held when input was taken away is still physically down over
+  # there, and the controller sent its key-ups into the void meanwhile. Release
+  # everything before resuming so the desktop does not come back with a stuck
+  # modifier.
+  Reset-RemoteInput
+  $script:wasBlocked = $false
 }
 
 while (($line = [Console]::In.ReadLine()) -ne $null) {
   $command = $null
   try {
     $command = $line | ConvertFrom-Json
-    if ($command.kind -eq 'reset') { Reset-RemoteInput }
-    else { Invoke-RemoteInput $command.input }
+    if ($command.kind -eq 'reset') {
+      Reset-RemoteInput
+      $script:wasBlocked = $false
+      [Console]::Out.WriteLine((@{ id = $command.id; ok = $true } | ConvertTo-Json -Compress))
+      continue
+    }
+    if ($command.kind -eq 'cursor') {
+      # The lock poll doubles as the recovery detector: it keeps running while
+      # the desktop is unreachable, so the session learns that input came back
+      # even if nobody is typing.
+      $blocked = [SollaRemoteInput]::BlockReason()
+      $locked = [SollaRemoteInput]::CursorLocked()
+      $reply = @{ id = $command.id; ok = $true; locked = $locked }
+      if ($null -ne $blocked) { $reply.blocked = $blocked }
+      [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
+      continue
+    }
+
+    $blocked = [SollaRemoteInput]::BlockReason()
+    if ($null -ne $blocked) {
+      # Injecting now would post the event to our own desktop, which nobody is
+      # looking at. Drop it and report the condition; this is not a failure.
+      $script:wasBlocked = $true
+      [Console]::Out.WriteLine((@{ id = $command.id; ok = $true; blocked = $blocked } | ConvertTo-Json -Compress))
+      continue
+    }
+    Resume-AfterBlock
+    Invoke-RemoteInput $command.input
     [Console]::Out.WriteLine((@{ id = $command.id; ok = $true } | ConvertTo-Json -Compress))
+  } catch [System.UnauthorizedAccessException] {
+    $script:wasBlocked = $true
+    $id = if ($null -ne $command) { $command.id } else { -1 }
+    [Console]::Out.WriteLine((@{ id = $id; ok = $true; blocked = 'elevated-window' } | ConvertTo-Json -Compress))
   } catch {
     $id = if ($null -ne $command) { $command.id } else { -1 }
     [Console]::Out.WriteLine((@{ id = $id; ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress))
@@ -394,14 +802,48 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 Reset-RemoteInput
 `;
 
+/**
+ * A host condition that suspends input without breaking anything.
+ *
+ * Mirrors `RemoteControlHostStatusReason` in the contracts package. Kept as a
+ * plain union here because the helper protocol is process-local and must stay
+ * readable from the platform scripts that produce these strings.
+ */
+export type RemoteInputBlockReason = "secure-desktop" | "elevated-window" | "secure-input";
+
+const REMOTE_INPUT_BLOCK_REASONS: ReadonlySet<string> = new Set<RemoteInputBlockReason>([
+  "secure-desktop",
+  "elevated-window",
+  "secure-input",
+]);
+
+function asBlockReason(value: unknown): RemoteInputBlockReason | undefined {
+  return typeof value === "string" && REMOTE_INPUT_BLOCK_REASONS.has(value)
+    ? (value as RemoteInputBlockReason)
+    : undefined;
+}
+
+export interface RemoteInputSendResult {
+  /** False when the OS is currently refusing input; the event was dropped. */
+  readonly delivered: boolean;
+  readonly blocked?: RemoteInputBlockReason;
+}
+
+export interface RemoteInputHostState {
+  readonly locked: boolean;
+  readonly blocked?: RemoteInputBlockReason;
+}
+
 interface RemoteInputReply {
   readonly id: number;
   readonly ok: boolean;
   readonly error?: string;
+  readonly locked?: boolean;
+  readonly blocked?: string;
 }
 
 interface PendingCommand {
-  readonly resolve: () => void;
+  readonly resolve: (reply: RemoteInputReply) => void;
   readonly reject: (cause: Error) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
 }
@@ -464,17 +906,53 @@ export class RemoteInputController {
     this.platform = platform;
   }
 
-  send(input: DesktopRemoteControlInput["input"]): Promise<void> {
-    return this.sendCommand({ kind: "input", input });
+  /**
+   * Injects one event, reporting rather than throwing when the OS is refusing
+   * input.
+   *
+   * A UAC prompt, the lock screen, or an elevated foreground window all make
+   * injection impossible for as long as they are up, and all of them clear on
+   * their own. Surfacing that as a value keeps callers from mistaking a normal,
+   * self-healing condition for a broken session.
+   */
+  async send(input: DesktopRemoteControlInput["input"]): Promise<RemoteInputSendResult> {
+    const reply = await this.sendCommand({ kind: "input", input });
+    const blocked = asBlockReason(reply.blocked);
+    return blocked ? { delivered: false, blocked } : { delivered: true };
   }
 
-  probe(): Promise<void> {
-    return this.sendCommand({ kind: "reset" });
+  async probe(): Promise<void> {
+    await this.sendCommand({ kind: "reset" });
   }
 
-  reset(): Promise<void> {
-    if (!this.child || this.child.exitCode !== null) return Promise.resolve();
-    return this.sendCommand({ kind: "reset" });
+  async reset(): Promise<void> {
+    if (!this.child || this.child.exitCode !== null) return;
+    await this.sendCommand({ kind: "reset" });
+  }
+
+  /**
+   * Whether the host's cursor is currently captured by some app.
+   *
+   * Rides the already-running helper rather than spawning anything: the
+   * controller polls this while a session is live, and a per-poll process
+   * launch would cost more than the frame it is attached to.
+   */
+  async readPointerLock(): Promise<boolean> {
+    return (await this.readHostState()).locked;
+  }
+
+  /**
+   * Cursor capture and input availability in one round trip.
+   *
+   * The poll that already runs for pointer lock is also the only thing still
+   * talking to the host while input is blocked, so it carries the recovery
+   * signal — an idle session would otherwise never notice the UAC prompt being
+   * dismissed.
+   */
+  async readHostState(): Promise<RemoteInputHostState> {
+    const reply = await this.sendCommand({ kind: "cursor" });
+    const blocked = asBlockReason(reply.blocked);
+    return { locked: reply.locked === true, ...(blocked ? { blocked } : {}) };
   }
 
   async dispose(): Promise<void> {
@@ -508,7 +986,7 @@ export class RemoteInputController {
       if (!pending) return;
       clearTimeout(pending.timeout);
       this.pending.delete(reply.id);
-      if (reply.ok) pending.resolve();
+      if (reply.ok) pending.resolve(reply);
       else pending.reject(new Error(reply.error?.trim() || "The host rejected remote input."));
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
@@ -536,11 +1014,12 @@ export class RemoteInputController {
   private sendCommand(
     command:
       | { readonly kind: "input"; readonly input: DesktopRemoteControlInput["input"] }
-      | { readonly kind: "reset" },
-  ): Promise<void> {
+      | { readonly kind: "reset" }
+      | { readonly kind: "cursor" },
+  ): Promise<RemoteInputReply> {
     const child = this.ensureChild();
     const id = this.nextCommandId++;
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<RemoteInputReply>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error("The host did not acknowledge remote input in time."));

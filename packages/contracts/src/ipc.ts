@@ -44,7 +44,7 @@ import type {
   TerminalWriteInput,
 } from "./terminal.ts";
 import * as Schema from "effect/Schema";
-import { RemoteControlInput } from "./remoteControl.ts";
+import { RemoteControlHostStatusReason, RemoteControlInput } from "./remoteControl.ts";
 import type {
   DiscoveredLocalServerList,
   PreviewCloseInput,
@@ -1044,6 +1044,27 @@ export const DesktopRemoteControlInputSchema = Schema.Struct({
 });
 export type DesktopRemoteControlInput = typeof DesktopRemoteControlInputSchema.Type;
 
+/**
+ * Outcome of one injected event.
+ *
+ * `blocked` is a normal, self-clearing host condition — a UAC prompt, the lock
+ * screen, an elevated foreground window, or macOS secure event input — during
+ * which the operating system will not deliver synthetic input to anyone. It is
+ * reported as a value rather than an error precisely so callers stop treating
+ * it as a session failure.
+ */
+export const DesktopRemoteControlInputResultSchema = Schema.Struct({
+  delivered: Schema.Boolean,
+  blocked: Schema.optional(RemoteControlHostStatusReason),
+});
+export type DesktopRemoteControlInputResult = typeof DesktopRemoteControlInputResultSchema.Type;
+
+export const DesktopRemoteControlHostStateSchema = Schema.Struct({
+  locked: Schema.Boolean,
+  blocked: Schema.optional(RemoteControlHostStatusReason),
+});
+export type DesktopRemoteControlHostState = typeof DesktopRemoteControlHostStateSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
@@ -1111,8 +1132,16 @@ export interface DesktopBridge {
     input: DesktopRemoteControlCaptureInput,
   ) => Promise<DesktopRemoteControlFrame>;
   listRemoteControlCaptureSources: () => Promise<DesktopRemoteControlCaptureSources>;
-  sendRemoteControlInput: (payload: DesktopRemoteControlInput) => Promise<void>;
+  sendRemoteControlInput: (
+    payload: DesktopRemoteControlInput,
+  ) => Promise<DesktopRemoteControlInputResult>;
   resetRemoteControlInput: () => Promise<void>;
+  /**
+   * Whether an app on the host has captured the cursor. Mirrored into browser
+   * pointer lock on the controller so mouse-look works and the two cursors do
+   * not diverge.
+   */
+  readRemoteControlPointerLock: () => Promise<DesktopRemoteControlHostState>;
   startFileDrag: (path: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;

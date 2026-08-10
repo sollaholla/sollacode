@@ -17,6 +17,7 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
+  resolveAutoResumeStartedAt,
   resolveSidebarV2Status,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
@@ -600,6 +601,40 @@ describe("isContextMenuPointerDown", () => {
         isMac: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveAutoResumeStartedAt", () => {
+  const queuedAt = "2026-08-07T03:11:47.000Z";
+
+  it("suppresses the auto-resume stamp while the thread runs its own turn", () => {
+    // The scheduler surfaces a queued successor over the executing obligation,
+    // so a startup resume can stay pending for a live turn's whole duration.
+    // Observed 2026-08-07: ten and a half hours of "Auto-resuming 10h 42m" on a
+    // thread that was simply working.
+    expect(
+      resolveAutoResumeStartedAt({ ownStatus: "working", startupResumeStartedAt: queuedAt }),
+    ).toBe(null);
+  });
+
+  it("keeps the stamp for a row that is only in motion because work is queued", () => {
+    expect(
+      resolveAutoResumeStartedAt({ ownStatus: "ready", startupResumeStartedAt: queuedAt }),
+    ).toBe(queuedAt);
+  });
+
+  it("does not invent a stamp when nothing is queued", () => {
+    for (const ownStatus of ["ready", "working", "approval", "input", "failed"] as const) {
+      expect(resolveAutoResumeStartedAt({ ownStatus, startupResumeStartedAt: null })).toBe(null);
+    }
+  });
+
+  it("leaves user-blocking states unlabelled rather than claiming progress", () => {
+    // Approval and input own the row: the thread is stopped waiting on a human,
+    // and a queued resume behind that must not read as motion.
+    expect(
+      resolveAutoResumeStartedAt({ ownStatus: "approval", startupResumeStartedAt: queuedAt }),
+    ).toBe(queuedAt);
   });
 });
 

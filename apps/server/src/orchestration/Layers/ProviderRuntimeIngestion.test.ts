@@ -696,6 +696,75 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("releases the thread when usage is exhausted and no failover target has quota", async () => {
+    // Observed 2026-08-06: with every provider spent, the handler recorded the
+    // "usage limit reached" activity and returned, leaving the session on
+    // `running`. The silence watchdog then restarted the dead turn every ~4m36s
+    // and the thread kept a working spinner nobody could clear. The row must be
+    // released so the spinner stops and nothing restarts it.
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-no-target"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "account.rate-limits.updated" as const,
+      eventId: asEventId("evt-codex-limit-no-target"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.activities.some((activity) => activity.kind === "provider.failover.unavailable") &&
+        entry.session?.status === "error",
+      10_000,
+    );
+
+    // Released: no active turn, and a status the spinner and the watchdog both
+    // read as "not working".
+    expect(thread.session?.activeTurnId).toBeNull();
+    expect(thread.session?.lastError).toContain("usage limit reached");
+    // Nothing was started anywhere else — there was nowhere to go.
+    expect(harness.startSessionCalls).toHaveLength(0);
+  });
+
   it("fails over exactly once from an exhausted active provider and hands off bounded JSON", async () => {
     const harness = await createHarness({
       providers: [

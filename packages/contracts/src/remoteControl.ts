@@ -130,6 +130,10 @@ export const RemoteControlHostPublishFrameInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
   frame: RemoteControlFrame,
+  // Whether an app on the host currently has the cursor captured. Rides the
+  // publish call the host is already making every frame rather than adding a
+  // channel of its own; the broker turns changes into `pointer-lock-changed`.
+  pointerLocked: Schema.optionalKey(Schema.Boolean),
 });
 export type RemoteControlHostPublishFrameInput = typeof RemoteControlHostPublishFrameInput.Type;
 
@@ -167,9 +171,68 @@ export const RemoteControlHostPublishVideoChunkInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
   chunk: RemoteControlVideoChunk,
+  // Whether an app on the host currently has the cursor captured. Rides the
+  // publish call the host is already making every frame rather than adding a
+  // channel of its own; the broker turns changes into `pointer-lock-changed`.
+  pointerLocked: Schema.optionalKey(Schema.Boolean),
 });
 export type RemoteControlHostPublishVideoChunkInput =
   typeof RemoteControlHostPublishVideoChunkInput.Type;
+
+/**
+ * Host permission failures, shared so the controller can tell them apart from
+ * conditions that clear on their own.
+ *
+ * These two need a human to change a system setting and will never recover by
+ * retrying, which is exactly the distinction the reconnect logic turns on — so
+ * the text lives here rather than being matched by keyword on either side.
+ */
+export const REMOTE_CONTROL_SCREEN_PERMISSION_HELP =
+  "Solla Code needs Screen Recording permission to share this Mac. Open System Settings → Privacy & Security → Screen Recording, enable Solla Code, then completely quit and reopen Solla Code.";
+export const REMOTE_CONTROL_ACCESSIBILITY_PERMISSION_HELP =
+  "Solla Code needs Accessibility permission to control this Mac. Open System Settings → Privacy & Security → Accessibility, enable Solla Code, then try remote control again.";
+
+/**
+ * Why the host cannot currently drive its own desktop.
+ *
+ * These are conditions the operating system imposes on *any* injected input or
+ * capture, not faults in the session, and every one of them clears on its own.
+ * Treating them as session failures is what used to end a stream the moment a
+ * UAC prompt appeared.
+ *
+ * - `secure-desktop`: Windows moved input to another desktop — a UAC consent
+ *   prompt, the lock screen, or Ctrl+Alt+Del. Nothing outside that desktop can
+ *   see it or type into it, by design; it must be answered at the machine.
+ * - `elevated-window`: the foreground window runs at a higher integrity level
+ *   than Solla Code, so UIPI silently discards injected input.
+ * - `secure-input`: macOS has secure event input enabled, which a password
+ *   field or authorization dialog turns on; synthetic key events are dropped.
+ * - `capture-interrupted`: the screen-capture pipeline dropped and is being
+ *   rebuilt. A desktop switch invalidates the duplication surface, so this is
+ *   normally what the viewer sees while a UAC prompt is up.
+ */
+export const RemoteControlHostStatusReason = Schema.Literals([
+  "secure-desktop",
+  "elevated-window",
+  "secure-input",
+  "capture-interrupted",
+]);
+export type RemoteControlHostStatusReason = typeof RemoteControlHostStatusReason.Type;
+
+export const RemoteControlHostStatus = Schema.Struct({
+  state: Schema.Literals(["ok", "interrupted"]),
+  reason: Schema.optional(RemoteControlHostStatusReason),
+  detail: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(400))),
+});
+export type RemoteControlHostStatus = typeof RemoteControlHostStatus.Type;
+
+export const RemoteControlHostReportStatusInput = Schema.Struct({
+  clientId: RemoteControlClientId,
+  connectionId: RemoteControlConnectionId,
+  sessionId: RemoteControlSessionId,
+  status: RemoteControlHostStatus,
+});
+export type RemoteControlHostReportStatusInput = typeof RemoteControlHostReportStatusInput.Type;
 
 export const RemoteControlHostEndInput = Schema.Struct({
   clientId: RemoteControlClientId,
@@ -189,6 +252,23 @@ const RemoteControlWheelDelta = Schema.Number.check(
   Schema.isBetween({ minimum: -2_000, maximum: 2_000 }),
 );
 
+/**
+ * One frame of relative pointer motion, in remote-screen pixels.
+ *
+ * Absolute coordinates cannot express mouse-look. A game reads the delta
+ * between cursor samples, so replaying an absolute position warps the cursor
+ * and the game interprets the warp as one huge flick — the "fling" that makes
+ * shooters unplayable over remote control. While the remote app holds the
+ * pointer captive the controller sends deltas instead, and the host injects
+ * them as relative motion.
+ *
+ * Bounded so a malicious or glitching controller cannot hurl the cursor across
+ * the desktop in a single event; the controller splits anything larger.
+ */
+const RemoteControlPointerDelta = Schema.Number.check(
+  Schema.isBetween({ minimum: -4_000, maximum: 4_000 }),
+);
+
 export const RemoteControlInput = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("pointer"),
@@ -196,6 +276,11 @@ export const RemoteControlInput = Schema.Union([
     x: RemoteControlNormalizedCoordinate,
     y: RemoteControlNormalizedCoordinate,
     button: RemoteControlPointerButton,
+    // Present only while the controller is in pointer lock. When set, the host
+    // injects relative motion and ignores x/y, which are then just a stale
+    // best-effort position kept for older hosts that cannot move relatively.
+    dx: Schema.optionalKey(RemoteControlPointerDelta),
+    dy: Schema.optionalKey(RemoteControlPointerDelta),
   }),
   Schema.Struct({
     type: Schema.Literal("wheel"),
@@ -275,6 +360,22 @@ export const RemoteControlControllerStreamEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("video-chunk"),
     chunk: RemoteControlVideoChunk,
+  }),
+  // The remote app took or released the pointer (a game entering mouse-look
+  // hides and captures the cursor). The controller mirrors it into browser
+  // pointer lock so the local cursor stops travelling across the viewer while
+  // the remote one is captive, and so the deltas the game wants are available
+  // at all. Escape releases pointer lock, which the browser handles natively.
+  Schema.Struct({
+    type: Schema.Literal("pointer-lock-changed"),
+    locked: Schema.Boolean,
+  }),
+  // The host hit — or recovered from — a condition that suspends input or
+  // capture without ending the session. The viewer shows this as a transient
+  // notice; the session stays approved and resumes on its own.
+  Schema.Struct({
+    type: Schema.Literal("host-status"),
+    status: RemoteControlHostStatus,
   }),
 ]);
 export type RemoteControlControllerStreamEvent = typeof RemoteControlControllerStreamEvent.Type;

@@ -5,12 +5,14 @@ import type {
   EnvironmentId,
   RemoteControlDisplay,
   RemoteControlHost,
+  RemoteControlHostStatus,
+  RemoteControlHostStatusReason,
   RemoteControlHostStreamEvent,
   RemoteControlSession,
 } from "@t3tools/contracts";
 import { REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH } from "@t3tools/contracts";
 import { MonitorUpIcon, ShieldCheckIcon } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
@@ -24,6 +26,13 @@ import {
   stopStream,
   supportsRemoteControlVideo,
 } from "./remoteControlEncoder";
+import {
+  classifyCaptureFailure,
+  classifyInputFailure,
+  isSameHostStatus,
+  recoveryDelayMs,
+  REMOTE_CONTROL_RECOVERY_GIVE_UP_MS,
+} from "./remoteControlHostStatus";
 import { createRemoteControlVideoPublishQueue } from "./remoteControlVideoPublishQueue";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
@@ -85,6 +94,16 @@ export function RemoteControlCoordinator() {
 function RemoteControlHostCoordinator(props: { readonly environmentId: EnvironmentId }) {
   const { environmentId } = props;
   const bridge = window.desktopBridge!;
+  /**
+   * Latest cursor-capture state, refreshed on a timer rather than per frame.
+   *
+   * Every publish call stamps this so the controller learns about a game
+   * grabbing the pointer without a channel of its own. Polling at 10Hz keeps
+   * the helper round-trip off the frame path entirely — at 60fps a synchronous
+   * query per frame would gate encoding on IPC latency, and lock transitions
+   * are a human-scale event that does not need frame-accurate timing.
+   */
+  const pointerLockedRef = useRef(false);
   const generatedId = useId();
   const clientId = `desktop-${generatedId}`;
   const host = useMemo<RemoteControlHost>(
@@ -118,6 +137,10 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     label: "stop remote control",
     reportFailure: false,
   });
+  const reportHostStatus = useAtomCommand(remoteControlEnvironment.reportHostStatus, {
+    label: "remote control host status",
+    reportFailure: false,
+  });
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [active, setActive] = useState<ActiveShare | null>(null);
   const [isResponding, setIsResponding] = useState(false);
@@ -133,6 +156,81 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   // Set by the encoder effect so an incoming selection can restart capture
   // without this component re-rendering the whole session.
   const displaySelectionListenerRef = useRef<(() => void) | null>(null);
+  // Last status actually sent, so a condition that repeats on every dropped
+  // event — which is what a UAC prompt does — is reported once.
+  const lastHostStatusRef = useRef<RemoteControlHostStatus | null>(null);
+  /**
+   * The two conditions are tracked separately and reduced to one status,
+   * rather than each path reporting its own.
+   *
+   * A UAC prompt causes both at the same time — input is refused and the
+   * capture surface is lost — so last-writer-wins would have the notice
+   * flapping between two descriptions of the same prompt. The input block is
+   * the more specific and more actionable of the two, so it wins.
+   */
+  const inputBlockRef = useRef<RemoteControlHostStatusReason | null>(null);
+  const captureInterruptedRef = useRef(false);
+
+  /**
+   * Tells the controller that the host is temporarily unable to comply, or
+   * that it can again. Never fails the session: this is the channel that keeps
+   * a stream alive through a condition it used to die on.
+   */
+  const syncHostStatus = useCallback(() => {
+    const current = activeRef.current;
+    if (!current) return;
+    const reason =
+      inputBlockRef.current ?? (captureInterruptedRef.current ? "capture-interrupted" : null);
+    const status: RemoteControlHostStatus = reason
+      ? { state: "interrupted", reason }
+      : { state: "ok" };
+    if (isSameHostStatus(lastHostStatusRef.current, status)) return;
+    lastHostStatusRef.current = status;
+    void reportHostStatus({
+      environmentId,
+      input: {
+        clientId,
+        connectionId: current.connectionId,
+        sessionId: current.session.sessionId,
+        status,
+      },
+    });
+  }, [clientId, environmentId, reportHostStatus]);
+
+  useEffect(() => {
+    if (!active) {
+      pointerLockedRef.current = false;
+      // A new session must not inherit the previous one's reported condition,
+      // or its first genuine outage would be de-duplicated away.
+      lastHostStatusRef.current = null;
+      inputBlockRef.current = null;
+      captureInterruptedRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await bridge.readRemoteControlPointerLock();
+        if (cancelled) return;
+        pointerLockedRef.current = result.locked;
+        // This poll is the only thing still reaching the host while its input
+        // is blocked, so it owns the recovery edge: nobody typing during a UAC
+        // prompt would otherwise leave the viewer stuck on the warning.
+        inputBlockRef.current = result.blocked ?? null;
+        syncHostStatus();
+      } catch {
+        // An unavailable signal must not disturb the stream; absent lock state
+        // just leaves the controller in absolute-pointer mode.
+      }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 100);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      pointerLockedRef.current = false;
+    };
+  }, [active, bridge, syncHostStatus]);
 
   useEffect(() => {
     const event: RemoteControlHostStreamEvent | null = hostEvents.data;
@@ -159,12 +257,21 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             ? { displayId: activeDisplayIdRef.current }
             : {}),
         })
+        .then((result) => {
+          // The host refusing input is a condition, not a failure: a UAC
+          // prompt, the lock screen, or an elevated window owns the desktop
+          // for a while and then gives it back. Say so and keep the session.
+          inputBlockRef.current = result.blocked ?? null;
+          syncHostStatus();
+        })
         .catch((cause: unknown) => {
-          const message =
-            cause instanceof Error && cause.message.trim()
-              ? cause.message
-              : "Solla Code could not apply input from the controlling device.";
-          setCaptureError(message);
+          const failure = classifyInputFailure(cause);
+          if (failure.kind === "transient") {
+            captureInterruptedRef.current = true;
+            syncHostStatus();
+            return;
+          }
+          setCaptureError(failure.message);
           setActive((value) => (value?.session.sessionId === event.sessionId ? null : value));
           void bridge.resetRemoteControlInput();
           void endByHost({
@@ -173,7 +280,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
               clientId,
               connectionId: event.connectionId,
               sessionId: event.sessionId,
-              failureReason: message,
+              failureReason: failure.message,
             },
           });
         });
@@ -237,7 +344,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         current?.session.sessionId === event.session.sessionId ? null : current,
       );
     }
-  }, [bridge, clientId, endByHost, environmentId, hostEvents.data, respond]);
+  }, [bridge, clientId, endByHost, environmentId, hostEvents.data, respond, syncHostStatus]);
 
   // Video path: a live MediaStream encoded by the platform codec. Falls back to
   // the JPEG loop below when this runtime cannot encode video, or when the
@@ -249,17 +356,30 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     let stream: MediaStream | null = null;
     let recorder: MediaRecorder | null = null;
     let restartTimer: number | null = null;
+    let recoveryTimer: number | null = null;
+    let recoveryAttempt = 0;
+    // When the current outage began, so a host that never comes back is still
+    // eventually given up on.
+    let outageStartedAt: number | null = null;
+    // Identifies the capture attempt an event belongs to. A recorder we tore
+    // down ourselves fires its own stop/error afterwards, and without this its
+    // late events would restart capture a second time.
+    let generation = 0;
+    type PublishItem = {
+      readonly blob: Blob;
+      readonly capturedAt: string;
+      readonly displayId: string | undefined;
+      readonly isInit: boolean;
+    };
+    let publishQueue: ReturnType<typeof createRemoteControlVideoPublishQueue<PublishItem>> | null =
+      null;
     const mimeType = selectRemoteControlMimeType();
     if (!mimeType) return;
 
-    const handleFailure = (cause: unknown) => {
+    const endSession = (message: string) => {
       if (cancelled) return;
       cancelled = true;
-      publishQueue.close();
-      const message =
-        cause instanceof Error && cause.message.trim()
-          ? cause.message
-          : "Solla Code could not encode this screen.";
+      publishQueue?.close();
       setCaptureError(message);
       setActive((current) =>
         current?.session.sessionId === active.session.sessionId ? null : current,
@@ -275,47 +395,57 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       });
     };
 
-    const publishQueue = createRemoteControlVideoPublishQueue<{
-      readonly blob: Blob;
-      readonly capturedAt: string;
-      readonly displayId: string | undefined;
-      readonly isInit: boolean;
-    }>({
-      // A binary payload this large encodes to the contract's 4 MB base64
-      // ceiling. Keeping this as the total retained budget also guarantees one
-      // malformed MediaRecorder event cannot allocate an oversized base64 copy.
-      maxPendingBytes: Math.floor(REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH / 4) * 3,
-      pauseAtBytes: 512 * 1_024,
-      resumeAtBytes: 128 * 1_024,
-      sizeOf: (item) => item.blob.size,
-      publish: async ({ blob, capturedAt, displayId, isInit }) => {
-        const data = await encodeBlobToBase64(blob);
+    const stopCapture = () => {
+      generation += 1;
+      publishQueue?.close();
+      publishQueue = null;
+      try {
+        recorder?.stop();
+      } catch {
+        // A recorder already stopped by an error path throws; nothing to undo.
+      }
+      recorder = null;
+      stopStream(stream);
+      stream = null;
+    };
+
+    /**
+     * The recovery path.
+     *
+     * Windows moves the desktop out from under a capture whenever it shows a
+     * UAC prompt, which invalidates the duplication surface and ends the
+     * capture track. That used to arrive here as a fatal encoder error and end
+     * the session; it is really a pause, so capture is rebuilt on a backoff and
+     * the session is only abandoned if the host stays gone for minutes.
+     */
+    const handleCaptureIssue = (cause: unknown) => {
+      if (cancelled) return;
+      const failure = classifyCaptureFailure(cause);
+      if (failure.kind === "fatal") {
+        endSession(failure.message);
+        return;
+      }
+      const now = performance.now();
+      outageStartedAt ??= now;
+      if (now - outageStartedAt > REMOTE_CONTROL_RECOVERY_GIVE_UP_MS) {
+        endSession(failure.message);
+        return;
+      }
+      captureInterruptedRef.current = true;
+      syncHostStatus();
+      stopCapture();
+      if (recoveryTimer !== null) return;
+      recoveryTimer = window.setTimeout(() => {
+        recoveryTimer = null;
         if (cancelled) return;
-        const outcome = await publishVideoChunk({
-          environmentId,
-          input: {
-            clientId,
-            connectionId: active.connectionId,
-            chunk: {
-              sessionId: active.session.sessionId,
-              sequence: sequence++,
-              capturedAt,
-              mimeType,
-              isInit,
-              data,
-              ...(displayId !== undefined ? { displayId } : {}),
-              ...(displaysRef.current.length > 0 ? { displays: displaysRef.current } : {}),
-            },
-          },
-        });
-        if (outcome._tag === "Failure") throw commandError(outcome);
-      },
-      onError: handleFailure,
-    });
+        void startRecorder().catch(handleCaptureIssue);
+      }, recoveryDelayMs(recoveryAttempt++));
+    };
 
     const startRecorder = async () => {
+      const attempt = generation;
       const catalog = await bridge.listRemoteControlCaptureSources();
-      if (cancelled) return;
+      if (cancelled || attempt !== generation) return;
       displaysRef.current = catalog.displays;
       const requested = selectedDisplayIdRef.current;
       const match =
@@ -329,10 +459,62 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       activeDisplayIdRef.current = match.displayId;
 
       stream = await openDisplayStream(match.sourceId);
-      if (cancelled) {
+      if (cancelled || attempt !== generation) {
         stopStream(stream);
+        stream = null;
         return;
       }
+      // A capture whose surface is invalidated ends its track rather than
+      // raising anything, so without this the stream simply goes quiet and the
+      // viewer sits on a frozen frame with no explanation.
+      for (const track of stream.getVideoTracks()) {
+        track.addEventListener("ended", () => {
+          if (attempt !== generation) return;
+          handleCaptureIssue(new Error("The remote screen capture stopped."));
+        });
+      }
+
+      // Each attempt gets its own queue: a queue that has reported an error is
+      // permanently closed, so reusing it across a recovery would silently
+      // drop every chunk that followed.
+      const currentQueue = createRemoteControlVideoPublishQueue<PublishItem>({
+        // A binary payload this large encodes to the contract's 4 MB base64
+        // ceiling. Keeping this as the total retained budget also guarantees one
+        // malformed MediaRecorder event cannot allocate an oversized base64 copy.
+        maxPendingBytes: Math.floor(REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH / 4) * 3,
+        pauseAtBytes: 512 * 1_024,
+        resumeAtBytes: 128 * 1_024,
+        sizeOf: (item) => item.blob.size,
+        publish: async ({ blob, capturedAt, displayId, isInit }) => {
+          const data = await encodeBlobToBase64(blob);
+          if (cancelled || attempt !== generation) return;
+          const outcome = await publishVideoChunk({
+            environmentId,
+            input: {
+              clientId,
+              connectionId: active.connectionId,
+              pointerLocked: pointerLockedRef.current,
+              chunk: {
+                sessionId: active.session.sessionId,
+                sequence: sequence++,
+                capturedAt,
+                mimeType,
+                isInit,
+                data,
+                ...(displayId !== undefined ? { displayId } : {}),
+                ...(displaysRef.current.length > 0 ? { displays: displaysRef.current } : {}),
+              },
+            },
+          });
+          if (outcome._tag === "Failure") throw commandError(outcome);
+        },
+        onError: (cause) => {
+          if (attempt !== generation) return;
+          handleCaptureIssue(cause);
+        },
+      });
+      publishQueue = currentQueue;
+
       const currentRecorder = new MediaRecorder(stream, {
         mimeType,
         videoBitsPerSecond: REMOTE_CONTROL_VIDEO_BITS_PER_SECOND,
@@ -342,10 +524,18 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       // is the init segment the broker retains for late-joining controllers.
       let isFirstBlob = true;
       currentRecorder.addEventListener("dataavailable", (event) => {
-        if (cancelled || event.data.size === 0) return;
+        if (cancelled || attempt !== generation || event.data.size === 0) return;
+        // Real encoded output is the only proof capture recovered — `start()`
+        // returning is not, since a dead surface still starts cleanly.
+        if (outageStartedAt !== null) {
+          outageStartedAt = null;
+          recoveryAttempt = 0;
+          captureInterruptedRef.current = false;
+          syncHostStatus();
+        }
         const isInit = isFirstBlob;
         isFirstBlob = false;
-        publishQueue.enqueue(
+        currentQueue.enqueue(
           {
             blob: event.data,
             capturedAt: new Date().toISOString(),
@@ -355,9 +545,16 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
           currentRecorder,
         );
       });
-      currentRecorder.addEventListener("error", () =>
-        handleFailure(new Error("The screen encoder stopped unexpectedly.")),
-      );
+      currentRecorder.addEventListener("error", () => {
+        if (attempt !== generation) return;
+        handleCaptureIssue(new Error("The screen encoder stopped unexpectedly."));
+      });
+      // A recorder that stops on its own — rather than because we replaced it —
+      // has lost its source and needs the same rebuild.
+      currentRecorder.addEventListener("stop", () => {
+        if (attempt !== generation) return;
+        handleCaptureIssue(new Error("The screen encoder stopped unexpectedly."));
+      });
       currentRecorder.start(REMOTE_CONTROL_TIMESLICE_MS);
     };
 
@@ -369,22 +566,21 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       restartTimer = window.setTimeout(() => {
         restartTimer = null;
         if (cancelled) return;
-        recorder?.stop();
-        recorder = null;
-        stopStream(stream);
-        stream = null;
-        void startRecorder().catch(handleFailure);
+        stopCapture();
+        void startRecorder().catch(handleCaptureIssue);
       }, 0);
     };
 
     displaySelectionListenerRef.current = applyDisplaySelection;
-    void startRecorder().catch(handleFailure);
+    void startRecorder().catch(handleCaptureIssue);
 
     return () => {
       cancelled = true;
-      publishQueue.close();
+      generation += 1;
+      publishQueue?.close();
       displaySelectionListenerRef.current = null;
       if (restartTimer !== null) window.clearTimeout(restartTimer);
+      if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
       try {
         recorder?.stop();
       } catch {
@@ -392,7 +588,16 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       }
       stopStream(stream);
     };
-  }, [active, bridge, clientId, endByHost, environmentId, imageFallback, publishVideoChunk]);
+  }, [
+    active,
+    bridge,
+    clientId,
+    endByHost,
+    environmentId,
+    imageFallback,
+    publishVideoChunk,
+    syncHostStatus,
+  ]);
 
   useEffect(() => {
     // Only the fallback path runs the JPEG loop; the video encoder owns capture
@@ -411,14 +616,35 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     // flight without letting a slow link build an unbounded backlog of stale
     // frames — on a congested link, dropping to the newest frame beats queueing.
     let inFlight: Promise<void> | null = null;
+    let recoveryAttempt = 0;
+    let outageStartedAt: number | null = null;
+
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+
+    const endSession = (message: string) => {
+      setCaptureError(message);
+      setActive((current) =>
+        current?.session.sessionId === active.session.sessionId ? null : current,
+      );
+      void endByHost({
+        environmentId,
+        input: {
+          clientId,
+          connectionId: active.connectionId,
+          sessionId: active.session.sessionId,
+          failureReason: message,
+        },
+      });
+    };
 
     const run = async () => {
-      try {
-        while (true) {
-          if (cancelled || activeRef.current?.session.sessionId !== active.session.sessionId) {
-            return;
-          }
-          const startedAt = performance.now();
+      while (true) {
+        if (cancelled || activeRef.current?.session.sessionId !== active.session.sessionId) {
+          return;
+        }
+        const startedAt = performance.now();
+        try {
           const captured = await bridge.captureRemoteControlFrame({
             maxWidth: 1_280,
             jpegQuality: 58,
@@ -445,6 +671,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             input: {
               clientId,
               connectionId: active.connectionId,
+              pointerLocked: pointerLockedRef.current,
               frame: {
                 sessionId: active.session.sessionId,
                 sequence: frameSequence,
@@ -455,32 +682,40 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             if (outcome._tag === "Failure") throw commandError(outcome);
           });
 
-          const elapsed = performance.now() - startedAt;
-          // Yield to the event loop even when already behind, so input events
-          // and session updates are not starved by a saturated capture loop.
-          await new Promise<void>((resolve) =>
-            window.setTimeout(resolve, Math.max(0, TARGET_FRAME_INTERVAL_MS - elapsed)),
-          );
+          if (outageStartedAt !== null) {
+            outageStartedAt = null;
+            recoveryAttempt = 0;
+            captureInterruptedRef.current = false;
+            syncHostStatus();
+          }
+        } catch (cause) {
+          if (cancelled) return;
+          // A frame that cannot be captured is almost always a desktop the OS
+          // has taken away for a moment — a UAC prompt, the lock screen, a
+          // resolution change. Keep the session and try again.
+          const failure = classifyCaptureFailure(cause);
+          const now = performance.now();
+          outageStartedAt ??= now;
+          if (
+            failure.kind === "fatal" ||
+            now - outageStartedAt > REMOTE_CONTROL_RECOVERY_GIVE_UP_MS
+          ) {
+            endSession(failure.message);
+            return;
+          }
+          captureInterruptedRef.current = true;
+          syncHostStatus();
+          // A failed capture leaves the previous publish unobserved; drop it so
+          // its rejection cannot surface later as an unhandled one.
+          inFlight = inFlight?.catch(() => undefined) ?? null;
+          await sleep(recoveryDelayMs(recoveryAttempt++));
+          continue;
         }
-      } catch (cause) {
-        if (cancelled) return;
-        const message =
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "Solla Code could not capture this screen.";
-        setCaptureError(message);
-        setActive((current) =>
-          current?.session.sessionId === active.session.sessionId ? null : current,
-        );
-        void endByHost({
-          environmentId,
-          input: {
-            clientId,
-            connectionId: active.connectionId,
-            sessionId: active.session.sessionId,
-            failureReason: message,
-          },
-        });
+
+        const elapsed = performance.now() - startedAt;
+        // Yield to the event loop even when already behind, so input events
+        // and session updates are not starved by a saturated capture loop.
+        await sleep(TARGET_FRAME_INTERVAL_MS - elapsed);
       }
     };
 
@@ -489,7 +724,16 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       cancelled = true;
       void bridge.resetRemoteControlInput();
     };
-  }, [active, bridge, clientId, endByHost, environmentId, imageFallback, publishFrame]);
+  }, [
+    active,
+    bridge,
+    clientId,
+    endByHost,
+    environmentId,
+    imageFallback,
+    publishFrame,
+    syncHostStatus,
+  ]);
 
   const answerRequest = async (
     decision: "approve" | "decline",

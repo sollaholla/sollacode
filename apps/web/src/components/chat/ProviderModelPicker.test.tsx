@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
 const instanceId = ProviderInstanceId.make("claudeAgent");
@@ -45,5 +46,24 @@ describe("ProviderModelPicker", () => {
     expect(markup).toContain('data-chat-composer-control-display="icon"');
     expect(markup).toContain('aria-label="Choose model, currently Opus 5"');
     expect(markup.match(/<svg/gu)).toHaveLength(1);
+  });
+
+  it("keeps an installed provider button enabled when its startup probe fails", () => {
+    const failedProvider: ServerProvider = {
+      ...provider,
+      status: "error",
+      message: "Claude Agent CLI is installed but failed to run.",
+    };
+    const markup = renderToStaticMarkup(
+      <ModelPickerSidebar
+        selectedInstanceId="favorites"
+        instanceEntries={deriveProviderInstanceEntries([failedProvider])}
+        onSelectInstance={() => undefined}
+      />,
+    );
+    const button = markup.match(/<button(?=[^>]*aria-label="Claude")[^>]*>/u)?.[0];
+
+    expect(button).toBeDefined();
+    expect(button).not.toContain("disabled");
   });
 });

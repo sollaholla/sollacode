@@ -421,3 +421,84 @@ describe("buildProviderHandoffSummary", () => {
     expect(decoded.currentRequest).toBe("Continue with Codex.");
   });
 });
+
+describe("selectProviderFailoverTarget account-level exhaustion", () => {
+  const NOW = Date.parse("2026-08-06T21:19:17.000Z");
+  const codexExhausted = {
+    rateLimits: {
+      primary: { usedPercent: 100, resetsAt: Math.floor(Date.parse("2026-08-08T00:53:00.000Z")) },
+      rateLimitReachedType: "weekly",
+    },
+  };
+
+  it("skips a Codex candidate whose own usage snapshot is already spent", () => {
+    // The 2026-08-06 regression: Claude hit its five-hour window, failover chose
+    // Codex, and Codex rejected the replacement turn seven seconds later.
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "claude", driver: "claudeAgent", model: "claude-opus-5" }),
+        provider({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5.6-sol",
+          accountUsage: codexExhausted,
+        }),
+        provider({ instanceId: "grok", driver: "grok", model: "grok-5" }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      nowEpochMs: NOW,
+    });
+    expect(target?.instanceId).toBe("grok");
+  });
+
+  it("returns null when every candidate is out of quota", () => {
+    expect(
+      selectProviderFailoverTarget({
+        providers: [
+          provider({ instanceId: "claude", driver: "claudeAgent", model: "claude-opus-5" }),
+          provider({
+            instanceId: "codex",
+            driver: "codex",
+            model: "gpt-5.6-sol",
+            accountUsage: codexExhausted,
+          }),
+        ],
+        currentInstanceId: ProviderInstanceId.make("claude"),
+        currentDriver: ProviderDriverKind.make("claudeAgent"),
+        nowEpochMs: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  it("still uses a Codex candidate whose window has already reset", () => {
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "claude", driver: "claudeAgent", model: "claude-opus-5" }),
+        provider({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5.6-sol",
+          accountUsage: codexExhausted,
+        }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      nowEpochMs: Date.parse("2026-08-09T00:00:00.000Z"),
+    });
+    expect(target?.instanceId).toBe("codex");
+  });
+
+  it("uses a Codex candidate with no usage snapshot at all", () => {
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "claude", driver: "claudeAgent", model: "claude-opus-5" }),
+        provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      nowEpochMs: NOW,
+    });
+    expect(target?.instanceId).toBe("codex");
+  });
+});

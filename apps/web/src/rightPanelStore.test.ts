@@ -118,6 +118,59 @@ describe("rightPanelStore", () => {
     ).toHaveLength(2);
   });
 
+  it("reorders tabs in place without disturbing the active tab", () => {
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().open(refA, "files");
+    useRightPanelStore.getState().activateSurface(refA, "diff");
+
+    useRightPanelStore.getState().reorderSurface(refA, "diff", "files");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      // Tab order is the persisted surface order, so the drop survives a reload.
+      activeSurfaceId: "diff",
+      surfaces: [
+        { id: "plan", kind: "plan" },
+        { id: "files", kind: "files" },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
+  it("leaves the reordered thread untouched when the drop is a no-op", () => {
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().open(refA, "plan");
+    const before = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+
+    useRightPanelStore.getState().reorderSurface(refA, "diff", "diff");
+    useRightPanelStore.getState().reorderSurface(refA, "diff", "missing");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      before,
+    );
+  });
+
+  it("reorders only the dragged thread's tabs", () => {
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().open(refA, "plan");
+    useRightPanelStore.getState().open(refB, "diff");
+    useRightPanelStore.getState().open(refB, "plan");
+
+    useRightPanelStore.getState().reorderSurface(refA, "diff", "plan");
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["plan", "diff"]);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces.map(
+        (surface) => surface.id,
+      ),
+    ).toEqual(["diff", "plan"]);
+  });
+
   it("reopening an inactive singleton activates its existing surface", () => {
     useRightPanelStore.getState().open(refA, "diff");
     useRightPanelStore.getState().open(refA, "plan");

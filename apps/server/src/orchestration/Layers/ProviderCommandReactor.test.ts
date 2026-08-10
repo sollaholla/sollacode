@@ -3808,6 +3808,114 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("releases the thread on interrupt even when the provider session cannot be stopped", async () => {
+    // Observed 2026-08-06: a usage-limited Codex session pinned a thread in
+    // `running` for three hours. Stop is authoritative over T3's own state and
+    // only best-effort over the provider's, so a provider that will not die
+    // must still not leave the thread claiming to work — otherwise the spinner
+    // never clears and there is no way back short of restarting the app.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.stopSession.mockImplementation((() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "Codex",
+          method: "session.stop",
+          detail: "the provider process is not responding",
+        }),
+      )) as unknown as (input: unknown) => Effect.Effect<void>);
+    harness.runtimeSessions.push({
+      threadId: ThreadId.make("thread-1"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      activeTurnId: asTurnId("provider-turn-1"),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-wedged"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({
+      status: "stopped",
+      activeTurnId: null,
+    });
+    // The failure is still surfaced — it is reported, not swallowed.
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+    ).toBe(true);
+  });
+
+  it("clears a session still claiming an active turn after the provider already stopped", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-stale"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "stopped",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-stale"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session).toMatchObject({ status: "stopped", activeTurnId: null });
+    // Nothing was live upstream, so Stop must not manufacture a provider call.
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+    expect(harness.interruptTurn.mock.calls.length).toBe(0);
+  });
+
   it("reacts to thread.task.stop by killing that task and leaving the session alone", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

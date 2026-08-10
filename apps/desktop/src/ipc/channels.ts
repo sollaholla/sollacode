@@ -12,6 +12,7 @@ export const REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL = "desktop:remote-control-capt
 export const REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL = "desktop:remote-control-capture-sources";
 export const REMOTE_CONTROL_SEND_INPUT_CHANNEL = "desktop:remote-control-send-input";
 export const REMOTE_CONTROL_RESET_INPUT_CHANNEL = "desktop:remote-control-reset-input";
+export const REMOTE_CONTROL_POINTER_LOCK_CHANNEL = "desktop:remote-control-pointer-lock";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
 export const GET_WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:get-window-fullscreen-state";
 export const WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:window-fullscreen-state";

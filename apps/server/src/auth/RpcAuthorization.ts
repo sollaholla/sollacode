@@ -99,6 +99,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.remoteControlHostPublishFrame]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlHostPublishVideoChunk]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlHostEnd]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteControlHostReportStatus]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlRequestAccess]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlWatch]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlSendInput]: AuthOrchestrationOperateScope,

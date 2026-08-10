@@ -79,6 +79,17 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.chunk.sessionId]),
       },
     }),
+    // "latest" because only the newest state matters: a status that was
+    // superseded while in flight describes a condition that has already passed.
+    reportHostStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:remote-control:host-report-status",
+      tag: WS_METHODS.remoteControlHostReportStatus,
+      scheduler: hostScheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sessionId]),
+      },
+    }),
     endByHost: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:host-end",
       tag: WS_METHODS.remoteControlHostEnd,

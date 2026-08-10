@@ -1,6 +1,7 @@
 import {
   EventId,
   type OrchestrationEvent,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   MessageId,
   ModelSelection,
@@ -11,6 +12,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AGENT_CONTINUE_PROMPT } from "@t3tools/shared/agentMode";
@@ -18,6 +20,9 @@ import {
   activeTurnMessageIdFromSourceTurnId,
   activeTurnWorkSourceId,
   agentAutoResumeIds,
+  agentContinuationShouldAwaitBackgroundTask,
+  BACKGROUND_TASK_CONTINUATION_GRACE_MS,
+  outstandingBackgroundTasks,
   providerAuthenticationResumeIds,
   shouldAutoContinueAgentThread,
   shouldResumeProviderAuthenticationPausedThread,
@@ -243,5 +248,190 @@ describe("server-owned Agent continuation", () => {
       messageId: "startup-auto-resume-message:thread-agent:turn-completed",
     });
     expect(startupResumeSourceTurnId({ threadId, messageId: startupIds.messageId })).toBe(turnId);
+  });
+});
+
+const T0 = Date.parse("2026-08-06T12:00:00.000Z");
+const isoAt = (epochMs: number) => DateTime.formatIso(DateTime.makeUnsafe(epochMs));
+
+function taskActivity(input: {
+  readonly kind: "task.started" | "task.progress" | "task.completed";
+  readonly taskId: string;
+  readonly offsetMs: number;
+  readonly taskType?: string;
+}): OrchestrationThreadActivity {
+  return {
+    id: EventId.make(`${input.kind}:${input.taskId}:${input.offsetMs}`),
+    tone: "info",
+    kind: input.kind,
+    summary: input.kind,
+    payload: {
+      taskId: input.taskId,
+      ...(input.taskType === undefined ? {} : { taskType: input.taskType }),
+    },
+    turnId: null,
+    createdAt: isoAt(T0 + input.offsetMs),
+  };
+}
+
+describe("outstandingBackgroundTasks", () => {
+  it("reports a task that started and never reported terminal", () => {
+    expect(
+      outstandingBackgroundTasks([
+        taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+      ]).map((task) => task.taskId),
+    ).toEqual(["bash-1"]);
+  });
+
+  it("clears a task once it completes", () => {
+    expect(
+      outstandingBackgroundTasks([
+        taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+        taskActivity({ kind: "task.completed", taskId: "bash-1", offsetMs: 10 }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("tracks each task independently", () => {
+    expect(
+      outstandingBackgroundTasks([
+        taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+        taskActivity({ kind: "task.started", taskId: "agent-2", offsetMs: 1 }),
+        taskActivity({ kind: "task.completed", taskId: "bash-1", offsetMs: 10 }),
+      ]).map((task) => task.taskId),
+    ).toEqual(["agent-2"]);
+  });
+
+  it("ignores plan tasks, which run outside the turn stream", () => {
+    expect(
+      outstandingBackgroundTasks([
+        taskActivity({ kind: "task.started", taskId: "plan-1", offsetMs: 0, taskType: "plan" }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("advances lastActivityAt on progress so a reporting task keeps its window", () => {
+    const [task] = outstandingBackgroundTasks([
+      taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+      taskActivity({ kind: "task.progress", taskId: "bash-1", offsetMs: 5_000 }),
+    ]);
+    expect(task?.startedAt).toEqual(isoAt(T0));
+    expect(task?.lastActivityAt).toEqual(isoAt(T0 + 5_000));
+  });
+});
+
+describe("agentContinuationShouldAwaitBackgroundTask", () => {
+  it("defers the continuation while a background task is still running", () => {
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        nowEpochMs: T0 + 1_000,
+      })?.taskId,
+    ).toBe("bash-1");
+  });
+
+  it("does not defer once the task reports terminal", () => {
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+          taskActivity({ kind: "task.completed", taskId: "bash-1", offsetMs: 10 }),
+        ],
+        nowEpochMs: T0 + 1_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("ignores a task stranded by a restart instead of burning the whole grace window", () => {
+    // The wait is only justified because the harness re-invokes the agent when
+    // a task it owns exits. A task announced before this process started has no
+    // live owner, so that signal can never arrive; only the lazy orphan sweep
+    // ends it. Observed 2026-08-07: a restart at 10:49 left a task whose
+    // "Task stopped" completion did not land until 15:36, and the thread sat on
+    // "Agent auto-resuming" in the meantime.
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        nowEpochMs: T0 + 1_000,
+        processStartedAtEpochMs: T0 + 500,
+      }),
+    ).toBeNull();
+  });
+
+  it("still waits on a task this process started", () => {
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 1_000 })],
+        nowEpochMs: T0 + 2_000,
+        processStartedAtEpochMs: T0 + 500,
+      })?.taskId,
+    ).toBe("bash-1");
+  });
+
+  it("keeps waiting on a pre-restart task whose progress continues under this process", () => {
+    // Progress arriving after startup proves something is still driving it, so
+    // the restart boundary must be read from the task's start, not its newest
+    // activity — but a task that only *started* earlier is still discarded.
+    const activities = [
+      taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+      taskActivity({ kind: "task.progress", taskId: "bash-1", offsetMs: 2_000 }),
+    ];
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities,
+        nowEpochMs: T0 + 3_000,
+        processStartedAtEpochMs: T0 + 500,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps waiting when the start stamp is unparseable and cannot be proven stale", () => {
+    // Progress supplies a usable lastActivityAt, so the task clears the grace
+    // check and actually reaches the restart boundary. A start that cannot be
+    // parsed is not evidence the task predates this process, so it must keep
+    // its grace window rather than be discarded as orphaned.
+    const started = taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 });
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [
+          { ...started, createdAt: "not-a-date" },
+          taskActivity({ kind: "task.progress", taskId: "bash-1", offsetMs: 2_000 }),
+        ],
+        nowEpochMs: T0 + 3_000,
+        processStartedAtEpochMs: T0 + 500,
+      })?.taskId,
+    ).toBe("bash-1");
+  });
+
+  it("gives up waiting after the grace window so a lost terminal cannot strand the thread", () => {
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        nowEpochMs: T0 + BACKGROUND_TASK_CONTINUATION_GRACE_MS,
+      }),
+    ).toBeNull();
+  });
+
+  it("extends the window from the newest progress report", () => {
+    const activities = [
+      taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+      taskActivity({
+        kind: "task.progress",
+        taskId: "bash-1",
+        offsetMs: BACKGROUND_TASK_CONTINUATION_GRACE_MS,
+      }),
+    ];
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({
+        activities,
+        nowEpochMs: T0 + BACKGROUND_TASK_CONTINUATION_GRACE_MS + 1_000,
+      })?.taskId,
+    ).toBe("bash-1");
+  });
+
+  it("does not defer when there are no task activities at all", () => {
+    expect(
+      agentContinuationShouldAwaitBackgroundTask({ activities: [], nowEpochMs: T0 }),
+    ).toBeNull();
   });
 });

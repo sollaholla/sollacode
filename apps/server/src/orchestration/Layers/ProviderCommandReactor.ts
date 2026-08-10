@@ -57,6 +57,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionPersistedTurnStartContext,
 } from "../Services/ProjectionSnapshotQuery.ts";
+import { THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT } from "./ProjectionSnapshotQuery.ts";
 import {
   ThreadWorkScheduler,
   type ThreadWorkExecutionOutcome,
@@ -81,6 +82,7 @@ import {
   activeTurnMessageIdFromSourceTurnId,
   activeTurnWorkSourceId,
   agentAutoResumeIds,
+  agentContinuationShouldAwaitBackgroundTask,
   shouldAutoContinueCompletedAgentTurn,
   startupAutoResumeIds,
   STARTUP_RESUME_SIGNED_OFF_REASON,
@@ -334,6 +336,9 @@ export interface ProviderCommandReactorLiveOptions {
 
 const make = (options?: ProviderCommandReactorLiveOptions) =>
   Effect.gen(function* () {
+    // Stamped once at construction so the background-task gate can tell a task
+    // this process is actually supervising from one stranded by a restart.
+    const processStartedAtEpochMs = yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
     const crypto = yield* Crypto.Crypto;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -471,7 +476,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
     const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
       return yield* projectionSnapshotQuery
-        .getThreadDetailById(threadId)
+        .getThreadDetailById(threadId, {
+          activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+        })
         .pipe(Effect.map(Option.getOrUndefined));
     });
 
@@ -1469,65 +1476,99 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (!thread) {
         return;
       }
-      const hasSession = thread.session && thread.session.status !== "stopped";
-      if (!hasSession) {
-        return yield* appendProviderFailureActivity({
-          threadId: event.payload.threadId,
-          kind: "provider.turn.interrupt.failed",
-          summary: "Provider turn interrupt failed",
-          detail: "No active provider session is bound to this thread.",
-          turnId: event.payload.turnId ?? null,
-          createdAt: event.payload.createdAt,
-        });
+      const session = thread.session;
+      if (!session) {
+        // No session row at all, so nothing claims to be running and there is
+        // nothing to release. `derivePhase(null)` is already "disconnected".
+        return;
       }
+      const interruptedAt = event.payload.createdAt;
+      const alreadyIdle = session.status === "stopped" && session.activeTurnId === null;
 
-      // Orchestration turn ids are not provider turn ids, so interrupt by session.
-      // A provider interrupt is cooperative and can acknowledge before its CLI or
-      // an in-flight tool actually exits. Explicit Stop is stronger: try the
-      // cooperative path briefly, then close the provider session so no orphaned
-      // process can continue emitting work. The next message restores the
-      // provider from its persisted resume cursor.
-      let cooperativeInterruptFailure: string | null = null;
-      yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
-        Effect.timeout("2 seconds"),
-        Effect.catchCause((cause) =>
-          Effect.sync(() => {
-            cooperativeInterruptFailure = formatFailureDetail(cause);
-          }),
-        ),
-      );
-      const stopped = yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
-        Effect.as(true),
-        Effect.catchCause((cause) =>
-          appendProviderFailureActivity({
+      /**
+       * Stop is authoritative over T3's own state, and only best-effort over the
+       * provider's. Those two must never be conflated.
+       *
+       * The session row is what the composer reads to decide it is "working", so
+       * leaving it on `running` because a dead CLI could not be reached is the
+       * one outcome the user cannot recover from: the spinner keeps turning, the
+       * Stop button re-arms against a turn nobody can kill, and the silence
+       * watchdog keeps re-dispatching the turn behind it. Observed 2026-08-06,
+       * when a usage-limited Codex session pinned a thread in `running` for
+       * three hours across five watchdog restarts.
+       *
+       * So the row is cleared unconditionally at the end of this handler. A
+       * provider that refuses to die still gets its failure surfaced as an
+       * activity, but it no longer holds the thread hostage.
+       */
+      if (session.status === "stopped") {
+        // Nothing to kill upstream, but the row may still claim an active turn.
+        // Fall through to the terminalization below rather than reporting a
+        // failure the user cannot act on.
+        yield* Effect.logDebug("provider turn interrupt on an already-stopped session", {
+          threadId: event.payload.threadId,
+          activeTurnId: session.activeTurnId,
+        });
+      } else {
+        // Orchestration turn ids are not provider turn ids, so interrupt by session.
+        // A provider interrupt is cooperative and can acknowledge before its CLI or
+        // an in-flight tool actually exits. Explicit Stop is stronger: try the
+        // cooperative path briefly, then close the provider session so no orphaned
+        // process can continue emitting work. The next message restores the
+        // provider from its persisted resume cursor.
+        let cooperativeInterruptFailure: string | null = null;
+        yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+          Effect.timeout("2 seconds"),
+          Effect.catchCause((cause) =>
+            Effect.sync(() => {
+              cooperativeInterruptFailure = formatFailureDetail(cause);
+            }),
+          ),
+        );
+        // A wedged adapter can hang here as easily as it hung mid-turn — an
+        // unbounded stop would strand the whole interrupt and never reach the
+        // terminalization below, which is precisely the state Stop exists to
+        // escape. Bound it, and treat the timeout as a provider failure.
+        const stopFailure = yield* providerService
+          .stopSession({ threadId: event.payload.threadId })
+          .pipe(
+            Effect.timeout("10 seconds"),
+            Effect.as(null),
+            Effect.catchCause((cause) => Effect.succeed(formatFailureDetail(cause))),
+          );
+        if (stopFailure !== null) {
+          yield* appendProviderFailureActivity({
             threadId: event.payload.threadId,
             kind: "provider.turn.interrupt.failed",
-            summary: "Provider turn interrupt failed",
+            summary: "Stopped locally; the provider session may still be running",
             detail: [
               cooperativeInterruptFailure
                 ? `The provider did not acknowledge the cooperative interrupt: ${cooperativeInterruptFailure}`
                 : null,
-              `The provider session could not be stopped: ${formatFailureDetail(cause)}`,
+              `The provider session could not be stopped: ${stopFailure}`,
+              "This thread was released anyway, so it is safe to send again. A stale provider process, if any, is reaped separately.",
             ]
               .filter((entry): entry is string => entry !== null)
               .join("\n"),
-            turnId: event.payload.turnId ?? thread.session?.activeTurnId ?? null,
-            createdAt: event.payload.createdAt,
-          }).pipe(Effect.as(false)),
-        ),
-      );
-      if (!stopped) return;
-      if (cooperativeInterruptFailure) {
-        yield* Effect.logWarning("provider cooperative interrupt required a forced session stop", {
-          threadId: event.payload.threadId,
-          detail: cooperativeInterruptFailure,
-        });
+            turnId: event.payload.turnId ?? session.activeTurnId ?? null,
+            createdAt: interruptedAt,
+          });
+        } else if (cooperativeInterruptFailure) {
+          yield* Effect.logWarning(
+            "provider cooperative interrupt required a forced session stop",
+            {
+              threadId: event.payload.threadId,
+              detail: cooperativeInterruptFailure,
+            },
+          );
+        }
       }
-      const interruptedAt = event.payload.createdAt;
+
+      if (alreadyIdle) return;
       yield* setThreadSession({
         threadId: event.payload.threadId,
         session: {
-          ...thread.session,
+          ...session,
           status: "stopped",
           activeTurnId: null,
           lastError: null,
@@ -2586,6 +2627,27 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           )
         ) {
           return { state: "cancelled" as const, reason: "control-only turn" };
+        }
+
+        // The turn signed off while work it launched is still running. The
+        // agent is waiting on that result on purpose, and the harness re-invokes
+        // it when the task exits, so resuming now just wakes it early into the
+        // same wait. Defer instead of dispatching; the grace window inside
+        // `agentContinuationShouldAwaitBackgroundTask` keeps a provider that
+        // never reports the task terminal from parking the thread forever.
+        const awaitedTask = agentContinuationShouldAwaitBackgroundTask({
+          activities: thread.activities,
+          nowEpochMs: yield* DateTime.now.pipe(Effect.map(DateTime.toEpochMillis)),
+          processStartedAtEpochMs,
+        });
+        if (awaitedTask !== null) {
+          yield* Effect.logDebug("agent-continuation.awaiting-background-task", {
+            threadId: obligation.threadId,
+            taskId: awaitedTask.taskId,
+          });
+          return yield* retryWorkAfter15Seconds(
+            `waiting for background task ${awaitedTask.taskId} to finish before resuming`,
+          );
         }
 
         // Two baseline agent-mode brakes (62099dc3b) that were lost when the

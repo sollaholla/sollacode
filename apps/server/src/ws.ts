@@ -449,6 +449,10 @@ const makeWsRpcLayer = (
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
+      // Proof that a client exists, independent of whether it reports activity.
+      // `rpcClientIds` above is only ever populated *by* the activity report, so
+      // on its own it can never distinguish a silent client from no client.
+      yield* backgroundPolicy.registerConnection(currentSessionId);
       yield* Effect.addFinalizer(() =>
         Ref.get(rpcClientIds).pipe(
           Effect.flatMap((clientIds) =>
@@ -2165,6 +2169,14 @@ const makeWsRpcLayer = (
             WS_METHODS.remoteControlHostPublishVideoChunk,
             authorizeDesktopHostEffect(
               remoteControlBroker.publishVideoChunk(input, currentSessionId),
+            ),
+            { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.remoteControlHostReportStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.remoteControlHostReportStatus,
+            authorizeDesktopHostEffect(
+              remoteControlBroker.reportHostStatus(input, currentSessionId),
             ),
             { "rpc.aggregate": "remote-control" },
           ),

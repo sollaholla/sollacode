@@ -569,3 +569,253 @@ it.effect("prunes expired terminal sessions and their retained media state", () 
     }),
   ),
 );
+
+it.effect("reports pointer-lock transitions to the controller without repeating them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const waiting = yield* broker.requestAccess(
+        { clientId: "controller-client", requestedCapabilities: ["screen"] },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find((event) => event.type === "access-requested");
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+      yield* broker.respondToRequest(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "approve",
+          grantedCapabilities: ["screen"],
+        },
+        hostSessionId,
+      );
+
+      const locks: boolean[] = [];
+      const stream = yield* broker.watch({ sessionId: waiting.sessionId }, controllerSessionId);
+      yield* Stream.runForEach(stream, (event) =>
+        Effect.sync(() => {
+          if (event.type === "pointer-lock-changed") locks.push(event.locked);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const chunkAt = (sequence: number, pointerLocked?: boolean) => ({
+        clientId: interactiveHost.clientId,
+        connectionId: connected.connectionId,
+        ...(pointerLocked === undefined ? {} : { pointerLocked }),
+        chunk: {
+          sessionId: waiting.sessionId,
+          sequence,
+          capturedAt: "2026-01-01T00:00:00.000Z",
+          mimeType: "video/webm;codecs=vp8",
+          isInit: sequence === 0,
+          data: "aW5pdA==",
+        },
+      });
+
+      // A host that never reports says nothing about lock state; treating that
+      // as "unlocked" would fight an older host.
+      yield* broker.publishVideoChunk(chunkAt(0), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(locks).toEqual([]);
+
+      // The transition is what the controller needs.
+      yield* broker.publishVideoChunk(chunkAt(1, true), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(locks).toEqual([true]);
+
+      // The host stamps every chunk, tens per second. Only edges may escape, or
+      // the bounded changes buffer would evict real session updates.
+      yield* broker.publishVideoChunk(chunkAt(2, true), hostSessionId);
+      yield* broker.publishVideoChunk(chunkAt(3, true), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(locks).toEqual([true]);
+
+      yield* broker.publishVideoChunk(chunkAt(4, false), hostSessionId);
+      yield* Effect.yieldNow;
+      expect(locks).toEqual([true, false]);
+    }),
+  ),
+);
+
+/**
+ * The watch stream concatenates a preamble ahead of three merged
+ * subscriptions, so a freshly published change takes more than one scheduler
+ * turn to surface. Yielding a few times is what makes the assertion about
+ * delivery rather than about timing.
+ */
+const drainWatch = Effect.gen(function* () {
+  for (let turn = 0; turn < 4; turn += 1) yield* Effect.yieldNow;
+});
+
+it.effect("relays a transient host condition without ending the session", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // The UAC case: while a Windows security prompt is up the host cannot
+      // capture or inject anything, and it used to report that by ending the
+      // stream. It must now be a notice the controller can render over a live,
+      // still-approved session.
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const waiting = yield* broker.requestAccess(
+        {
+          clientId: "controller-client",
+          requestedCapabilities: ["screen", "pointer", "keyboard"],
+        },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      const requested = hostEvents.find((event) => event.type === "access-requested");
+      if (connected?.type !== "connected" || requested?.type !== "access-requested") return;
+
+      yield* broker.respondToRequest(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          requestId: requested.requestId,
+          decision: "approve",
+          grantedCapabilities: ["screen", "pointer", "keyboard"],
+        },
+        hostSessionId,
+      );
+
+      const watched: Array<{ readonly type: string }> = [];
+      const watchStream = yield* broker.watch(
+        { sessionId: waiting.sessionId },
+        controllerSessionId,
+      );
+      yield* Stream.runForEach(watchStream, (event) =>
+        Effect.sync(() => {
+          watched.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const report = (state: "ok" | "interrupted", reason?: "secure-desktop") =>
+        broker.reportHostStatus(
+          {
+            clientId: interactiveHost.clientId,
+            connectionId: connected.connectionId,
+            sessionId: waiting.sessionId,
+            status: { state, ...(reason ? { reason } : {}) },
+          },
+          hostSessionId,
+        );
+
+      yield* report("interrupted", "secure-desktop");
+      // A held prompt makes the host re-report on every dropped event; only the
+      // edges may reach the controller or the change feed fills with duplicates.
+      yield* report("interrupted", "secure-desktop");
+      yield* report("interrupted", "secure-desktop");
+      yield* drainWatch;
+
+      const interrupted = watched.filter((event) => event.type === "host-status");
+      expect(interrupted).toHaveLength(1);
+      expect(interrupted[0]).toMatchObject({
+        status: { state: "interrupted", reason: "secure-desktop" },
+      });
+
+      yield* report("ok");
+      yield* drainWatch;
+      const statuses = watched.filter((event) => event.type === "host-status");
+      expect(statuses).toHaveLength(2);
+      expect(statuses[1]).toMatchObject({ status: { state: "ok" } });
+
+      // The session itself was never touched.
+      const sessionUpdates = watched.filter((event) => event.type === "session-updated");
+      for (const update of sessionUpdates) {
+        expect(update).toMatchObject({ session: { status: "approved" } });
+      }
+    }),
+  ),
+);
+
+it.effect("refuses a host status report from a session that does not own the host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const waiting = yield* broker.requestAccess(
+        {
+          clientId: "controller-client",
+          requestedCapabilities: ["screen"],
+        },
+        requester,
+      );
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      if (connected?.type !== "connected") return;
+
+      const error = yield* broker
+        .reportHostStatus(
+          {
+            clientId: interactiveHost.clientId,
+            connectionId: connected.connectionId,
+            sessionId: waiting.sessionId,
+            status: { state: "interrupted", reason: "secure-desktop" },
+          },
+          foreignSessionId,
+        )
+        .pipe(Effect.flip);
+      expect(error).toBeInstanceOf(RemoteControlSessionAccessDeniedError);
+    }),
+  ),
+);
+
+it.effect("ignores a status report for a session it no longer knows about", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // A report racing session teardown is normal. Failing it would turn a
+      // best-effort notice into an error the host has to handle mid-shutdown.
+      const broker = yield* makeBroker;
+      const hostEvents: RemoteControlHostStreamEvent[] = [];
+      const hostStream = yield* broker.connectHost(interactiveHost, hostSessionId);
+      yield* Stream.runForEach(hostStream, (event) =>
+        Effect.sync(() => {
+          hostEvents.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const connected = hostEvents.find((event) => event.type === "connected");
+      if (connected?.type !== "connected") return;
+
+      yield* broker.reportHostStatus(
+        {
+          clientId: interactiveHost.clientId,
+          connectionId: connected.connectionId,
+          sessionId: "session-that-never-existed",
+          status: { state: "interrupted", reason: "secure-desktop" },
+        },
+        hostSessionId,
+      );
+    }),
+  ),
+);
