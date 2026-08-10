@@ -796,7 +796,16 @@ export function projectEvent(
                       thread.latestTurn?.turnId === payload.turnId
                         ? (thread.latestTurn.startedAt ?? payload.completedAt)
                         : payload.completedAt,
-                    completedAt: payload.completedAt,
+                    // Checkpoint capture is asynchronous and carries the
+                    // timestamp it inherited when capture started — a mid-turn
+                    // time for placeholder replacements. The session leaving
+                    // "running" already stamped the authoritative turn end;
+                    // rewinding it here desynced this read model from the
+                    // sqlite projection the continuation gate judges.
+                    completedAt:
+                      thread.latestTurn?.turnId === payload.turnId
+                        ? (thread.latestTurn.completedAt ?? payload.completedAt)
+                        : payload.completedAt,
                     assistantMessageId: payload.assistantMessageId,
                   },
             updatedAt: event.occurredAt,
