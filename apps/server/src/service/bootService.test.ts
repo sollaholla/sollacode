@@ -111,6 +111,7 @@ it("renders a systemd unit with absolute paths and append-mode logging", () => {
       "Environment=T3CODE_HOME=/home/theo/.t3",
       "Environment=T3_BOOT_SERVICE_UNIT=t3code.service",
       "ExecStart=/usr/local/bin/node /home/theo/.t3/runtime/versions/0.0.27/node_modules/t3/dist/bin.mjs serve",
+      "OOMPolicy=continue",
       "Restart=always",
       "RestartSec=5",
       "StandardOutput=append:/home/theo/.t3/userdata/logs/boot-service.log",
@@ -122,6 +123,25 @@ it("renders a systemd unit with absolute paths and append-mode logging", () => {
     ].join("\n"),
   );
 });
+
+it("survives the kernel OOM-killing a greedy agent child", () => {
+  // Agent tool calls are children of the server and share its cgroup. Under
+  // systemd's default OOMPolicy=stop, one runaway build or test run getting
+  // OOM-killed takes down the unit — server, every live agent, and the user's
+  // connection — rather than just the offending child.
+  const unit = BootService.renderBootServiceUnit({
+    nodePath: "/usr/bin/node",
+    t3EntryPath: "/home/theo/.t3/runtime/versions/0.0.27/node_modules/t3/dist/bin.mjs",
+    baseDir: "/home/theo/.t3",
+    logPath: "/home/theo/.t3/userdata/logs/boot-service.log",
+    unitPath: "/home/theo/.config/systemd/user/t3code.service",
+  });
+
+  assert.include(unit, "OOMPolicy=continue");
+  // Restart=always still has to cover the main process dying.
+  assert.include(unit, "Restart=always");
+});
+
 it("quotes systemd values containing spaces and escapes percent specifiers", () => {
   assert.equal(BootService.quoteSystemdValue("/plain/path"), "/plain/path");
   assert.equal(BootService.quoteSystemdValue("/home/me/T3 Data"), '"/home/me/T3 Data"');
