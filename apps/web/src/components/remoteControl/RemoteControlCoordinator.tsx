@@ -8,6 +8,7 @@ import type {
   RemoteControlHostStatus,
   RemoteControlHostStatusReason,
   RemoteControlHostStreamEvent,
+  RemoteControlInput,
   RemoteControlSession,
 } from "@t3tools/contracts";
 import { REMOTE_CONTROL_CHUNK_MAX_BASE64_LENGTH } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ import {
   recoveryDelayMs,
   REMOTE_CONTROL_RECOVERY_GIVE_UP_MS,
 } from "./remoteControlHostStatus";
+import { createRemoteControlInputScheduler } from "./remoteControlInputScheduler";
 import { createRemoteControlVideoPublishQueue } from "./remoteControlVideoPublishQueue";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
@@ -197,7 +199,58 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     });
   }, [clientId, environmentId, reportHostStatus]);
 
+  const dispatchHostInput = useCallback(
+    async (input: RemoteControlInput) => {
+      const current = activeRef.current;
+      if (!current) return;
+      try {
+        const result = await bridge.sendRemoteControlInput({
+          input,
+          ...(activeDisplayIdRef.current !== undefined
+            ? { displayId: activeDisplayIdRef.current }
+            : {}),
+        });
+        // The host refusing input is a condition, not a failure: a UAC prompt,
+        // the lock screen, or an elevated window owns the desktop temporarily.
+        inputBlockRef.current = result.blocked ?? null;
+        syncHostStatus();
+      } catch (cause: unknown) {
+        const failure = classifyInputFailure(cause);
+        if (failure.kind === "transient") {
+          captureInterruptedRef.current = true;
+          syncHostStatus();
+        } else {
+          setCaptureError(failure.message);
+          setActive((value) =>
+            value?.session.sessionId === current.session.sessionId ? null : value,
+          );
+          void bridge.resetRemoteControlInput();
+          void endByHost({
+            environmentId,
+            input: {
+              clientId,
+              connectionId: current.connectionId,
+              sessionId: current.session.sessionId,
+              failureReason: failure.message,
+            },
+          });
+        }
+        // Rejecting tells the scheduler to discard any motion that became
+        // stale while the native helper was unavailable.
+        throw cause;
+      }
+    },
+    [bridge, clientId, endByHost, environmentId, syncHostStatus],
+  );
+
+  const hostInputScheduler = useMemo(
+    () => createRemoteControlInputScheduler({ send: dispatchHostInput }),
+    [dispatchHostInput],
+  );
+
   useEffect(() => {
+    // Session transitions invalidate pending motion from the previous desktop.
+    hostInputScheduler.clear();
     if (!active) {
       pointerLockedRef.current = false;
       // A new session must not inherit the previous one's reported condition,
@@ -230,7 +283,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       clearInterval(timer);
       pointerLockedRef.current = false;
     };
-  }, [active, bridge, syncHostStatus]);
+  }, [active, bridge, hostInputScheduler, syncHostStatus]);
+
+  useEffect(() => () => hostInputScheduler.clear(), [hostInputScheduler]);
 
   useEffect(() => {
     const event: RemoteControlHostStreamEvent | null = hostEvents.data;
@@ -250,40 +305,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         setImageFallback(true);
         return;
       }
-      void bridge
-        .sendRemoteControlInput({
-          input: event.input,
-          ...(activeDisplayIdRef.current !== undefined
-            ? { displayId: activeDisplayIdRef.current }
-            : {}),
-        })
-        .then((result) => {
-          // The host refusing input is a condition, not a failure: a UAC
-          // prompt, the lock screen, or an elevated window owns the desktop
-          // for a while and then gives it back. Say so and keep the session.
-          inputBlockRef.current = result.blocked ?? null;
-          syncHostStatus();
-        })
-        .catch((cause: unknown) => {
-          const failure = classifyInputFailure(cause);
-          if (failure.kind === "transient") {
-            captureInterruptedRef.current = true;
-            syncHostStatus();
-            return;
-          }
-          setCaptureError(failure.message);
-          setActive((value) => (value?.session.sessionId === event.sessionId ? null : value));
-          void bridge.resetRemoteControlInput();
-          void endByHost({
-            environmentId,
-            input: {
-              clientId,
-              connectionId: event.connectionId,
-              sessionId: event.sessionId,
-              failureReason: failure.message,
-            },
-          });
-        });
+      hostInputScheduler.enqueue(event.input);
       return;
     }
     if (event.type === "access-requested") {
@@ -344,7 +366,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         current?.session.sessionId === event.session.sessionId ? null : current,
       );
     }
-  }, [bridge, clientId, endByHost, environmentId, hostEvents.data, respond, syncHostStatus]);
+  }, [clientId, environmentId, hostEvents.data, hostInputScheduler, respond]);
 
   // Video path: a live MediaStream encoded by the platform codec. Falls back to
   // the JPEG loop below when this runtime cannot encode video, or when the

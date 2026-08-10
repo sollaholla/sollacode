@@ -43,13 +43,9 @@ import {
   remotePointerButton,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
+import { createRemoteControlInputScheduler } from "./remoteControlInputScheduler";
 import { describeHostStatus } from "./remoteControlHostStatus";
-import {
-  createPointerMotionSmoother,
-  mergePointerMoves,
-  REMOTE_CONTROL_POINTER_DELTA_LIMIT,
-  splitPointerDelta,
-} from "./remoteControlPointerMotion";
+import { clampPointerDelta } from "./remoteControlPointerMotion";
 import {
   createRemoteControlVideoSink,
   describeUnsupportedCodec,
@@ -90,7 +86,6 @@ export function RemoteControlViewerDialog(props: {
   const [remoteLocked, setRemoteLocked] = useState(false);
   const [pointerLocked, setPointerLocked] = useState(false);
   const pointerLockedRef = useRef(false);
-  const pointerMotionRef = useRef(createPointerMotionSmoother());
   const surfaceElementRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef(false);
   const frameImageRef = useRef<HTMLImageElement>(null);
@@ -109,8 +104,6 @@ export function RemoteControlViewerDialog(props: {
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
-  const inputQueueRef = useRef<RemoteControlInput[]>([]);
-  const inputSendingRef = useRef(false);
   const pressedKeysRef = useRef(new Map<string, string>());
   const pressedPointerButtonRef = useRef<RemoteControlPointerButton | null>(null);
   const lastPointerPointRef = useRef({ x: 0.5, y: 0.5 });
@@ -282,60 +275,48 @@ export function RemoteControlViewerDialog(props: {
     if (watch.error) setError(watch.error);
   }, [watch.error]);
 
-  const drainInputQueue = useCallback(
-    async function drainRemoteInputQueue() {
-      if (inputSendingRef.current) return;
+  const dispatchInput = useCallback(
+    async (input: RemoteControlInput) => {
       const currentSession = sessionRef.current;
-      const input = inputQueueRef.current.shift();
-      if (!input || currentSession?.status !== "approved") return;
-      inputSendingRef.current = true;
-      try {
-        const outcome = await sendInputCommand({
-          environmentId,
-          input: {
-            sessionId: currentSession.sessionId,
-            sequence: inputSequenceRef.current++,
-            input,
-          },
-        });
-        if (outcome._tag === "Failure") {
-          throw new Error(failureMessage(outcome));
-        }
-        // Recovery is only observable here, so a stale error must not outlive
-        // the condition that caused it.
-        setInputError((current) => (current === null ? current : null));
-      } catch (cause) {
-        inputQueueRef.current = [];
-        setInputError(
-          cause instanceof Error && cause.message.trim()
-            ? cause.message
-            : "The remote computer could not apply that input.",
-        );
-      } finally {
-        inputSendingRef.current = false;
-        if (inputQueueRef.current.length > 0) void drainRemoteInputQueue();
+      if (currentSession?.status !== "approved") return;
+      const outcome = await sendInputCommand({
+        environmentId,
+        input: {
+          sessionId: currentSession.sessionId,
+          sequence: inputSequenceRef.current++,
+          input,
+        },
+      });
+      if (outcome._tag === "Failure") {
+        throw new Error(failureMessage(outcome));
       }
+      // Recovery is only observable here, so a stale error must not outlive
+      // the condition that caused it.
+      setInputError((current) => (current === null ? current : null));
     },
     [environmentId, sendInputCommand],
   );
 
+  const inputScheduler = useMemo(
+    () =>
+      createRemoteControlInputScheduler({
+        send: dispatchInput,
+        onError: (cause) => {
+          setInputError(
+            cause instanceof Error && cause.message.trim()
+              ? cause.message
+              : "The remote computer could not apply that input.",
+          );
+        },
+        scheduleFrame: (callback) => window.requestAnimationFrame(callback),
+        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+      }),
+    [dispatchInput],
+  );
+
   const enqueueInput = useCallback(
-    (input: RemoteControlInput) => {
-      if (input.type === "pointer" && input.action === "move") {
-        const lastIndex = inputQueueRef.current.length - 1;
-        const last = inputQueueRef.current[lastIndex];
-        const merged =
-          last?.type === "pointer" && last.action === "move"
-            ? mergePointerMoves(last, input)
-            : null;
-        if (merged) inputQueueRef.current[lastIndex] = merged;
-        else inputQueueRef.current.push(input);
-      } else {
-        inputQueueRef.current.push(input);
-      }
-      void drainInputQueue();
-    },
-    [drainInputQueue],
+    (input: RemoteControlInput) => inputScheduler.enqueue(input),
+    [inputScheduler],
   );
 
   const remoteSurfaceRect = useCallback(
@@ -402,17 +383,16 @@ export function RemoteControlViewerDialog(props: {
       const locked = document.pointerLockElement === surfaceElementRef.current;
       pointerLockedRef.current = locked;
       setPointerLocked(locked);
-      // Motion accumulated under lock must never replay afterwards, when it
-      // would be interpreted against absolute coordinates.
-      if (!locked) pointerMotionRef.current.reset();
+      // A mode edge invalidates any unsent motion sampled in the previous mode.
+      inputScheduler.discardPointerMotion();
     };
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     return () => {
       document.removeEventListener("pointerlockchange", handlePointerLockChange);
       pointerLockedRef.current = false;
-      pointerMotionRef.current.reset();
+      inputScheduler.discardPointerMotion();
     };
-  }, []);
+  }, [inputScheduler]);
 
   useEffect(() => {
     if (!inputCaptured) return;
@@ -431,11 +411,11 @@ export function RemoteControlViewerDialog(props: {
   useEffect(
     () => () => {
       inputCapturedRef.current = false;
-      inputQueueRef.current = [];
+      inputScheduler.clear();
       pressedKeysRef.current.clear();
       pressedPointerButtonRef.current = null;
     },
-    [],
+    [inputScheduler],
   );
 
   const close = async () => {
@@ -448,7 +428,7 @@ export function RemoteControlViewerDialog(props: {
     setHostNotice(null);
     inputCapturedRef.current = false;
     setInputCaptured(false);
-    inputQueueRef.current = [];
+    inputScheduler.clear();
     pressedKeysRef.current.clear();
     onOpenChange(false);
     if (
@@ -508,19 +488,16 @@ export function RemoteControlViewerDialog(props: {
     event.preventDefault();
 
     // Locked: the remote app is in mouse-look, so it reads deltas and the
-    // cursor position is meaningless to it. Send eased relative motion and
-    // keep the last known point only so the payload stays well-formed for a
-    // host too old to understand dx/dy.
+    // cursor position is meaningless to it. The scheduler samples these at
+    // display-frame cadence and keeps only one replaceable successor; there is
+    // deliberately no residual motion to replay later.
     if (pointerLockedRef.current) {
       const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
       if (action === "move") {
-        pointerMotionRef.current.push(event.movementX, event.movementY);
-        let step = pointerMotionRef.current.next();
-        while (step !== null) {
-          for (const chunk of splitPointerDelta(step, REMOTE_CONTROL_POINTER_DELTA_LIMIT)) {
-            enqueueInput({ type: "pointer", action, ...point, button, dx: chunk.dx, dy: chunk.dy });
-          }
-          step = pointerMotionRef.current.next();
+        const dx = clampPointerDelta(event.movementX);
+        const dy = clampPointerDelta(event.movementY);
+        if (dx !== 0 || dy !== 0) {
+          enqueueInput({ type: "pointer", action, ...point, button, dx, dy });
         }
         return;
       }
@@ -583,14 +560,22 @@ export function RemoteControlViewerDialog(props: {
       event.preventDefault();
       event.stopPropagation();
       const code = normalizeRemoteControlKeyCode(event.code, platform);
-      if (action === "down") pressedKeysRef.current.set(code, event.key);
-      else pressedKeysRef.current.delete(code);
+      const pressedKey = pressedKeysRef.current.get(code);
+      // One down edge holds the remote key until its up edge. Forwarding every
+      // browser auto-repeat adds no state and creates a latency queue.
+      if (action === "down") {
+        if (event.repeat || pressedKey !== undefined) return;
+        pressedKeysRef.current.set(code, event.key);
+      } else {
+        if (pressedKey === undefined) return;
+        pressedKeysRef.current.delete(code);
+      }
       enqueueInput({
         type: "key",
         action,
         code,
-        key: event.key.slice(0, 64),
-        repeat: action === "down" && event.repeat,
+        key: (pressedKey ?? event.key).slice(0, 64),
+        repeat: false,
       });
     },
     [canKeyboard, enqueueInput, platform],
