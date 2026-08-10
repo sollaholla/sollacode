@@ -32,6 +32,20 @@ export interface TestTurnResponse {
     readonly cwd: string;
     readonly turnCount: number;
   }) => Effect.Effect<void, never>;
+  /**
+   * Leaves the turn running instead of completing it.
+   *
+   * Every fixture turn otherwise ends with `turn.completed` — supplied by the
+   * fixture or synthesized here — which drains the turn and stops its session
+   * almost immediately. Anything that acts on a *running* turn therefore races
+   * that drain, and the reactor skips the provider entirely once the session is
+   * stopped, so the test silently observes nothing.
+   *
+   * Set this when the turn's whole point is to still be running when something
+   * else happens to it, such as an interrupt. Whatever acts on the turn is then
+   * responsible for terminalizing it.
+   */
+  readonly leaveTurnOpen?: boolean;
 }
 
 export type FixtureProviderRuntimeEvent = {
@@ -376,7 +390,9 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
           turns: [...state.snapshot.turns, nextTurn],
         };
 
-        if (deferredTurnCompletedEvents.length === 0) {
+        if (response.leaveTurnOpen === true) {
+          // The caller owns terminalization from here.
+        } else if (deferredTurnCompletedEvents.length === 0) {
           yield* emit({
             type: "turn.completed",
             eventId: EventId.make(yield* randomUUIDv4(input.threadId)),
