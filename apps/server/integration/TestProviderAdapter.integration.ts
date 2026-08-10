@@ -70,6 +70,8 @@ interface SessionState {
   turnCount: number;
   readonly queuedResponses: Array<TestTurnResponse>;
   readonly rollbackCalls: Array<number>;
+  /** Turn left running by `leaveTurnOpen`, terminalized by the next interrupt. */
+  openTurnId: TurnId | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -306,6 +308,7 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
           turnCount: 0,
           queuedResponses: queuedResponsesForNextSession.splice(0),
           rollbackCalls: [],
+          openTurnId: null,
         });
 
         return session;
@@ -391,7 +394,8 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
         };
 
         if (response.leaveTurnOpen === true) {
-          // The caller owns terminalization from here.
+          // Terminalized by the next interrupt, mirroring a real provider.
+          state.openTurnId = turnId;
         } else if (deferredTurnCompletedEvents.length === 0) {
           yield* emit({
             type: "turn.completed",
@@ -420,13 +424,33 @@ export const makeTestProviderAdapterHarness = (options?: MakeTestProviderAdapter
       threadId,
       turnId,
     ) =>
-      sessions.has(threadId)
-        ? Effect.sync(() => {
-            const existing = interruptCallsBySession.get(threadId) ?? [];
-            existing.push(turnId);
-            interruptCallsBySession.set(threadId, existing);
-          })
-        : missingSessionEffect(provider, threadId);
+      Effect.gen(function* () {
+        const state = sessions.get(threadId);
+        if (!state) {
+          return yield* missingSessionEffect(provider, threadId);
+        }
+        const existing = interruptCallsBySession.get(threadId) ?? [];
+        existing.push(turnId);
+        interruptCallsBySession.set(threadId, existing);
+        // A real provider ends the interrupted turn with a terminal event;
+        // without this a `leaveTurnOpen` turn survived its own interrupt and
+        // the projected session stayed running forever.
+        const openTurnId = state.openTurnId;
+        if (openTurnId !== null) {
+          state.openTurnId = null;
+          yield* emit({
+            type: "turn.completed",
+            eventId: EventId.make(yield* randomUUIDv4(threadId)),
+            provider,
+            createdAt: nowIso(),
+            threadId: state.snapshot.threadId,
+            turnId: openTurnId,
+            payload: {
+              state: "interrupted",
+            },
+          });
+        }
+      });
 
     const respondToRequest: ProviderAdapterShape<ProviderAdapterError>["respondToRequest"] = (
       threadId,

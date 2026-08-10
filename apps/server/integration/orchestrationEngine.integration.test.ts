@@ -1443,3 +1443,112 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
     CLAUDE_AGENT_PROVIDER,
   ),
 );
+
+it.live("a settings update sent mid-turn interrupts the codex turn and starts a fresh one", () =>
+  withHarness((harness) =>
+    Effect.gen(function* () {
+      // The stuck-send regression: a "Settings updated:" message (how the app
+      // applies a model switch) used to be steered into the very turn it was
+      // about to interrupt. The delivery obligation had already been claimed as
+      // completed, so when the dying turn swallowed the steer the message was
+      // gone for good — shown as sent, never received, with the turn killed
+      // mid-flight. It must instead interrupt the live turn and deliver as a
+      // fresh turn carrying the new model selection.
+      yield* seedProjectAndThread(harness);
+
+      yield* harness.adapterHarness!.queueTurnResponseForNextSession({
+        events: [
+          {
+            type: "turn.started",
+            ...runtimeBase("evt-settings-switch-1", "2026-02-24T10:20:00.000Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+          },
+          {
+            type: "message.delta",
+            ...runtimeBase("evt-settings-switch-2", "2026-02-24T10:20:00.050Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            delta: "Working on the long task.\n",
+          },
+        ],
+        leaveTurnOpen: true,
+      });
+
+      yield* startTurn({
+        harness,
+        commandId: "cmd-turn-start-settings-switch",
+        messageId: "msg-user-settings-switch",
+        text: "Start a long task",
+      });
+      yield* harness.waitForThread(
+        THREAD_ID,
+        (entry) => entry.session?.status === "running" && entry.session?.activeTurnId != null,
+      );
+
+      // The fresh turn the parked delivery is expected to start.
+      yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
+        events: [
+          {
+            type: "turn.started",
+            ...runtimeBase("evt-settings-switch-3", "2026-02-24T10:20:01.000Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+          },
+          {
+            type: "message.delta",
+            ...runtimeBase("evt-settings-switch-4", "2026-02-24T10:20:01.050Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            delta: "Settings applied; continuing with the new model.\n",
+          },
+          {
+            type: "turn.completed",
+            ...runtimeBase("evt-settings-switch-5", "2026-02-24T10:20:01.100Z"),
+            threadId: THREAD_ID,
+            turnId: FIXTURE_TURN_ID,
+            status: "completed",
+          },
+        ],
+      });
+
+      yield* startTurn({
+        harness,
+        commandId: "cmd-turn-start-settings-update",
+        messageId: "msg-user-settings-update",
+        text: "Settings updated: gpt-5.7-sol with high effort. Apply these settings immediately and continue the current task without waiting for another message.",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.7-sol",
+        },
+      });
+
+      // The live turn is stopped rather than steered into.
+      const interruptCalls = yield* waitForSync(
+        () => harness.adapterHarness!.getInterruptCalls(THREAD_ID),
+        (calls) => calls.length >= 1,
+        "settings update interrupt call",
+      );
+      assert.isAtLeast(interruptCalls.length, 1);
+
+      // The parked delivery then starts a fresh provider turn with the new
+      // model, which lands on the thread as its selection.
+      const settled = yield* harness.waitForThread(
+        THREAD_ID,
+        (entry) =>
+          entry.modelSelection.model === "gpt-5.7-sol" &&
+          entry.messages.some((message) =>
+            message.text.includes("Settings applied; continuing with the new model."),
+          ),
+      );
+      assert.equal(settled.modelSelection.model, "gpt-5.7-sol");
+
+      // And the delivery obligation retired normally — not stuck "sent". The
+      // pending-work projection surfaces any waiting or claimed obligation on
+      // the thread shell, so a clear field is the user-visible proof that
+      // nothing is parked.
+      const drained = yield* harness.waitForThread(THREAD_ID, (entry) => entry.pendingWork == null);
+      assert.isTrue(drained.pendingWork == null);
+    }),
+  ),
+);
