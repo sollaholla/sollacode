@@ -29,6 +29,8 @@ remote-control window. Local threads do not show the control.
 Remote control always starts with approval on the host computer. The host can decline, grant
 view-only access, or allow screen, pointer, and keyboard control. Primary shortcuts translate
 between Command on macOS and Control on Windows. The host can stop the session at any time.
+Pointer motion is sampled to the current display frame and stale unsent motion is replaced rather
+than replayed. Keyboard holds use down/up state edges instead of buffering browser repeat events.
 
 Selecting **Remember for this device** remembers only the capabilities approved for that paired
 device. A later request for additional capabilities still requires approval, and removing then
