@@ -131,6 +131,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL, payload),
   resetRemoteControlInput: () =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_RESET_INPUT_CHANNEL, {}),
+  readRemoteControlPointerLock: () =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_POINTER_LOCK_CHANNEL, {}),
   startFileDrag: (path) => ipcRenderer.invoke(IpcChannels.START_FILE_DRAG_CHANNEL, path),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {

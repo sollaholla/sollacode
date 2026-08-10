@@ -60,11 +60,17 @@ import {
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
-const UPDATE = makePackageManagedProviderMaintenanceResolver({
+export const CodexProviderMaintenance = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@openai/codex",
   homebrewFormula: "codex",
-  nativeUpdate: null,
+  nativeUpdate: {
+    executable: "codex",
+    args: ["update"],
+    lockKey: "codex-standalone",
+    isCommandPath: (commandPath) =>
+      commandPath.replaceAll("\\", "/").includes("/.codex/packages/standalone/"),
+  },
 });
 
 /**
@@ -148,10 +154,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         ...processEnv,
         ...(homeLayout.effectiveHomePath ? { CODEX_HOME: homeLayout.effectiveHomePath } : {}),
       };
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+        CodexProviderMaintenance,
+        {
+          binaryPath: effectiveConfig.binaryPath,
+          env: processEnv,
+        },
+      );
 
       // `makeCodexAdapter` and `makeCodexTextGeneration` have `never` error
       // channels at construction time — their failure modes are all on the

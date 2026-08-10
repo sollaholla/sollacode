@@ -316,6 +316,108 @@ describe("BackgroundPolicy", () => {
     }).pipe(Effect.provide(makeLayer(nominalHostPower))),
   );
 
+  it.effect("keeps provider-status refreshing for a visible client nobody is touching", () =>
+    Effect.gen(function* () {
+      // Watching an agent work is the case where the usage bar matters most and
+      // the user is deliberately not interacting. Holding provider-status to
+      // the foreground test froze the Claude usage reading for as long as the
+      // window sat unfocused and idle.
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* policy.reportClientActivity(
+        AuthSessionId.make("session-1"),
+        RpcClientId.make(1),
+        makeReport({
+          focused: false,
+          recentlyInteracted: false,
+          visible: true,
+          scopes: [{ type: "provider-status" }, { type: "vcs-status", cwd: "/repo" }],
+        }),
+      );
+
+      assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), true);
+      // The relaxation is scoped: costlier polling still waits for foreground.
+      assert.equal(yield* policy.shouldRunScopeWork({ type: "vcs-status", cwd: "/repo" }), false);
+    }).pipe(Effect.provide(makeLayer(nominalHostPower))),
+  );
+
+  it.effect("still pauses provider-status once the client is no longer visible", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* policy.reportClientActivity(
+        AuthSessionId.make("session-1"),
+        RpcClientId.make(1),
+        makeReport({
+          focused: false,
+          recentlyInteracted: false,
+          visible: false,
+          scopes: [{ type: "provider-status" }],
+        }),
+      );
+
+      assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), false);
+    }).pipe(Effect.provide(makeLayer(nominalHostPower))),
+  );
+
+  it.effect("keeps provider-status alive for a connected session that reports no activity", () =>
+    Effect.gen(function* () {
+      // The 2026-08-06 failure: a desktop session issuing ~88 RPCs per 90s held
+      // zero activity leases, so the policy concluded nobody was there and the
+      // Claude usage probe never ran again. A live connection is proof of a
+      // client regardless of what the client reports.
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), false);
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* policy.registerConnection(AuthSessionId.make("session-1"));
+          assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), true);
+          // The fallback is deliberately narrow: it does not resurrect costlier
+          // scopes, which still require a real lease.
+          assert.equal(
+            yield* policy.shouldRunScopeWork({ type: "vcs-status", cwd: "/repo" }),
+            false,
+          );
+        }),
+      );
+
+      // Released with the session scope.
+      assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), false);
+    }).pipe(Effect.provide(makeLayer(nominalHostPower))),
+  );
+
+  it.effect("lets a reporting client veto provider-status once leases exist", () =>
+    Effect.gen(function* () {
+      // A hidden client is a real "no". The connection fallback must not
+      // override a healthy reporter, or hiding the window would stop saving
+      // anything.
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* policy.registerConnection(AuthSessionId.make("session-1"));
+          yield* policy.reportClientActivity(
+            AuthSessionId.make("session-1"),
+            RpcClientId.make(1),
+            makeReport({ visible: false, focused: false, scopes: [{ type: "provider-status" }] }),
+          );
+
+          assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), false);
+        }),
+      );
+    }).pipe(Effect.provide(makeLayer(nominalHostPower))),
+  );
+
+  it.effect("never runs work for a connected session while the host is constrained", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* policy.registerConnection(AuthSessionId.make("session-1"));
+          assert.equal(yield* policy.shouldRunScopeWork({ type: "provider-status" }), false);
+        }),
+      );
+    }).pipe(Effect.provide(makeLayer(constrainedHostPower))),
+  );
+
   it.effect(
     "performance profile allows background scoped work while a scoped lease is active",
     () =>

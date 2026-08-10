@@ -49,6 +49,7 @@ import * as PreviewIpc from "./methods/preview.ts";
 import {
   captureRemoteControlFrame,
   listRemoteControlCaptureSources,
+  readRemoteControlPointerLock,
   resetRemoteControlInput,
   sendRemoteControlInput,
 } from "./methods/remoteControl.ts";
@@ -104,6 +105,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(captureRemoteControlFrame);
   yield* ipc.handle(listRemoteControlCaptureSources);
   yield* ipc.handle(sendRemoteControlInput);
+  yield* ipc.handle(readRemoteControlPointerLock);
   yield* ipc.handle(resetRemoteControlInput);
   yield* ipc.handle(startFileDrag);
   for (const previewMethod of PreviewIpc.methods) {

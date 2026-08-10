@@ -1584,6 +1584,45 @@ const make = Effect.gen(function* () {
             resetsAt: exhaustion.resetsAt,
           },
         });
+        // Recording the activity is not the same as ending the turn. Every
+        // provider is spent, so nothing is going to move this thread until a
+        // quota window rolls over — but the session row was left exactly as it
+        // was, still claiming to run. The silence watchdog then reads a frozen
+        // feed, restarts the turn, and the replacement is rejected within
+        // seconds by the same exhausted account, forever.
+        //
+        // Observed 2026-08-06: Claude's five-hour window closed, failover chose
+        // an already-spent Codex, and the pair re-ran that cycle five times at
+        // ~4m36s intervals before the thread went quiet still wearing a working
+        // spinner nobody could clear.
+        //
+        // Release the thread instead. `error` is the honest status: it stops
+        // the spinner (`derivePhase` maps it to "disconnected"), keeps the
+        // watchdog from restarting a session that is not running, and declines
+        // agent continuation so a failing account is never hammered.
+        const exhaustedAt = event.createdAt;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "usage-limit-session-release"),
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "error",
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            activeTurnId: null,
+            // The reset timestamp is already on the failover activity above;
+            // this string only has to explain why the thread stopped.
+            lastError:
+              "Provider usage limit reached, and no other configured provider has quota available. Send again once a quota window resets, or switch to a provider that still has one.",
+            failureKind: null,
+            updatedAt: exhaustedAt,
+          },
+          createdAt: exhaustedAt,
+        });
         return;
       }
 

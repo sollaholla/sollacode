@@ -52,6 +52,24 @@ export class BackgroundPolicy extends Context.Service<
     readonly hasDemand: (scope: BackgroundScope) => Effect.Effect<boolean>;
     readonly shouldRunScopeWork: (scope: BackgroundScope) => Effect.Effect<boolean>;
     readonly shouldRunOpportunisticWork: Effect.Effect<boolean>;
+    /**
+     * Register a live RPC connection for the lifetime of its session.
+     *
+     * Activity leases are client-cooperative: the client must keep sending
+     * `reportClientActivity`. That is the right signal when it works, and a
+     * silent single point of failure when it does not — a client whose reports
+     * stop looks byte-for-byte identical to no client at all, and every scoped
+     * background job stops with it. Observed 2026-08-06: a desktop session
+     * issuing ~88 RPCs per 90 seconds held zero leases, so the provider health
+     * probe never ran and the Claude usage bar froze for hours.
+     *
+     * A connected session is proof of a client independent of anything the
+     * client chooses to report, so it is tracked separately and used as a floor
+     * (see `BASELINE_CONNECTION_SCOPE_TYPES`).
+     */
+    readonly registerConnection: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/background/BackgroundPolicy") {}
 
@@ -162,6 +180,35 @@ function isClientConstrained(
   return settings.pauseWhenOnBattery && lease.batteryState === "unplugged";
 }
 
+/**
+ * Scopes whose work a *visible* client is enough to justify, without also
+ * requiring focus or a mouse move in the last 45 seconds.
+ *
+ * `provider-status` is the one thing on screen that changes while the user is
+ * deliberately not touching anything: you watch an agent burn quota, and the
+ * usage bar is how you watch it. Holding it to the same foreground test as
+ * expensive polling meant the reading froze exactly when it mattered — the
+ * refresh only fired if the interval happened to elapse during a moment of
+ * interaction. The probe is a cheap, already rate-limited health check, so
+ * "the window is on screen" is the right bar for it.
+ */
+const VISIBLE_ONLY_SCOPE_TYPES: ReadonlySet<BackgroundScope["type"]> = new Set(["provider-status"]);
+
+/**
+ * Scopes that a bare connected session is enough to keep running when *no*
+ * activity lease exists at all.
+ *
+ * This is a fallback for a broken or absent reporter, not a second way to ask
+ * for work. While any lease exists the leases decide — a client that reports
+ * `visible: false` still gets no work, so hiding the window still stops the
+ * probe and the idle-work savings hold. Only the total absence of leases
+ * alongside a live connection triggers it, because that combination cannot
+ * mean "nobody is here": something is connected and talking.
+ */
+const BASELINE_CONNECTION_SCOPE_TYPES: ReadonlySet<BackgroundScope["type"]> = new Set([
+  "provider-status",
+]);
+
 function leaseMayRunScopedWork(
   lease: ClientActivityLease,
   scope: BackgroundScope,
@@ -174,6 +221,9 @@ function leaseMayRunScopedWork(
   }
   if (settings.profile === "performance") {
     return true;
+  }
+  if (VISIBLE_ONLY_SCOPE_TYPES.has(scope.type)) {
+    return lease.visible;
   }
   return isForegroundLease(lease, now);
 }
@@ -288,15 +338,52 @@ export const make = Effect.fn("background.policy.make")(function* () {
   const hasDemand: BackgroundPolicy["Service"]["hasDemand"] = (scope) =>
     Effect.map(snapshot, (current) => current.activeScopeKeys.includes(scopeKey(scope)));
 
+  /**
+   * Sessions with a live RPC connection. Counted rather than stored as a set of
+   * one entry per session so repeated registrations from the same session (a
+   * reconnect racing its own finalizer) cannot drop the count early.
+   */
+  const connectedSessionsRef = yield* Ref.make(new Map<string, number>());
+
+  const registerConnection: BackgroundPolicy["Service"]["registerConnection"] = (sessionId) =>
+    Effect.acquireRelease(
+      Ref.update(connectedSessionsRef, (sessions) => {
+        const next = new Map(sessions);
+        next.set(String(sessionId), (next.get(String(sessionId)) ?? 0) + 1);
+        return next;
+      }),
+      () =>
+        Ref.update(connectedSessionsRef, (sessions) => {
+          const next = new Map(sessions);
+          const remaining = (next.get(String(sessionId)) ?? 0) - 1;
+          if (remaining > 0) next.set(String(sessionId), remaining);
+          else next.delete(String(sessionId));
+          return next;
+        }),
+    ).pipe(Effect.asVoid);
+
   const shouldRunScopeWork: BackgroundPolicy["Service"]["shouldRunScopeWork"] = (scope) =>
     Effect.gen(function* () {
       const [current, settings] = yield* Effect.all([snapshot, backgroundActivitySettings]);
       if (isHostConstrained(current.hostPower, settings)) {
         return false;
       }
-      return current.leases.some((lease) =>
-        leaseMayRunScopedWork(lease, scope, current.updatedAt, settings),
-      );
+      if (
+        current.leases.some((lease) =>
+          leaseMayRunScopedWork(lease, scope, current.updatedAt, settings),
+        )
+      ) {
+        return true;
+      }
+      // No lease permits this scope. That is authoritative when leases exist —
+      // but when there are none at all and a session is still connected, the
+      // reporter is broken rather than the user absent, and baseline scopes
+      // must not be starved by a signal that is simply missing.
+      if (!BASELINE_CONNECTION_SCOPE_TYPES.has(scope.type) || current.leases.length > 0) {
+        return false;
+      }
+      const connectedSessions = yield* Ref.get(connectedSessionsRef);
+      return connectedSessions.size > 0;
     });
 
   const shouldRunOpportunisticWork = Effect.map(
@@ -343,6 +430,7 @@ export const make = Effect.fn("background.policy.make")(function* () {
     hasDemand,
     shouldRunScopeWork,
     shouldRunOpportunisticWork,
+    registerConnection,
   });
 });
 

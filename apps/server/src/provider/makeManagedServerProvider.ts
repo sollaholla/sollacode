@@ -187,27 +187,50 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
 
+  /**
+   * How soon to re-check after a tick was skipped for lack of demand.
+   *
+   * A skipped tick used to cost a whole refresh interval: the loop asked
+   * "is anyone watching?" exactly once every five minutes and, on a `no`, slept
+   * another five. Watching an agent work without touching the mouse is enough
+   * to miss it — the demand lease needs a *foreground* client — so the provider
+   * snapshot, and with it the Claude usage bar, could sit frozen indefinitely
+   * while the app was open and plainly in use.
+   *
+   * Re-checking on a short cadence keeps the idle-work saving (nothing runs
+   * while there is genuinely no demand) but collapses the cost of a miss from
+   * one full interval to this.
+   */
+  const DEFERRED_REFRESH_RECHECK = Duration.seconds(30);
+  const refreshOwedRef = yield* Ref.make(false);
+
   yield* Effect.forever(
     getRefreshInterval.pipe(
       Effect.flatMap((refreshInterval) =>
-        Effect.raceFirst(
-          Effect.sleep(
-            Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) <= 0
-              ? "60 seconds"
-              : refreshInterval,
-          ).pipe(Effect.as(true)),
-          Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),
-        ).pipe(
-          Effect.flatMap((intervalElapsed) =>
-            intervalElapsed && Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
-              ? hasProviderStatusDemand.pipe(
-                  Effect.flatMap((shouldRefresh) =>
-                    shouldRefresh ? refreshSnapshot().pipe(Effect.asVoid) : Effect.void,
-                  ),
-                )
-              : Effect.void,
-          ),
-        ),
+        Effect.gen(function* () {
+          const configuredMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
+          const refreshOwed = yield* Ref.get(refreshOwedRef);
+          const sleepFor =
+            configuredMs <= 0
+              ? Duration.seconds(60)
+              : refreshOwed && Duration.toMillis(DEFERRED_REFRESH_RECHECK) < configuredMs
+                ? DEFERRED_REFRESH_RECHECK
+                : Duration.fromInputUnsafe(refreshInterval);
+          const intervalElapsed = yield* Effect.raceFirst(
+            Effect.sleep(sleepFor).pipe(Effect.as(true)),
+            Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),
+          );
+          if (!intervalElapsed || configuredMs <= 0) return;
+          const shouldRefresh = yield* hasProviderStatusDemand;
+          if (!shouldRefresh) {
+            // Remember the miss so the next check comes quickly rather than a
+            // full interval later.
+            yield* Ref.set(refreshOwedRef, true);
+            return;
+          }
+          yield* Ref.set(refreshOwedRef, false);
+          yield* refreshSnapshot().pipe(Effect.asVoid);
+        }),
       ),
       Effect.ignoreCause({ log: true }),
     ),

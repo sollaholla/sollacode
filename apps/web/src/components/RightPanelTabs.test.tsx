@@ -2,7 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { reorderSurfaces } from "~/rightPanelStore";
+
 import {
+  isPointerOverTabStrip,
   resolveHorizontalTabWheelDelta,
   RightPanelEmptyState,
   routeCapturedHorizontalTabWheel,
@@ -103,6 +106,8 @@ describe("right-panel tab-strip wheel routing", () => {
       deltaX: 32,
       deltaY: 0,
       deltaMode: 0,
+      clientX: 120,
+      clientY: 20,
       composedPath: () => [closeButton, { role: "tab" }, viewport, { role: "document" }],
       preventDefault: vi.fn(),
       stopPropagation: vi.fn(),
@@ -122,6 +127,8 @@ describe("right-panel tab-strip wheel routing", () => {
       deltaX: 32,
       deltaY: 0,
       deltaMode: 0,
+      clientX: 900,
+      clientY: 600,
       composedPath: () => [{ role: "conversation" }, { role: "document" }],
       preventDefault: vi.fn(),
       stopPropagation: vi.fn(),
@@ -132,6 +139,74 @@ describe("right-panel tab-strip wheel routing", () => {
     expect(viewport.scrollLeft).toBe(100);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(event.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  const STRIP_BOX = { left: 0, top: 0, right: 400, bottom: 44 };
+
+  it("keeps scrolling when a hovered child retargets the gesture off the viewport", () => {
+    const viewport = { clientWidth: 400, scrollWidth: 1_000, scrollLeft: 100 };
+    const event = {
+      deltaX: 32,
+      deltaY: 0,
+      deltaMode: 0,
+      clientX: 180,
+      clientY: 20,
+      // A label span, close glyph, or overlay can leave the viewport out of the
+      // composed path entirely; the pointer is still over the strip.
+      composedPath: () => [{ tagName: "SPAN" }, { role: "document" }],
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      stopImmediatePropagation: vi.fn(),
+    };
+
+    expect(routeCapturedHorizontalTabWheel(viewport, event, () => STRIP_BOX)).toBe(true);
+    expect(viewport.scrollLeft).toBe(132);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("still declines a retargeted gesture whose pointer is outside the strip", () => {
+    const viewport = { clientWidth: 400, scrollWidth: 1_000, scrollLeft: 100 };
+    const event = {
+      deltaX: 32,
+      deltaY: 0,
+      deltaMode: 0,
+      clientX: 180,
+      clientY: 500,
+      composedPath: () => [{ tagName: "SPAN" }, { role: "document" }],
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      stopImmediatePropagation: vi.fn(),
+    };
+
+    expect(routeCapturedHorizontalTabWheel(viewport, event, () => STRIP_BOX)).toBe(false);
+    expect(viewport.scrollLeft).toBe(100);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("reads the strip box only when the composed path misses", () => {
+    const viewport = { clientWidth: 400, scrollWidth: 1_000, scrollLeft: 100 };
+    const readBox = vi.fn(() => STRIP_BOX);
+    const event = {
+      deltaX: 32,
+      deltaY: 0,
+      deltaMode: 0,
+      clientX: 180,
+      clientY: 20,
+      composedPath: () => [viewport],
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      stopImmediatePropagation: vi.fn(),
+    };
+
+    expect(routeCapturedHorizontalTabWheel(viewport, event, readBox)).toBe(true);
+    expect(readBox).not.toHaveBeenCalled();
+  });
+
+  it("treats the strip box edges as inside", () => {
+    expect(isPointerOverTabStrip(STRIP_BOX, { clientX: 0, clientY: 0 })).toBe(true);
+    expect(isPointerOverTabStrip(STRIP_BOX, { clientX: 400, clientY: 44 })).toBe(true);
+    expect(isPointerOverTabStrip(STRIP_BOX, { clientX: 401, clientY: 44 })).toBe(false);
+    expect(isPointerOverTabStrip(STRIP_BOX, { clientX: 400, clientY: 45 })).toBe(false);
   });
 
   it("leaves the wheel available to an ancestor when the strip cannot move farther", () => {
@@ -149,6 +224,36 @@ describe("right-panel tab-strip wheel routing", () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(event.stopPropagation).not.toHaveBeenCalled();
     expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
+});
+
+describe("right-panel tab reordering", () => {
+  const surfaces = [
+    { id: "diff", kind: "diff" },
+    { id: "files", kind: "files" },
+    { id: "plan", kind: "plan" },
+  ] as const;
+
+  it("moves a tab forward into the slot it was dropped on", () => {
+    expect(reorderSurfaces(surfaces, "diff", "plan").map((surface) => surface.id)).toEqual([
+      "files",
+      "plan",
+      "diff",
+    ]);
+  });
+
+  it("moves a tab backward into the slot it was dropped on", () => {
+    expect(reorderSurfaces(surfaces, "plan", "diff").map((surface) => surface.id)).toEqual([
+      "plan",
+      "diff",
+      "files",
+    ]);
+  });
+
+  it("returns the same array for a no-op drop so the store skips a write", () => {
+    expect(reorderSurfaces(surfaces, "files", "files")).toBe(surfaces);
+    expect(reorderSurfaces(surfaces, "files", "missing")).toBe(surfaces);
+    expect(reorderSurfaces(surfaces, "missing", "files")).toBe(surfaces);
   });
 });
 

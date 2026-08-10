@@ -4,7 +4,11 @@ import { SparklesIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
+import {
+  isProviderInstancePickerReady,
+  isProviderInstancePickerSelectable,
+  type ProviderInstanceEntry,
+} from "../../providerInstances";
 
 /**
  * Build the hover tooltip for an instance button. Mirrors the old
@@ -137,16 +141,17 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
 
           {/* Instance buttons (one per configured instance — built-in + custom) */}
           {props.instanceEntries.map((entry) => {
-            const isUnavailable = !isProviderInstancePickerReady(entry);
+            const isNotReady = !isProviderInstancePickerReady(entry);
+            const isSelectable = isProviderInstancePickerSelectable(entry);
             const isContextDisabled = props.disabledInstanceIds?.has(entry.instanceId) ?? false;
-            const isDisabled = isUnavailable || isContextDisabled;
+            const isDisabled = !isSelectable || isContextDisabled;
             const isSelected = props.selectedInstanceId === entry.instanceId;
             const isHovered = hoveredInstanceId === entry.instanceId;
             const showNewBadge = props.newBadgeInstanceIds?.has(entry.instanceId) ?? false;
             const showInstanceBadge =
               Boolean(entry.accentColor) || (duplicateDriverCounts.get(entry.driverKind) ?? 0) > 1;
 
-            const tooltip = isUnavailable
+            const tooltip = isNotReady
               ? describeUnavailableInstance(entry)
               : isContextDisabled
                 ? (props.getDisabledInstanceTooltip?.(entry) ?? entry.displayName)

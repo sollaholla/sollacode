@@ -5,6 +5,23 @@ import type {
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { restrictToFirstScrollableAncestor, restrictToHorizontalAxis } from "@dnd-kit/modifiers";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   ClipboardList,
   FileDiff,
   Files,
@@ -18,6 +35,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactElement,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useRef,
@@ -68,6 +86,8 @@ interface RightPanelTabsProps {
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
   onCloseSurfacesToRight: (surface: RightPanelSurface) => void;
   onCloseAllSurfaces: () => void;
+  /** Moves `surface` to the slot currently held by `overSurfaceId`. */
+  onReorderSurface: (surface: RightPanelSurface, overSurfaceId: string) => void;
   onCopyFilePath: (relativePath: string) => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
@@ -124,8 +144,30 @@ interface HorizontalTabWheelEvent {
   stopImmediatePropagation: () => void;
 }
 
+interface HorizontalTabViewportBox {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
 interface CapturedHorizontalTabWheelEvent extends HorizontalTabWheelEvent {
   composedPath: () => readonly unknown[];
+  readonly clientX: number;
+  readonly clientY: number;
+}
+
+/** True when the gesture's pointer sits inside the strip's own box. */
+export function isPointerOverTabStrip(
+  box: HorizontalTabViewportBox,
+  pointer: { readonly clientX: number; readonly clientY: number },
+): boolean {
+  return (
+    pointer.clientX >= box.left &&
+    pointer.clientX <= box.right &&
+    pointer.clientY >= box.top &&
+    pointer.clientY <= box.bottom
+  );
 }
 
 /** Routes a wheel gesture to the strip regardless of which nested control is hovered. */
@@ -156,16 +198,28 @@ export function routeHorizontalTabWheel(
 }
 
 /**
- * Claims a window-captured gesture only when it originated inside this strip.
+ * Claims a window-captured gesture only when it is aimed at this strip.
  *
  * Window capture runs before document-level popovers and scroll locks, which
  * otherwise get the first chance to cancel a wheel event aimed at a tab child.
+ *
+ * Ownership is geometric as well as path-based. The composed path is the only
+ * part of this router that varies with which nested control the pointer sits
+ * over, so a retargeted event — a tooltip, an overlay, an SVG glyph inside the
+ * close button — used to drop the gesture and stall the strip mid-scroll. The
+ * pointer's position over the strip's box cannot vary that way, so either
+ * signal is enough to claim the gesture.
  */
 export function routeCapturedHorizontalTabWheel(
   viewport: HorizontalTabViewport,
   event: CapturedHorizontalTabWheelEvent,
+  /** Read lazily: the path check covers the common case without a layout read. */
+  readBox?: (() => HorizontalTabViewportBox | null) | null,
 ): boolean {
-  if (!event.composedPath().includes(viewport)) return false;
+  if (!event.composedPath().includes(viewport)) {
+    const box = readBox?.() ?? null;
+    if (box === null || !isPointerOverTabStrip(box, event)) return false;
+  }
   return routeHorizontalTabWheel(viewport, event);
 }
 
@@ -423,6 +477,110 @@ function SurfaceIcon({
   }
 }
 
+/**
+ * One tab, draggable by its label. The close button is deliberately not a drag
+ * handle: it is a 16px target whose only job is closing the tab.
+ */
+function SortableTab(props: {
+  surface: RightPanelSurface;
+  active: boolean;
+  pending: boolean;
+  title: string;
+  sideChatStatus: SideChatTabStatus | null;
+  sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  theme: "light" | "dark";
+  /** Set while a drag is settling so the trailing click cannot activate a tab. */
+  dragSuppressedRef: RefObject<boolean>;
+  onActivate: (surface: RightPanelSurface) => void;
+  onCloseSurface: (surface: RightPanelSurface) => void;
+  onTabMouseDown: (event: ReactMouseEvent) => void;
+  onTabAuxClick: (event: ReactMouseEvent, surface: RightPanelSurface) => void;
+  onTabContextMenu: (event: ReactMouseEvent, surface: RightPanelSurface) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+    isOver,
+  } = useSortable({ id: props.surface.id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      data-active-tab={props.active}
+      // A drag that ends without a trailing click would otherwise leave the
+      // suppression flag armed and swallow the next real activation.
+      onPointerDown={() => {
+        props.dragSuppressedRef.current = false;
+      }}
+      onMouseDown={props.onTabMouseDown}
+      onAuxClick={(event) => props.onTabAuxClick(event, props.surface)}
+      onContextMenu={(event) => void props.onTabContextMenu(event, props.surface)}
+      className={cn(
+        "group flex h-7 min-w-25 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm",
+        props.active
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+        isDragging && "z-20 opacity-80",
+        isOver && !isDragging && "ring-1 ring-primary/40",
+      )}
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              ref={setActivatorNodeRef}
+              className="flex min-w-0 flex-1 items-center gap-1.5"
+              onClick={() => {
+                if (props.dragSuppressedRef.current) {
+                  props.dragSuppressedRef.current = false;
+                  return;
+                }
+                props.onActivate(props.surface);
+              }}
+              {...attributes}
+              {...listeners}
+            >
+              <SurfaceIcon
+                surface={props.surface}
+                sessions={props.sessions}
+                sideChatStatus={props.sideChatStatus}
+                theme={props.theme}
+              />
+              <span className="truncate">{props.title}</span>
+            </button>
+          }
+        />
+        <TooltipPopup>{props.title}</TooltipPopup>
+      </Tooltip>
+      <button
+        type="button"
+        className={cn(
+          "relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted focus:opacity-100",
+          props.pending ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        )}
+        aria-label={`Close ${props.title}`}
+        onClick={() => props.onCloseSurface(props.surface)}
+      >
+        {props.pending ? (
+          <>
+            <span className="size-2 rounded-full bg-current group-hover:hidden" aria-hidden />
+            <X className="hidden size-3 group-hover:block" />
+          </>
+        ) : (
+          <X className="size-3" />
+        )}
+      </button>
+    </div>
+  );
+}
+
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
   const { resolvedTheme } = useTheme();
@@ -489,6 +647,27 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     if (event.button !== 1) return;
     event.preventDefault();
   }, []);
+  const dragSuppressedRef = useRef(false);
+  const tabSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const handleTabDragStart = useCallback(() => {
+    dragSuppressedRef.current = true;
+  }, []);
+  const handleTabDragCancel = useCallback(() => {
+    dragSuppressedRef.current = false;
+  }, []);
+  const handleTabDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const surface = props.surfaces.find((entry) => entry.id === active.id);
+      if (!surface) return;
+      props.onReorderSurface(surface, String(over.id));
+    },
+    [props],
+  );
   const handleTabAuxClick = useCallback(
     (event: ReactMouseEvent, surface: RightPanelSurface) => {
       if (event.button !== 1) return;
@@ -505,7 +684,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     if (!viewport) return;
 
     const handleWheel = (event: WheelEvent) => {
-      routeCapturedHorizontalTabWheel(viewport, event);
+      routeCapturedHorizontalTabWheel(viewport, event, () => viewport.getBoundingClientRect());
     };
 
     // Own the gesture at the first DOM boundary. Document-level popovers and
@@ -544,72 +723,42 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           data-right-panel-tab-list
         >
           <div className="flex h-full w-max min-w-full items-center gap-1">
-            {props.surfaces.map((surface) => {
-              const active = surface.id === props.activeSurfaceId;
-              const pending = props.pendingSurfaceIds.has(surface.id);
-              const sideChatStatus =
-                surface.kind === "side-chat"
-                  ? (props.sideChatStatusByThreadId.get(surface.resourceId) ?? null)
-                  : null;
-              const title = surfaceTitle(surface, props.previewSessions, props.terminalLabelsById);
-              return (
-                <div
-                  key={surface.id}
-                  data-active-tab={active}
-                  onMouseDown={handleTabMouseDown}
-                  onAuxClick={(event) => handleTabAuxClick(event, surface)}
-                  onContextMenu={(event) => void handleTabContextMenu(event, surface)}
-                  className={cn(
-                    "group flex h-7 min-w-25 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm",
-                    active
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                  )}
-                >
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-1.5"
-                          onClick={() => props.onActivate(surface)}
-                        >
-                          <SurfaceIcon
-                            surface={surface}
-                            sessions={props.previewSessions}
-                            sideChatStatus={sideChatStatus}
-                            theme={resolvedTheme}
-                          />
-                          <span className="truncate">{title}</span>
-                        </button>
-                      }
-                    />
-                    <TooltipPopup>{title}</TooltipPopup>
-                  </Tooltip>
-                  <button
-                    type="button"
-                    className={cn(
-                      "relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted focus:opacity-100",
-                      pending ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                    )}
-                    aria-label={`Close ${title}`}
-                    onClick={() => props.onCloseSurface(surface)}
-                  >
-                    {pending ? (
-                      <>
-                        <span
-                          className="size-2 rounded-full bg-current group-hover:hidden"
-                          aria-hidden
-                        />
-                        <X className="hidden size-3 group-hover:block" />
-                      </>
-                    ) : (
-                      <X className="size-3" />
-                    )}
-                  </button>
-                </div>
-              );
-            })}
+            <DndContext
+              sensors={tabSensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToHorizontalAxis, restrictToFirstScrollableAncestor]}
+              onDragStart={handleTabDragStart}
+              onDragEnd={handleTabDragEnd}
+              onDragCancel={handleTabDragCancel}
+            >
+              <SortableContext
+                items={props.surfaces.map((surface) => surface.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                {props.surfaces.map((surface) => (
+                  <SortableTab
+                    key={surface.id}
+                    surface={surface}
+                    active={surface.id === props.activeSurfaceId}
+                    pending={props.pendingSurfaceIds.has(surface.id)}
+                    title={surfaceTitle(surface, props.previewSessions, props.terminalLabelsById)}
+                    sideChatStatus={
+                      surface.kind === "side-chat"
+                        ? (props.sideChatStatusByThreadId.get(surface.resourceId) ?? null)
+                        : null
+                    }
+                    sessions={props.previewSessions}
+                    theme={resolvedTheme}
+                    dragSuppressedRef={dragSuppressedRef}
+                    onActivate={props.onActivate}
+                    onCloseSurface={props.onCloseSurface}
+                    onTabMouseDown={handleTabMouseDown}
+                    onTabAuxClick={handleTabAuxClick}
+                    onTabContextMenu={handleTabContextMenu}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
             {props.surfaces.length > 0 ? (
               <Menu>
                 <MenuTrigger

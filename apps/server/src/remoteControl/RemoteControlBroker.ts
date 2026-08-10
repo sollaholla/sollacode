@@ -13,6 +13,7 @@ import {
   type RemoteControlHost,
   type RemoteControlHostEndInput,
   type RemoteControlHostPublishFrameInput,
+  type RemoteControlHostReportStatusInput,
   type RemoteControlHostPublishVideoChunkInput,
   type RemoteControlVideoChunk,
   type RemoteControlHostRespondInput,
@@ -30,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -142,6 +144,10 @@ export class RemoteControlBroker extends Context.Service<
       input: RemoteControlHostPublishVideoChunkInput,
       hostSessionId: AuthSessionId,
     ) => Effect.Effect<void, RemoteControlBrokerError>;
+    readonly reportHostStatus: (
+      input: RemoteControlHostReportStatusInput,
+      hostSessionId: AuthSessionId,
+    ) => Effect.Effect<void, RemoteControlBrokerError>;
     readonly endByHost: (
       input: RemoteControlHostEndInput,
       hostSessionId: AuthSessionId,
@@ -189,6 +195,41 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     host: null,
     sessions: new Map(),
   });
+
+  /**
+   * Last pointer-lock state broadcast per session.
+   *
+   * The host stamps its current state on every frame it publishes, which is
+   * tens of times a second. Only the transitions are interesting to the
+   * controller, so this collapses that stream into edges — otherwise the
+   * changes PubSub would carry a redundant event per frame and evict real
+   * session updates out of its bounded buffer.
+   */
+  const pointerLockBySession = yield* Ref.make(new Map<string, boolean>());
+
+  /**
+   * Last host-status signature broadcast per session, for the same reason: the
+   * host re-reports on every failed input, and only the edges are interesting.
+   */
+  const hostStatusBySession = yield* Ref.make(new Map<string, string>());
+
+  const publishPointerLockIfChanged = Effect.fn("RemoteControlBroker.publishPointerLock")(
+    function* (record: RemoteControlSessionRecord, locked: boolean | undefined) {
+      // A host that never reports says nothing about lock state, as opposed to
+      // reporting "unlocked"; treating absence as false would fight a host that
+      // is simply older than this field.
+      if (locked === undefined) return;
+      const sessionId = String(record.session.sessionId);
+      const seen = yield* Ref.get(pointerLockBySession);
+      if (seen.get(sessionId) === locked) return;
+      yield* Ref.update(pointerLockBySession, (current) => {
+        const next = new Map(current);
+        next.set(sessionId, locked);
+        return next;
+      });
+      yield* PubSub.publish(record.changes, { type: "pointer-lock-changed", locked });
+    },
+  );
 
   const publishSession = Effect.fn("RemoteControlBroker.publishSession")(function* (
     record: RemoteControlSessionRecord,
@@ -584,6 +625,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           type: "frame",
           frame: input.frame,
         });
+        yield* publishPointerLockIfChanged(result.record, input.pointerLocked);
         return;
     }
   });
@@ -660,6 +702,9 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
                   sessionId: input.chunk.sessionId,
                 });
               }
+              // Video is the default transport, so this is the path that
+              // actually carries lock state in a normal session.
+              yield* publishPointerLockIfChanged(result.record, input.pointerLocked);
               yield* SynchronizedRef.update(state, (current) => {
                 const record = current.sessions.get(input.chunk.sessionId);
                 if (
@@ -683,6 +728,46 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         }),
       ),
     );
+  });
+
+  /**
+   * Relays a transient host condition to the controller without touching the
+   * session's status.
+   *
+   * The host reports edges, but it can restart mid-outage — so this de-dupes
+   * again here rather than trusting the caller, and stays silent on a repeat.
+   * Deliberately tolerant of a session it no longer recognises: a status report
+   * racing session teardown is normal, and failing it would only turn a
+   * best-effort notice into an error the host has to handle.
+   */
+  const reportHostStatus: RemoteControlBroker["Service"]["reportHostStatus"] = Effect.fn(
+    "RemoteControlBroker.reportHostStatus",
+  )(function* (input, hostSessionId) {
+    const current = yield* SynchronizedRef.get(state);
+    const host = current.host;
+    const record = current.sessions.get(input.sessionId);
+    if (!record) return;
+    if (
+      !host ||
+      host.sessionId !== hostSessionId ||
+      host.host.clientId !== input.clientId ||
+      host.connectionId !== input.connectionId ||
+      record.hostConnectionId !== input.connectionId
+    ) {
+      return yield* new RemoteControlSessionAccessDeniedError({ sessionId: input.sessionId });
+    }
+    if (record.session.status !== "approved") return;
+
+    const sessionId = String(input.sessionId);
+    const signature = `${input.status.state}:${input.status.reason ?? ""}`;
+    const seen = yield* Ref.get(hostStatusBySession);
+    if (seen.get(sessionId) === signature) return;
+    yield* Ref.update(hostStatusBySession, (existing) => {
+      const next = new Map(existing);
+      next.set(sessionId, signature);
+      return next;
+    });
+    yield* PubSub.publish(record.changes, { type: "host-status", status: input.status });
   });
 
   const endByHostUnlocked: RemoteControlBroker["Service"]["endByHost"] = Effect.fn(
@@ -977,6 +1062,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     publishFrame,
     publishVideoChunk,
     endByHost,
+    reportHostStatus,
     watch,
     sendInput,
     cancel,

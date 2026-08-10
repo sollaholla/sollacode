@@ -313,10 +313,39 @@ function failoverModel(
   return usable.find((entry) => entry.isDefault === true) ?? usable[0] ?? null;
 }
 
+/**
+ * Whether this provider's *account* is out of quota, as opposed to one of its
+ * models. Claude meters per model family and is screened in `failoverModel`;
+ * Codex meters the whole account, so a per-model screen can never see it.
+ *
+ * Without this, failover happily hands the turn to a provider whose own health
+ * probe already said it was spent, and the replacement turn is rejected on
+ * arrival. Observed 2026-08-06: Claude hit its five-hour window, failover chose
+ * Codex, and Codex answered "You've hit your usage limit … try again at Aug
+ * 8th" — a two-day reset — within seven seconds, leaving the thread with no
+ * provider and no way to say so.
+ *
+ * Only a positive, unexpired signal disqualifies a candidate. A missing or
+ * stale snapshot says nothing, and must not exclude an otherwise usable
+ * provider.
+ */
+function isProviderAccountExhausted(provider: ServerProvider, nowEpochMs: number | null): boolean {
+  const exhaustion = detectProviderUsageLimitExhaustion(provider.driver, provider.accountUsage);
+  if (exhaustion === null || exhaustion.resetsAt === null) {
+    return exhaustion !== null;
+  }
+  const resetAtMs = epochMilliseconds(exhaustion.resetsAt);
+  // A window that has already rolled over is stale, not exhausted.
+  return !(resetAtMs !== null && nowEpochMs !== null && resetAtMs <= nowEpochMs);
+}
+
 function targetFromProvider(
   provider: ServerProvider,
   nowEpochMs: number | null,
 ): ProviderFailoverTarget | null {
+  if (isProviderAccountExhausted(provider, nowEpochMs)) {
+    return null;
+  }
   const model = failoverModel(provider, nowEpochMs);
   if (!model) {
     return null;

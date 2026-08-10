@@ -787,6 +787,7 @@ const buildAppUnderTest = (options?: {
         Layer.mock(BackgroundPolicy.BackgroundPolicy)({
           reportClientActivity: () => Effect.void,
           removeRpcClient: () => Effect.void,
+          registerConnection: () => Effect.void,
           reportHostPowerState: () => Effect.void,
           snapshot: Effect.succeed({
             hostPower: {

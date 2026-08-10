@@ -3,6 +3,7 @@ import {
   MessageId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -57,6 +58,140 @@ export function shouldAutoContinueAgentThread(
     assistantText,
     turnInteractionMode,
   });
+}
+
+/**
+ * A backgrounded task keeps running after the turn that launched it ends —
+ * that is the whole point of backgrounding one. The agent therefore signs off
+ * *in order to wait*, and its reply carries no AGENT_STOP, so the continuation
+ * gate above reads "keep going" and dispatches a resume immediately. The agent
+ * wakes with the task still mid-flight, finds nothing to act on, and burns a
+ * continuation on a wait it was already doing correctly.
+ *
+ * The harness already re-invokes the agent when a tracked task exits, so the
+ * fix is to let *that* be the wake signal and have the continuation defer while
+ * any task is still outstanding. It must only defer, never cancel: a provider
+ * that drops a terminal `task.completed` would otherwise strand the thread
+ * forever, so the caller pairs this with a bounded grace window.
+ */
+const PLAN_TASK_TYPE = "plan";
+
+interface TaskActivityPayload {
+  readonly taskId?: unknown;
+  readonly taskType?: unknown;
+}
+
+function taskActivityFields(activity: OrchestrationThreadActivity): {
+  readonly taskId: string;
+  readonly taskType: string | null;
+} | null {
+  const payload = activity.payload as TaskActivityPayload | undefined;
+  const taskId = typeof payload?.taskId === "string" ? payload.taskId : null;
+  if (taskId === null || taskId.length === 0) return null;
+  return {
+    taskId,
+    taskType: typeof payload?.taskType === "string" ? payload.taskType : null,
+  };
+}
+
+export interface OutstandingBackgroundTask {
+  readonly taskId: string;
+  /** When the task was announced, used to bound how long the gate may wait. */
+  readonly startedAt: string;
+  /** Newest `task.started`/`task.progress` timestamp seen for this task. */
+  readonly lastActivityAt: string;
+}
+
+/**
+ * Folds the append-only `task.*` stream into the set of tasks that were started
+ * and never reported terminal. Plan tasks are excluded: they are a UI-side plan
+ * refresh that runs outside the turn stream and nothing waits on them.
+ */
+export function outstandingBackgroundTasks(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OutstandingBackgroundTask> {
+  const running = new Map<string, OutstandingBackgroundTask>();
+  for (const activity of activities) {
+    const fields = taskActivityFields(activity);
+    if (fields === null) continue;
+    switch (activity.kind) {
+      case "task.started": {
+        if (fields.taskType === PLAN_TASK_TYPE) break;
+        running.set(fields.taskId, {
+          taskId: fields.taskId,
+          startedAt: activity.createdAt,
+          lastActivityAt: activity.createdAt,
+        });
+        break;
+      }
+      case "task.progress": {
+        const existing = running.get(fields.taskId);
+        if (existing !== undefined) {
+          running.set(fields.taskId, { ...existing, lastActivityAt: activity.createdAt });
+        }
+        break;
+      }
+      case "task.completed": {
+        running.delete(fields.taskId);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return [...running.values()];
+}
+
+/**
+ * How long the continuation may defer to an outstanding task before giving up
+ * and resuming anyway. Long enough for a real build, test run, or sub-agent;
+ * short enough that a provider which never emits `task.completed` costs one
+ * delay rather than a dead thread. Measured from the task's newest activity, so
+ * a task that keeps reporting progress keeps extending the window.
+ */
+export const BACKGROUND_TASK_CONTINUATION_GRACE_MS = 15 * 60_000;
+
+/**
+ * Whether an agent continuation should wait rather than dispatch, because the
+ * turn ended with work still running that the agent is expecting a result from.
+ * Returns null when there is nothing to wait for or the grace window has
+ * expired — in both cases the continuation proceeds exactly as it does today.
+ */
+export function agentContinuationShouldAwaitBackgroundTask(input: {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly nowEpochMs: number;
+  readonly graceMs?: number;
+  /**
+   * When this server process started. Tasks announced before it belong to a
+   * dead process and are skipped outright.
+   *
+   * Waiting is only justified because the harness re-invokes the agent when a
+   * task it owns exits. A task from a previous process has no live owner, so
+   * that wake signal can never fire for it: the only thing that ends the wait
+   * is the orphan sweep writing a late `task.completed` ("Task stopped"), which
+   * is lazy — observed 2026-08-07 landing 4h47m after the restart that stranded
+   * it. Without this bound a restart costs every affected thread the full grace
+   * window of "Agent auto-resuming" before it moves.
+   */
+  readonly processStartedAtEpochMs?: number;
+}): OutstandingBackgroundTask | null {
+  const graceMs = input.graceMs ?? BACKGROUND_TASK_CONTINUATION_GRACE_MS;
+  let newest: { readonly task: OutstandingBackgroundTask; readonly at: number } | null = null;
+  for (const task of outstandingBackgroundTasks(input.activities)) {
+    const at = Date.parse(task.lastActivityAt);
+    // An unparseable timestamp cannot be aged out, so it must not gate the
+    // continuation: treating it as fresh would wait forever.
+    if (!Number.isFinite(at)) continue;
+    if (input.nowEpochMs - at >= graceMs) continue;
+    if (input.processStartedAtEpochMs !== undefined) {
+      const startedAt = Date.parse(task.startedAt);
+      // An unparseable start cannot be proven to predate this process, so it
+      // keeps the grace window rather than being discarded as orphaned.
+      if (Number.isFinite(startedAt) && startedAt < input.processStartedAtEpochMs) continue;
+    }
+    if (newest === null || at > newest.at) newest = { task, at };
+  }
+  return newest?.task ?? null;
 }
 
 /** Stable IDs make repeated finalization events and reconnect races idempotent. */

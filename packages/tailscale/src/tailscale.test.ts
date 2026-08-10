@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -191,6 +192,85 @@ describe("tailscale", () => {
         tailnetIpv4Addresses: ["100.90.1.2"],
       });
     });
+  });
+
+  const WINDOWS_INSTALL_PATH = "C:\\Program Files\\Tailscale\\tailscale.exe";
+  const notFound = () =>
+    PlatformError.systemError({
+      _tag: "NotFound",
+      module: "ChildProcess",
+      method: "spawn",
+      cause: new Error("ENOENT"),
+    });
+
+  /**
+   * Windows launchers can hand the app a PATH snapshot that predates the
+   * Tailscale install, so the bare name is absent even though Tailscale is
+   * installed and running. Detection must fall through to the canonical path
+   * instead of reporting "not installed".
+   */
+  it.effect("falls back to the Windows install path when the bare name is absent", () => {
+    const attempted: string[] = [];
+    const layer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const child = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+        };
+        attempted.push(child.command);
+        return child.command === WINDOWS_INSTALL_PATH
+          ? Effect.succeed(mockHandle({ stdout: JSON.stringify({ BackendState: "Running" }) }))
+          : Effect.fail(notFound());
+      }),
+    );
+
+    return Effect.gen(function* () {
+      yield* readTailscaleStatus.pipe(Effect.provide(layer));
+      assert.deepEqual(attempted, ["tailscale.exe", WINDOWS_INSTALL_PATH]);
+    }).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+  });
+
+  it.effect("does not retry elsewhere when the executable exists but spawning fails", () => {
+    // Retrying a permission failure at another path would surface it as
+    // "Tailscale not found", pointing the user at the wrong problem.
+    const attempted: string[] = [];
+    const permissionDenied = PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "ChildProcess",
+      method: "spawn",
+      cause: new Error("EACCES"),
+    });
+    const layer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        attempted.push((command as unknown as { readonly command: string }).command);
+        return Effect.fail(permissionDenied);
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
+      assert.instanceOf(error, TailscaleCommandSpawnError);
+      assert.isFalse(isTailscaleNotInstalledError(error));
+      assert.deepEqual(attempted, ["tailscale.exe"]);
+    }).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+  });
+
+  it.effect("does not look for Windows install paths on other platforms", () => {
+    const attempted: string[] = [];
+    const layer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        attempted.push((command as unknown as { readonly command: string }).command);
+        return Effect.fail(notFound());
+      }),
+    );
+
+    return Effect.gen(function* () {
+      yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
+      assert.deepEqual(attempted, ["tailscale"]);
+    }).pipe(Effect.provideService(HostProcessPlatform, "darwin"));
   });
 
   it.effect("preserves tailscale spawn failures as causes", () => {

@@ -74,6 +74,18 @@ export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boo
   return entry.enabled && entry.isAvailable && entry.status === "ready";
 }
 
+/**
+ * Whether the picker should let the user choose this instance.
+ *
+ * A health probe is advisory: an installed CLI can time out during startup or
+ * fail a version check and still work when the user actually starts a turn.
+ * Keep that diagnostic visible, but only hard-block instances that are
+ * disabled, structurally unavailable, or genuinely not installed.
+ */
+export function isProviderInstancePickerSelectable(entry: ProviderInstanceEntry): boolean {
+  return entry.enabled && entry.isAvailable && entry.installed;
+}
+
 /** Picker rails contain configured, enabled instances only. */
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
   return entry.enabled;

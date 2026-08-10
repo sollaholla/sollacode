@@ -2,9 +2,13 @@ import {
   DesktopRemoteControlCaptureInputSchema,
   DesktopRemoteControlCaptureSourcesSchema,
   DesktopRemoteControlFrameSchema,
+  DesktopRemoteControlHostStateSchema,
+  DesktopRemoteControlInputResultSchema,
   DesktopRemoteControlInputSchema,
   type DesktopRemoteControlInput,
+  REMOTE_CONTROL_ACCESSIBILITY_PERMISSION_HELP,
   REMOTE_CONTROL_FRAME_MAX_BASE64_LENGTH,
+  REMOTE_CONTROL_SCREEN_PERMISSION_HELP,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
@@ -16,10 +20,8 @@ import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import { remoteInputControllerForPlatform } from "../../app/RemoteInput.ts";
 
-const SCREEN_RECORDING_PERMISSION_HELP =
-  "Solla Code needs Screen Recording permission to share this Mac. Open System Settings → Privacy & Security → Screen Recording, enable Solla Code, then completely quit and reopen Solla Code.";
-const ACCESSIBILITY_PERMISSION_HELP =
-  "Solla Code needs Accessibility permission to control this Mac. Open System Settings → Privacy & Security → Accessibility, enable Solla Code, then try remote control again.";
+const SCREEN_RECORDING_PERMISSION_HELP = REMOTE_CONTROL_SCREEN_PERMISSION_HELP;
+const ACCESSIBILITY_PERMISSION_HELP = REMOTE_CONTROL_ACCESSIBILITY_PERMISSION_HELP;
 
 class DesktopRemoteControlCaptureError extends Schema.TaggedErrorClass<DesktopRemoteControlCaptureError>()(
   "DesktopRemoteControlCaptureError",
@@ -316,10 +318,10 @@ const captureSourceDisplays = new Map<string, Electron.Display>();
 export const sendRemoteControlInput = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL,
   payload: DesktopRemoteControlInputSchema,
-  result: Schema.Void,
+  result: DesktopRemoteControlInputResultSchema,
   handler: Effect.fn("desktop.ipc.remoteControl.sendInput")(function* (input) {
     const platform = yield* HostProcessPlatform;
-    yield* Effect.tryPromise({
+    return yield* Effect.tryPromise({
       try: async () => {
         if (platform === "darwin") {
           const trusted = Electron.systemPreferences.isTrustedAccessibilityClient(false);
@@ -328,12 +330,40 @@ export const sendRemoteControlInput = DesktopIpc.makeIpcMethod({
             throw failCapture(ACCESSIBILITY_PERMISSION_HELP);
           }
         }
-        await remoteInputControllerForPlatform(platform).send(
+        // A blocked host comes back as a result, not a rejection: the OS
+        // refusing input while a UAC prompt is up is a condition to wait out,
+        // and raising it here is what used to end the whole session.
+        return await remoteInputControllerForPlatform(platform).send(
           toVirtualDesktopInput(input.input, input.displayId),
         );
       },
       catch: captureError,
     });
+  }),
+});
+
+/**
+ * Report whether some app on this host has captured the cursor.
+ *
+ * The controller mirrors this into browser pointer lock so the local cursor
+ * stops wandering while the remote one is pinned inside a game, and so the
+ * relative deltas mouse-look needs become available at all.
+ *
+ * Answered by the already-running input helper rather than a fresh process:
+ * the host polls this for the life of a session.
+ */
+export const readRemoteControlPointerLock = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.REMOTE_CONTROL_POINTER_LOCK_CHANNEL,
+  payload: Schema.Struct({}),
+  result: DesktopRemoteControlHostStateSchema,
+  handler: Effect.fn("desktop.ipc.remoteControl.pointerLock")(function* () {
+    const platform = yield* HostProcessPlatform;
+    // A host that cannot answer is reported as unlocked rather than failing the
+    // poll: an unavailable signal must not take the session down with it.
+    return yield* Effect.tryPromise({
+      try: () => remoteInputControllerForPlatform(platform).readHostState(),
+      catch: captureError,
+    }).pipe(Effect.orElseSucceed(() => ({ locked: false })));
   }),
 });
 

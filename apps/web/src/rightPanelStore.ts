@@ -94,6 +94,12 @@ interface RightPanelStoreState {
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurfacesToRight: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeAllSurfaces: (ref: ScopedThreadRef) => void;
+  /**
+   * Moves a tab so it lands where `overSurfaceId` currently sits. Tab order is
+   * the `surfaces` array order, which already persists, so dragging needs no
+   * companion store.
+   */
+  reorderSurface: (ref: ScopedThreadRef, surfaceId: string, overSurfaceId: string) => void;
   reconcileBrowserSurfaces: (ref: ScopedThreadRef, tabIds: readonly string[]) => void;
   reconcileFileSurfaces: (ref: ScopedThreadRef, workspaceAvailable: boolean) => void;
   reconcileSideChatSurfaces: (
@@ -173,6 +179,26 @@ const sideChatSurface = (threadId: string, title: string): SideChatSurface => ({
   resourceId: threadId,
   title,
 });
+
+/**
+ * Moves `surfaceId` to the index `overSurfaceId` occupies, shifting the tabs
+ * in between. Returns the original array when either id is unknown or the move
+ * is a no-op so callers can skip a store write.
+ */
+export function reorderSurfaces(
+  surfaces: readonly RightPanelSurface[],
+  surfaceId: string,
+  overSurfaceId: string,
+): readonly RightPanelSurface[] {
+  const from = surfaces.findIndex((surface) => surface.id === surfaceId);
+  const to = surfaces.findIndex((surface) => surface.id === overSurfaceId);
+  if (from < 0 || to < 0 || from === to) return surfaces;
+  const next = [...surfaces];
+  const [moved] = next.splice(from, 1);
+  if (!moved) return surfaces;
+  next.splice(to, 0, moved);
+  return next;
+}
 
 const upsertSurface = (
   current: ThreadRightPanelState,
@@ -518,6 +544,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               ? current
               : { ...current, surfaces: [], activeSurfaceId: null },
           ),
+        })),
+      reorderSurface: (ref, surfaceId, overSurfaceId) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surfaces = reorderSurfaces(current.surfaces, surfaceId, overSurfaceId);
+            return surfaces === current.surfaces
+              ? current
+              : { ...current, surfaces: [...surfaces] };
+          }),
         })),
       reconcileBrowserSurfaces: (ref, tabIds) =>
         set((state) => ({

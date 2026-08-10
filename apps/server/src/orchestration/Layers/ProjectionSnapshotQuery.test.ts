@@ -170,14 +170,38 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       const full = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-large-snapshot"));
+      const bounded = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-large-snapshot"),
+        { activityLimit: 3 },
+      );
+      const withoutActivities = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-large-snapshot"),
+        { activityLimit: 0 },
+      );
       const snapshot = yield* snapshotQuery.getThreadDetailSnapshot(
         ThreadId.make("thread-large-snapshot"),
       );
 
       assert.equal(full._tag, "Some");
+      assert.equal(bounded._tag, "Some");
+      assert.equal(withoutActivities._tag, "Some");
       assert.equal(snapshot._tag, "Some");
-      if (full._tag === "Some" && snapshot._tag === "Some") {
+      if (
+        full._tag === "Some" &&
+        bounded._tag === "Some" &&
+        withoutActivities._tag === "Some" &&
+        snapshot._tag === "Some"
+      ) {
         assert.equal(full.value.activities.length, THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5);
+        assert.deepEqual(
+          bounded.value.activities.map((activity) => activity.sequence),
+          [
+            THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 3,
+            THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 4,
+            THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5,
+          ],
+        );
+        assert.equal(withoutActivities.value.activities.length, 0);
         assert.equal(
           snapshot.value.thread.activities.length,
           THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,

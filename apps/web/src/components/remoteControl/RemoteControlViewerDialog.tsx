@@ -43,6 +43,13 @@ import {
   remotePointerButton,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
+import { describeHostStatus } from "./remoteControlHostStatus";
+import {
+  createPointerMotionSmoother,
+  mergePointerMoves,
+  REMOTE_CONTROL_POINTER_DELTA_LIMIT,
+  splitPointerDelta,
+} from "./remoteControlPointerMotion";
 import {
   createRemoteControlVideoSink,
   describeUnsupportedCodec,
@@ -72,8 +79,19 @@ export function RemoteControlViewerDialog(props: {
   const [activeDisplayId, setActiveDisplayId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
+  // A host condition that suspends the stream without ending it — a UAC prompt
+  // being the usual one. Cleared by the host reporting itself healthy again.
+  const [hostNotice, setHostNotice] = useState<string | null>(null);
   const [inputCaptured, setInputCaptured] = useState(false);
   const inputCapturedRef = useRef(false);
+  // Mirrors the remote pointer grab. `remoteLocked` is what the host reports;
+  // `pointerLocked` is what the browser actually granted, which can lag or be
+  // refused (pointer lock needs a user gesture and can be denied outright).
+  const [remoteLocked, setRemoteLocked] = useState(false);
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const pointerLockedRef = useRef(false);
+  const pointerMotionRef = useRef(createPointerMotionSmoother());
+  const surfaceElementRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef(false);
   const frameImageRef = useRef<HTMLImageElement>(null);
   const frameVideoRef = useRef<HTMLVideoElement>(null);
@@ -231,6 +249,17 @@ export function RemoteControlViewerDialog(props: {
       appendVideoChunk(event.chunk);
       return;
     }
+    if (event.type === "pointer-lock-changed") {
+      setRemoteLocked(event.locked);
+      return;
+    }
+    if (event.type === "host-status") {
+      // Transient by definition: the session is still approved and the stream
+      // is expected back, so this is a notice rather than an error.
+      setHostNotice(describeHostStatus(event.status));
+      if (event.status.state === "ok") setInputError(null);
+      return;
+    }
     if (event.type === "frame") {
       setFrameData(`data:${event.frame.mimeType};base64,${event.frame.data}`);
       if (event.frame.displays) setDisplays(event.frame.displays);
@@ -272,6 +301,9 @@ export function RemoteControlViewerDialog(props: {
         if (outcome._tag === "Failure") {
           throw new Error(failureMessage(outcome));
         }
+        // Recovery is only observable here, so a stale error must not outlive
+        // the condition that caused it.
+        setInputError((current) => (current === null ? current : null));
       } catch (cause) {
         inputQueueRef.current = [];
         setInputError(
@@ -292,11 +324,12 @@ export function RemoteControlViewerDialog(props: {
       if (input.type === "pointer" && input.action === "move") {
         const lastIndex = inputQueueRef.current.length - 1;
         const last = inputQueueRef.current[lastIndex];
-        if (last?.type === "pointer" && last.action === "move") {
-          inputQueueRef.current[lastIndex] = input;
-        } else {
-          inputQueueRef.current.push(input);
-        }
+        const merged =
+          last?.type === "pointer" && last.action === "move"
+            ? mergePointerMoves(last, input)
+            : null;
+        if (merged) inputQueueRef.current[lastIndex] = merged;
+        else inputQueueRef.current.push(input);
       } else {
         inputQueueRef.current.push(input);
       }
@@ -351,6 +384,36 @@ export function RemoteControlViewerDialog(props: {
     setInputError(null);
   }, []);
 
+  /**
+   * Mirror the remote pointer grab into browser pointer lock.
+   *
+   * Without this the local cursor keeps wandering across the viewer — and off
+   * it — while the remote cursor is pinned inside a game, so the two disagree
+   * about where the mouse is and the local pointer eventually leaves the
+   * window entirely. Pointer lock also unlocks `movementX/Y`, which is the
+   * only way to get the relative deltas mouse-look needs.
+   *
+   * Escape exits pointer lock natively; `pointerlockchange` below is what
+   * observes it, so the browser's own gesture stays the release path and no
+   * key interception is needed.
+   */
+  useEffect(() => {
+    const handlePointerLockChange = () => {
+      const locked = document.pointerLockElement === surfaceElementRef.current;
+      pointerLockedRef.current = locked;
+      setPointerLocked(locked);
+      // Motion accumulated under lock must never replay afterwards, when it
+      // would be interpreted against absolute coordinates.
+      if (!locked) pointerMotionRef.current.reset();
+    };
+    document.addEventListener("pointerlockchange", handlePointerLockChange);
+    return () => {
+      document.removeEventListener("pointerlockchange", handlePointerLockChange);
+      pointerLockedRef.current = false;
+      pointerMotionRef.current.reset();
+    };
+  }, []);
+
   useEffect(() => {
     if (!inputCaptured) return;
     const handleWindowBlur = () => releaseInputCapture();
@@ -382,6 +445,7 @@ export function RemoteControlViewerDialog(props: {
     setFrameData(null);
     setError(null);
     setInputError(null);
+    setHostNotice(null);
     inputCapturedRef.current = false;
     setInputCaptured(false);
     inputQueueRef.current = [];
@@ -408,6 +472,21 @@ export function RemoteControlViewerDialog(props: {
   const canControl = canPointer || canKeyboard;
 
   useEffect(() => {
+    const surface = surfaceElementRef.current;
+    if (!surface) return;
+    if (remoteLocked && inputCaptured && canPointer) {
+      if (document.pointerLockElement !== surface) {
+        // Can reject when the browser has no recent user gesture; the click
+        // that captured input normally satisfies it, and a failure just leaves
+        // the session in absolute mode rather than breaking it.
+        void Promise.resolve(surface.requestPointerLock()).catch(() => undefined);
+      }
+      return;
+    }
+    if (document.pointerLockElement === surface) document.exitPointerLock();
+  }, [canPointer, inputCaptured, remoteLocked]);
+
+  useEffect(() => {
     if (!canControl && inputCaptured) releaseInputCapture();
   }, [canControl, inputCaptured, releaseInputCapture]);
 
@@ -427,6 +506,29 @@ export function RemoteControlViewerDialog(props: {
       return;
     }
     event.preventDefault();
+
+    // Locked: the remote app is in mouse-look, so it reads deltas and the
+    // cursor position is meaningless to it. Send eased relative motion and
+    // keep the last known point only so the payload stays well-formed for a
+    // host too old to understand dx/dy.
+    if (pointerLockedRef.current) {
+      const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
+      if (action === "move") {
+        pointerMotionRef.current.push(event.movementX, event.movementY);
+        let step = pointerMotionRef.current.next();
+        while (step !== null) {
+          for (const chunk of splitPointerDelta(step, REMOTE_CONTROL_POINTER_DELTA_LIMIT)) {
+            enqueueInput({ type: "pointer", action, ...point, button, dx: chunk.dx, dy: chunk.dy });
+          }
+          step = pointerMotionRef.current.next();
+        }
+        return;
+      }
+      // A click must not carry motion, or pressing fire would nudge the aim.
+      enqueueInput({ type: "pointer", action, ...point, button, dx: 0, dy: 0 });
+      return;
+    }
+
     const point = normalizedRemotePoint({
       clientX: event.clientX,
       clientY: event.clientY,
@@ -590,9 +692,11 @@ export function RemoteControlViewerDialog(props: {
             </div>
           ) : (frameData || (videoMimeType && !videoUnavailable)) && isApproved ? (
             <div
+              ref={surfaceElementRef}
               role="application"
               aria-label={`Remote desktop control for ${environmentLabel}`}
               data-remote-input-capture={inputCaptured ? "active" : "inactive"}
+              data-remote-pointer-lock={pointerLocked ? "locked" : "unlocked"}
               className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-lg bg-black outline-hidden overscroll-none ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
@@ -677,7 +781,12 @@ export function RemoteControlViewerDialog(props: {
                     : "Live · click to focus"
                   : "Live · view only"}
               </div>
-              {inputError ? (
+              {hostNotice ? (
+                <div className="absolute inset-x-3 top-3 flex items-start gap-3 rounded-lg border border-amber-500/35 bg-background/95 px-3 py-2 text-sm text-amber-600 shadow-lg dark:text-amber-400">
+                  <Spinner className="mt-0.5 size-4 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">{hostNotice}</span>
+                </div>
+              ) : inputError ? (
                 <div className="absolute inset-x-3 top-3 rounded-lg border border-destructive/35 bg-background/95 px-3 py-2 text-sm text-destructive shadow-lg">
                   {inputError}
                 </div>

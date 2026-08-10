@@ -1670,12 +1670,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.turn-interrupt-requested": {
-          if (event.payload.turnId === undefined) {
+          // The client only attaches a turn id when the session row happens to
+          // read `running` at click time. A thread wedged in any other status —
+          // or one whose session update lost a race with the click — sent none,
+          // and this case then returned without ever marking the turn
+          // interrupted, leaving a permanently "running" turn row behind the
+          // stopped session. Fall back to whatever turn the session still
+          // claims so Stop terminalizes both halves of the state.
+          const interruptedTurnId =
+            event.payload.turnId ??
+            (yield* projectionThreadSessionRepository
+              .getByThreadId({ threadId: event.payload.threadId })
+              .pipe(
+                Effect.map((session) =>
+                  Option.isSome(session) ? (session.value.activeTurnId ?? undefined) : undefined,
+                ),
+              ));
+          if (interruptedTurnId === undefined) {
             return;
           }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
             threadId: event.payload.threadId,
-            turnId: event.payload.turnId,
+            turnId: interruptedTurnId,
           });
           if (Option.isSome(existingTurn)) {
             yield* projectionTurnRepository.upsertByTurnId({
@@ -1688,7 +1704,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
           yield* projectionTurnRepository.upsertByTurnId({
-            turnId: event.payload.turnId,
+            turnId: interruptedTurnId,
             threadId: event.payload.threadId,
             pendingMessageId: null,
             sourceProposedPlanThreadId: null,

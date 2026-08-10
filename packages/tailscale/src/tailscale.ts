@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -17,6 +18,63 @@ export const TAILSCALE_PROBE_TIMEOUT = Duration.millis(2_500);
 // it is always spawned directly rather than through cmd.exe shell mode.
 const tailscaleCommandForPlatform = (platform: NodeJS.Platform): "tailscale" | "tailscale.exe" =>
   platform === "win32" ? "tailscale.exe" : "tailscale";
+
+/**
+ * Where the Windows installer puts tailscale.exe.
+ *
+ * The installer adds this directory to the *machine* PATH, but a process only
+ * ever gets the environment it was launched with. An app started from Explorer,
+ * a service, or a scheduled task can be holding a PATH snapshot that predates
+ * the Tailscale install, and then spawning the bare name fails ENOENT — which
+ * this package reports as `NotFound` and the UI renders as "Tailscale not
+ * found" on a machine where Tailscale is installed, running, and serving.
+ * Observed 2026-08-07 on a Windows host whose CLI worked fine from a fresh
+ * shell. Trying the canonical path when the bare name is absent makes detection
+ * independent of whoever launched us.
+ */
+const TAILSCALE_WINDOWS_INSTALL_PATHS: ReadonlyArray<string> = [
+  "C:\\Program Files\\Tailscale\\tailscale.exe",
+];
+
+const tailscaleExecutableCandidates = (platform: NodeJS.Platform): ReadonlyArray<string> =>
+  platform === "win32"
+    ? [tailscaleCommandForPlatform(platform), ...TAILSCALE_WINDOWS_INSTALL_PATHS]
+    : [tailscaleCommandForPlatform(platform)];
+
+const isExecutableNotFound = (error: PlatformError.PlatformError): boolean =>
+  error.reason._tag === "NotFound";
+
+const NOT_FOUND_FALLBACK_DEFAULT = "tailscale";
+
+/**
+ * Spawns the first candidate that exists.
+ *
+ * Only a `NotFound` moves on to the next path: any other spawn failure is a
+ * real problem with an executable that *is* there, and retrying elsewhere would
+ * mask it behind a misleading "not installed".
+ */
+const spawnFirstAvailableTailscale = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  candidates: ReadonlyArray<string>,
+  args: readonly string[],
+): Effect.Effect<
+  ChildProcessSpawner.ChildProcessHandle,
+  PlatformError.PlatformError,
+  Scope.Scope
+> =>
+  candidates
+    .slice(1)
+    .reduce(
+      (attempt, candidate) =>
+        attempt.pipe(
+          Effect.catch((error: PlatformError.PlatformError) =>
+            isExecutableNotFound(error)
+              ? spawner.spawn(ChildProcess.make(candidate, args))
+              : Effect.fail(error),
+          ),
+        ),
+      spawner.spawn(ChildProcess.make(candidates[0] ?? NOT_FOUND_FALLBACK_DEFAULT, args)),
+    );
 
 const TailscaleCommandContext = {
   executable: Schema.Literals(["tailscale", "tailscale.exe"]),
@@ -282,11 +340,13 @@ export const readTailscaleStatus = Effect.gen(function* () {
     argumentCount: args.length,
   };
   return yield* Effect.gen(function* () {
-    const child = yield* spawner
-      .spawn(ChildProcess.make(executable, args))
-      .pipe(
-        Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
-      );
+    const child = yield* spawnFirstAvailableTailscale(
+      spawner,
+      tailscaleExecutableCandidates(hostPlatform),
+      args,
+    ).pipe(
+      Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
+    );
     const [stdout, stderr, exitCode] = yield* Effect.all(
       [
         collectStdout(child.stdout),
@@ -353,11 +413,13 @@ const runTailscaleCommand = (
     };
     const timeout = Duration.fromInputUnsafe(timeoutInput);
     return yield* Effect.gen(function* () {
-      const child = yield* spawner
-        .spawn(ChildProcess.make(executable, args))
-        .pipe(
-          Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
-        );
+      const child = yield* spawnFirstAvailableTailscale(
+        spawner,
+        tailscaleExecutableCandidates(hostPlatform),
+        args,
+      ).pipe(
+        Effect.mapError((cause) => new TailscaleCommandSpawnError({ ...commandContext, cause })),
+      );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           collectStdout(child.stdout),

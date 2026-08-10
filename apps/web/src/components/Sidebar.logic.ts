@@ -439,6 +439,28 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   return "ready";
 }
 
+/**
+ * When a queued startup resume may describe the row.
+ *
+ * "Auto-resuming" is only honest for a row that is in motion *because* the
+ * server has work queued for it. A thread running its own turn is simply
+ * working, and the scheduler deliberately surfaces a queued successor over the
+ * executing obligation (see refreshProjectionThreadPendingWork) — so a startup
+ * resume parked behind a live turn stays pending for as long as that turn runs.
+ *
+ * Observed 2026-08-07: a resume queued at 03:11 sat behind an agent
+ * continuation until 14:13, and for those ten and a half hours the row read
+ * "Auto-resuming 10h 42m" while the thread was busy working. Returning null
+ * here keeps the label at "Working" and the elapsed on the turn's own start
+ * instead of backdating it to the queued obligation.
+ */
+export function resolveAutoResumeStartedAt(input: {
+  readonly ownStatus: SidebarV2Status;
+  readonly startupResumeStartedAt: string | null;
+}): string | null {
+  return input.ownStatus === "working" ? null : input.startupResumeStartedAt;
+}
+
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
     poison the whole ordering, so it sinks to the epoch instead. */
 export function parseTimestampMs(isoDate: string): number {

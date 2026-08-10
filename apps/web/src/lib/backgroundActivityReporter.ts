@@ -206,7 +206,21 @@ export const backgroundActivityReporterLayer = Layer.effectDiscard(
                 createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
               ),
             )
-            .pipe(Effect.ignore),
+            // A dropped report is not cosmetic: without a lease the server
+            // treats the client as absent and stops every scoped background
+            // job, so the provider health probe — and the usage bar it feeds —
+            // silently stops updating. `Effect.ignore` hid that completely,
+            // including a report that fails identically on every attempt.
+            // Swallow it for control flow, but never without a trace.
+            .pipe(
+              Effect.tapCause((cause) =>
+                Effect.logWarning("web.backgroundActivity.report-failed", {
+                  environmentId,
+                  cause,
+                }),
+              ),
+              Effect.ignore,
+            ),
         { concurrency: "unbounded", discard: true },
       );
     }).pipe(Effect.withSpan("web.backgroundActivity.report"));

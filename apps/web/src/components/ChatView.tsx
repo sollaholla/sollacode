@@ -2700,6 +2700,19 @@ function ChatViewContent(props: ChatViewProps) {
       setInterruptRequestedThreadKey(null);
     }
   }, [interruptRequestedThreadKey, phase]);
+  // The latch above disables Stop for as long as the thread still reads
+  // "running" — which is correct while an interrupt is genuinely in flight, and
+  // a trap when it is not. If the interrupt itself is lost (server restart,
+  // dropped command, an adapter that never answers), the button stays disabled
+  // against a turn nobody can kill and the only escape is reloading the app.
+  // Re-arm after the server's own stop budget (2s cooperative + 10s forced) has
+  // elapsed, so a second press is always possible.
+  const INTERRUPT_REARM_MS = 15_000;
+  useEffect(() => {
+    if (interruptRequestedThreadKey === null) return;
+    const timer = setTimeout(() => setInterruptRequestedThreadKey(null), INTERRUPT_REARM_MS);
+    return () => clearTimeout(timer);
+  }, [interruptRequestedThreadKey]);
   const resumableAssistantMessageId = useMemo(
     () =>
       deriveResumableAssistantMessageId({
@@ -3179,15 +3192,24 @@ function ChatViewContent(props: ChatViewProps) {
         startedAt: startupAutoResumeStartedAt,
         nowMs: autoResumeNowMs,
       }));
+  // A turn that is actually running outranks any queued work. The scheduler
+  // surfaces a queued successor over the executing obligation, so a startup
+  // resume parked behind a live turn stays pending for that turn's whole
+  // duration — claiming "Auto-resuming thread" over it describes work that is
+  // waiting, not the work on screen, and backdates the elapsed clock to when
+  // the resume was queued rather than when this turn began.
   const visibleStartupAutoResumePending =
-    startupAutoResumePending && !activeProviderAuthenticationPaused;
+    startupAutoResumePending && !activeProviderAuthenticationPaused && !isWorking;
+  const visibleAgentAutoResumePending = agentAutoResumePending && !isWorking;
   const timelineIsWorking = isWorking || agentAutoResumePending || visibleStartupAutoResumePending;
-  const timelineWorkStartedAt = visibleStartupAutoResumePending
-    ? (startupAutoResumeStartedAt ??
-      (serverStartupAutoResumePending ? (serverPendingWork?.since ?? null) : null))
-    : agentAutoResumePending
-      ? (serverPendingWork?.since ?? activeLatestTurn?.completedAt ?? activeWorkStartedAt)
-      : activeWorkStartedAt;
+  const timelineWorkStartedAt = isWorking
+    ? activeWorkStartedAt
+    : visibleStartupAutoResumePending
+      ? (startupAutoResumeStartedAt ??
+        (serverStartupAutoResumePending ? (serverPendingWork?.since ?? null) : null))
+      : agentAutoResumePending
+        ? (serverPendingWork?.since ?? activeLatestTurn?.completedAt ?? activeWorkStartedAt)
+        : activeWorkStartedAt;
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
@@ -4394,6 +4416,13 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     cleanupRightPanelSurfaces(rightPanelState.surfaces);
   }, [activeThreadRef, cleanupRightPanelSurfaces, rightPanelState.surfaces]);
+  const reorderRightPanelSurface = useCallback(
+    (surface: RightPanelSurface, overSurfaceId: string) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().reorderSurface(activeThreadRef, surface.id, overSurfaceId);
+    },
+    [activeThreadRef],
+  );
   const copyRightPanelFilePath = useCallback((relativePath: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
       toastManager.add(
@@ -7522,7 +7551,9 @@ function ChatViewContent(props: ChatViewProps) {
                 pendingMessageIds={pendingMessageIds}
                 newestUserMessageId={newestUserMessageId}
                 isWorking={timelineIsWorking}
-                pendingContinuation={agentAutoResumePending || visibleStartupAutoResumePending}
+                pendingContinuation={
+                  visibleAgentAutoResumePending || visibleStartupAutoResumePending
+                }
                 workingStatusLabel={
                   activeProviderOverloadRetrying
                     ? "Provider unavailable — retrying shortly"
@@ -7532,7 +7563,7 @@ function ChatViewContent(props: ChatViewProps) {
                         ? "Continuing conversation"
                         : visibleStartupAutoResumePending
                           ? "Auto-resuming thread"
-                          : agentAutoResumePending
+                          : visibleAgentAutoResumePending
                             ? "Agent auto-resuming"
                             : // A turn that happens to have compacted earlier is just a
                               // turn; labelling the rest of it "Continuing after
@@ -8072,6 +8103,7 @@ function ChatViewContent(props: ChatViewProps) {
           onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
           onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
           onCloseAllSurfaces={closeAllRightPanelSurfaces}
+          onReorderSurface={reorderRightPanelSurface}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
@@ -8103,6 +8135,7 @@ function ChatViewContent(props: ChatViewProps) {
             onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
             onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
             onCloseAllSurfaces={closeAllRightPanelSurfaces}
+            onReorderSurface={reorderRightPanelSurface}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
