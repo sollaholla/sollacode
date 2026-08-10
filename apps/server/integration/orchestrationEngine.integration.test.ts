@@ -1240,18 +1240,13 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
               turnId: FIXTURE_TURN_ID,
               delta: "Long running output.\n",
             },
-            {
-              type: "turn.completed",
-              ...runtimeBase(
-                "evt-claude-interrupt-3",
-                "2026-02-24T10:13:00.100Z",
-                CLAUDE_AGENT_PROVIDER,
-              ),
-              threadId: THREAD_ID,
-              turnId: FIXTURE_TURN_ID,
-              status: "completed",
-            },
           ],
+          // A turn that completes on its own cannot be interrupted: the reactor
+          // skips the provider entirely once the session is stopped, so this
+          // used to assert nothing whenever the drain beat the interrupt — which
+          // under a loaded parallel suite was most of the time. The interrupt
+          // below is what terminalizes this turn.
+          leaveTurnOpen: true,
         });
 
         yield* startTurn({
@@ -1265,11 +1260,20 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
           },
         });
 
+        // Waiting only for the session row to exist was the race: it appears
+        // before the turn starts running, and the reactor forwards an interrupt
+        // to the provider only while the session is actually running one. Under
+        // load the interrupt landed in that gap and was correctly skipped, so
+        // the adapter never saw a call and the assertion timed out.
         const thread = yield* harness.waitForThread(
           THREAD_ID,
-          (entry) => entry.session?.threadId === "thread-1",
+          (entry) =>
+            entry.session?.threadId === "thread-1" &&
+            entry.session?.status === "running" &&
+            entry.session?.activeTurnId != null,
         );
         assert.equal(thread.session?.threadId, "thread-1");
+        assert.equal(thread.session?.status, "running");
 
         yield* harness.engine.dispatch({
           type: "thread.turn.interrupt",
