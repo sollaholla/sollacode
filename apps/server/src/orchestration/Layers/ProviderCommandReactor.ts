@@ -1304,6 +1304,50 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         event.payload.modelSelection?.instanceId === undefined ||
         event.payload.modelSelection.instanceId ===
           (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId);
+      // A settings update is an immediate control action: the current turn is
+      // still running with the OLD settings, so the update must stop it and
+      // start fresh, not be injected into it. Steering one raced its own
+      // interrupt — `buildSendTurnRequestForThread` stops the live turn, and
+      // the steer then landed in a turn that was already dying, which consumed
+      // the message without ever acting on it. The delivery obligation had
+      // been pre-claimed as completed, so the message was gone for good:
+      // "sent", never received, and the turn killed mid-flight. Interrupt here
+      // instead and leave the parked delivery to start a fresh turn — it
+      // carries the full model selection from the persisted turn-start context.
+      if (
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null &&
+        steerTargetsLiveSession &&
+        message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)
+      ) {
+        const interruptedTurnId = thread.session.activeTurnId;
+        yield* providerService
+          .interruptTurn({
+            threadId: event.payload.threadId,
+            turnId: interruptedTurnId,
+          })
+          .pipe(
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+              // The parked delivery still runs at the turn boundary either
+              // way; a failed interrupt only means the update waits for the
+              // turn to end on its own.
+              return Effect.logWarning("provider.settings-update.interrupt-failed", {
+                threadId: event.payload.threadId,
+                turnId: interruptedTurnId,
+                cause: Cause.pretty(cause),
+              });
+            }),
+            Effect.forkScoped,
+          );
+        yield* threadWorkScheduler.wake(
+          event.payload.modelSelection?.instanceId ??
+            thread.session?.providerInstanceId ??
+            thread.modelSelection.instanceId,
+        );
+        return;
+      }
+
       if (
         thread.session?.status === "running" &&
         thread.session.activeTurnId &&
@@ -1347,6 +1391,26 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             createdAt: event.payload.createdAt,
           }).pipe(
             Effect.flatMap(providerService.sendTurn),
+            Effect.tap(() => {
+              // A steer cannot change the model of the turn it joins, but the
+              // switch must still land on the thread — the parked path records
+              // it via `thread.meta.update` after a successful send, and
+              // skipping that here meant a model picked mid-turn silently
+              // reverted on the next turn and on every agent continuation.
+              const requestedModelSelection = event.payload.modelSelection;
+              if (requestedModelSelection === undefined) return Effect.void;
+              threadModelSelections.set(event.payload.threadId, requestedModelSelection);
+              return serverCommandId("provider-selection-accepted").pipe(
+                Effect.flatMap((commandId) =>
+                  orchestrationEngine.dispatch({
+                    type: "thread.meta.update",
+                    commandId,
+                    threadId: event.payload.threadId,
+                    modelSelection: requestedModelSelection,
+                  }),
+                ),
+              );
+            }),
             Effect.catchCause((cause) =>
               Effect.gen(function* () {
                 if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
