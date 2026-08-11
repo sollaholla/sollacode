@@ -162,6 +162,10 @@ const ThreadMessageLookupInput = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
 });
+const ThreadTurnLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+});
 const ProjectionThreadTurnStartContextRowSchema = Schema.Struct({
   payload: Schema.fromJsonString(ThreadTurnStartRequestedPayload),
   sequence: NonNegativeInt,
@@ -1142,6 +1146,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND pending_message_id = ${messageId}
           AND turn_id IS NOT NULL
         ORDER BY COALESCE(started_at, requested_at) DESC, row_id DESC
+        LIMIT 1
+      `,
+  });
+
+  const getThreadProviderTurnByIdRow = SqlSchema.findOneOption({
+    Request: ThreadTurnLookupInput,
+    Result: ProjectionProviderTurnForMessageRowSchema,
+    execute: ({ threadId, turnId }) =>
+      sql`
+        SELECT
+          turn_id AS "turnId",
+          state
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
         LIMIT 1
       `,
   });
@@ -2500,6 +2519,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getThreadProviderTurnById: NonNullable<
+    ProjectionSnapshotQueryShape["getThreadProviderTurnById"]
+  > = (threadId, turnId) =>
+    getThreadProviderTurnByIdRow({ threadId, turnId }).pipe(
+      Effect.map(Option.map((row) => row satisfies ProjectionProviderTurnForMessage)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadProviderTurnById:query",
+          "ProjectionSnapshotQuery.getThreadProviderTurnById:decodeRow",
+        ),
+      ),
+    );
+
   const getThreadIngestionContext: ProjectionSnapshotQueryShape["getThreadIngestionContext"] = (
     threadId,
     taskId,
@@ -2776,6 +2808,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadLatestTurnStartContext,
     getThreadTurnStartContext,
     getThreadProviderTurnForMessage,
+    getThreadProviderTurnById,
     getThreadIngestionContext,
     getThreadAssetSource,
     getThreadDetailById,
