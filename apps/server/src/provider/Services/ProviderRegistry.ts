@@ -50,6 +50,18 @@ export interface ProviderRegistryShape {
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
+   * Record an account-usage snapshot emitted by a live provider session.
+   * Keeping this in the registry makes the latest quota state available to
+   * every connected client instead of tying it to one thread's activity page.
+   */
+  readonly recordAccountUsage: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly accountUsage: unknown;
+    readonly reportedAt: string;
+  }) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  /**
    * Resolve the maintenance capabilities owned by one live provider instance.
    * Falls back to manual-only capabilities when the instance is not live.
    */

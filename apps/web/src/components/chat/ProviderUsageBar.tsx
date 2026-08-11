@@ -412,11 +412,12 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
       if (!window) continue;
       const key = normalizeClaudeWindowKey(rawKey);
       const utilization = finiteNumber(window.utilization);
-      if (utilization === null) continue;
+      const rejected = window.status === "rejected";
+      if (utilization === null && !rejected) continue;
       windows.push({
         key,
         label: claudeWindowLabel(key),
-        usedPercent: clampPercentage(utilization),
+        usedPercent: utilization === null ? 100 : clampPercentage(utilization),
         resetAt: epochMilliseconds(window.resets_at),
         windowDurationMs: CLAUDE_WINDOW_DURATIONS_MS[key] ?? null,
       });
@@ -470,8 +471,10 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
   const key =
     typeof info?.rateLimitType === "string" ? normalizeClaudeWindowKey(info.rateLimitType) : null;
   const utilization = finiteNumber(info?.utilization);
-  if (!key || utilization === null) return [];
-  const normalizedUtilization = utilization <= 1 ? utilization * 100 : utilization;
+  const rejected = info?.status === "rejected";
+  if (!key || (utilization === null && !rejected)) return [];
+  const normalizedUtilization =
+    utilization === null ? 100 : utilization <= 1 ? utilization * 100 : utilization;
   return [
     {
       key,
@@ -1079,6 +1082,7 @@ export function ProviderUsageBar(props: {
   return (
     <section
       aria-label="Provider usage"
+      data-chat-composer-provider-usage="true"
       className="pointer-events-auto mx-auto flex w-fit max-w-[calc(100%-1rem)] items-center gap-1.5 overflow-x-auto rounded-full border border-border/65 bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
     >
       {compactEntries.map(({ summary, compactMetric }) => (

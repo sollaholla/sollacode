@@ -1655,6 +1655,11 @@ export function ProviderSettingsPanel() {
       }
       throw squashAtomCommandFailure(result);
     }
+    for (const report of Object.values(
+      deriveProviderUsageReports(result.value.providers, [], primaryEnvironment.environmentId),
+    )) {
+      recordProviderUsage(report);
+    }
   };
 
   const requestProviderUsageRefresh = useCallback(
