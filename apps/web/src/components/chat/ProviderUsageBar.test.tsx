@@ -1002,6 +1002,8 @@ describe("provider usage summaries", () => {
     );
 
     expect(markup).toContain('aria-label="Provider usage"');
+    expect(markup).toContain("shrink-0");
+    expect(markup).not.toContain("overflow-x-auto");
     expect(markup).toContain('aria-label="Show Claude usage details; Claude Fable: 91% used"');
     expect(markup).toContain(
       'aria-label="Show Codex account usage details; Codex Weekly: 38% used"',

@@ -1083,7 +1083,7 @@ export function ProviderUsageBar(props: {
     <section
       aria-label="Provider usage"
       data-chat-composer-provider-usage="true"
-      className="pointer-events-auto mx-auto flex w-fit max-w-[calc(100%-1rem)] items-center gap-1.5 overflow-x-auto rounded-full border border-border/65 bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
+      className="pointer-events-auto mx-auto flex w-fit shrink-0 items-center gap-1.5 rounded-full border border-border/65 bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur"
     >
       {compactEntries.map(({ summary, compactMetric }) => (
         <ProviderUsageBadge

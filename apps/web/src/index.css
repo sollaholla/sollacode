@@ -477,15 +477,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     .chat-composer-status-label-compact {
       display: inline;
     }
-
-    .chat-composer-status-usage [role="progressbar"] {
-      display: none;
-    }
-
-    .chat-composer-status-usage [aria-label="Provider usage"] {
-      gap: 0.25rem;
-      padding-inline: 0.375rem;
-    }
   }
 
   @container chat-composer-status (max-width: 48rem) {
