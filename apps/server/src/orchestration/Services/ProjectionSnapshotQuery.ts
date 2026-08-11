@@ -232,6 +232,16 @@ export interface ProjectionSnapshotQueryShape {
   ) => Effect.Effect<Option.Option<ProjectionProviderTurnForMessage>, ProjectionRepositoryError>;
 
   /**
+   * Read one exact provider turn independently of the thread's latest-turn
+   * pointer. Durable work uses this when provider failover has already made a
+   * successor turn the latest while the original delivery is still settling.
+   */
+  readonly getThreadProviderTurnById?: (
+    threadId: ThreadId,
+    turnId: TurnId,
+  ) => Effect.Effect<Option.Option<ProjectionProviderTurnForMessage>, ProjectionRepositoryError>;
+
+  /**
    * Read only the bounded message/plan state needed while ingesting provider
    * events. This deliberately excludes activities and checkpoints, whose
    * payload history can be hundreds of megabytes on long-running threads.

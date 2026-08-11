@@ -2151,6 +2151,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ? Effect.succeed(Option.none())
         : projectionSnapshotQuery.getThreadProviderTurnForMessage(threadId, messageId);
 
+    const getPersistedProviderTurnById = (threadId: ThreadId, turnId: TurnId) =>
+      projectionSnapshotQuery.getThreadProviderTurnById === undefined
+        ? Effect.succeed(Option.none())
+        : projectionSnapshotQuery.getThreadProviderTurnById(threadId, turnId);
+
     const waitForProviderTurnTerminal = Effect.fn("waitForProviderTurnTerminal")(function* (input: {
       readonly threadId: ThreadId;
       readonly turnId: TurnId;
@@ -2173,16 +2178,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return { state: "cancelled" as const, reason: "thread disappeared" };
         }
 
-        if (shell.session?.failureKind === "retryable-upstream") {
-          return yield* retryTransientUpstreamWork(
-            shell.session.lastError ?? "retryable upstream provider failure",
-            input.attempt,
-          );
-        }
-
         const latestTurn = shell.latestTurn;
-        if (latestTurn?.turnId === input.turnId) {
-          if (latestTurn.state === "completed") {
+        // Failover can start a successor before the obligation supervising the
+        // original turn observes its completion. Once that happens
+        // `shell.latestTurn` points at the successor forever. Read the exact
+        // awaited row only on that uncommon mismatch path; the normal 100ms
+        // poll remains a single lightweight shell query.
+        const awaitedTurn =
+          latestTurn?.turnId === input.turnId
+            ? latestTurn
+            : yield* getPersistedProviderTurnById(input.threadId, input.turnId).pipe(
+                Effect.map(Option.getOrUndefined),
+              );
+        if (awaitedTurn !== undefined) {
+          if (awaitedTurn.state === "completed") {
             if (input.requireTurnOutput === true) {
               // Runs once, when the turn settles — not on every 100ms poll.
               const settledThread = yield* resolveThread(input.threadId);
@@ -2195,16 +2204,28 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             }
             return { state: "completed" as const };
           }
-          if (latestTurn.state === "interrupted") {
+          if (awaitedTurn.state === "interrupted") {
             return { state: "cancelled" as const, reason: "turn was interrupted" };
           }
-          if (latestTurn.state === "incomplete" || latestTurn.state === "error") {
-            const detail = shell.session?.lastError ?? `provider turn became ${latestTurn.state}`;
+          if (awaitedTurn.state === "incomplete" || awaitedTurn.state === "error") {
+            // A mismatched latest turn belongs to a successor session. Do not
+            // attribute that successor's error text to the turn being awaited.
+            const detail =
+              latestTurn?.turnId === input.turnId
+                ? (shell.session?.lastError ?? `provider turn became ${awaitedTurn.state}`)
+                : `provider turn became ${awaitedTurn.state}`;
             if (isProviderAuthenticationFailure(detail)) {
               return { state: "blocked-authentication" as const, reason: detail };
             }
             return yield* retryFailureWork(detail, input.attempt);
           }
+        }
+
+        if (shell.session?.failureKind === "retryable-upstream") {
+          return yield* retryTransientUpstreamWork(
+            shell.session.lastError ?? "retryable upstream provider failure",
+            input.attempt,
+          );
         }
 
         if (shell.session?.status === "error") {

@@ -2281,6 +2281,120 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  // Provider failover can start a successor turn immediately after the old
+  // turn settles. The thread shell then points at the successor, but the work
+  // obligation still owns the old turn. Waiting only on `latestTurn` stranded
+  // that obligation until the silence watchdog fired, which in turn blocked
+  // every newer send on the thread. Observed on the 3D Modeling Trial thread:
+  // Codex had the eventual message, while the app looked stuck for minutes.
+  effectIt.effect("settles the supervised turn after a successor becomes latest", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const originalTurnId = asTurnId("turn-before-failover");
+      const successorTurnId = asTurnId("turn-after-failover");
+      const codex = ProviderInstanceId.make("codex");
+
+      harness.sendTurn.mockImplementation(() =>
+        Effect.sync(() => {
+          const index = harness.runtimeSessions.findIndex(
+            (session) => session.threadId === threadId,
+          );
+          const session = index >= 0 ? harness.runtimeSessions[index] : undefined;
+          if (session !== undefined) {
+            harness.runtimeSessions[index] = {
+              ...session,
+              status: "running",
+              activeTurnId: originalTurnId,
+            };
+          }
+          return { threadId, turnId: originalTurnId };
+        }),
+      );
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-before-failover"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-before-failover"),
+          role: "user",
+          text: "Start the original turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-original-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: codex,
+          runtimeMode: "approval-required",
+          activeTurnId: originalTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+
+      const readObligation = harness.threadWorkObligations
+        .getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(asMessageId("message-before-failover")),
+          kind: "active-turn-recovery",
+        })
+        .pipe(Effect.map(Option.getOrUndefined));
+      expect((yield* readObligation)?.state).toBe("executing");
+
+      const runtimeIndex = harness.runtimeSessions.findIndex(
+        (session) => session.threadId === threadId,
+      );
+      const runtimeSession = runtimeIndex >= 0 ? harness.runtimeSessions[runtimeIndex] : undefined;
+      if (runtimeSession !== undefined) {
+        harness.runtimeSessions[runtimeIndex] = {
+          ...runtimeSession,
+          status: "running",
+          activeTurnId: successorTurnId,
+        };
+      }
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-successor-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: codex,
+          runtimeMode: "approval-required",
+          activeTurnId: successorTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+
+      const overtakenReadModel = yield* Effect.promise(harness.readModel);
+      expect(
+        overtakenReadModel.threads.find((thread) => thread.id === threadId)?.latestTurn?.turnId,
+      ).toBe(successorTurnId);
+      yield* Effect.promise(() =>
+        waitFor(async () => {
+          const obligation = await runtime!.runPromise(readObligation);
+          return obligation?.state === "completed";
+        }),
+      );
+      expect((yield* readObligation)?.state).toBe("completed");
+    }),
+  );
+
   // Full-flow regression for the mid-turn send ("steer") pipeline: a steer is
   // injected into the live turn immediately when the provider accepts it, the
   // parked delivery resolves without double-sending, a steer the provider
