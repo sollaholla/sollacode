@@ -174,6 +174,10 @@ interface TimelineRowSharedState {
   newestUserMessageId: MessageId | null;
   /** Optimistic rows the server has not echoed back yet. */
   pendingMessageIds: ReadonlySet<string>;
+  /** Provider expected to consume the newest queued user message. */
+  deliveryProviderName: string;
+  /** Whether the selected provider emits explicit consumption receipts. */
+  deliveryReceiptsExpected: boolean;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -236,6 +240,8 @@ interface MessagesTimelineProps {
   deliveredMessageIds?: ReadonlySet<string>;
   newestUserMessageId?: MessageId | null;
   pendingMessageIds?: ReadonlySet<string>;
+  deliveryProviderName?: string;
+  deliveryReceiptsExpected?: boolean;
   followEnd?: boolean;
   initialScrollAtEnd?: boolean;
   initialScrollOffset?: number | null;
@@ -285,6 +291,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   deliveredMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
   newestUserMessageId = null,
   pendingMessageIds = EMPTY_DELIVERED_MESSAGE_IDS,
+  deliveryProviderName = "provider CLI",
+  deliveryReceiptsExpected = false,
   followEnd = true,
   initialScrollAtEnd = true,
   initialScrollOffset = null,
@@ -590,6 +598,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       deliveredMessageIds,
       newestUserMessageId,
       pendingMessageIds,
+      deliveryProviderName,
+      deliveryReceiptsExpected,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -613,6 +623,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       deliveredMessageIds,
       newestUserMessageId,
       pendingMessageIds,
+      deliveryProviderName,
+      deliveryReceiptsExpected,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onImageExpand,
@@ -1123,8 +1135,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     isDelivered,
   });
   const showDeliveryIndicator = shouldShowDeliveryIndicator({
+    isOptimistic: ctx.pendingMessageIds.has(row.message.id),
     isDelivered,
     isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
+    providerReportsDelivery: ctx.deliveryReceiptsExpected,
     threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
   });
 
@@ -1164,6 +1178,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           <span>{syntheticPromptLabel}</span>
           <FastForwardIcon className="size-3.5" aria-hidden />
         </button>
+        {showDeliveryIndicator ? (
+          <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
+        ) : null}
         {syntheticPromptExpanded ? (
           <div className="max-w-[80%] rounded-2xl bg-accent p-3">
             <CollapsibleUserMessageBody
@@ -1264,7 +1281,9 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             )}
           </div>
         </div>
-        {showDeliveryIndicator ? <MessageDeliveryIndicator state={deliveryState} /> : null}
+        {showDeliveryIndicator ? (
+          <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
+        ) : null}
       </div>
     </div>
   );
@@ -1283,19 +1302,22 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
  */
 function MessageDeliveryIndicator({
   state,
+  providerName,
 }: {
   state: Exclude<MessageDeliveryState, "pending"> | "pending";
+  providerName: string;
 }) {
-  const label = messageDeliveryLabel(state);
+  const label = messageDeliveryLabel(state, providerName);
+  const showInlineStatus = state !== "read";
 
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <span
-            className="flex shrink-0 items-center text-muted-foreground/60"
+            className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-muted-foreground/70"
             aria-label={label}
-            role="img"
+            role="status"
           />
         }
       >
@@ -1310,6 +1332,7 @@ function MessageDeliveryIndicator({
         ) : (
           <CheckIcon className="size-3" aria-hidden />
         )}
+        {showInlineStatus ? <span>{label}</span> : null}
       </TooltipTrigger>
       <TooltipPopup>{label}</TooltipPopup>
     </Tooltip>

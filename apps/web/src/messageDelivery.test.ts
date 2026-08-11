@@ -97,6 +97,7 @@ describe("shouldShowDeliveryIndicator", () => {
     // there would claim "sent but never read", which is worse than silence.
     expect(
       shouldShowDeliveryIndicator({
+        isOptimistic: false,
         isDelivered: false,
         isNewestUserMessage: false,
         threadReportsDelivery: true,
@@ -107,6 +108,7 @@ describe("shouldShowDeliveryIndicator", () => {
   it("shows the newest message while it could still be in flight", () => {
     expect(
       shouldShowDeliveryIndicator({
+        isOptimistic: false,
         isDelivered: false,
         isNewestUserMessage: true,
         threadReportsDelivery: true,
@@ -114,9 +116,22 @@ describe("shouldShowDeliveryIndicator", () => {
     ).toBe(true);
   });
 
+  it("shows the first queued message for providers with delivery receipts", () => {
+    expect(
+      shouldShowDeliveryIndicator({
+        isOptimistic: false,
+        isDelivered: false,
+        isNewestUserMessage: true,
+        providerReportsDelivery: true,
+        threadReportsDelivery: false,
+      }),
+    ).toBe(true);
+  });
+
   it("always shows a confirmed receipt, however old", () => {
     expect(
       shouldShowDeliveryIndicator({
+        isOptimistic: false,
         isDelivered: true,
         isNewestUserMessage: false,
         threadReportsDelivery: false,
@@ -131,18 +146,34 @@ describe("shouldShowDeliveryIndicator", () => {
     // CLI" forever, describing a stall that is not happening.
     expect(
       shouldShowDeliveryIndicator({
+        isOptimistic: false,
         isDelivered: false,
         isNewestUserMessage: true,
         threadReportsDelivery: false,
       }),
     ).toBe(false);
   });
+
+  it("shows a newest local echo even before provider receipts are available", () => {
+    expect(
+      shouldShowDeliveryIndicator({
+        isOptimistic: true,
+        isDelivered: false,
+        isNewestUserMessage: true,
+        threadReportsDelivery: false,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("messageDeliveryLabel", () => {
   it("describes each state distinctly", () => {
-    const labels = (["pending", "sent", "read"] as const).map(messageDeliveryLabel);
+    const labels = (["pending", "sent", "read"] as const).map((state) =>
+      messageDeliveryLabel(state),
+    );
     expect(new Set(labels).size).toBe(3);
     expect(messageDeliveryLabel("read")).toContain("CLI");
+    expect(messageDeliveryLabel("sent", "Codex")).toBe("Queued for Codex");
+    expect(messageDeliveryLabel("read", "Codex")).toBe("Received by Codex");
   });
 });

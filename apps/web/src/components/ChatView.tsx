@@ -193,6 +193,8 @@ import {
   CircleDashedIcon,
   GitBranchIcon,
   LogInIcon,
+  LoaderCircleIcon,
+  MicIcon,
   TriangleAlertIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -208,7 +210,11 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
+import {
+  formatProviderDriverKindLabel,
+  getProviderModelCapabilities,
+  resolveSelectableProvider,
+} from "../providerModels";
 import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -270,6 +276,7 @@ import {
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ComposerStatusRail } from "./chat/ComposerStatusRail";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
   deriveWorkingSideChatsByParent,
@@ -307,11 +314,13 @@ import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ThreadSyncOverlay } from "./chat/ThreadSyncStatusPill";
 import {
+  deriveProviderUsageReports,
   ProviderUsageBar,
   ProviderUsagePlacementRow,
   providerUsageDetailsSide,
   resolveProviderUsagePlacement,
 } from "./chat/ProviderUsageBar";
+import { useProviderUsageStore } from "../providerUsageStore";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
   DRAFT_HERO_TRANSITION_DURATION_MS,
@@ -1550,6 +1559,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeServerThread = serverThread ?? loadingServerThread;
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const showProviderUsageBar = useUiStateStore((store) => store.showProviderUsageBar);
+  const recordProviderUsage = useProviderUsageStore((store) => store.record);
   const activeThreadLastVisitedAt = useUiStateStore(
     (store) => store.threadLastVisitedAtById[routeThreadKey],
   );
@@ -1652,6 +1662,16 @@ function ChatViewContent(props: ChatViewProps) {
     pushToTalkStatus,
     backgroundPushToTalkStatus,
   );
+  const visiblePushToTalkLabel =
+    visiblePushToTalkStatus === "recording"
+      ? settings.autoSendVoiceTranscription
+        ? "Listening… release to transcribe and send"
+        : "Listening… release to transcribe"
+      : visiblePushToTalkStatus === "loading"
+        ? "Loading local transcription model…"
+        : visiblePushToTalkStatus === "transcribing"
+          ? "Transcribing…"
+          : null;
   const pushToTalkStatusRef = useRef(pushToTalkStatus);
   pushToTalkStatusRef.current = pushToTalkStatus;
   const pushToTalkEnabledRef = useRef(false);
@@ -2625,6 +2645,11 @@ function ChatViewContent(props: ChatViewProps) {
       }
       throw new Error("Provider usage refresh failed.");
     }
+    for (const report of Object.values(
+      deriveProviderUsageReports(result.value.providers, [], environmentId),
+    )) {
+      recordProviderUsage(report);
+    }
   };
   const refreshProviderUsage = useCallback(async (provider: ServerProvider) => {
     const request = providerUsageRefreshCoordinatorRef.current.request(provider);
@@ -2735,6 +2760,16 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveDeliveredMessageIds(threadActivities),
     [threadActivities],
   );
+  const deliveryProvider = useMemo(() => {
+    const provider = providerStatuses.find(
+      (status) => status.instanceId === activeProviderInstanceId,
+    );
+    const driver = provider?.driver ?? selectedProvider;
+    return {
+      name: provider?.displayName?.trim() || formatProviderDriverKindLabel(driver),
+      receiptsExpected: driver === "codex" || driver === "claudeAgent",
+    };
+  }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -7549,6 +7584,8 @@ function ChatViewContent(props: ChatViewProps) {
                 key={routeThreadKey}
                 deliveredMessageIds={deliveredMessageIds}
                 pendingMessageIds={pendingMessageIds}
+                deliveryProviderName={deliveryProvider.name}
+                deliveryReceiptsExpected={deliveryProvider.receiptsExpected}
                 newestUserMessageId={newestUserMessageId}
                 isWorking={timelineIsWorking}
                 pendingContinuation={
@@ -7665,18 +7702,106 @@ function ChatViewContent(props: ChatViewProps) {
                 ref={attachDraftHeroTransitionGroupRef}
                 className="chat-composer-horizontal-inset w-full"
               >
-                {providerUsagePlacement === "active-footer" ? (
-                  <ProviderUsagePlacementRow placement={providerUsagePlacement}>
-                    <ProviderUsageBar
-                      environmentId={environmentId}
-                      providers={providerStatuses}
-                      activities={activeThread.activities}
-                      selectedModelSelection={providerUsageModelSelection}
-                      detailsSide={providerUsageDetailsSide(false)}
-                      onRefreshProvider={refreshProviderUsage}
-                    />
-                  </ProviderUsagePlacementRow>
-                ) : null}
+                <ComposerStatusRail
+                  voice={
+                    visiblePushToTalkStatus ? (
+                      <button
+                        aria-label={
+                          visiblePushToTalkStatus === "recording"
+                            ? (visiblePushToTalkLabel ?? undefined)
+                            : `${visiblePushToTalkLabel} Cancel voice transcription.`
+                        }
+                        className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm disabled:cursor-default"
+                        data-chat-composer-status-chip="voice"
+                        disabled={visiblePushToTalkStatus === "recording"}
+                        onClick={() => {
+                          cancelActiveTranscription();
+                        }}
+                        role="status"
+                        aria-live="polite"
+                        title={
+                          visiblePushToTalkStatus === "recording"
+                            ? undefined
+                            : "Cancel voice transcription"
+                        }
+                        type="button"
+                      >
+                        {visiblePushToTalkStatus === "recording" ? (
+                          <MicIcon aria-hidden className="size-3" />
+                        ) : (
+                          <LoaderCircleIcon aria-hidden className="size-3 animate-spin" />
+                        )}
+                        <span aria-hidden className="chat-composer-status-label-full">
+                          {visiblePushToTalkLabel}
+                        </span>
+                        <span aria-hidden className="chat-composer-status-label-compact">
+                          {visiblePushToTalkStatus === "recording"
+                            ? "Listening…"
+                            : visiblePushToTalkStatus === "loading"
+                              ? "Loading…"
+                              : "Transcribing…"}
+                        </span>
+                        <span aria-hidden className="chat-composer-status-label-minimal">
+                          {visiblePushToTalkStatus === "recording"
+                            ? "Live"
+                            : visiblePushToTalkStatus === "loading"
+                              ? "Loading"
+                              : "Text"}
+                        </span>
+                        {visiblePushToTalkStatus === "recording" ? null : (
+                          <span aria-hidden className="text-base leading-none text-foreground/75">
+                            ×
+                          </span>
+                        )}
+                      </button>
+                    ) : null
+                  }
+                  usage={
+                    providerUsagePlacement === "active-footer" ? (
+                      <ProviderUsageBar
+                        environmentId={environmentId}
+                        providers={providerStatuses}
+                        activities={activeThread.activities}
+                        selectedModelSelection={providerUsageModelSelection}
+                        detailsSide={providerUsageDetailsSide(false)}
+                        onRefreshProvider={refreshProviderUsage}
+                      />
+                    ) : null
+                  }
+                  actions={
+                    activeSideChatActivity || providerTasks.length > 0 ? (
+                      <>
+                        {activeSideChatActivity ? (
+                          <button
+                            aria-label={`${activeSideChatActivity.count} side ${activeSideChatActivity.count === 1 ? "chat is" : "chats are"} working. Open the first working side chat.`}
+                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-sky-600 shadow-sm transition-colors hover:text-sky-500 dark:text-sky-400"
+                            data-chat-composer-status-chip="side-chats"
+                            onClick={openWorkingSideChat}
+                            title="Open a working side chat"
+                            type="button"
+                          >
+                            <CircleDashedIcon aria-hidden className="size-3" />
+                            <span aria-hidden className="chat-composer-status-label-full">
+                              {activeSideChatActivity.count} side{" "}
+                              {activeSideChatActivity.count === 1 ? "chat" : "chats"} working
+                            </span>
+                            <span aria-hidden className="chat-composer-status-label-compact">
+                              {activeSideChatActivity.count} side
+                            </span>
+                            <span aria-hidden className="chat-composer-status-label-minimal">
+                              {activeSideChatActivity.count}
+                            </span>
+                          </button>
+                        ) : null}
+                        <ProviderTaskChip
+                          tasks={providerTasks}
+                          onOpen={openProviderTasks}
+                          positioned={false}
+                        />
+                      </>
+                    ) : null
+                  }
+                />
                 <div className="pointer-events-auto relative z-10">
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full z-0">
@@ -7717,68 +7842,6 @@ function ChatViewContent(props: ChatViewProps) {
                     >
                       <div className="chat-composer-glass-host relative z-10 w-full rounded-[22px]">
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
-                          {visiblePushToTalkStatus ? (
-                            <button
-                              aria-label={
-                                visiblePushToTalkStatus === "recording"
-                                  ? undefined
-                                  : "Cancel voice transcription"
-                              }
-                              className="absolute -top-8 left-3 flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm disabled:cursor-default"
-                              disabled={visiblePushToTalkStatus === "recording"}
-                              onClick={() => {
-                                cancelActiveTranscription();
-                              }}
-                              role="status"
-                              aria-live="polite"
-                              title={
-                                visiblePushToTalkStatus === "recording"
-                                  ? undefined
-                                  : "Cancel voice transcription"
-                              }
-                              type="button"
-                            >
-                              <span>
-                                {visiblePushToTalkStatus === "recording"
-                                  ? settings.autoSendVoiceTranscription
-                                    ? "Listening… release to transcribe and send"
-                                    : "Listening… release to transcribe"
-                                  : visiblePushToTalkStatus === "loading"
-                                    ? "Loading local transcription model…"
-                                    : "Transcribing…"}
-                              </span>
-                              {visiblePushToTalkStatus === "recording" ? null : (
-                                <span
-                                  aria-hidden="true"
-                                  className="text-base leading-none text-foreground/75"
-                                >
-                                  ×
-                                </span>
-                              )}
-                            </button>
-                          ) : null}
-                          <div className="absolute -top-8 right-3 flex items-center gap-1.5">
-                            {activeSideChatActivity ? (
-                              <button
-                                aria-label={`${activeSideChatActivity.count} side ${activeSideChatActivity.count === 1 ? "chat is" : "chats are"} working. Open the first working side chat.`}
-                                className="flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-sky-600 shadow-sm transition-colors hover:text-sky-500 dark:text-sky-400"
-                                onClick={openWorkingSideChat}
-                                title="Open a working side chat"
-                                type="button"
-                              >
-                                <CircleDashedIcon aria-hidden className="size-3" />
-                                <span>
-                                  {activeSideChatActivity.count} side{" "}
-                                  {activeSideChatActivity.count === 1 ? "chat" : "chats"} working
-                                </span>
-                              </button>
-                            ) : null}
-                            <ProviderTaskChip
-                              tasks={providerTasks}
-                              onOpen={openProviderTasks}
-                              positioned={false}
-                            />
-                          </div>
                           <ChatComposer
                             composerRef={composerRef}
                             composerDraftTarget={composerDraftTarget}
