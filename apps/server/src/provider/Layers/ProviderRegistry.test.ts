@@ -632,6 +632,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ]);
       });
 
+      it("retains the newest server usage snapshot for the same authenticated account", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("claudeAgent"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated", type: "oauth", email: "user@example.com" },
+          checkedAt: "2026-08-11T14:00:00.000Z",
+          version: "2.1.220",
+          accountUsage: { rate_limits: { five_hour: { utilization: 100 } } },
+          accountUsageReportedAt: "2026-08-11T14:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const {
+          accountUsage: _accountUsage,
+          accountUsageReportedAt: _accountUsageReportedAt,
+          ...previousWithoutUsage
+        } = previousProvider;
+        const refreshWithoutUsage = {
+          ...previousWithoutUsage,
+          checkedAt: "2026-08-11T14:01:00.000Z",
+        } satisfies ServerProvider;
+
+        const merged = mergeProviderSnapshot(previousProvider, refreshWithoutUsage);
+        assert.deepStrictEqual(merged.accountUsage, previousProvider.accountUsage);
+        assert.strictEqual(merged.accountUsageReportedAt, previousProvider.accountUsageReportedAt);
+
+        const switchedAccount = {
+          ...refreshWithoutUsage,
+          auth: { status: "authenticated", type: "oauth", email: "other@example.com" },
+        } as const satisfies ServerProvider;
+        assert.strictEqual(
+          mergeProviderSnapshot(previousProvider, switchedAccount).accountUsage,
+          undefined,
+        );
+      });
+
       it("drops stale OpenCode models missing from a successful refresh", () => {
         const previousProvider = {
           instanceId: ProviderInstanceId.make("opencode"),
@@ -921,6 +961,25 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             const registry = yield* ProviderRegistry.ProviderRegistry;
             assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
+            const reportedAt = "2026-06-10T00:01:00.000Z";
+            const accountUsage = {
+              rateLimits: {
+                primary: { usedPercent: 36, windowDurationMins: 300 },
+              },
+            };
+            yield* registry.recordAccountUsage({
+              instanceId: codexInstanceId,
+              driver: codexDriver,
+              accountUsage,
+              reportedAt,
+            });
+            assert.deepStrictEqual(yield* registry.getProviders, [
+              {
+                ...initialProvider,
+                accountUsage,
+                accountUsageReportedAt: reportedAt,
+              },
+            ]);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );

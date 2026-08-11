@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  defaultInstanceIdForDriver,
   EventId,
   MessageId,
   type OrchestrationEvent,
@@ -2323,6 +2324,12 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid);
 
       if (event.type === "account.rate-limits.updated") {
+        yield* providerRegistry.recordAccountUsage({
+          instanceId: event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider),
+          driver: event.provider,
+          accountUsage: event.payload.rateLimits,
+          reportedAt: event.createdAt,
+        });
         yield* attemptProviderUsageLimitFailover(event);
       }
     });

@@ -133,6 +133,12 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         },
       ],
       message: "Cached message",
+      accountUsage: {
+        rateLimits: {
+          primary: { usedPercent: 42, windowDurationMins: 300 },
+        },
+      },
+      accountUsageReportedAt: "2026-04-10T11:59:00.000Z",
       skills: [
         {
           name: "github:gh-fix-ci",
@@ -177,6 +183,8 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         checkedAt: cachedCodex.checkedAt,
         slashCommands: cachedCodex.slashCommands,
         skills: cachedCodex.skills,
+        accountUsage: cachedCodex.accountUsage,
+        accountUsageReportedAt: cachedCodex.accountUsageReportedAt,
         message: cachedCodex.message,
       },
     );

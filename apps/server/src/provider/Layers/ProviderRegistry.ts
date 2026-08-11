@@ -126,13 +126,34 @@ const mergeProviderModels = (
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
-): ServerProvider =>
-  !previousProvider
-    ? nextProvider
-    : {
-        ...nextProvider,
-        models: mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models),
-      };
+): ServerProvider => {
+  if (!previousProvider) return nextProvider;
+
+  const previousUsageReportedAt = previousProvider.accountUsageReportedAt;
+  const nextUsageReportedAt = nextProvider.accountUsageReportedAt;
+  const shouldRetainPreviousUsage =
+    previousProvider.accountUsage !== undefined &&
+    previousUsageReportedAt !== undefined &&
+    previousProvider.auth.status === "authenticated" &&
+    nextProvider.auth.status === "authenticated" &&
+    previousProvider.auth.email?.trim().toLocaleLowerCase() ===
+      nextProvider.auth.email?.trim().toLocaleLowerCase() &&
+    previousProvider.auth.type === nextProvider.auth.type &&
+    (nextProvider.accountUsage === undefined ||
+      nextUsageReportedAt === undefined ||
+      Date.parse(previousUsageReportedAt) > Date.parse(nextUsageReportedAt));
+
+  return {
+    ...nextProvider,
+    ...(shouldRetainPreviousUsage
+      ? {
+          accountUsage: previousProvider.accountUsage,
+          accountUsageReportedAt: previousUsageReportedAt,
+        }
+      : {}),
+    models: mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models),
+  };
+};
 
 export const mergeProviderSnapshots = (
   previousProviders: ReadonlyArray<ServerProvider>,
@@ -496,6 +517,27 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* refreshOneSource(providerSource);
     });
 
+    const recordAccountUsage = Effect.fn("recordAccountUsage")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly driver: ProviderDriverKind;
+      readonly accountUsage: unknown;
+      readonly reportedAt: string;
+    }) {
+      const providers = yield* Ref.get(providersRef);
+      const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
+      if (!provider || provider.driver !== input.driver) {
+        return providers;
+      }
+
+      return yield* upsertProviders([
+        {
+          ...provider,
+          accountUsage: input.accountUsage,
+          accountUsageReportedAt: input.reportedAt,
+        },
+      ]);
+    });
+
     const getProviderMaintenanceCapabilitiesForInstance = Effect.fn(
       "getProviderMaintenanceCapabilitiesForInstance",
     )(function* (instanceId: ProviderInstanceId, provider: ProviderDriverKind) {
@@ -710,6 +752,7 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      recordAccountUsage,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {

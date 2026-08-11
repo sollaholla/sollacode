@@ -181,6 +181,36 @@ describe("provider usage summaries", () => {
     ]);
   });
 
+  it("treats a definitive Claude rejection without utilization as 100% used", () => {
+    const summaries = deriveProviderUsageSummaries(
+      [makeProvider("claudeAgent")],
+      [
+        usageActivity("claude-rejected", "claudeAgent", "claudeAgent", {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "rejected",
+            rateLimitType: "five_hour",
+            resetsAt: 1_786_401_600,
+          },
+        }),
+      ],
+      {},
+      Date.parse("2026-07-29T15:01:00.000Z"),
+    );
+
+    expect(summaries[0]).toMatchObject({
+      state: "available",
+      windows: [
+        expect.objectContaining({
+          key: "current_session",
+          label: "Current session",
+          usedPercent: 100,
+          resetAt: 1_786_401_600_000,
+        }),
+      ],
+    });
+  });
+
   it("parses Claude's structured usage refresh snapshot without inventing windows", () => {
     const resetAt = "2026-07-30T18:30:00.000Z";
     const provider = {
