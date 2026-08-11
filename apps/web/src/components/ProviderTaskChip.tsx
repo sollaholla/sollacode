@@ -26,12 +26,19 @@ export function ProviderTaskChip(props: {
   const label = providerTaskChipLabel(props.tasks);
   if (label === null) return null;
   const running = countActiveProviderTasks(props.tasks);
+  const stalled = props.tasks.filter((task) => task.status === "stale").length;
+  const compactLabel =
+    running > 0
+      ? `${running} running${stalled > 0 ? ` · ${stalled} stalled` : ""}`
+      : `${stalled} stalled`;
+  const minimalLabel = String(running + stalled);
 
   return (
     <button
       aria-label={`${label}. Show agents and tasks.`}
+      data-chat-composer-status-chip="provider-tasks"
       className={cn(
-        "flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:text-foreground",
+        "chat-composer-status-chip flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:text-foreground",
         props.positioned !== false && "absolute -top-8 right-3",
       )}
       onClick={props.onOpen}
@@ -44,7 +51,15 @@ export function ProviderTaskChip(props: {
         // Stalled-only: a spinner here would assert liveness we do not have.
         <CircleHelp aria-hidden className="size-3 text-amber-500" />
       )}
-      <span>{label}</span>
+      <span aria-hidden className="chat-composer-status-label-full">
+        {label}
+      </span>
+      <span aria-hidden className="chat-composer-status-label-compact">
+        {compactLabel}
+      </span>
+      <span aria-hidden className="chat-composer-status-label-minimal">
+        {minimalLabel}
+      </span>
     </button>
   );
 }

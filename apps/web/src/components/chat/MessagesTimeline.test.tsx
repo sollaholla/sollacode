@@ -247,6 +247,52 @@ function buildUserTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("shows a persisted newest message as explicitly queued for Codex", () => {
+    const entry = buildUserTimelineEntry("Please inspect the model");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        newestUserMessageId={entry.message.id}
+        deliveryReceiptsExpected
+        deliveryProviderName="Codex"
+      />,
+    );
+
+    expect(markup).toContain("Queued for Codex");
+  });
+
+  it("keeps delivery state visible for a manually sent Resume message", () => {
+    const entry = buildUserTimelineEntry("resume");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        newestUserMessageId={entry.message.id}
+        deliveryReceiptsExpected
+        deliveryProviderName="Codex"
+      />,
+    );
+
+    expect(markup).toContain(">Resume<");
+    expect(markup).toContain("Queued for Codex");
+  });
+
+  it("shows Sending while the newest message is still only a local echo", () => {
+    const entry = buildUserTimelineEntry("Queued locally");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[entry]}
+        newestUserMessageId={entry.message.id}
+        pendingMessageIds={new Set([entry.message.id])}
+        deliveryProviderName="Codex"
+      />,
+    );
+
+    expect(markup).toContain("Sending…");
+  });
+
   it("labels compaction and continuation work explicitly without fake percentages", () => {
     const compactingMarkup = renderToStaticMarkup(
       <MessagesTimeline

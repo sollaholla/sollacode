@@ -411,6 +411,127 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     padding-inline-end: calc(env(safe-area-inset-right) + 0.75rem);
   }
 
+  .chat-composer-status-container {
+    container-name: chat-composer-status;
+    container-type: inline-size;
+  }
+
+  .chat-composer-status-rail {
+    display: grid;
+    grid-template-areas: "voice usage actions";
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2rem;
+    padding: 0 0.75rem 0.25rem;
+  }
+
+  .chat-composer-status-voice,
+  .chat-composer-status-usage,
+  .chat-composer-status-actions {
+    min-width: 0;
+  }
+
+  .chat-composer-status-voice {
+    grid-area: voice;
+    justify-self: start;
+  }
+
+  .chat-composer-status-usage {
+    grid-area: usage;
+    max-width: 100%;
+    justify-self: center;
+  }
+
+  .chat-composer-status-actions {
+    grid-area: actions;
+    display: flex;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-self: end;
+    gap: 0.375rem;
+  }
+
+  .chat-composer-status-voice:empty,
+  .chat-composer-status-usage:empty,
+  .chat-composer-status-actions:empty {
+    display: none;
+  }
+
+  .chat-composer-status-chip {
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  .chat-composer-status-label-compact,
+  .chat-composer-status-label-minimal {
+    display: none;
+  }
+
+  @container chat-composer-status (max-width: 68rem) {
+    .chat-composer-status-label-full {
+      display: none;
+    }
+
+    .chat-composer-status-label-compact {
+      display: inline;
+    }
+
+    .chat-composer-status-usage [role="progressbar"] {
+      display: none;
+    }
+
+    .chat-composer-status-usage [aria-label="Provider usage"] {
+      gap: 0.25rem;
+      padding-inline: 0.375rem;
+    }
+  }
+
+  @container chat-composer-status (max-width: 48rem) {
+    .chat-composer-status-rail {
+      grid-template-areas:
+        "usage usage"
+        "voice actions";
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      row-gap: 0.375rem;
+      padding-bottom: 0.375rem;
+    }
+  }
+
+  @container chat-composer-status (max-width: 32rem) {
+    .chat-composer-status-rail {
+      grid-template-areas:
+        "usage"
+        "actions"
+        "voice";
+      grid-template-columns: minmax(0, 1fr);
+      justify-items: center;
+    }
+
+    .chat-composer-status-voice,
+    .chat-composer-status-actions {
+      justify-self: center;
+    }
+
+    .chat-composer-status-actions {
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .chat-composer-status-label-compact {
+      display: none;
+    }
+
+    .chat-composer-status-label-minimal {
+      display: inline;
+    }
+
+    .chat-composer-status-chip {
+      padding-inline: 0.5rem;
+    }
+  }
+
   .chat-composer-glass {
     background: color-mix(in srgb, var(--background) var(--glass-opacity), transparent);
     -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));

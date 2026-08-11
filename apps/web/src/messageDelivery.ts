@@ -80,8 +80,11 @@ export function threadReportsDelivery(delivered: ReadonlySet<string>): boolean {
  * alarming claim than the truth ("we weren't tracking yet").
  */
 export function shouldShowDeliveryIndicator(input: {
+  readonly isOptimistic: boolean;
   readonly isDelivered: boolean;
   readonly isNewestUserMessage: boolean;
+  /** Whether the selected provider emits explicit consumption receipts. */
+  readonly providerReportsDelivery?: boolean;
   /**
    * Whether this thread has ever produced a receipt — see
    * {@link threadReportsDelivery}.
@@ -90,22 +93,32 @@ export function shouldShowDeliveryIndicator(input: {
 }): boolean {
   // A confirmed receipt is always worth showing.
   if (input.isDelivered) return true;
-  // An unconfirmed one is only honest when receipts are known to arrive here.
-  // A server that never emits them — an older build, which for a remote
-  // environment is the *remote* machine's server rather than this one — would
-  // otherwise leave the newest message sitting on a single check reading
-  // "waiting for the CLI" forever, describing a stall that is not happening.
-  return input.isNewestUserMessage && input.threadReportsDelivery;
+  // The local echo is authoritative evidence that this client is still
+  // handing the message to the server. Showing "Sending…" does not depend on
+  // whether the remote server is new enough to emit provider receipts.
+  if (input.isOptimistic) return input.isNewestUserMessage;
+  // An unconfirmed one is only honest when this provider is known to emit
+  // receipts, or this thread has already demonstrated that it does. The
+  // provider capability closes the first-message gap: a queued Codex or Claude
+  // send remains explained even before the thread has produced its first
+  // receipt.
+  return (
+    input.isNewestUserMessage &&
+    (input.providerReportsDelivery === true || input.threadReportsDelivery)
+  );
 }
 
-export function messageDeliveryLabel(state: MessageDeliveryState): string {
+export function messageDeliveryLabel(
+  state: MessageDeliveryState,
+  providerName = "provider CLI",
+): string {
   switch (state) {
     case "pending":
       return "Sending…";
     case "sent":
-      return "Sent — waiting for the CLI to pick it up";
+      return `Queued for ${providerName}`;
     case "read":
-      return "Read by the CLI";
+      return `Received by ${providerName}`;
   }
 }
 
