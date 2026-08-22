@@ -25,10 +25,12 @@ describe("composer emoji picker", () => {
     // hover it back.
     expect(markup).not.toContain("opacity-[0.12]");
     expect(markup).toContain("opacity-45");
-    // The phone is where the control actually collides with the text, so it
-    // fades further there — the reverse of the old `max-sm:opacity-100`, which
-    // pinned it fully opaque on exactly that layout.
-    expect(markup).toContain("phone-portrait:opacity-25");
+    // Phone widths are where the control actually collides with the text, so
+    // it fades further there — the exact reverse of the old
+    // `max-sm:opacity-100`, which pinned it opaque on that very layout. Same
+    // breakpoint deliberately: that one demonstrably matched on the device
+    // that reported the problem.
+    expect(markup).toContain("max-sm:opacity-25");
     expect(markup).not.toContain("max-sm:opacity-100");
     // Touch has no hover, so it has to come back some other way.
     expect(markup).toContain("hover:opacity-100");
@@ -42,6 +44,6 @@ describe("composer emoji picker", () => {
     );
 
     expect(markup).toContain('data-chat-composer-emoji-underlay="false"');
-    expect(markup).not.toContain("phone-portrait:opacity-25");
+    expect(markup).not.toContain("max-sm:opacity-25");
   });
 });
