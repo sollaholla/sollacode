@@ -5109,7 +5109,6 @@ describe("ProviderCommandReactor", () => {
       ),
     );
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -5131,7 +5130,6 @@ describe("ProviderCommandReactor", () => {
     // The answer already landed once: the adapter dropped its callback, so the
     // second submit reports the request as unknown even though the session is
     // healthy and mid-turn.
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.activity.append",
@@ -5150,7 +5148,6 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.user-input.respond",
@@ -5241,7 +5238,6 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -5268,7 +5264,6 @@ describe("ProviderCommandReactor", () => {
       return thread?.session?.status === "ready";
     });
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.stop",
@@ -5302,7 +5297,6 @@ describe("ProviderCommandReactor", () => {
       updatedAt: now,
     });
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -5323,7 +5317,6 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- This legacy async harness exposes the dispatch Effect directly.
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",

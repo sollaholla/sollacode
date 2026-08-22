@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ComposerPrimaryActions, formatPushToTalkActionLabel } from "./ComposerPrimaryActions";
 
@@ -29,6 +29,14 @@ const renderActions = (overrides: Partial<ComponentProps<typeof ComposerPrimaryA
       {...overrides}
     />,
   );
+
+beforeEach(() => {
+  vi.stubGlobal("navigator", { platform: "MacIntel" });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("composer push-to-talk action", () => {
   it("renders the microphone immediately before the send button", () => {
