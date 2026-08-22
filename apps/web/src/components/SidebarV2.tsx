@@ -378,7 +378,11 @@ function SidebarV2ThreadTooltip({
  * has gone. It dims until the threshold is crossed and goes solid at it, which
  * is the "let go now and this happens" signal.
  */
-function SidebarRowSwipeAffordance(props: { state: SidebarRowSwipeState }) {
+function SidebarRowSwipeAffordance(props: {
+  state: SidebarRowSwipeState;
+  /** Vertical inset, to match a row whose list item carries padding. */
+  insetClassName?: string;
+}) {
   const { action, offset, progress, armed } = props.state;
   if (action === null || offset === 0) return null;
   const { label, tone } = describeSwipeAction(action);
@@ -387,7 +391,8 @@ function SidebarRowSwipeAffordance(props: { state: SidebarRowSwipeState }) {
     <div
       aria-hidden
       className={cn(
-        "pointer-events-none absolute inset-y-0 flex items-center gap-1.5 rounded-md px-3 text-xs font-medium",
+        "pointer-events-none absolute flex items-center gap-1.5 rounded-md px-3 text-xs font-medium",
+        props.insetClassName ?? "inset-y-0",
         // Revealed on the side the row moved away from.
         offset > 0 ? "left-0" : "right-0",
         tone === "settle"
@@ -876,6 +881,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       )
     : undefined;
   const swipeAffordance = <SidebarRowSwipeAffordance state={swipe.state} />;
+  // The card row's list item carries py-0.5; without matching it the plate
+  // stands 4px proud of the row it is revealed behind and bleeds into the gap.
+  const swipeAffordanceCard = (
+    <SidebarRowSwipeAffordance state={swipe.state} insetClassName="inset-y-0.5" />
+  );
 
   // All Sidebar V2 rows share one surface model. Live threads used to look
   // like elevated cards while settled threads were plain rows, leaving neither
@@ -1087,7 +1097,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       data-thread-item
       className="relative list-none overflow-hidden py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
     >
-      {swipeAffordance}
+      {swipeAffordanceCard}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -1170,73 +1180,40 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     threadTimeLabel(thread)
                   )}
                 </span>
-                {swipeEnabled ? (
-                  <>
-                    {/* Undrawn, and `inert` so it is neither focusable nor
-                        announced: it exists only to give the preset popover
-                        that the swipe opens something to anchor to. The
-                        control assistive tech uses is the one below. */}
-                    {showSnoozeButton ? (
-                      <span
-                        inert
-                        className="pointer-events-none absolute inset-y-0 right-0 opacity-0"
-                      >
+                {/* Same treatment as the slim row: undrawn, not unmounted.
+                    Keeping the real controls — rather than an inert anchor
+                    plus sr-only stand-ins — means the popover the swipe opens
+                    is opened through the ordinary path, anchored to a button
+                    that is a genuine, focusable button. */}
+                <span className={swipeEnabled ? "sr-only" : "contents"}>
+                  {props.settlementSupported || showSnoozeButton ? (
+                    <span
+                      className={cn(
+                        "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
+                        snoozeMenuOpen && "static opacity-100",
+                      )}
+                    >
+                      {showSnoozeButton ? (
                         <SnoozePopoverButton
                           open={snoozeMenuOpen}
                           onOpenChange={setSnoozeMenuOpen}
                           onSnooze={handleSnoozePreset}
                         />
-                      </span>
-                    ) : null}
-                    {/* Sliding is a gesture assistive tech cannot perform, so
-                        the actions stay reachable as controls even though the
-                        row is driven by the gesture. */}
-                    {props.settlementSupported ? (
-                      <button type="button" className="sr-only" onClick={handleSettleClick}>
-                        Settle thread
-                      </button>
-                    ) : null}
-                    {showSnoozeButton ? (
-                      <button
-                        type="button"
-                        className="sr-only"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          setSnoozeMenuOpen(true);
-                        }}
-                      >
-                        Snooze thread
-                      </button>
-                    ) : null}
-                  </>
-                ) : props.settlementSupported || showSnoozeButton ? (
-                  <span
-                    className={cn(
-                      "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
-                      snoozeMenuOpen && "static opacity-100",
-                    )}
-                  >
-                    {showSnoozeButton ? (
-                      <SnoozePopoverButton
-                        open={snoozeMenuOpen}
-                        onOpenChange={setSnoozeMenuOpen}
-                        onSnooze={handleSnoozePreset}
-                      />
-                    ) : null}
-                    {props.settlementSupported ? (
-                      <button
-                        type="button"
-                        aria-label="Settle thread"
-                        onClick={handleSettleClick}
-                        className="-mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
-                      >
-                        <CheckIcon className="size-3.5" />
-                        Settle
-                      </button>
-                    ) : null}
-                  </span>
-                ) : null}
+                      ) : null}
+                      {props.settlementSupported ? (
+                        <button
+                          type="button"
+                          aria-label="Settle thread"
+                          onClick={handleSettleClick}
+                          className="-mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <CheckIcon className="size-3.5" />
+                          Settle
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </span>
               </span>
             </div>
             <div className="mt-1 flex min-w-0">{title}</div>
