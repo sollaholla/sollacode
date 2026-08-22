@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { setTimeout as delay } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -159,7 +159,7 @@ export class McpBridgeConnection {
   private async makeConnection(): Promise<Client> {
     if (this.stopped) throw new Error("MCP provider bridge connection is closed.");
     const waitMs = Math.max(0, this.nextConnectAt - DateTime.toEpochMillis(DateTime.nowUnsafe()));
-    if (waitMs > 0) await delay(waitMs);
+    if (waitMs > 0) await NodeTimersPromises.setTimeout(waitMs);
 
     const parameters: StdioServerParameters = {
       command: this.options.command,

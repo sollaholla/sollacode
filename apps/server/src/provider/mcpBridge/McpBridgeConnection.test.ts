@@ -1,19 +1,21 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeURL from "node:url";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { McpBridgeConnection } from "./McpBridgeConnection.ts";
 
-const fixture = fileURLToPath(new URL("./fixtures/fakeProviderBridge.mjs", import.meta.url));
+const fixture = NodeURL.fileURLToPath(
+  new URL("./fixtures/fakeProviderBridge.mjs", import.meta.url),
+);
 const tempDirectories: string[] = [];
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-mcp-bridge-"));
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-mcp-bridge-"));
   tempDirectories.push(directory);
   return directory;
 }
@@ -22,7 +24,7 @@ afterEach(async () => {
   await Promise.all(
     tempDirectories
       .splice(0)
-      .map((directory) => NodeFS.rm(directory, { recursive: true, force: true })),
+      .map((directory) => NodeFSP.rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -38,7 +40,7 @@ describe("McpBridgeConnection", () => {
     try {
       const described = await connection.describe();
       expect(described.health.argv).toEqual(["value with spaces", "*literal*", "$(never-run)"]);
-      expect(described.health.cwd).toBe(await NodeFS.realpath(cwd));
+      expect(described.health.cwd).toBe(await NodeFSP.realpath(cwd));
       expect(described.health.forwardedEnvironment).toBe("forwarded");
       expect(connection.pid).toBeTypeOf("number");
     } finally {
@@ -178,7 +180,7 @@ describe("McpBridgeConnection", () => {
       process.kill(firstPid!, "SIGKILL");
       for (let attempt = 0; attempt < 100; attempt += 1) {
         if (connection.pid === null) break;
-        await delay(10);
+        await NodeTimersPromises.setTimeout(10);
       }
       expect(connection.pid).toBeNull();
 
@@ -220,7 +222,7 @@ describe("McpBridgeConnection", () => {
     });
     await connection.describe();
     await connection.shutdown();
-    await expect(NodeFS.readFile(marker, "utf8")).resolves.toBe("shutdown\n");
+    await expect(NodeFSP.readFile(marker, "utf8")).resolves.toBe("shutdown\n");
     expect(connection.pid).toBeNull();
   });
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import readline from "node:readline";
+import * as NodeFS from "node:fs";
+import * as NodeReadline from "node:readline";
 
 const protocolVersion = process.env.FAKE_BRIDGE_PROTOCOL_VERSION ?? "solla.provider-bridge/1";
 const marker = process.env.FAKE_BRIDGE_MARKER;
 const crashMarker = process.env.FAKE_BRIDGE_CRASH_ONCE_MARKER;
-if (crashMarker && !fs.existsSync(crashMarker)) {
-  fs.writeFileSync(crashMarker, "crashed\n");
+if (crashMarker && !NodeFS.existsSync(crashMarker)) {
+  NodeFS.writeFileSync(crashMarker, "crashed\n");
   process.stderr.write("intentional fake bridge crash\n");
   process.exit(17);
 }
@@ -69,7 +69,7 @@ const descriptor = () => ({
   },
 });
 
-const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+const lines = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", (line) => {
   let message;
   try {
@@ -106,8 +106,8 @@ lines.on("line", (line) => {
   const name = message.params?.name;
   if (name === process.env.FAKE_BRIDGE_EXIT_TOOL) {
     const exitMarker = process.env.FAKE_BRIDGE_EXIT_ONCE_MARKER;
-    if (!exitMarker || !fs.existsSync(exitMarker)) {
-      if (exitMarker) fs.writeFileSync(exitMarker, "exited\n");
+    if (!exitMarker || !NodeFS.existsSync(exitMarker)) {
+      if (exitMarker) NodeFS.writeFileSync(exitMarker, "exited\n");
       process.exit(23);
     }
   }
@@ -122,7 +122,7 @@ lines.on("line", (line) => {
     return;
   }
   if (name === "provider_bridge.shutdown") {
-    if (marker) fs.writeFileSync(marker, "shutdown\n");
+    if (marker) NodeFS.writeFileSync(marker, "shutdown\n");
     write(id, toolResult({ protocolVersion, shutdown: true }));
     return;
   }

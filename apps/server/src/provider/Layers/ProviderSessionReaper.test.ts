@@ -643,8 +643,8 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
     // Bind the session only AFTER startup: the one-shot startup reconcile cannot
     // see it, so clearing it here can only come from the periodic pass.
@@ -680,7 +680,7 @@ describe("ProviderSessionReaper", () => {
     const turnId = TurnId.make("turn-reaper-periodic-grace");
     // A turn that only just started: its adapter may still be registering, so
     // the periodic pass must leave it alone until it ages past the grace.
-    const freshUpdatedAt = await Effect.runPromise(Effect.map(DateTime.now, DateTime.formatIso));
+    const freshUpdatedAt = DateTime.formatIso(DateTime.nowUnsafe());
     const harness = await createHarness({
       readModel: makeReadModel([
         {
@@ -708,8 +708,8 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
     await runtime!.runPromise(
       repository.upsert({
@@ -736,7 +736,7 @@ describe("ProviderSessionReaper", () => {
   it("keeps a projected active turn only when the adapter proves the same turn is live", async () => {
     const threadId = ThreadId.make("thread-reaper-live-after-restart");
     const turnId = TurnId.make("turn-reaper-live-after-restart");
-    const now = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    const now = DateTime.formatIso(DateTime.nowUnsafe());
     const harness = await createHarness({
       readModel: makeReadModel([
         {
@@ -783,9 +783,9 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
-    await Effect.runPromise(drainFibers);
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     expect(harness.dispatchedCommands).toEqual([]);
@@ -794,7 +794,7 @@ describe("ProviderSessionReaper", () => {
   it("clears a stale projected turn when the surviving provider session is only ready", async () => {
     const threadId = ThreadId.make("thread-reaper-ready-after-restart");
     const turnId = TurnId.make("turn-reaper-stale-after-restart");
-    const now = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    const now = DateTime.formatIso(DateTime.nowUnsafe());
     const harness = await createHarness({
       readModel: makeReadModel([
         {
@@ -840,8 +840,8 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
     await waitFor(() => harness.dispatchedCommands.length === 2);
     expect(harness.stopSession).not.toHaveBeenCalled();
@@ -865,7 +865,7 @@ describe("ProviderSessionReaper", () => {
 
   it("does not reap sessions that are still within the inactivity threshold", async () => {
     const threadId = ThreadId.make("thread-reaper-fresh");
-    const now = DateTime.formatIso(await Effect.runPromise(DateTime.now));
+    const now = DateTime.formatIso(DateTime.nowUnsafe());
     const harness = await createHarness({
       readModel: makeReadModel([
         {
@@ -903,9 +903,9 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
-    await Effect.runPromise(drainFibers);
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
@@ -952,9 +952,9 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
-    await Effect.runPromise(drainFibers);
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
@@ -1038,8 +1038,8 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
     await waitFor(() => harness.stopSession.mock.calls.length === 2);
 
@@ -1121,8 +1121,8 @@ describe("ProviderSessionReaper", () => {
     );
 
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
-    scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
 
     await waitFor(() => harness.stopSession.mock.calls.length === 2);
 
