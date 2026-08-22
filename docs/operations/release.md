@@ -28,6 +28,27 @@ This document covers the unified release workflow for stable and nightly desktop
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
 
+## Optional hosted services (forks)
+
+Everything the release needs from T3's own infrastructure is optional and
+auto-detected. A fork with no secrets configured still runs the full quality
+gates, builds all four desktop artifacts, and publishes a GitHub Release.
+
+| Stage                                    | Enabled by                                                                                                                                      | When unconfigured                                                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| T3 Connect / relay tracing config        | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` secrets **and** an `infra/relay` (`t3code-relay`) workspace package                            | Relay state read is skipped; an empty tracing config is published so downstream jobs still resolve |
+| Clerk sign-in baked into the build       | `CLERK_PUBLISHABLE_KEY`, `CLERK_JWT_TEMPLATE`, `CLERK_CLI_OAUTH_CLIENT_ID` variables + a relay domain (`RELAY_DOMAIN` or `RELAY_API_ZONE_NAME`) | Artifacts build without hosted sign-in and relay endpoints                                         |
+| npm CLI publish                          | `RELEASE_PUBLISH_CLI` repository variable set to `true`                                                                                         | `publish_cli` is skipped; `release` proceeds anyway                                                |
+| Hosted web app deploy                    | `VERCEL_TOKEN` + `VERCEL_ORG_ID` + `VERCEL_PROJECT_ID` secrets                                                                                  | `deploy_web` no-ops and reports success                                                            |
+| Release commits authored by a GitHub App | `RELEASE_APP_ID` + `RELEASE_APP_PRIVATE_KEY` secrets                                                                                            | Falls back to the built-in `GITHUB_TOKEN`, committing as `github-actions[bot]`                     |
+| Discord announcement                     | `DISCORD_RELEASE_WEBHOOK_URL` secret                                                                                                            | Announcement steps are skipped                                                                     |
+| macOS / Windows code signing             | Apple and Azure secrets (see below)                                                                                                             | Unsigned artifacts                                                                                 |
+
+Forks that skip the npm publish give up the server self-update invariant
+described below: a client can only update a connected server to its exact
+version if a matching package exists on npm. To restore it, publish the CLI
+under a package name the fork owns and set `RELEASE_PUBLISH_CLI=true`.
+
 ## Hosted web app release deployment
 
 The hosted app is intentionally not deployed by Vercel's Git integration. The

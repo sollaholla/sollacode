@@ -175,6 +175,7 @@ jobs:
     environment:
       name: production
     outputs:
+      configured: ${{ steps.public_config.outputs.configured }}
       clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ steps.public_config.outputs.clerk_jwt_template }}
       clerk_cli_oauth_client_id: ${{ steps.public_config.outputs.clerk_cli_oauth_client_id }}
@@ -193,7 +194,30 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.ref }}
 
+      # Forks generally do not ship the hosted relay worker (infra/relay) and
+      # have no T3 Connect tenant, so there is no deployed relay state to read.
+      # Detect that up front and degrade to an unconfigured build instead of
+      # failing the job — every downstream job is gated on this one succeeding.
+      - id: hosted
+        name: Detect hosted relay configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          relay_pkg="$(grep -rl '"name": "t3code-relay"' --include=package.json infra apps packages 2>/dev/null | head -n 1 || true)"
+
+          if [[ -z "$relay_pkg" ]]; then
+            echo "No t3code-relay workspace package in this repository; skipping relay state read."
+            echo "relay_state=false" >> "$GITHUB_OUTPUT"
+          elif [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+            echo "Cloudflare credentials are not configured; skipping relay state read."
+            echo "relay_state=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "relay_state=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Vite+
+        if: steps.hosted.outputs.relay_state == 'true'
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -204,6 +228,7 @@ jobs:
 
       - id: relay_state
         name: Read production relay tracing config
+        if: steps.hosted.outputs.relay_state == 'true'
         shell: bash
         run: |
           vp run --filter t3code-relay deploy \
@@ -211,6 +236,21 @@ jobs:
             --read-state \
             --github-output \
             --github-env-file "$RUNNER_TEMP/relay-client-tracing.env"
+
+      # The consuming jobs unconditionally download this artifact, so publish an
+      # empty-but-valid env file when there is no relay to read from. The keys
+      # must still be present and assignment-shaped: consumers append the file
+      # straight to $GITHUB_ENV, which rejects anything that is not NAME=value.
+      - name: Write empty relay client tracing config
+        if: steps.hosted.outputs.relay_state != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/relay-client-tracing.env" <<'EOF'
+          T3CODE_RELAY_CLIENT_OTLP_TRACES_URL=
+          T3CODE_RELAY_CLIENT_OTLP_TRACES_DATASET=
+          T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=
+          EOF
 
       - name: Upload relay client tracing config
         uses: actions/upload-artifact@v7
@@ -242,11 +282,20 @@ jobs:
               missing+=("$name")
             fi
           done
+
+          # A fork with no T3 Connect tenant still gets a complete desktop build;
+          # it just ships without the hosted sign-in and relay endpoints baked in.
           if (( ${#missing[@]} > 0 )); then
-            printf 'Missing required relay deployment configuration: %s\n' "${missing[*]}" >&2
-            exit 1
+            printf 'T3 Connect is not configured (missing: %s). Building without hosted relay support.\n' "${missing[*]}"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "clerk_publishable_key=" >> "$GITHUB_OUTPUT"
+            echo "clerk_jwt_template=" >> "$GITHUB_OUTPUT"
+            echo "clerk_cli_oauth_client_id=" >> "$GITHUB_OUTPUT"
+            echo "relay_url=" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          echo "configured=true" >> "$GITHUB_OUTPUT"
           echo "clerk_publishable_key=$CLERK_PUBLISHABLE_KEY" >> "$GITHUB_OUTPUT"
           echo "clerk_jwt_template=$CLERK_JWT_TEMPLATE" >> "$GITHUB_OUTPUT"
           echo "clerk_cli_oauth_client_id=$CLERK_CLI_OAUTH_CLIENT_ID" >> "$GITHUB_OUTPUT"
@@ -384,7 +433,10 @@ jobs:
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          # Empty when the repository has no hosted relay; masking "" is an error.
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
@@ -620,7 +672,9 @@ jobs:
   publish_cli:
     name: Publish CLI to npm
     needs: [preflight, relay_public_config, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
+    # Publishing targets the `t3` package on npm, which only the upstream project
+    # owns. Forks leave RELEASE_PUBLISH_CLI unset and ship desktop artifacts only.
+    if: ${{ !failure() && !cancelled() && vars.RELEASE_PUBLISH_CLI == 'true' && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -659,7 +713,10 @@ jobs:
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          # Empty when the repository has no hosted relay; masking "" is an error.
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
@@ -695,12 +752,19 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [preflight, build, publish_cli]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.publish_cli.result == 'success' }}
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.publish_cli.result == 'success' || needs.publish_cli.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Needed so the release can be cut with the built-in GITHUB_TOKEN when no
+    # release GitHub App is configured.
+    permissions:
+      contents: write
+    env:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
     steps:
       - id: app_token
         name: Mint release app token
+        if: env.RELEASE_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
@@ -745,7 +809,7 @@ jobs:
             release-assets/*.AppImage
             release-assets/*.exe
           fail_on_unmatched_files: true
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ steps.app_token.outputs.token || github.token }}
 
       - name: Publish first release
         if: needs.preflight.outputs.previous_tag == ''
@@ -763,7 +827,7 @@ jobs:
             release-assets/*.AppImage
             release-assets/*.exe
           fail_on_unmatched_files: true
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ steps.app_token.outputs.token || github.token }}
 
   deploy_web:
     name: Deploy hosted web app
@@ -784,12 +848,28 @@ jobs:
       T3CODE_WEB_NIGHTLY_DOMAIN: ${{ vars.T3CODE_WEB_NIGHTLY_DOMAIN }}
       VERCEL_TEAM_SLUG: ${{ vars.VERCEL_TEAM_SLUG }}
     steps:
+      # Hosting the web app is optional. Without Vercel credentials this job
+      # short-circuits to a no-op success so the release itself still completes.
+      - id: vercel
+        name: Detect Vercel configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_ORG_ID:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Vercel is not configured (VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID); skipping hosted web deploy."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.vercel.outputs.enabled == 'true'
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
 
       - name: Setup Vite+
+        if: steps.vercel.outputs.enabled == 'true'
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -800,34 +880,37 @@ jobs:
               - --filter=@t3tools/web...
 
       - name: Download relay client tracing config
+        if: steps.vercel.outputs.enabled == 'true'
         uses: actions/download-artifact@v8
         with:
           name: relay-client-tracing-config
           path: ${{ runner.temp }}/relay-client-tracing
 
       - name: Load relay client tracing config
+        if: steps.vercel.outputs.enabled == 'true'
         shell: bash
         run: |
           config_path="$RUNNER_TEMP/relay-client-tracing/relay-client-tracing.env"
           tracing_token="$(sed -n 's/^T3CODE_RELAY_CLIENT_OTLP_TRACES_TOKEN=//p' "$config_path")"
-          echo "::add-mask::$tracing_token"
+          # Empty when the repository has no hosted relay; masking "" is an error.
+          if [[ -n "$tracing_token" ]]; then
+            echo "::add-mask::$tracing_token"
+          fi
           cat "$config_path" >> "$GITHUB_ENV"
 
       - name: Align package versions to release version
+        if: steps.vercel.outputs.enabled == 'true'
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Refresh release lockfile
+        if: steps.vercel.outputs.enabled == 'true'
         run: vp install --lockfile-only --ignore-scripts
 
       - name: Deploy and alias channel
+        if: steps.vercel.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ -z "${VERCEL_TOKEN:-}" || -z "${VERCEL_ORG_ID:-}" || -z "${VERCEL_PROJECT_ID:-}" ]]; then
-            echo "Missing one or more required Vercel secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID." >&2
-            exit 1
-          fi
 
           router_url="${T3CODE_WEB_ROUTER_URL:-https://app.t3.codes}"
           latest_domain="${T3CODE_WEB_LATEST_DOMAIN:-latest.app.t3.codes}"
@@ -886,9 +969,16 @@ jobs:
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Needed to push the version bump with the built-in GITHUB_TOKEN when no
+    # release GitHub App is configured.
+    permissions:
+      contents: write
+    env:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
     steps:
       - id: app_token
         name: Mint release app token
+        if: env.RELEASE_APP_ID != ''
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
@@ -900,15 +990,23 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ steps.app_token.outputs.token }}
+          token: ${{ steps.app_token.outputs.token || github.token }}
           persist-credentials: true
 
       - id: app_bot
-        name: Resolve GitHub App bot identity
+        name: Resolve commit identity
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token || github.token }}
           APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
         run: |
+          set -euo pipefail
+          if [[ -z "${APP_SLUG:-}" ]]; then
+            # No release App: commit as the Actions bot, which is what
+            # GITHUB_TOKEN authenticates as.
+            echo "name=github-actions[bot]" >> "$GITHUB_OUTPUT"
+            echo "email=41898282+github-actions[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           user_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
           echo "name=${APP_SLUG}[bot]" >> "$GITHUB_OUTPUT"
           echo "email=${user_id}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
@@ -967,6 +1065,8 @@ jobs:
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -974,6 +1074,7 @@ jobs:
           ref: ${{ needs.preflight.outputs.ref }}
 
       - name: Setup Vite+
+        if: env.DISCORD_WEBHOOK_URL != ''
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
@@ -983,11 +1084,10 @@ jobs:
               - --filter=@t3tools/scripts...
 
       - name: Announce prerelease on Discord
-        if: needs.preflight.outputs.is_prerelease == 'true'
+        if: needs.preflight.outputs.is_prerelease == 'true' && env.DISCORD_WEBHOOK_URL != ''
         continue-on-error: true
         env:
           DISCORD_MENTION_ROLE_ID: ${{ secrets.DISCORD_RELEASE_NIGHTLY_ROLE_ID }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
         run: |
           node scripts/notify-discord-release.ts prerelease \
             --role-id "$DISCORD_MENTION_ROLE_ID" \
@@ -997,11 +1097,10 @@ jobs:
             --release-url "https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.tag }}"
 
       - name: Announce latest release on Discord
-        if: needs.preflight.outputs.make_latest == 'true'
+        if: needs.preflight.outputs.make_latest == 'true' && env.DISCORD_WEBHOOK_URL != ''
         continue-on-error: true
         env:
           DISCORD_MENTION_ROLE_ID: ${{ secrets.DISCORD_RELEASE_LATEST_ROLE_ID }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
         run: |
           node scripts/notify-discord-release.ts latest \
             --role-id "$DISCORD_MENTION_ROLE_ID" \
