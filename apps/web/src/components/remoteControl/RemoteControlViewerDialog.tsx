@@ -1200,99 +1200,108 @@ export function RemoteControlViewerDialog(props: {
                   }}
                 />
               ) : null}
-              <div className="absolute right-3 bottom-3 flex items-center gap-2">
-                {canControl && canPointer && canKeyboard ? (
-                  <button
-                    type="button"
-                    aria-label={fpsArmed ? "Disable FPS controller" : "Enable FPS controller"}
-                    aria-pressed={fpsArmed}
-                    className={`flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-white ${
-                      fpsArmed ? "bg-primary/85 hover:bg-primary" : "bg-black/70 hover:bg-black/85"
+              {/* One row, not two absolutely-positioned corners: the pill and
+                  the buttons used to be independent and could run into each
+                  other, and the clearance needed differed per breakpoint
+                  because the buttons reveal their labels at `sm`. Here the
+                  pill simply truncates against whatever the buttons take. */}
+              <div className="absolute inset-x-3 bottom-3 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
+                  <span
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      inputCaptured ? "bg-primary" : "bg-emerald-400"
                     }`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setFpsArmed((armed) => !armed);
-                      captureInput();
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    <Gamepad2Icon className="size-3.5" />
-                    <span className="sr-only sm:not-sr-only">FPS</span>
-                  </button>
-                ) : null}
-                {canKeyboard ? (
+                  />
+                  <span className="truncate">
+                    {canControl
+                      ? fpsActive
+                        ? "FPS controller · left thumb moves, right thumb looks"
+                        : fpsArmed
+                          ? // Armed but idle. Without this the FPS button lights up
+                            // and nothing else happens, which reads as a dead
+                            // control rather than as waiting for the remote app.
+                            "FPS ready · starts when the remote game captures the mouse"
+                          : pointerLocked
+                            ? "Live · mouse captured — Esc releases"
+                            : remoteLocked && canPointer && inputCaptured
+                              ? "Live · click to capture your mouse"
+                              : inputCaptured
+                                ? "Live · input focused"
+                                : "Live · click to focus"
+                      : "Live · view only"}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {canControl && canPointer && canKeyboard ? (
+                    <button
+                      type="button"
+                      aria-label={fpsArmed ? "Disable FPS controller" : "Enable FPS controller"}
+                      aria-pressed={fpsArmed}
+                      className={`flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-white ${
+                        fpsArmed
+                          ? "bg-primary/85 hover:bg-primary"
+                          : "bg-black/70 hover:bg-black/85"
+                      }`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setFpsArmed((armed) => !armed);
+                        captureInput();
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <Gamepad2Icon className="size-3.5" />
+                      <span className="sr-only sm:not-sr-only">FPS</span>
+                    </button>
+                  ) : null}
+                  {canKeyboard ? (
+                    <button
+                      type="button"
+                      aria-label={virtualKeyboardOpen ? "Hide keyboard" : "Show keyboard"}
+                      aria-pressed={virtualKeyboardOpen}
+                      className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (virtualKeyboardOpen) {
+                          virtualKeyboardInputRef.current?.blur();
+                          return;
+                        }
+                        captureInput();
+                        // Synchronously, inside the tap gesture — mobile
+                        // browsers refuse to raise the keyboard for a deferred
+                        // focus. Open/closed state follows the input's own
+                        // focus events.
+                        virtualKeyboardInputRef.current?.focus();
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <KeyboardIcon className="size-3.5" />
+                      <span className="sr-only sm:not-sr-only">Keyboard</span>
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    aria-label={virtualKeyboardOpen ? "Hide keyboard" : "Show keyboard"}
-                    aria-pressed={virtualKeyboardOpen}
+                    aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
+                    // Bottom right, opposite the status pill: the top edge belongs
+                    // to the host/input notices, which span the full width.
                     className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
                     onClick={(event) => {
+                      // The surface below forwards clicks to the remote desktop;
+                      // pressing this must not also click over there.
                       event.stopPropagation();
-                      if (virtualKeyboardOpen) {
-                        virtualKeyboardInputRef.current?.blur();
-                        return;
-                      }
-                      captureInput();
-                      // Synchronously, inside the tap gesture — mobile
-                      // browsers refuse to raise the keyboard for a deferred
-                      // focus. Open/closed state follows the input's own
-                      // focus events.
-                      virtualKeyboardInputRef.current?.focus();
+                      toggleFullScreen();
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
-                    <KeyboardIcon className="size-3.5" />
-                    <span className="sr-only sm:not-sr-only">Keyboard</span>
+                    {isFullScreen ? (
+                      <MinimizeIcon className="size-3.5" />
+                    ) : (
+                      <MaximizeIcon className="size-3.5" />
+                    )}
+                    <span className="sr-only sm:not-sr-only">
+                      {isFullScreen ? "Exit full screen" : "Full screen"}
+                    </span>
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
-                  // Bottom right, opposite the status pill: the top edge belongs
-                  // to the host/input notices, which span the full width.
-                  className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
-                  onClick={(event) => {
-                    // The surface below forwards clicks to the remote desktop;
-                    // pressing this must not also click over there.
-                    event.stopPropagation();
-                    toggleFullScreen();
-                  }}
-                  onPointerDown={(event) => event.stopPropagation()}
-                >
-                  {isFullScreen ? (
-                    <MinimizeIcon className="size-3.5" />
-                  ) : (
-                    <MaximizeIcon className="size-3.5" />
-                  )}
-                  <span className="sr-only sm:not-sr-only">
-                    {isFullScreen ? "Exit full screen" : "Full screen"}
-                  </span>
-                </button>
-              </div>
-              <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-7.5rem)] items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
-                <span
-                  className={`size-1.5 shrink-0 rounded-full ${
-                    inputCaptured ? "bg-primary" : "bg-emerald-400"
-                  }`}
-                />
-                <span className="truncate">
-                  {canControl
-                    ? fpsActive
-                      ? "FPS controller · left thumb moves, right thumb looks"
-                      : fpsArmed
-                        ? // Armed but idle. Without this the FPS button lights up
-                          // and nothing else happens, which reads as a dead
-                          // control rather than as waiting for the remote app.
-                          "FPS ready · starts when the remote game captures the mouse"
-                        : pointerLocked
-                          ? "Live · mouse captured — Esc releases"
-                          : remoteLocked && canPointer && inputCaptured
-                            ? "Live · click to capture your mouse"
-                            : inputCaptured
-                              ? "Live · input focused"
-                              : "Live · click to focus"
-                    : "Live · view only"}
-                </span>
+                </div>
               </div>
               {fpsActive ? (
                 <RemoteControlFpsOverlay
