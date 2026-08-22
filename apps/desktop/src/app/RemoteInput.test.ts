@@ -104,6 +104,7 @@ public static class SollaRemoteInput {
   public static void Mouse(uint flags, int data) { Calls.Add("Mouse:" + flags); }
   public static void Key(ushort vk, bool down) { Calls.Add("Key:" + vk + ":" + down); }
   public static bool CursorLocked() { Calls.Add("CursorLocked"); return true; }
+  public static string CursorShape() { Calls.Add("CursorShape"); return "default"; }
   public static void RestorePointerMode() { Calls.Add("RestorePointerMode"); }
   public static string BlockReason() { return Blocked; }
 }

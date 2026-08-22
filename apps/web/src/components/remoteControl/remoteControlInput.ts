@@ -62,6 +62,50 @@ export function normalizeRemoteControlKeyCode(
   return code;
 }
 
+/**
+ * CSS cursor keywords the host shape channel is allowed to drive. The wire
+ * value goes straight into a style attribute, so anything outside this list —
+ * a newer host's shape, a corrupted value — degrades to the arrow.
+ */
+const REMOTE_CURSOR_KEYWORDS: ReadonlySet<string> = new Set([
+  "default",
+  "text",
+  "pointer",
+  "crosshair",
+  "wait",
+  "progress",
+  "help",
+  "move",
+  "not-allowed",
+  "none",
+  "ew-resize",
+  "ns-resize",
+  "nesw-resize",
+  "nwse-resize",
+  "col-resize",
+  "row-resize",
+  "grab",
+  "grabbing",
+  "alias",
+  "copy",
+  "context-menu",
+  "vertical-text",
+]);
+
+/**
+ * The local cursor to show over the remote surface. Mirrors the host cursor
+ * only while input is captured with pointer rights — an uncaptured surface is
+ * not forwarding motion, so the host shape describes somebody else's pointer.
+ */
+export function remoteSurfaceCursorStyle(input: {
+  readonly shape: string;
+  readonly inputCaptured: boolean;
+  readonly pointerGranted: boolean;
+}): string {
+  if (!input.pointerGranted || !input.inputCaptured) return "default";
+  return REMOTE_CURSOR_KEYWORDS.has(input.shape) ? input.shape : "default";
+}
+
 export function remotePointerButton(button: number): RemoteControlPointerButton {
   if (button === 1) return "middle";
   if (button === 2) return "right";

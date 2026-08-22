@@ -44,3 +44,48 @@ export function clampPreviewMiniPlayerPosition(
     y: Math.min(Math.max(position.y, PREVIEW_MINI_PLAYER_EDGE_GAP), maxY),
   };
 }
+
+export type PreviewMiniPlayerResizeCorner = "left" | "right";
+
+/**
+ * Resolve the position and size for a bottom-corner resize drag.
+ *
+ * Bottom-right is the simple case: the top-left stays put and the box grows
+ * with the pointer. Bottom-left drags the *left* edge, so width grows as the
+ * pointer moves left and the right edge is the anchor that must not move —
+ * which is why this returns a position as well as a size.
+ */
+export function resolvePreviewMiniPlayerResize(input: {
+  readonly corner: PreviewMiniPlayerResizeCorner;
+  readonly origin: {
+    readonly position: PreviewMiniPlayerPosition;
+    readonly size: PreviewMiniPlayerSize;
+  };
+  readonly delta: { readonly x: number; readonly y: number };
+  readonly container: PreviewMiniPlayerSize;
+  readonly bottomInset?: number;
+}): { readonly position: PreviewMiniPlayerPosition; readonly size: PreviewMiniPlayerSize } {
+  const { bottomInset = 0, container, corner, delta, origin } = input;
+  const rightEdge = origin.position.x + origin.size.width;
+  const desiredWidth =
+    corner === "left" ? origin.size.width - delta.x : origin.size.width + delta.x;
+  // Cap a left drag at the container's left gap. Without this the width keeps
+  // growing past the edge and the position clamp slides the anchored right edge
+  // rightwards, so the box appears to walk across the screen instead of stopping.
+  const maxWidth =
+    corner === "left"
+      ? Math.max(PREVIEW_MINI_PLAYER_MIN_SIZE.width, rightEdge - PREVIEW_MINI_PLAYER_EDGE_GAP)
+      : Number.POSITIVE_INFINITY;
+  const size = clampPreviewMiniPlayerSize(
+    { width: Math.min(desiredWidth, maxWidth), height: origin.size.height + delta.y },
+    container,
+    bottomInset,
+  );
+  const position = clampPreviewMiniPlayerPosition(
+    { x: corner === "left" ? rightEdge - size.width : origin.position.x, y: origin.position.y },
+    container,
+    size,
+    bottomInset,
+  );
+  return { position, size };
+}

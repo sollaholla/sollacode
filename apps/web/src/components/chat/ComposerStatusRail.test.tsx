@@ -36,8 +36,8 @@ describe("ComposerStatusRail", () => {
   });
 });
 
-describe("ProviderTaskChip responsive labels", () => {
-  it("keeps full, compact, and minimal labels available to container-query states", () => {
+describe("ProviderTaskChip compact rendering", () => {
+  it("renders icon plus count with the full sentence kept accessible", () => {
     const task: ProviderTask = {
       taskId: "task-1",
       taskType: "local_agent",
@@ -54,9 +54,12 @@ describe("ProviderTaskChip responsive labels", () => {
     );
 
     expect(markup).toContain('data-chat-composer-status-chip="provider-tasks"');
-    expect(markup).toContain("1 stalled task");
-    expect(markup).toContain("1 stalled");
-    expect(markup).toContain("chat-composer-status-label-minimal");
+    // The sentence lives in the accessible name; the visible chip is only a
+    // hammer and the count.
+    expect(markup).toContain('aria-label="1 stalled task. Show agents and tasks."');
+    expect(markup).toContain("lucide-hammer");
+    expect(markup).toContain(">1</span>");
+    expect(markup).not.toContain("chat-composer-status-label-full");
     expect(markup).not.toContain("absolute -top-8");
   });
 });

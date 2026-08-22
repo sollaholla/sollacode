@@ -338,7 +338,9 @@ function UsageWindowProgressLine({
       aria-valuenow={Math.round(window.usedPercent)}
       {...(paceDescription === null
         ? {}
-        : { title: paceDescription, "aria-valuetext": paceDescription })}
+        : // aria-valuetext only — a native `title` here doubles up with the
+          // custom Tooltip below and both render at once.
+          { "aria-valuetext": paceDescription })}
       className="relative block h-1.5 overflow-hidden rounded-full bg-foreground/10"
     >
       <span
@@ -1093,7 +1095,6 @@ function ProviderUsageBadge({
         delay={150}
         closeDelay={150}
         aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatusWithPace}`}
-        title={`${compactUsageLabel}: ${compactStatusWithPace}`}
         data-provider-usage-compact-driver={provider.driver}
         className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
         {...(hoverCapable ? { onFocus: () => setOpen(true) } : {})}

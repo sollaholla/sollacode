@@ -17,6 +17,8 @@ import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
   PREVIEW_MINI_PLAYER_DEFAULT_SIZE,
+  type PreviewMiniPlayerResizeCorner,
+  resolvePreviewMiniPlayerResize,
 } from "./previewMiniPlayerLayout";
 
 interface DragState {
@@ -29,10 +31,13 @@ interface DragState {
 
 interface ResizeState {
   readonly pointerId: number;
+  readonly corner: PreviewMiniPlayerResizeCorner;
   readonly pointerX: number;
   readonly pointerY: number;
   readonly width: number;
   readonly height: number;
+  readonly playerX: number;
+  readonly playerY: number;
 }
 
 interface Props {
@@ -156,21 +161,30 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
     }
   };
 
-  const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return;
-    const root = rootRef.current;
-    if (!root) return;
-    resizeRef.current = {
-      pointerId: event.pointerId,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      width: root.offsetWidth,
-      height: root.offsetHeight,
+  const handleResizePointerDown =
+    (corner: PreviewMiniPlayerResizeCorner) => (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+      const root = rootRef.current;
+      const parent = root?.offsetParent;
+      if (!root || !(parent instanceof HTMLElement)) return;
+      const rootRect = root.getBoundingClientRect();
+      const parentRect = parent.getBoundingClientRect();
+      resizeRef.current = {
+        pointerId: event.pointerId,
+        corner,
+        pointerX: event.clientX,
+        pointerY: event.clientY,
+        width: root.offsetWidth,
+        height: root.offsetHeight,
+        playerX: rootRect.left - parentRect.left,
+        playerY: rootRect.top - parentRect.top,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      // Resizing and dragging share the surface now, so a corner press must not
+      // also start a move.
+      event.stopPropagation();
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-    event.stopPropagation();
-  };
 
   const handleResizePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const resize = resizeRef.current;
@@ -184,22 +198,18 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
     ) {
       return;
     }
-    const nextSize = clampPreviewMiniPlayerSize(
-      {
-        width: resize.width + event.clientX - resize.pointerX,
-        height: resize.height + event.clientY - resize.pointerY,
+    const next = resolvePreviewMiniPlayerResize({
+      corner: resize.corner,
+      origin: {
+        position: { x: resize.playerX, y: resize.playerY },
+        size: { width: resize.width, height: resize.height },
       },
-      { width: parent.clientWidth, height: parent.clientHeight },
+      delta: { x: event.clientX - resize.pointerX, y: event.clientY - resize.pointerY },
+      container: { width: parent.clientWidth, height: parent.clientHeight },
       bottomInset,
-    );
-    usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, nextSize);
-    const nextPosition = clampPreviewMiniPlayerPosition(
-      position ?? { x: root.offsetLeft, y: root.offsetTop },
-      { width: parent.clientWidth, height: parent.clientHeight },
-      nextSize,
-      bottomInset,
-    );
-    usePreviewMiniPlayerStore.getState().move(threadRef, tabId, nextPosition);
+    });
+    usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, next.size);
+    usePreviewMiniPlayerStore.getState().move(threadRef, tabId, next.position);
   };
 
   const endResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -229,28 +239,58 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
             }
       }
     >
-      <div className="group pointer-events-auto absolute right-2 top-2 z-[34] size-3">
-        <div
-          aria-hidden="true"
-          className="absolute right-0 top-0 size-2 rounded-full bg-foreground/25 shadow-sm ring-1 ring-background/70 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+      <div className="group relative h-full min-h-0">
+        <div className="absolute inset-0 z-[29] rounded-xl bg-muted shadow-2xl/35" />
+        {/* The guest paints at z-30 between the backdrop and the controls. It is
+            presented non-interactively: floating, this is a thumbnail you move,
+            so a click must never land in the page. Interactivity is what
+            "Open" promotes you to. */}
+        <BrowserSurfaceSlot
+          tabId={runtimeTabId}
+          visible={Boolean(desktopOverlay?.hasWebContents)}
+          cornerRadius={12}
+          fitSourceContent
+          interactive={false}
+          layoutVersion={position ? `${position.x}:${position.y}` : `initial:${bottomInset}`}
+          className="absolute inset-0"
         />
+        <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border/80" />
+        {!desktopOverlay?.hasWebContents ? (
+          <div className="pointer-events-none absolute inset-0 z-[31] flex items-center justify-center rounded-xl bg-muted text-xs text-muted-foreground">
+            Reconnecting preview…
+          </div>
+        ) : null}
+
+        {/* Drag surface. Explicit rather than relying on the guest's
+            `pointer-events: none` letting clicks fall through to the backdrop:
+            this layer sits above the guest, so dragging works the same however
+            the surface is hosted. */}
         <div
-          className="pointer-events-none absolute right-0 top-0 flex h-8 cursor-grab items-center gap-0.5 rounded-lg border border-border/80 bg-popover/92 p-0.5 opacity-0 shadow-lg/20 backdrop-blur-xl transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 active:cursor-grabbing"
+          data-preview-mini-player-drag=""
+          className="pointer-events-auto absolute inset-0 z-[32] cursor-grab rounded-xl active:cursor-grabbing"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
-        >
+        />
+
+        <div className="pointer-events-none absolute inset-0 z-[33] flex items-center justify-center rounded-xl bg-background/50 opacity-0 backdrop-blur-[2px] transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
           <Button
-            variant="ghost"
-            size="icon-xs"
+            variant="secondary"
+            size="sm"
+            data-testid="preview-mini-player-open"
             aria-label="Open preview in right panel"
             title="Open in right panel"
+            className="pointer-events-auto shadow-lg"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={openInPanel}
           >
             <PanelRightIcon />
+            Open
           </Button>
+        </div>
+
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-[34] flex h-8 items-center gap-0.5 rounded-lg border border-border/80 bg-popover/92 p-0.5 opacity-0 shadow-lg/20 backdrop-blur-xl transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
           <Button
             variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
             size="icon-xs"
@@ -281,30 +321,25 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
             <XIcon />
           </Button>
         </div>
-      </div>
 
-      <div className="relative h-full min-h-0">
-        <div className="absolute inset-0 z-[29] rounded-xl bg-muted shadow-2xl/35" />
-        <BrowserSurfaceSlot
-          tabId={runtimeTabId}
-          visible={Boolean(desktopOverlay?.hasWebContents)}
-          cornerRadius={12}
-          fitSourceContent
-          layoutVersion={position ? `${position.x}:${position.y}` : `initial:${bottomInset}`}
-          className="absolute inset-0"
-        />
-        <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border/80" />
-        {!desktopOverlay?.hasWebContents ? (
-          <div className="pointer-events-none absolute inset-0 z-[32] flex items-center justify-center rounded-xl bg-muted text-xs text-muted-foreground">
-            Reconnecting preview…
-          </div>
-        ) : null}
         <button
           type="button"
-          aria-label="Resize floating preview"
+          aria-label="Resize floating preview from the bottom left"
           title="Resize floating preview"
-          className="pointer-events-auto absolute bottom-0 right-0 z-[33] size-5 cursor-nwse-resize rounded-br-xl after:absolute after:bottom-1 after:right-1 after:size-2 after:border-b after:border-r after:border-foreground/45"
-          onPointerDown={handleResizePointerDown}
+          data-testid="preview-mini-player-resize-left"
+          className="pointer-events-auto absolute bottom-0 left-0 z-[35] size-5 cursor-nesw-resize rounded-bl-xl after:absolute after:bottom-1 after:left-1 after:size-2 after:border-b after:border-l after:border-foreground/45"
+          onPointerDown={handleResizePointerDown("left")}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+        />
+        <button
+          type="button"
+          aria-label="Resize floating preview from the bottom right"
+          title="Resize floating preview"
+          data-testid="preview-mini-player-resize-right"
+          className="pointer-events-auto absolute bottom-0 right-0 z-[35] size-5 cursor-nwse-resize rounded-br-xl after:absolute after:bottom-1 after:right-1 after:size-2 after:border-b after:border-r after:border-foreground/45"
+          onPointerDown={handleResizePointerDown("right")}
           onPointerMove={handleResizePointerMove}
           onPointerUp={endResize}
           onPointerCancel={endResize}

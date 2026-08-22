@@ -27,6 +27,8 @@ export interface PersistedUiState {
   defaultAdvertisedEndpointKey?: string | null;
   showProviderUsageBar?: boolean;
   settledShelfExpanded?: boolean;
+  agentsSectionExpanded?: boolean;
+  threadsSectionExpanded?: boolean;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
 }
@@ -53,13 +55,19 @@ export interface UiSidebarShelfState {
   settledShelfExpanded: boolean;
 }
 
+export interface UiSidebarSectionState {
+  agentsSectionExpanded: boolean;
+  threadsSectionExpanded: boolean;
+}
+
 export interface UiState
   extends
     UiProjectState,
     UiThreadState,
     UiEndpointState,
     UiProviderUsageState,
-    UiSidebarShelfState {}
+    UiSidebarShelfState,
+    UiSidebarSectionState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -69,6 +77,8 @@ const initialState: UiState = {
   defaultAdvertisedEndpointKey: null,
   showProviderUsageBar: false,
   settledShelfExpanded: false,
+  agentsSectionExpanded: true,
+  threadsSectionExpanded: true,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -155,6 +165,9 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
         : null,
     showProviderUsageBar: parsed.showProviderUsageBar === true,
     settledShelfExpanded: parsed.settledShelfExpanded === true,
+    // Sidebar sections start open: absent means "never collapsed", not "collapsed".
+    agentsSectionExpanded: parsed.agentsSectionExpanded !== false,
+    threadsSectionExpanded: parsed.threadsSectionExpanded !== false,
   };
 }
 
@@ -229,6 +242,8 @@ export function persistState(state: UiState): void {
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
         showProviderUsageBar: state.showProviderUsageBar,
         settledShelfExpanded: state.settledShelfExpanded,
+        agentsSectionExpanded: state.agentsSectionExpanded,
+        threadsSectionExpanded: state.threadsSectionExpanded,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -410,6 +425,8 @@ interface UiStateStore extends UiState {
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setShowProviderUsageBar: (visible: boolean) => void;
   setSettledShelfExpanded: (expanded: boolean) => void;
+  setAgentsSectionExpanded: (expanded: boolean) => void;
+  setThreadsSectionExpanded: (expanded: boolean) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -437,6 +454,18 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
       state.settledShelfExpanded === expanded
         ? state
         : { ...state, settledShelfExpanded: expanded },
+    ),
+  setAgentsSectionExpanded: (expanded) =>
+    set((state) =>
+      state.agentsSectionExpanded === expanded
+        ? state
+        : { ...state, agentsSectionExpanded: expanded },
+    ),
+  setThreadsSectionExpanded: (expanded) =>
+    set((state) =>
+      state.threadsSectionExpanded === expanded
+        ? state
+        : { ...state, threadsSectionExpanded: expanded },
     ),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),

@@ -23,8 +23,15 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
   readonly cornerRadius?: number;
   readonly rect: BrowserSurfaceRect | null;
   readonly hiddenSize: HostedBrowserWebviewSize;
+  /**
+   * Whether the guest receives pointer input. The floating mini player presents
+   * the same live surface as a preview thumbnail, where a stray click would
+   * navigate the guest instead of moving the window, so it presents
+   * non-interactively and promotes to the right panel to be used.
+   */
+  readonly interactive?: boolean;
 }): HostedBrowserWebviewWrapperStyle {
-  const { active, cornerRadius = 0, hiddenSize, rect } = input;
+  const { active, cornerRadius = 0, hiddenSize, interactive = true, rect } = input;
   if (active && rect) {
     return {
       left: rect.x,
@@ -32,7 +39,7 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
       width: rect.width,
       height: rect.height,
       zIndex: 30,
-      pointerEvents: "auto",
+      pointerEvents: interactive ? "auto" : "none",
       ...(cornerRadius > 0 ? { borderRadius: cornerRadius } : {}),
     };
   }

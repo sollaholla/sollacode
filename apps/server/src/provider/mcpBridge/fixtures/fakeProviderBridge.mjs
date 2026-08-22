@@ -146,7 +146,7 @@ lines.on("line", (line) => {
     id,
     toolResult({
       protocolVersion,
-      ...(message.params?.arguments ?? {}),
+      ...message.params?.arguments,
     }),
   );
 });

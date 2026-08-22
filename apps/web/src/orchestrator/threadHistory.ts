@@ -128,7 +128,7 @@ export function statusMessageTail(
   const kept: Array<StatusTailMessage> = [];
   let spent = 0;
   // Newest first: when the budget cuts, it is the older context that goes.
-  for (const entry of [...candidates].reverse()) {
+  for (const entry of [...candidates].toReversed()) {
     if (kept.length > 0 && spent + entry.text.length > STATUS_TAIL_BUDGET_CHARS) break;
     kept.unshift(entry);
     spent += entry.text.length;

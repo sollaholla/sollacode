@@ -555,6 +555,13 @@ export const make = Effect.gen(function* () {
     const allowedRendererPermissions: ReadonlySet<string> = new Set([
       "clipboard-read",
       "clipboard-sanitized-write",
+      // Element fullscreen is a permission in Electron; denying it turns the
+      // remote-control viewer's fullscreen button into a silent no-op.
+      "fullscreen",
+      // Pointer lock backs the remote-control mouse-look mirror (a game on
+      // the host capturing the cursor); denied, the request quietly fails and
+      // relative motion never engages.
+      "pointerLock",
     ]);
     const isAudioOnlyMediaRequest = (details: unknown): boolean => {
       const requested = (details as { mediaTypes?: ReadonlyArray<string> }).mediaTypes ?? [];

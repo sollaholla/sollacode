@@ -1,0 +1,30 @@
+{
+  "name": "solla-motion",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A tiny deterministic frame renderer for the README media. Renders React compositions to GIF via headless Chromium and ffmpeg.",
+  "type": "module",
+  "scripts": {
+    "render": "node --experimental-strip-types src/motion/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "esbuild": "^0.28.1",
+    "playwright-core": "^1.60.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.14",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "~6.0.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

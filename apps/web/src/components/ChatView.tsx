@@ -8235,6 +8235,7 @@ function ChatViewContent(props: ChatViewProps) {
               gitCwd={gitCwd}
               mainSurface={terminalUiState.mainSurface}
               terminalsWorking={activeTerminalActivity !== null}
+              chatWorking={timelineIsWorking}
               onMainSurfaceChange={handleMainSurfaceChange}
               onNewThreadInProject={handleNewThreadInActiveProject}
               onRunProjectScript={runProjectScript}
@@ -8503,15 +8504,7 @@ function ChatViewContent(props: ChatViewProps) {
                             type="button"
                           >
                             <TerminalSessionIcon className="size-3" working />
-                            <span aria-hidden className="chat-composer-status-label-full">
-                              {activeTerminalActivity.count}{" "}
-                              {activeTerminalActivity.count === 1 ? "terminal" : "terminals"}{" "}
-                              working
-                            </span>
-                            <span aria-hidden className="chat-composer-status-label-compact">
-                              {activeTerminalActivity.count} term
-                            </span>
-                            <span aria-hidden className="chat-composer-status-label-minimal">
+                            <span aria-hidden className="tabular-nums">
                               {activeTerminalActivity.count}
                             </span>
                           </button>
@@ -8526,14 +8519,7 @@ function ChatViewContent(props: ChatViewProps) {
                             type="button"
                           >
                             <CircleDashedIcon aria-hidden className="size-3" />
-                            <span aria-hidden className="chat-composer-status-label-full">
-                              {activeSideChatActivity.count} side{" "}
-                              {activeSideChatActivity.count === 1 ? "chat" : "chats"} working
-                            </span>
-                            <span aria-hidden className="chat-composer-status-label-compact">
-                              {activeSideChatActivity.count} side
-                            </span>
-                            <span aria-hidden className="chat-composer-status-label-minimal">
+                            <span aria-hidden className="tabular-nums">
                               {activeSideChatActivity.count}
                             </span>
                           </button>

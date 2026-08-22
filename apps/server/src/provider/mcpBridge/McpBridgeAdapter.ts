@@ -348,7 +348,7 @@ export function mapMcpBridgeEvent(
       return {
         ...base,
         type: "turn.started",
-        payload: { ...(stringValue(payload.model) ? { model: stringValue(payload.model) } : {}) },
+        payload: stringValue(payload.model) ? { model: stringValue(payload.model) } : {},
       };
     case "turn.completed":
       return {

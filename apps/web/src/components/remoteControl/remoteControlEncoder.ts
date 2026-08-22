@@ -16,9 +16,13 @@
 
 export const REMOTE_CONTROL_TIMESLICE_MS = 60;
 export const REMOTE_CONTROL_TARGET_FPS = 30;
-export const REMOTE_CONTROL_MAX_WIDTH = 1_920;
-export const REMOTE_CONTROL_MAX_HEIGHT = 1_080;
-export const REMOTE_CONTROL_VIDEO_BITS_PER_SECOND = 2_500_000;
+// 1440p-class ceiling: a 1080p cap on a Retina/HiDPI desktop threw away half
+// the pixels and made remote text unreadably soft. Bytes are still latency,
+// but the links this runs over (tailnet/LAN) carry this bitrate comfortably —
+// and VP8 only spends it when the screen actually changes.
+export const REMOTE_CONTROL_MAX_WIDTH = 2_560;
+export const REMOTE_CONTROL_MAX_HEIGHT = 1_600;
+export const REMOTE_CONTROL_VIDEO_BITS_PER_SECOND = 8_000_000;
 
 /** Ordered by encode latency, cheapest first. */
 const CANDIDATE_MIME_TYPES = [

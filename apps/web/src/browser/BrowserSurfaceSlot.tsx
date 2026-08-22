@@ -11,6 +11,12 @@ export function BrowserSurfaceSlot(props: {
   readonly layoutVersion?: string | number;
   readonly className?: string;
   readonly fitSourceContent?: boolean;
+  /**
+   * Whether the presented guest accepts pointer input. Defaults to true; the
+   * floating mini player passes false so the surface reads as a thumbnail that
+   * drags, rather than a live page that swallows the drag.
+   */
+  readonly interactive?: boolean;
 }) {
   const {
     tabId,
@@ -19,9 +25,10 @@ export function BrowserSurfaceSlot(props: {
     layoutVersion,
     className,
     fitSourceContent = false,
+    interactive = true,
   } = props;
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const presentationRef = useRef({ visible, cornerRadius });
+  const presentationRef = useRef({ visible, cornerRadius, interactive });
   const updateRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
@@ -40,6 +47,7 @@ export function BrowserSurfaceSlot(props: {
         },
         presentation.visible && rect.width > 0 && rect.height > 0,
         presentation.cornerRadius,
+        presentation.interactive,
       );
       if (presentation.visible && !presented) {
         lease.release();
@@ -53,6 +61,7 @@ export function BrowserSurfaceSlot(props: {
           },
           rect.width > 0 && rect.height > 0,
           presentation.cornerRadius,
+          presentation.interactive,
         );
       }
     };
@@ -72,9 +81,9 @@ export function BrowserSurfaceSlot(props: {
   }, [fitSourceContent, tabId]);
 
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius };
+    presentationRef.current = { visible, cornerRadius, interactive };
     updateRef.current?.();
-  }, [cornerRadius, layoutVersion, visible]);
+  }, [cornerRadius, interactive, layoutVersion, visible]);
 
   return <div ref={elementRef} className={className} data-browser-surface-slot={tabId} />;
 }

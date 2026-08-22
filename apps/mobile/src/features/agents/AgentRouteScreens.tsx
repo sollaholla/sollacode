@@ -396,7 +396,7 @@ function CollaborationSection(props: {
                 Waiting for your answer
               </Text>
               <Text className="mt-1 text-sm text-foreground">
-                {[...(detail?.messages ?? [])].reverse().find((item) => item.kind === "question")
+                {[...(detail?.messages ?? [])].toReversed().find((item) => item.kind === "question")
                   ?.text ?? "The worker needs input before it can continue."}
               </Text>
             </View>

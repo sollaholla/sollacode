@@ -48,6 +48,30 @@ var pressedKeys = {};
 var pressedButtons = {};
 var lastPoint = $.CGPointMake(0, 0);
 
+// Synthetic CGEvents do not inherit modifier state from earlier synthetic
+// modifier key events the way physical keyboards do: every event carries its
+// own flags word, and an empty one means "no modifiers held". Without stamping
+// flags, Cmd+C arrives as a bare C and shift-click as a plain click.
+var MODIFIER_KINDS = {
+  ShiftLeft: "shift", ShiftRight: "shift",
+  ControlLeft: "control", ControlRight: "control",
+  AltLeft: "alt", AltRight: "alt",
+  MetaLeft: "command", MetaRight: "command",
+  PrimaryLeft: "command", PrimaryRight: "command"
+};
+
+function heldModifierFlags() {
+  var flags = 0;
+  Object.keys(pressedKeys).forEach(function (codeName) {
+    var kind = MODIFIER_KINDS[codeName];
+    if (kind === "shift") flags |= $.kCGEventFlagMaskShift;
+    else if (kind === "control") flags |= $.kCGEventFlagMaskControl;
+    else if (kind === "alt") flags |= $.kCGEventFlagMaskAlternate;
+    else if (kind === "command") flags |= $.kCGEventFlagMaskCommand;
+  });
+  return flags;
+}
+
 function writeReply(value) {
   var text = JSON.stringify(value) + "\n";
   var data = $(text).dataUsingEncoding($.NSUTF8StringEncoding);
@@ -102,6 +126,8 @@ function postPointer(input) {
   var point = displayPoint(input);
   var button = mouseButton(input.button);
   var event = $.CGEventCreateMouseEvent(null, mouseEventType(input.action, input.button), point, button);
+  // Shift-click, Cmd-click, Ctrl-click: pointer events carry modifiers too.
+  $.CGEventSetFlags(event, heldModifierFlags());
   $.CGEventPost($.kCGHIDEventTap, event);
   if (input.action === "down") pressedButtons[input.button] = true;
   if (input.action === "up") delete pressedButtons[input.button];
@@ -118,6 +144,7 @@ function postWheel(input) {
     vertical,
     horizontal
   );
+  $.CGEventSetFlags(event, heldModifierFlags());
   $.CGEventPost($.kCGHIDEventTap, event);
 }
 
@@ -125,15 +152,30 @@ function postKey(input) {
   var code = keyCodes[input.code];
   if (code === undefined) return;
   var isDown = input.action === "down";
-  var event = $.CGEventCreateKeyboardEvent(null, code, isDown);
-  $.CGEventPost($.kCGHIDEventTap, event);
+  // Update held state first so a modifier's own down edge carries its flag and
+  // its up edge does not — matching what a physical keyboard produces.
   if (isDown) pressedKeys[input.code] = code;
   else delete pressedKeys[input.code];
+  var event = $.CGEventCreateKeyboardEvent(null, code, isDown);
+  $.CGEventSetFlags(event, heldModifierFlags());
+  $.CGEventPost($.kCGHIDEventTap, event);
+}
+
+var systemEventsApp = null;
+
+// Literal text from touch keyboards. System Events types with the active
+// layout, which is exactly the behaviour a code table cannot give.
+function postText(input) {
+  if (systemEventsApp === null) {
+    systemEventsApp = Application("System Events");
+  }
+  systemEventsApp.keystroke(input.text);
 }
 
 function resetInput() {
   Object.keys(pressedKeys).forEach(function(codeName) {
     var event = $.CGEventCreateKeyboardEvent(null, pressedKeys[codeName], false);
+    $.CGEventSetFlags(event, 0);
     $.CGEventPost($.kCGHIDEventTap, event);
   });
   Object.keys(pressedButtons).forEach(function(buttonName) {
@@ -166,6 +208,43 @@ function cursorLocked() {
 }
 
 /**
+ * The current global cursor as a CSS cursor keyword, best-effort.
+ *
+ * AppKit's named cursors are shared instances, so an identity comparison
+ * against currentSystemCursor recognises the standard shapes. Apps that set a
+ * custom cursor image (and macOS versions where currentSystemCursor answers
+ * nil) report "default" — that is a graceful miss, not an error.
+ */
+function cursorShape() {
+  try {
+    if (cursorLocked()) return "none";
+    var current = $.NSCursor.currentSystemCursor;
+    if (!current || (current.isNil && current.isNil())) return "default";
+    var named = [
+      ["text", $.NSCursor.IBeamCursor],
+      ["pointer", $.NSCursor.pointingHandCursor],
+      ["crosshair", $.NSCursor.crosshairCursor],
+      ["ew-resize", $.NSCursor.resizeLeftRightCursor],
+      ["ns-resize", $.NSCursor.resizeUpDownCursor],
+      ["grab", $.NSCursor.openHandCursor],
+      ["grabbing", $.NSCursor.closedHandCursor],
+      ["not-allowed", $.NSCursor.operationNotAllowedCursor],
+      ["vertical-text", $.NSCursor.IBeamCursorForVerticalLayout],
+      ["copy", $.NSCursor.dragCopyCursor],
+      ["alias", $.NSCursor.dragLinkCursor],
+      ["context-menu", $.NSCursor.contextualMenuCursor]
+    ];
+    for (var index = 0; index < named.length; index += 1) {
+      var candidate = named[index][1];
+      if (candidate && current.isEqual(candidate)) return named[index][0];
+    }
+    return "default";
+  } catch (error) {
+    return "default";
+  }
+}
+
+/**
  * Why injected input would go nowhere right now, or null when it will land.
  *
  * macOS has no secure desktop, but it has the same idea in a narrower form:
@@ -194,7 +273,7 @@ function applyCommand(command) {
   if (command.kind === "cursor") {
     // The lock poll doubles as the recovery detector, so it reports the block
     // state too — otherwise an idle session never learns that input came back.
-    return { locked: cursorLocked(), blocked: blockReason() };
+    return { locked: cursorLocked(), blocked: blockReason(), cursor: cursorShape() };
   }
   var blocked = blockReason();
   if (blocked !== null) {
@@ -211,6 +290,7 @@ function applyCommand(command) {
   if (input.type === "pointer") postPointer(input);
   else if (input.type === "wheel") postWheel(input);
   else if (input.type === "key") postKey(input);
+  else if (input.type === "text") postText(input);
   return null;
 }
 
@@ -232,6 +312,7 @@ while (true) {
         var reply = { id: command.id, ok: true };
         if (result && typeof result.locked === "boolean") reply.locked = result.locked;
         if (result && typeof result.blocked === "string") reply.blocked = result.blocked;
+        if (result && typeof result.cursor === "string") reply.cursor = result.cursor;
         writeReply(reply);
       } catch (error) {
         writeReply({
@@ -492,6 +573,50 @@ public static class SollaRemoteInput {
     return (info.flags & CURSOR_SHOWING) == 0;
   }
 
+  [DllImport("user32.dll")]
+  private static extern IntPtr LoadCursor(IntPtr instance, int cursorName);
+
+  private static System.Collections.Generic.Dictionary<IntPtr, string> knownCursors;
+
+  private static void RegisterCursor(int id, string shape) {
+    var handle = LoadCursor(IntPtr.Zero, id);
+    if (handle != IntPtr.Zero && !knownCursors.ContainsKey(handle)) knownCursors[handle] = shape;
+  }
+
+  /**
+   * The current global cursor as a CSS cursor keyword.
+   *
+   * The standard IDC_* cursors are shared system handles, so the handle that
+   * GetCursorInfo reports can be compared against LoadCursor(NULL, IDC_*)
+   * directly. Custom application cursors have private handles and report
+   * "default" — matching their look is not possible from the outside.
+   */
+  public static string CursorShape() {
+    if (knownCursors == null) {
+      knownCursors = new System.Collections.Generic.Dictionary<IntPtr, string>();
+      RegisterCursor(32512, "default");     // IDC_ARROW
+      RegisterCursor(32513, "text");        // IDC_IBEAM
+      RegisterCursor(32514, "wait");        // IDC_WAIT
+      RegisterCursor(32515, "crosshair");   // IDC_CROSS
+      RegisterCursor(32516, "default");     // IDC_UPARROW
+      RegisterCursor(32642, "nwse-resize"); // IDC_SIZENWSE
+      RegisterCursor(32643, "nesw-resize"); // IDC_SIZENESW
+      RegisterCursor(32644, "ew-resize");   // IDC_SIZEWE
+      RegisterCursor(32645, "ns-resize");   // IDC_SIZENS
+      RegisterCursor(32646, "move");        // IDC_SIZEALL
+      RegisterCursor(32648, "not-allowed"); // IDC_NO
+      RegisterCursor(32649, "pointer");     // IDC_HAND
+      RegisterCursor(32650, "progress");    // IDC_APPSTARTING
+      RegisterCursor(32651, "help");        // IDC_HELP
+    }
+    var info = new CURSORINFO();
+    info.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (!GetCursorInfo(ref info)) return "default";
+    if ((info.flags & CURSOR_SHOWING) == 0) return "none";
+    string shape;
+    return knownCursors.TryGetValue(info.hCursor, out shape) ? shape : "default";
+  }
+
   /**
    * Extended-scan-code keys. These share a scan code with a numpad key and are
    * only told apart by the E0 prefix, so omitting the flag turns Arrow keys
@@ -604,6 +729,44 @@ public static class SollaRemoteInput {
       }
     };
     SendChecked(input, "mouse input");
+  }
+
+  private const uint KEYEVENTF_UNICODE = 0x0004;
+
+  /**
+   * Literal text injection, one UTF-16 unit per down/up pair. KEYEVENTF_UNICODE
+   * bypasses the virtual-key layer entirely, so it types correctly on every
+   * keyboard layout — which is why touch keyboards send text instead of codes.
+   */
+  public static void Text(string text) {
+    foreach (var unit in text) {
+      var down = new INPUT {
+        type = INPUT_KEYBOARD,
+        data = new InputUnion {
+          keyboard = new KEYBDINPUT {
+            virtualKey = 0,
+            scanCode = unit,
+            flags = KEYEVENTF_UNICODE,
+            time = 0,
+            extraInfo = UIntPtr.Zero
+          }
+        }
+      };
+      var up = new INPUT {
+        type = INPUT_KEYBOARD,
+        data = new InputUnion {
+          keyboard = new KEYBDINPUT {
+            virtualKey = 0,
+            scanCode = unit,
+            flags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+            time = 0,
+            extraInfo = UIntPtr.Zero
+          }
+        }
+      };
+      SendChecked(down, "text input");
+      SendChecked(up, "text input");
+    }
   }
 
   public static void Key(ushort virtualKey, bool down) {
@@ -728,6 +891,10 @@ function Invoke-RemoteInput($eventData) {
     [SollaRemoteInput]::Key([uint16]$virtualKey, $down)
     if ($down) { $pressedKeys[[string]$eventData.code] = [uint16]$virtualKey }
     else { $pressedKeys.Remove([string]$eventData.code) }
+    return
+  }
+  if ($eventData.type -eq 'text') {
+    [SollaRemoteInput]::Text([string]$eventData.text)
   }
 }
 
@@ -774,6 +941,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
       $blocked = [SollaRemoteInput]::BlockReason()
       $locked = [SollaRemoteInput]::CursorLocked()
       $reply = @{ id = $command.id; ok = $true; locked = $locked }
+      $reply.cursor = [SollaRemoteInput]::CursorShape()
       if ($null -ne $blocked) { $reply.blocked = $blocked }
       [Console]::Out.WriteLine(($reply | ConvertTo-Json -Compress))
       continue
@@ -832,6 +1000,8 @@ export interface RemoteInputSendResult {
 export interface RemoteInputHostState {
   readonly locked: boolean;
   readonly blocked?: RemoteInputBlockReason;
+  /** Host cursor as a CSS cursor keyword ("default", "text", "none", …). */
+  readonly cursor?: string;
 }
 
 interface RemoteInputReply {
@@ -840,6 +1010,14 @@ interface RemoteInputReply {
   readonly error?: string;
   readonly locked?: boolean;
   readonly blocked?: string;
+  readonly cursor?: string;
+}
+
+/** Helper output crosses a process boundary; accept only cursor keywords. */
+const CURSOR_SHAPE_PATTERN = /^[a-z][a-z-]{0,31}$/;
+
+function asCursorShape(value: unknown): string | undefined {
+  return typeof value === "string" && CURSOR_SHAPE_PATTERN.test(value) ? value : undefined;
 }
 
 interface PendingCommand {
@@ -952,7 +1130,12 @@ export class RemoteInputController {
   async readHostState(): Promise<RemoteInputHostState> {
     const reply = await this.sendCommand({ kind: "cursor" });
     const blocked = asBlockReason(reply.blocked);
-    return { locked: reply.locked === true, ...(blocked ? { blocked } : {}) };
+    const cursor = asCursorShape(reply.cursor);
+    return {
+      locked: reply.locked === true,
+      ...(blocked ? { blocked } : {}),
+      ...(cursor ? { cursor } : {}),
+    };
   }
 
   async dispose(): Promise<void> {

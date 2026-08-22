@@ -1,0 +1,68 @@
+/*
+ * Design tokens copied from the running Solla Code web client
+ * (`apps/web/src/index.css`, dark theme) by reading
+ * `getComputedStyle(document.documentElement)` on a live dev server.
+ *
+ * These are the literal authored values, not approximations: Remotion renders
+ * through headless Chromium, so `oklch()` and `color-mix()` resolve exactly as
+ * they do in the app. Keep them in sync with the web client's dark block if the
+ * palette changes.
+ */
+
+@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+:root {
+  --background: oklch(14.5% 0 0);
+  --foreground: oklch(97% 0 0);
+  --card: color-mix(in srgb, oklch(14.5% 0 0) 97%, #fff);
+  --card-foreground: oklch(97% 0 0);
+  --primary: oklch(0.588 0.217 264);
+  --primary-foreground: #fff;
+  --accent: color-mix(in oklab, #fff 4%, transparent);
+  --accent-foreground: oklch(97% 0 0);
+  --muted: color-mix(in oklab, #fff 4%, transparent);
+  --muted-foreground: color-mix(in srgb, oklch(55.6% 0 0) 90%, #fff);
+  --border: color-mix(in oklab, #fff 6%, transparent);
+  --ring: oklch(0.588 0.217 264);
+  --destructive: color-mix(in srgb, oklch(63.7% 0.237 25.331) 90%, #fff);
+  --app-chrome-background: oklch(14.5% 0 0);
+
+  --sidebar: color-mix(in srgb, oklch(14.5% 0 0) 97%, #fff);
+  --sidebar-foreground: oklch(97% 0 0);
+  --sidebar-muted-foreground: color-mix(in srgb, oklch(55.6% 0 0) 90%, #fff);
+  --sidebar-control-surface: color-mix(in oklab, #fff 4%, transparent);
+  --sidebar-row-hover: color-mix(in oklab, #fff 4%, transparent);
+  --sidebar-row-active: color-mix(in oklab, #fff 4%, transparent);
+  --sidebar-row-selected: color-mix(in oklab, #fff 4%, transparent);
+  --sidebar-border: color-mix(in oklab, #fff 6%, transparent);
+
+  /* Solla brand gold, from assets/source/solla-code-gold-s-master.png. */
+  --brand-gold: #c89b3c;
+
+  --radius: 0.625rem;
+
+  /* Measured off the live client: sidebar 255px, thread rows 36px @ 8px radius,
+     section headers 12px/500, orchestrator row 32px. */
+  --sidebar-width: 255px;
+  --row-height: 36px;
+  --row-radius: 8px;
+
+  --font-sans:
+    "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}

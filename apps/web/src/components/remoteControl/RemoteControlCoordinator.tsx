@@ -106,6 +106,8 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
    * are a human-scale event that does not need frame-accurate timing.
    */
   const pointerLockedRef = useRef(false);
+  /** Latest host cursor shape from the same 10Hz poll; stamped per publish. */
+  const cursorShapeRef = useRef<string | undefined>(undefined);
   const generatedId = useId();
   const clientId = `desktop-${generatedId}`;
   const host = useMemo<RemoteControlHost>(
@@ -158,6 +160,10 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   // Set by the encoder effect so an incoming selection can restart capture
   // without this component re-rendering the whole session.
   const displaySelectionListenerRef = useRef<(() => void) | null>(null);
+  // Same pattern for broker-requested encoder restarts: a controller that
+  // subscribes mid-stream cannot decode a WebM container from the middle, so
+  // the broker asks for a fresh init segment when a watcher attaches.
+  const videoRestartListenerRef = useRef<(() => void) | null>(null);
   // Last status actually sent, so a condition that repeats on every dropped
   // event — which is what a UAC prompt does — is reported once.
   const lastHostStatusRef = useRef<RemoteControlHostStatus | null>(null);
@@ -266,6 +272,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         const result = await bridge.readRemoteControlPointerLock();
         if (cancelled) return;
         pointerLockedRef.current = result.locked;
+        cursorShapeRef.current = result.cursor;
         // This poll is the only thing still reaching the host while its input
         // is blocked, so it owns the recovery edge: nobody typing during a UAC
         // prompt would otherwise leave the viewer stuck on the warning.
@@ -306,6 +313,12 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         return;
       }
       hostInputScheduler.enqueue(event.input);
+      return;
+    }
+    if (event.type === "video-restart-requested") {
+      const current = activeRef.current;
+      if (!current || current.session.sessionId !== event.sessionId) return;
+      videoRestartListenerRef.current?.();
       return;
     }
     if (event.type === "access-requested") {
@@ -517,6 +530,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
               clientId,
               connectionId: active.connectionId,
               pointerLocked: pointerLockedRef.current,
+              ...(cursorShapeRef.current !== undefined
+                ? { cursorShape: cursorShapeRef.current }
+                : {}),
               chunk: {
                 sessionId: active.session.sessionId,
                 sequence: sequence++,
@@ -594,7 +610,20 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       }, 0);
     };
 
+    // Debounced so several controllers attaching at once cost one restart.
+    // Reuses the display-switch restart timer: both are "cut a new container".
+    const applyVideoRestart = () => {
+      if (cancelled || restartTimer !== null) return;
+      restartTimer = window.setTimeout(() => {
+        restartTimer = null;
+        if (cancelled) return;
+        stopCapture();
+        void startRecorder().catch(handleCaptureIssue);
+      }, 150);
+    };
+
     displaySelectionListenerRef.current = applyDisplaySelection;
+    videoRestartListenerRef.current = applyVideoRestart;
     void startRecorder().catch(handleCaptureIssue);
 
     return () => {
@@ -602,6 +631,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       generation += 1;
       publishQueue?.close();
       displaySelectionListenerRef.current = null;
+      videoRestartListenerRef.current = null;
       if (restartTimer !== null) window.clearTimeout(restartTimer);
       if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
       try {
@@ -669,8 +699,8 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         const startedAt = performance.now();
         try {
           const captured = await bridge.captureRemoteControlFrame({
-            maxWidth: 1_280,
-            jpegQuality: 58,
+            maxWidth: 1_600,
+            jpegQuality: 65,
             ...(selectedDisplayIdRef.current !== undefined
               ? { displayId: selectedDisplayIdRef.current }
               : {}),
@@ -695,6 +725,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
               clientId,
               connectionId: active.connectionId,
               pointerLocked: pointerLockedRef.current,
+              ...(cursorShapeRef.current !== undefined
+                ? { cursorShape: cursorShapeRef.current }
+                : {}),
               frame: {
                 sessionId: active.session.sessionId,
                 sequence: frameSequence,

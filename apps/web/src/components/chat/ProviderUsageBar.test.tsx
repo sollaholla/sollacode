@@ -1149,8 +1149,10 @@ describe("provider usage summaries", () => {
     expect(markup).toContain(
       'aria-label="Show Codex account usage details; Codex Weekly: 38% used"',
     );
-    expect(markup).toContain('title="Claude Fable: 91% used"');
-    expect(markup).toContain('title="Codex Weekly: 38% used"');
+    // No native `title`: it doubled up with the custom hover popover, showing
+    // two tooltips at once. The aria-label above keeps the text accessible.
+    expect(markup).not.toContain('title="Claude Fable: 91% used"');
+    expect(markup).not.toContain('title="Codex Weekly: 38% used"');
     expect(markup).toContain('data-provider-usage-compact-driver="claudeAgent"');
     expect(markup).toContain('data-provider-usage-compact-driver="codex"');
     expect(markup).not.toContain(">Current session<");

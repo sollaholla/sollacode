@@ -47,7 +47,11 @@ import type {
   TerminalWriteInput,
 } from "./terminal.ts";
 import * as Schema from "effect/Schema";
-import { RemoteControlHostStatusReason, RemoteControlInput } from "./remoteControl.ts";
+import {
+  RemoteControlCursorShape,
+  RemoteControlHostStatusReason,
+  RemoteControlInput,
+} from "./remoteControl.ts";
 import type {
   DiscoveredLocalServerList,
   PreviewCloseInput,
@@ -1066,6 +1070,8 @@ export type DesktopRemoteControlInputResult = typeof DesktopRemoteControlInputRe
 export const DesktopRemoteControlHostStateSchema = Schema.Struct({
   locked: Schema.Boolean,
   blocked: Schema.optional(RemoteControlHostStatusReason),
+  // Host OS cursor shape as a CSS cursor keyword; absent when unknown.
+  cursor: Schema.optional(RemoteControlCursorShape),
 });
 export type DesktopRemoteControlHostState = typeof DesktopRemoteControlHostStateSchema.Type;
 

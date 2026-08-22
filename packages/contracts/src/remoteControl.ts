@@ -126,6 +126,15 @@ export const RemoteControlFrame = Schema.Struct({
 });
 export type RemoteControlFrame = typeof RemoteControlFrame.Type;
 
+/**
+ * The host's current cursor shape as a CSS cursor keyword ("default", "text",
+ * "pointer", …). Kept as a bounded string rather than a literal union so a
+ * host that learns a new shape does not fail validation on an older server;
+ * viewers map unknown values to "default".
+ */
+export const RemoteControlCursorShape = TrimmedNonEmptyString.check(Schema.isMaxLength(32));
+export type RemoteControlCursorShape = typeof RemoteControlCursorShape.Type;
+
 export const RemoteControlHostPublishFrameInput = Schema.Struct({
   clientId: RemoteControlClientId,
   connectionId: RemoteControlConnectionId,
@@ -134,6 +143,9 @@ export const RemoteControlHostPublishFrameInput = Schema.Struct({
   // publish call the host is already making every frame rather than adding a
   // channel of its own; the broker turns changes into `pointer-lock-changed`.
   pointerLocked: Schema.optionalKey(Schema.Boolean),
+  // The host OS cursor shape, so the viewer's local cursor can match the
+  // surface under the remote pointer. Same edge-collapsing as pointerLocked.
+  cursorShape: Schema.optionalKey(RemoteControlCursorShape),
 });
 export type RemoteControlHostPublishFrameInput = typeof RemoteControlHostPublishFrameInput.Type;
 
@@ -175,6 +187,8 @@ export const RemoteControlHostPublishVideoChunkInput = Schema.Struct({
   // publish call the host is already making every frame rather than adding a
   // channel of its own; the broker turns changes into `pointer-lock-changed`.
   pointerLocked: Schema.optionalKey(Schema.Boolean),
+  // The host OS cursor shape; see RemoteControlHostPublishFrameInput.
+  cursorShape: Schema.optionalKey(RemoteControlCursorShape),
 });
 export type RemoteControlHostPublishVideoChunkInput =
   typeof RemoteControlHostPublishVideoChunkInput.Type;
@@ -299,6 +313,14 @@ export const RemoteControlInput = Schema.Union([
     key: Schema.String.check(Schema.isMaxLength(REMOTE_CONTROL_KEY_VALUE_MAX_LENGTH)),
     repeat: Schema.Boolean,
   }),
+  // Literal text, injected as Unicode rather than key codes. This is how
+  // touch keyboards type: mobile browsers do not produce reliable per-key
+  // codes, and code-table injection is US-layout-bound anyway. Hosts inject
+  // it layout-independently (KEYEVENTF_UNICODE / System Events keystroke).
+  Schema.Struct({
+    type: Schema.Literal("text"),
+    text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  }),
   // Routed over the existing input channel, but it never reaches the OS input
   // controller — the host consumes it to retarget capture. It is gated on the
   // `screen` capability rather than `pointer`, so a view-only session can still
@@ -345,6 +367,16 @@ export const RemoteControlHostStreamEvent = Schema.Union([
     sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     input: RemoteControlInput,
   }),
+  // A controller attached (or re-attached) to an approved session's stream.
+  // WebM over MSE cannot decode from the middle of a container — Chromium's
+  // demuxer hard-fails on the discontinuity — so the host restarts its
+  // encoder to cut a fresh init segment and give the new subscriber a
+  // contiguous byte stream. Hosts debounce this; extra requests are cheap.
+  Schema.Struct({
+    type: Schema.Literal("video-restart-requested"),
+    connectionId: RemoteControlConnectionId,
+    sessionId: RemoteControlSessionId,
+  }),
 ]);
 export type RemoteControlHostStreamEvent = typeof RemoteControlHostStreamEvent.Type;
 
@@ -369,6 +401,13 @@ export const RemoteControlControllerStreamEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("pointer-lock-changed"),
     locked: Schema.Boolean,
+  }),
+  // The host OS cursor changed shape (text beam over an editor, hand over a
+  // link). The viewer mirrors it onto its local cursor so hovering the remote
+  // desktop reads like hovering the real one.
+  Schema.Struct({
+    type: Schema.Literal("cursor-changed"),
+    shape: RemoteControlCursorShape,
   }),
   // The host hit — or recovered from — a condition that suspends input or
   // capture without ending the session. The viewer shows this as a transient
