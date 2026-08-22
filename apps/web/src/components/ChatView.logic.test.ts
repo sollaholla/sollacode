@@ -28,6 +28,7 @@ import {
   isThreadWorkInterruptible,
   reconcileRetainedMountedThreadIds,
   retainClosingSideChatThreadIds,
+  shouldAutoFocusComposerOnThreadOpen,
   describeThreadErrorAge,
   resolveDraftThreadCreateModelSelection,
   resolveVisibleServerThreadError,
@@ -958,5 +959,45 @@ describe("describeThreadErrorAge", () => {
     expect(describeThreadErrorAge("not a date", now)).toBeNull();
     expect(describeThreadErrorAge(null, now)).toBeNull();
     expect(describeThreadErrorAge(undefined, now)).toBeNull();
+  });
+});
+
+describe("shouldAutoFocusComposerOnThreadOpen", () => {
+  const base = {
+    hasThread: true,
+    terminalSurfaceActive: false,
+    usesOnScreenKeyboard: false,
+  };
+
+  it("places the caret when there is a real keyboard", () => {
+    expect(shouldAutoFocusComposerOnThreadOpen(base)).toBe(true);
+  });
+
+  it("leaves the keyboard closed on a touch device", () => {
+    // The regression this exists for: opening a thread summoned the on-screen
+    // keyboard, which covers the conversation that was just opened.
+    expect(shouldAutoFocusComposerOnThreadOpen({ ...base, usesOnScreenKeyboard: true })).toBe(
+      false,
+    );
+  });
+
+  it("does not depend on viewport size or orientation", () => {
+    // A tablet and a phone held sideways both have a soft keyboard, and the
+    // old phone-portrait guard matched neither.
+    for (const usesOnScreenKeyboard of [true, false]) {
+      expect(shouldAutoFocusComposerOnThreadOpen({ ...base, usesOnScreenKeyboard })).toBe(
+        !usesOnScreenKeyboard,
+      );
+    }
+  });
+
+  it("yields to the terminal surface", () => {
+    expect(shouldAutoFocusComposerOnThreadOpen({ ...base, terminalSurfaceActive: true })).toBe(
+      false,
+    );
+  });
+
+  it("does nothing without a thread", () => {
+    expect(shouldAutoFocusComposerOnThreadOpen({ ...base, hasThread: false })).toBe(false);
   });
 });
