@@ -112,6 +112,32 @@ export function remotePointerButton(button: number): RemoteControlPointerButton 
   return "left";
 }
 
+/**
+ * The rectangle the picture actually occupies inside an `object-contain`
+ * media element. With the element stretched to fill its pane (so the stream
+ * scales UP in fullscreen), the element rect includes the letterbox bars —
+ * normalizing pointer coordinates against it would skew every click. This
+ * reproduces object-contain's math to exclude the bars; unknown intrinsic
+ * dimensions fall back to the element rect unchanged.
+ */
+export function objectContainContentRect(
+  rect: Pick<DOMRect, "left" | "top" | "width" | "height">,
+  intrinsic: { readonly width: number; readonly height: number },
+): Pick<DOMRect, "left" | "top" | "width" | "height"> {
+  if (intrinsic.width <= 0 || intrinsic.height <= 0 || rect.width <= 0 || rect.height <= 0) {
+    return rect;
+  }
+  const scale = Math.min(rect.width / intrinsic.width, rect.height / intrinsic.height);
+  const width = intrinsic.width * scale;
+  const height = intrinsic.height * scale;
+  return {
+    left: rect.left + (rect.width - width) / 2,
+    top: rect.top + (rect.height - height) / 2,
+    width,
+    height,
+  };
+}
+
 export function normalizedRemotePoint(input: {
   readonly clientX: number;
   readonly clientY: number;

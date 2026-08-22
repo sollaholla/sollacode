@@ -10,6 +10,7 @@ import type {
   RemoteControlVideoChunk,
 } from "@t3tools/contracts";
 import {
+  Gamepad2Icon,
   KeyboardIcon,
   MaximizeIcon,
   MinimizeIcon,
@@ -37,13 +38,13 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogPanel,
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
 import {
   controllerPlatform,
+  objectContainContentRect,
   normalizeRemoteControlKeyCode,
   normalizedRemotePoint,
   remotePointerButton,
@@ -51,6 +52,8 @@ import {
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
+import { RemoteControlFpsOverlay } from "./RemoteControlFpsOverlay";
+import { type FpsMovementCode, shouldShowFpsController } from "./remoteControlFpsController";
 import { createRemoteControlInputScheduler } from "./remoteControlInputScheduler";
 import { describeHostStatus } from "./remoteControlHostStatus";
 import { clampPointerDelta } from "./remoteControlPointerMotion";
@@ -107,6 +110,9 @@ export function RemoteControlViewerDialog(props: {
   const [remoteCursorShape, setRemoteCursorShape] = useState("default");
   const [pointerLocked, setPointerLocked] = useState(false);
   const pointerLockedRef = useRef(false);
+  // Armed by the user; the controller only appears once something actually
+  // locks the pointer, which is when relative motion starts meaning anything.
+  const [fpsArmed, setFpsArmed] = useState(false);
   const programmaticPointerUnlockRef = useRef(false);
   const surfaceElementRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef(false);
@@ -375,13 +381,26 @@ export function RemoteControlViewerDialog(props: {
     [inputScheduler],
   );
 
-  const remoteSurfaceRect = useCallback(
-    () =>
-      frameVideoRef.current?.getBoundingClientRect() ??
-      frameImageRef.current?.getBoundingClientRect() ??
-      null,
-    [],
-  );
+  // The media elements fill the pane (so the stream scales up to the window,
+  // fullscreen included) and object-contain letterboxes INSIDE the element —
+  // so pointer math must use the picture's rectangle, not the element's.
+  const remoteSurfaceRect = useCallback(() => {
+    const video = frameVideoRef.current;
+    if (video) {
+      return objectContainContentRect(video.getBoundingClientRect(), {
+        width: video.videoWidth,
+        height: video.videoHeight,
+      });
+    }
+    const image = frameImageRef.current;
+    if (image) {
+      return objectContainContentRect(image.getBoundingClientRect(), {
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      });
+    }
+    return null;
+  }, []);
 
   // Tell the host to stop encoding video once this client has given up on it,
   // otherwise it keeps sending chunks nobody can render and the view stays black.
@@ -755,6 +774,96 @@ export function RemoteControlViewerDialog(props: {
     });
   };
 
+  /**
+   * FPS controller wiring.
+   *
+   * Every one of these mirrors what the locked-pointer path in `sendPointer`
+   * already does, so the host cannot tell a thumb from a mouse: motion carries
+   * `dx`/`dy` and no position, and a button edge carries no motion at all —
+   * otherwise pressing fire would nudge the aim.
+   */
+  const fpsActive = shouldShowFpsController({
+    armed: fpsArmed,
+    canControl,
+    canPointer,
+    canKeyboard,
+    remoteLocked,
+    pointerLocked,
+  });
+
+  const sendFpsKey = useCallback(
+    (code: string, key: string, action: "down" | "up") => {
+      // Same gate as the physical keyboard path. The pad can be on screen with
+      // capture lost — the host's lock state raises it, not this window's
+      // focus — and without this it would keep feeding a surface the rest of
+      // the component considers unfocused.
+      if (
+        !shouldForwardRemoteSurfaceInput({
+          capabilityGranted: canKeyboard,
+          inputCaptured: inputCapturedRef.current,
+          kind: "key",
+        })
+      ) {
+        // A release still has to land, or the key stays down on the host
+        // forever. Only new presses are suppressed.
+        if (action === "down" || !pressedKeysRef.current.has(code)) return;
+      }
+      // Same one-edge-per-key bookkeeping the physical keyboard path uses, so
+      // a thumb held on Sprint cannot stack duplicate downs, and a release
+      // with nothing held is dropped rather than inventing an up edge.
+      if (action === "down") {
+        if (pressedKeysRef.current.has(code)) return;
+        pressedKeysRef.current.set(code, key);
+      } else if (!pressedKeysRef.current.delete(code)) {
+        return;
+      }
+      enqueueInput({ type: "key", action, code, key, repeat: false });
+    },
+    [canKeyboard, enqueueInput],
+  );
+
+  const sendFpsMovementKey = useCallback(
+    (code: FpsMovementCode, action: "down" | "up") => {
+      sendFpsKey(code, code.slice(3).toLowerCase(), action);
+    },
+    [sendFpsKey],
+  );
+
+  const sendFpsLook = useCallback(
+    (dx: number, dy: number) => {
+      if (
+        !shouldForwardRemoteSurfaceInput({
+          capabilityGranted: canPointer,
+          inputCaptured: inputCapturedRef.current,
+          kind: "pointer-move",
+        })
+      ) {
+        return;
+      }
+      const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
+      enqueueInput({ type: "pointer", action: "move", ...point, button: "left", dx, dy });
+    },
+    [canPointer, enqueueInput],
+  );
+
+  const sendFpsPointerButton = useCallback(
+    (button: "left" | "right", action: "down" | "up") => {
+      if (
+        !shouldForwardRemoteSurfaceInput({
+          capabilityGranted: canPointer,
+          inputCaptured: inputCapturedRef.current,
+          kind: action === "down" ? "pointer-down" : "pointer-up",
+          hasActivePointerPress: true,
+        })
+      ) {
+        return;
+      }
+      const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
+      enqueueInput({ type: "pointer", action, ...point, button, dx: 0, dy: 0 });
+    },
+    [canPointer, enqueueInput],
+  );
+
   const sendKey = useCallback(
     (event: KeyboardEvent, action: "down" | "up") => {
       if (
@@ -812,13 +921,13 @@ export function RemoteControlViewerDialog(props: {
         showCloseButton={false}
         bottomStickOnMobile={false}
       >
-        <DialogHeader className="flex-row items-center justify-between gap-4">
+        <DialogHeader className="flex-row items-center justify-between gap-2 max-sm:p-3 sm:gap-4">
           <div className="min-w-0 space-y-1">
             <DialogTitle className="flex items-center gap-2">
               <MonitorIcon className="size-5 shrink-0" />
               <span className="truncate">{environmentLabel}</span>
             </DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="sr-only sm:not-sr-only">
               {isWaiting
                 ? "Waiting for approval on the remote computer…"
                 : isApproved
@@ -858,7 +967,15 @@ export function RemoteControlViewerDialog(props: {
             </Button>
           </div>
         </DialogHeader>
-        <DialogPanel className="flex h-[calc(100%-7rem)] min-h-0 items-center justify-center p-3">
+        {/* Deliberately not `DialogPanel`: that wraps a ScrollArea sized to
+            the full popup height, which is why this needed a hardcoded
+            `calc(100% - 7rem)` header allowance in the first place. A plain
+            flex child measures itself against whatever the header and footer
+            actually take, at any width. */}
+        <div
+          data-slot="dialog-panel"
+          className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-2 sm:p-3"
+        >
           {error ? (
             <div className="max-w-lg space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-5 text-center">
               <p className="font-medium text-destructive">{error}</p>
@@ -976,7 +1093,7 @@ export function RemoteControlViewerDialog(props: {
                     setHasRenderedFrame(true);
                   }}
                   onPlaying={() => setHasRenderedFrame(true)}
-                  className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
+                  className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : surface.media === "image" ? (
                 <img
@@ -988,7 +1105,7 @@ export function RemoteControlViewerDialog(props: {
                   // loading overlay up until the browser has decoded the first
                   // JPEG, otherwise a slow image decode still exposes black.
                   onLoad={() => setHasRenderedFrame(true)}
-                  className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
+                  className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : null}
               {surface.showLoadingOverlay ? (
@@ -1078,6 +1195,25 @@ export function RemoteControlViewerDialog(props: {
                 />
               ) : null}
               <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                {canControl && canPointer && canKeyboard ? (
+                  <button
+                    type="button"
+                    aria-label={fpsArmed ? "Disable FPS controller" : "Enable FPS controller"}
+                    aria-pressed={fpsArmed}
+                    className={`flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-white ${
+                      fpsArmed ? "bg-primary/85 hover:bg-primary" : "bg-black/70 hover:bg-black/85"
+                    }`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setFpsArmed((armed) => !armed);
+                      captureInput();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <Gamepad2Icon className="size-3.5" />
+                    <span className="sr-only sm:not-sr-only">FPS</span>
+                  </button>
+                ) : null}
                 {canKeyboard ? (
                   <button
                     type="button"
@@ -1134,22 +1270,41 @@ export function RemoteControlViewerDialog(props: {
                   }`}
                 />
                 {canControl
-                  ? pointerLocked
-                    ? "Live · mouse captured — Esc releases"
-                    : remoteLocked && canPointer && inputCaptured
-                      ? "Live · click to capture your mouse"
-                      : inputCaptured
-                        ? "Live · input focused"
-                        : "Live · click to focus"
+                  ? fpsActive
+                    ? "FPS controller · left thumb moves, right thumb looks"
+                    : fpsArmed
+                      ? // Armed but idle. Without this the FPS button lights up
+                        // and nothing else happens, which reads as a dead
+                        // control rather than as waiting for the remote app.
+                        "FPS ready · starts when the remote game captures the mouse"
+                      : pointerLocked
+                        ? "Live · mouse captured — Esc releases"
+                        : remoteLocked && canPointer && inputCaptured
+                          ? "Live · click to capture your mouse"
+                          : inputCaptured
+                            ? "Live · input focused"
+                            : "Live · click to focus"
                   : "Live · view only"}
               </div>
+              {fpsActive ? (
+                <RemoteControlFpsOverlay
+                  onMovementKey={sendFpsMovementKey}
+                  onActionKey={sendFpsKey}
+                  onLook={sendFpsLook}
+                  onPointerButton={sendFpsPointerButton}
+                  onExit={() => setFpsArmed(false)}
+                />
+              ) : null}
+              {/* Above the FPS pad: a host notice means input is going nowhere
+                  (a UAC prompt, a stalled encoder), which is exactly when a
+                  player needs to be told rather than left mashing keys. */}
               {hostNotice ? (
-                <div className="absolute inset-x-3 top-3 flex items-start gap-3 rounded-lg border border-amber-500/35 bg-background/95 px-3 py-2 text-sm text-amber-600 shadow-lg dark:text-amber-400">
+                <div className="absolute inset-x-3 top-3 z-30 flex items-start gap-3 rounded-lg border border-amber-500/35 bg-background/95 px-3 py-2 text-sm text-amber-600 shadow-lg dark:text-amber-400">
                   <Spinner className="mt-0.5 size-4 shrink-0" />
                   <span className="min-w-0 flex-1 break-words">{hostNotice}</span>
                 </div>
               ) : inputError ? (
-                <div className="absolute inset-x-3 top-3 rounded-lg border border-destructive/35 bg-background/95 px-3 py-2 text-sm text-destructive shadow-lg">
+                <div className="absolute inset-x-3 top-3 z-30 rounded-lg border border-destructive/35 bg-background/95 px-3 py-2 text-sm text-destructive shadow-lg">
                   {inputError}
                 </div>
               ) : null}
@@ -1160,8 +1315,8 @@ export function RemoteControlViewerDialog(props: {
               <p className="font-medium">Screen sharing ended</p>
             </div>
           ) : null}
-        </DialogPanel>
-        <DialogFooter className="py-2 text-xs text-muted-foreground" variant="bare">
+        </div>
+        <DialogFooter className="py-2 text-xs text-muted-foreground max-sm:hidden" variant="bare">
           {canControl
             ? inputCaptured
               ? "Input is focused on the remote computer. Click outside the screen or close the window to release it. Command and Control map automatically."

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   controllerPlatform,
   normalizeRemoteControlKeyCode,
+  objectContainContentRect,
   normalizedRemotePoint,
   remotePointerButton,
   remoteSurfaceCursorStyle,
@@ -138,5 +139,31 @@ describe("remoteSurfaceCursorStyle", () => {
         pointerGranted: true,
       }),
     ).toBe("default");
+  });
+});
+
+describe("objectContainContentRect", () => {
+  it("excludes letterbox bars for a wide element showing a 16:9 picture", () => {
+    const rect = objectContainContentRect(
+      { left: 0, top: 0, width: 2000, height: 900 },
+      { width: 1600, height: 900 },
+    );
+    expect(rect).toEqual({ left: 200, top: 0, width: 1600, height: 900 });
+  });
+
+  it("excludes pillar bars for a tall element", () => {
+    const rect = objectContainContentRect(
+      { left: 10, top: 20, width: 800, height: 1000 },
+      { width: 1600, height: 900 },
+    );
+    expect(rect.left).toBe(10);
+    expect(rect.width).toBe(800);
+    expect(rect.height).toBeCloseTo(450);
+    expect(rect.top).toBeCloseTo(20 + (1000 - 450) / 2);
+  });
+
+  it("falls back to the element rect when intrinsic size is unknown", () => {
+    const element = { left: 0, top: 0, width: 800, height: 600 };
+    expect(objectContainContentRect(element, { width: 0, height: 0 })).toBe(element);
   });
 });
