@@ -54,7 +54,6 @@ function Waveform({ active }: { readonly active: boolean }) {
 export function VoiceOrchestrator() {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const enter = spring({ frame, fps, config: { damping: 200 }, durationInFrames: 25 });
 
   const listening = frame > 14 && frame < 92;
   const spoken = Math.max(0, Math.floor((frame - 20) * 1.15));
@@ -63,7 +62,7 @@ export function VoiceOrchestrator() {
   const threads = frame > 122 ? [ROUTED_THREAD, ...BASE_THREADS] : BASE_THREADS;
 
   return (
-    <AppWindow style={{ opacity: enter }}>
+    <AppWindow>
       <Sidebar
         agentsExpanded
         threadsExpanded

@@ -49,31 +49,49 @@ Solla Code is built on the open core of [T3 Code](https://github.com/pingdotgg/t
 
 ## See it in action
 
+These are the capabilities this fork adds on top of [T3 Code](https://github.com/pingdotgg/t3code). Base T3 Code already gives you projects, threads, and a chat surface; everything below is new here.
+
 <p align="center">
-  <a href="./docs/media/readme/workspace-tour.gif">
-    <img src="./docs/media/readme/workspace-tour.gif" alt="Solla Code workspace: collapsible Agents and Threads sections in the sidebar while an agent turn streams into the thread" width="1100" />
+  <a href="./docs/media/readme/voice-orchestrator.gif">
+    <img src="./docs/media/readme/voice-orchestrator.gif" alt="Speaking to the Solla Code workspace orchestrator, which reads CI gates, creates a focused thread, and routes it to a provider" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub>Durable threads in the sidebar, with Agents and Threads as collapsible sections, and an agent turn streaming in.</sub></p>
+<p align="center"><sub><b>Voice orchestrator.</b> Speak to a workspace-level agent that inspects threads, creates focused threads, and routes work to a provider.</sub></p>
+
+<p align="center">
+  <a href="./docs/media/readme/custom-agents.gif">
+    <img src="./docs/media/readme/custom-agents.gif" alt="Delegating to a named Solla Code agent, which asks a scoped question, receives an answer, and returns a result" width="1100" />
+  </a>
+</p>
+
+<p align="center"><sub><b>Custom agents and bounded collaboration.</b> Named agents with their own durable conversation. A root agent delegates, the worker asks a scoped question, and the result comes back in the same thread.</sub></p>
 
 <p align="center">
   <a href="./docs/media/readme/terminal-workspaces.gif">
-    <img src="./docs/media/readme/terminal-workspaces.gif" alt="A named four-pane Solla Code terminal layout running a dev server, tests, an agent CLI, and git" width="1100" />
+    <img src="./docs/media/readme/terminal-workspaces.gif" alt="A named four-pane Solla Code terminal layout running a dev server, the test suite, an agent CLI, and git" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub>A named terminal layout: four retained panes running a dev server, the test suite, an agent CLI, and git.</sub></p>
+<p align="center"><sub><b>Persistent terminal workspaces.</b> Named layouts with retained PTYs, so long-running work survives navigation and relaunch.</sub></p>
 
 <p align="center">
-  <a href="./docs/media/readme/agents-collaboration.gif">
-    <img src="./docs/media/readme/agents-collaboration.gif" alt="Delegating work to a named Solla Code agent, which asks a question, receives an answer, and returns a result" width="1100" />
+  <a href="./docs/media/readme/thread-artifacts.gif">
+    <img src="./docs/media/readme/thread-artifacts.gif" alt="Publishing a revisioned Solla Code thread artifact and opening it from desktop, LAN, and phone over Tailscale" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub>Bounded collaboration: delegate to a named agent, answer its question, and get the result back in the same thread.</sub></p>
+<p align="center"><sub><b>Thread artifacts.</b> Publish revisioned bundles from an ordinary chat. A signed host URL reaches authorized local, LAN, relay, and Tailscale clients.</sub></p>
 
-<p align="center"><sub>These are interface reconstructions rendered with <a href="./tools/motion/README.md">Remotion</a> for documentation, not screen recordings. Every state shown is one the product produces.</sub></p>
+<p align="center">
+  <a href="./docs/media/readme/provider-failover.gif">
+    <img src="./docs/media/readme/provider-failover.gif" alt="A Solla Code provider reaching its usage limit and the queued turn resuming automatically on a standby provider" width="1100" />
+  </a>
+</p>
+
+<p align="center"><sub><b>Provider reliability.</b> A typed usage-limit event fails over to a standby provider and resumes the queued turn instead of dropping it.</sub></p>
+
+<p align="center"><sub>These are interface reconstructions rendered for documentation, not screen recordings. Every state shown is one the product produces; the renderer lives in <a href="./tools/motion/README.md">tools/motion</a>.</sub></p>
 
 ## Providers
 

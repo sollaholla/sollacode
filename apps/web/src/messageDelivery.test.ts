@@ -2,6 +2,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  expandDeliveredMessageIds,
   deriveDeliveredMessageIds,
   messageDeliveryLabel,
   messageDeliveryState,
@@ -175,5 +176,39 @@ describe("messageDeliveryLabel", () => {
     expect(messageDeliveryLabel("read")).toContain("CLI");
     expect(messageDeliveryLabel("sent", "Codex")).toBe("Queued for Codex");
     expect(messageDeliveryLabel("read", "Codex")).toBe("Received by Codex");
+  });
+});
+
+describe("expandDeliveredMessageIds", () => {
+  it("marks predecessors of a receipted message as delivered", () => {
+    // The regression: the server coalesces messages sent while a turn is
+    // running into one prompt tagged with only the newest id, so "m1" and "m2"
+    // were delivered in that same prompt but never receipted, and sat on
+    // "Queued for Claude" forever after the agent had answered them.
+    const expanded = expandDeliveredMessageIds(["m1", "m2", "m3"], new Set(["m3"]));
+    expect([...expanded].sort()).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("leaves messages sent after the newest receipt undelivered", () => {
+    // "m3" is genuinely still in flight; claiming otherwise is the exact
+    // dishonesty the indicator exists to avoid.
+    const expanded = expandDeliveredMessageIds(["m1", "m2", "m3"], new Set(["m2"]));
+    expect(expanded.has("m3")).toBe(false);
+    expect(expanded.has("m1")).toBe(true);
+  });
+
+  it("returns the input untouched when nothing has been receipted", () => {
+    const delivered = new Set<string>();
+    expect(expandDeliveredMessageIds(["m1", "m2"], delivered)).toBe(delivered);
+  });
+
+  it("ignores receipts for ids that are not in the ordered list", () => {
+    const delivered = new Set(["unknown"]);
+    expect(expandDeliveredMessageIds(["m1", "m2"], delivered)).toBe(delivered);
+  });
+
+  it("is unchanged when every message is already receipted", () => {
+    const expanded = expandDeliveredMessageIds(["m1", "m2"], new Set(["m1", "m2"]));
+    expect([...expanded].sort()).toEqual(["m1", "m2"]);
   });
 });

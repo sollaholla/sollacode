@@ -116,11 +116,26 @@ export function spring(input: {
   let position = 0;
   let velocity = 0;
   const dt = 1 / fps;
+
+  // Substep, and derive the count from the stability condition rather than
+  // guessing. Explicit Euler on a damped spring diverges once the timestep
+  // exceeds 2*mass/damping, and the UI configs here use damping 200 at 30fps —
+  // dt=0.0333 against a limit of 0.01. Integrating that directly does not
+  // merely lose accuracy, it explodes: the entrance springs were returning
+  // ~1e112 instead of a value in [0, 1], so elements never became visible.
+  const dampingLimit = (2 * mass) / Math.max(damping, 1e-6);
+  const stiffnessLimit = 2 / Math.sqrt(Math.max(stiffness, 1e-6) / mass);
+  const stableDt = Math.min(dampingLimit, stiffnessLimit) * 0.5;
+  const substeps = Math.max(1, Math.ceil(dt / stableDt));
+  const h = dt / substeps;
+
   for (let step = 0; step < steps; step += 1) {
-    const springForce = -stiffness * (position - 1);
-    const dampingForce = -damping * velocity;
-    velocity += ((springForce + dampingForce) / mass) * dt;
-    position += velocity * dt;
+    for (let sub = 0; sub < substeps; sub += 1) {
+      const springForce = -stiffness * (position - 1);
+      const dampingForce = -damping * velocity;
+      velocity += ((springForce + dampingForce) / mass) * h;
+      position += velocity * h;
+    }
   }
   return position;
 }

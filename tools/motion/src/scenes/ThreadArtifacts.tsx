@@ -17,7 +17,6 @@ const SURFACES: readonly { readonly at: number; readonly name: string; readonly 
 export function ThreadArtifacts() {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const enter = spring({ frame, fps, config: { damping: 200 }, durationInFrames: 25 });
 
   // Revision 2 replaces revision 1 in place, which is the point: artifacts are
   // revisioned rather than re-published as a new thing.
@@ -26,7 +25,7 @@ export function ThreadArtifacts() {
   const bump = spring({ frame: frame - 74, fps, config: { damping: 140 }, durationInFrames: 14 });
 
   return (
-    <AppWindow style={{ opacity: enter }}>
+    <AppWindow>
       <Sidebar
         agentsExpanded
         threadsExpanded

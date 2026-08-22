@@ -132,7 +132,7 @@ import {
   resolveProviderTaskPanelPlacement,
 } from "../providerTasks";
 import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
-import { deriveDeliveredMessageIds } from "../messageDelivery";
+import { deriveDeliveredMessageIds, expandDeliveredMessageIds } from "../messageDelivery";
 import { ProviderTaskChip } from "./ProviderTaskChip";
 import { ProviderTaskPanel } from "./ProviderTaskPanel";
 import { useUiStateStore } from "../uiStateStore";
@@ -3201,7 +3201,7 @@ function ChatViewContent(props: ChatViewProps) {
     readonly reject: (error: Error) => void;
   } | null>(null);
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
-  const deliveredMessageIds = useMemo(
+  const receiptedMessageIds = useMemo(
     () => deriveDeliveredMessageIds(threadActivities),
     [threadActivities],
   );
@@ -3745,6 +3745,18 @@ function ChatViewContent(props: ChatViewProps) {
         .map((message) => message.id),
     );
   }, [displayServerMessages, optimisticUserMessages]);
+  // Coalesced sends only receipt the newest message of the batch, so widen the
+  // set by send order before anything reads it. See expandDeliveredMessageIds.
+  const deliveredMessageIds = useMemo(
+    () =>
+      expandDeliveredMessageIds(
+        timelineMessages
+          .filter((message) => message.role === "user" && message.voiceTranscript !== true)
+          .map((message) => message.id),
+        receiptedMessageIds,
+      ),
+    [receiptedMessageIds, timelineMessages],
+  );
   const newestUserMessageId = useMemo(() => {
     for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
       const message = timelineMessages[index];
