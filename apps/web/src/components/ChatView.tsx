@@ -780,12 +780,6 @@ function useLocalDispatchState(input: {
 interface PersistentThreadTerminalDrawerProps {
   threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   threadId: ThreadId;
-  /**
-   * "drawer" renders the bottom drawer; "main" fills the thread's main column
-   * for terminal-mode threads (panel chrome, pane headers, drawer-owned
-   * shortcuts, auto-materialized first terminal).
-   */
-  surface?: "drawer" | "main";
   paneLayout?: "split" | "tabs";
   tabStripTrailing?: ReactNode;
   fullscreen?: boolean;
@@ -806,7 +800,6 @@ const EMPTY_PERSISTED_TERMINAL_IDS: readonly string[] = [];
 const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDrawer({
   threadRef,
   threadId,
-  surface = "drawer",
   paneLayout,
   tabStripTrailing,
   fullscreen,
@@ -963,7 +956,6 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     (state) => state.setTerminalSidebarWidth,
   );
   const reconcileTerminalIds = useTerminalUiStateStore((state) => state.reconcileTerminalIds);
-  const isMainSurface = surface === "main";
 
   // Full-screen programs in a background-mounted terminal need a repaint when
   // the thread returns to view; count reveals so viewports can nudge the PTY.
@@ -1201,25 +1193,15 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   }
   // The terminal is only ever the main surface; the drawer variant that used
   // to render under the chat is gone.
-  if (!isMainSurface) {
-    return null;
-  }
-
   return (
-    <div
-      className={visible ? (isMainSurface ? "flex min-h-0 min-w-0 flex-1" : undefined) : "hidden"}
-    >
+    <div className={visible ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
       <Suspense fallback={null}>
         <ThreadTerminalDrawer
           showPaneHeaders={paneLayout !== "tabs"}
-          {...(isMainSurface
-            ? {
-                mode: "panel" as const,
-                focusOwner: "drawer" as const,
-                ...(paneLayout !== undefined ? { paneLayout } : {}),
-                ...(tabStripTrailing !== undefined ? { tabStripTrailing } : {}),
-              }
-            : {})}
+          mode="panel"
+          focusOwner="drawer"
+          {...(paneLayout !== undefined ? { paneLayout } : {})}
+          {...(tabStripTrailing !== undefined ? { tabStripTrailing } : {})}
           threadRef={threadRef}
           threadId={threadId}
           cwd={cwd}
@@ -8257,7 +8239,6 @@ function ChatViewContent(props: ChatViewProps) {
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                 <PersistentThreadTerminalDrawer
                   key={`main:${activeThreadKey ?? ""}`}
-                  surface="main"
                   threadRef={activeThreadRef}
                   threadId={activeThreadRef.threadId}
                   visible
