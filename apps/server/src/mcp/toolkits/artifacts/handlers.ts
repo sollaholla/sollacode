@@ -3,10 +3,18 @@ import {
   ThreadArtifactInvalidInputError,
   ThreadArtifactStorageError,
 } from "@t3tools/contracts";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
 import * as Effect from "effect/Effect";
 
 import { issueArtifactAssetUrl } from "../../../assets/AssetAccess.ts";
 import { ThreadArtifactService } from "../../../artifacts/ThreadArtifactService.ts";
+import {
+  describeLocalPathRejection,
+  isInside,
+  MAX_LOCAL_FILE_BYTES,
+  resolveArtifactLocalPath,
+} from "./localFiles.ts";
 import {
   describeMissingAssetReferences,
   findMissingAssetReferences,
@@ -82,10 +90,20 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
       const decodedFiles = yield* Effect.forEach(files, (file) => {
         const hasText = file.text !== undefined;
         const hasBase64 = file.dataBase64 !== undefined;
-        if (hasText === hasBase64) {
+        const hasLocalPath = file.localPath !== undefined;
+        const sourceCount = [hasText, hasBase64, hasLocalPath].filter(Boolean).length;
+        if (sourceCount !== 1) {
           return new ThreadArtifactInvalidInputError({
             field: `files.${file.path}`,
-            reason: "must provide exactly one of text or dataBase64",
+            reason: "must provide exactly one of text, dataBase64 or localPath",
+          });
+        }
+        if (file.localPath !== undefined) {
+          return readLocalArtifactFile({
+            path: file.path,
+            contentType: file.contentType,
+            localPath: file.localPath,
+            localDir: input.localDir,
           });
         }
         if (file.text !== undefined) {
@@ -210,3 +228,82 @@ const handlers = {
 } satisfies Parameters<typeof ThreadArtifactToolkit.toLayer>[0];
 
 export const ThreadArtifactToolkitHandlersLive = ThreadArtifactToolkit.toLayer(handlers);
+
+/**
+ * Reads one bundle file from disk instead of from the tool call.
+ *
+ * Confinement is checked twice on purpose. `resolveArtifactLocalPath` rejects
+ * the path as written, and the realpath check below rejects it as the
+ * filesystem actually resolves it — a symlink inside the directory pointing
+ * anywhere else passes the first and fails the second.
+ */
+const readLocalArtifactFile = Effect.fn("ThreadArtifact.readLocalFile")(function* (input: {
+  readonly path: string;
+  readonly contentType: string;
+  readonly localPath: string;
+  readonly localDir: string | undefined;
+}) {
+  const resolution = resolveArtifactLocalPath({
+    localPath: input.localPath,
+    localDir: input.localDir,
+  });
+  if (!resolution.ok) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: describeLocalPathRejection(input.localPath, resolution.rejection),
+    });
+  }
+
+  const real = yield* Effect.promise(() =>
+    NodeFSP.realpath(resolution.absolutePath).then(
+      (value): string | null => value,
+      () => null,
+    ),
+  );
+  if (real === null) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: `'${input.localPath}' does not exist or cannot be read`,
+    });
+  }
+  // The link target, not the link, is what would actually be published.
+  if (!isInside(input.localDir ?? "", real)) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: `'${input.localPath}' resolves through a link to '${real}', outside localDir`,
+    });
+  }
+
+  const stat = yield* Effect.promise(() =>
+    NodeFSP.stat(real).then(
+      (value) => value,
+      () => null,
+    ),
+  );
+  if (stat === null || !stat.isFile()) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: `'${input.localPath}' is not a regular file`,
+    });
+  }
+  if (stat.size > MAX_LOCAL_FILE_BYTES) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: `'${input.localPath}' is ${stat.size} bytes, over the ${MAX_LOCAL_FILE_BYTES} byte limit`,
+    });
+  }
+
+  const bytes = yield* Effect.promise(() =>
+    NodeFSP.readFile(real).then(
+      (value): Buffer | null => value,
+      () => null,
+    ),
+  );
+  if (bytes === null) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: `files.${input.path}.localPath`,
+      reason: `'${input.localPath}' could not be read`,
+    });
+  }
+  return { path: input.path, contentType: input.contentType, bytes: new Uint8Array(bytes) };
+});
