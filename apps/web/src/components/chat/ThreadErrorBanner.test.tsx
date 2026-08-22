@@ -12,7 +12,7 @@ describe("ThreadErrorBanner", () => {
     expect(markup).toContain('data-chat-thread-error-banner="true"');
     expect(markup).toContain("pointer-events-auto");
     expect(markup).toContain("z-30");
-    expect(markup).toContain('aria-label="Dismiss error"');
+    expect(markup).toContain('aria-label="Dismiss error and reset the session"');
     expect(markup).toContain('data-chat-thread-error-dismiss="true"');
     expect(markup).toContain("size-11");
     expect(markup).toContain("touch-manipulation");
