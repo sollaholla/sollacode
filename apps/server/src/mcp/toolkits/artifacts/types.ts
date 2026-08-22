@@ -13,6 +13,10 @@ const ArtifactFile = Schema.Struct({
   contentType: Schema.String.check(Schema.isMaxLength(128)),
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(5 * 1024 * 1024))),
   dataBase64: Schema.optional(Schema.String.check(Schema.isMaxLength(28 * 1024 * 1024))),
+  localPath: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))).annotate({
+    description:
+      "Path to read the bytes from, relative to localDir (or absolute inside it). The host reads and encodes the file, so its contents never pass through the model. Preferred for anything already on disk, and the only way to publish a bundle larger than one response.",
+  }),
 });
 
 export const ThreadArtifactToolInput = Schema.Struct({
@@ -28,6 +32,10 @@ export const ThreadArtifactToolInput = Schema.Struct({
   kind: Schema.optional(ThreadArtifactKind),
   entryPath: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
   files: Schema.optional(Schema.Array(ArtifactFile).check(Schema.isMaxLength(256))),
+  localDir: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))).annotate({
+    description:
+      "Directory that localPath entries are read from. Required when any file uses localPath. Every path must resolve inside it once symlinks are followed.",
+  }),
   iconSvg: Schema.optional(Schema.String.check(Schema.isMaxLength(16 * 1024))),
 });
 export type ThreadArtifactToolInput = typeof ThreadArtifactToolInput.Type;
