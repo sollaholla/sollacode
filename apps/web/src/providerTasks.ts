@@ -470,3 +470,20 @@ export function describeSendOverRunningTasks(count: number): string {
   const object = count === 1 ? "it" : "them";
   return `${subject} still running. Sending now will cancel ${object}. Send anyway?`;
 }
+
+/**
+ * Whether the agents-and-tasks panel starts collapsed.
+ *
+ * It is stacked under the panel's other sections and claims up to 45% of the
+ * height, which on a phone pushes whatever is above it — a plan, an artifact
+ * list — into a sliver. On a small touch layout it opens as a header row
+ * carrying the counts, and expands when asked.
+ *
+ * Running work never collapses out of sight silently: the header keeps the
+ * active count, so the panel still says what is happening while folded.
+ */
+export function shouldCollapseProviderTaskPanelByDefault(input: {
+  readonly usesCompactLayout: boolean;
+}): boolean {
+  return input.usesCompactLayout;
+}

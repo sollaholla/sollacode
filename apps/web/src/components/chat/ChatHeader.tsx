@@ -6,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { isElectron } from "~/env";
 import { MessageSquareIcon } from "lucide-react";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
@@ -54,13 +55,30 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
 }
 
+/**
+ * Whether to offer "open in editor / reveal in the file manager".
+ *
+ * The action opens a directory on the machine running the app, so it only
+ * means anything on a client that IS that machine. A phone, or a browser
+ * connected over the network, is looking at the same project through a
+ * transport that cannot open anything locally — the button either does
+ * nothing visible or acts on a machine the user is not sitting at, and it
+ * costs header room that a narrow layout does not have.
+ *
+ * The desktop bridge is the honest test: it exists only in the local desktop
+ * app. Environment identity is not enough on its own — a remote browser is
+ * still looking at the primary environment.
+ */
 export function shouldShowOpenInPicker(input: {
   readonly activeProjectName: string | undefined;
   readonly activeThreadEnvironmentId: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
+  /** The client is the local desktop app, not a browser reaching it. */
+  readonly isDesktopClient: boolean;
 }): boolean {
   return (
     Boolean(input.activeProjectName) &&
+    input.isDesktopClient &&
     input.primaryEnvironmentId !== null &&
     input.activeThreadEnvironmentId === input.primaryEnvironmentId
   );
@@ -99,6 +117,7 @@ export const ChatHeader = memo(function ChatHeader({
     activeProjectName,
     activeThreadEnvironmentId,
     primaryEnvironmentId,
+    isDesktopClient: isElectron,
   });
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
