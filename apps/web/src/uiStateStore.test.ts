@@ -155,6 +155,34 @@ describe("parsePersistedState", () => {
     expect(parsePersistedState({}).settledShelfExpanded).toBe(false);
     expect(parsePersistedState({ settledShelfExpanded: true }).settledShelfExpanded).toBe(true);
   });
+
+  it("defaults the Agents and Threads sections open and preserves an explicit collapse", () => {
+    // Opposite polarity from the settled shelf above: these read `!== false`, so
+    // absent means "never collapsed" rather than "collapsed". Upgrading from a
+    // build without these keys must not fold up both sidebar sections, and only
+    // a literal `false` — not any stray truthy-ish value — may collapse one.
+    expect(parsePersistedState({})).toMatchObject({
+      agentsSectionExpanded: true,
+      threadsSectionExpanded: true,
+    });
+    expect(
+      parsePersistedState({ agentsSectionExpanded: false, threadsSectionExpanded: false }),
+    ).toMatchObject({ agentsSectionExpanded: false, threadsSectionExpanded: false });
+    expect(
+      parsePersistedState({ agentsSectionExpanded: "false" as unknown as boolean }),
+    ).toMatchObject({ agentsSectionExpanded: true });
+  });
+
+  it("collapses the Agents and Threads sections independently", () => {
+    expect(parsePersistedState({ agentsSectionExpanded: false })).toMatchObject({
+      agentsSectionExpanded: false,
+      threadsSectionExpanded: true,
+    });
+    expect(parsePersistedState({ threadsSectionExpanded: false })).toMatchObject({
+      agentsSectionExpanded: true,
+      threadsSectionExpanded: false,
+    });
+  });
   it("hydrates raw UI-owned state without server entities", () => {
     const parsed = parsePersistedState({
       projectExpandedById: {
@@ -333,6 +361,19 @@ describe("uiStateStore persistence", () => {
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
+    });
+  });
+
+  it("round-trips a collapsed sidebar section through storage", () => {
+    persistState(makeUiState({ agentsSectionExpanded: false }));
+
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+
+    expect(parsePersistedState(persisted)).toMatchObject({
+      agentsSectionExpanded: false,
+      threadsSectionExpanded: true,
     });
   });
 
