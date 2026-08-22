@@ -22,8 +22,11 @@ describe("composer emoji picker", () => {
 
     expect(markup).toContain('data-chat-composer-emoji-underlay="true"');
     // 12% was invisible on a pointer device: you had to know it was there to
-    // hover it back.
-    expect(markup).not.toContain("opacity-[0.12]");
+    // hover it back. Asserted as the positive value rather than the absence of
+    // the old one — the element carries exactly one base opacity class, so
+    // this already excludes it, and naming the old class here would put it in
+    // Tailwind's scan set and compile a dead `opacity:.12` rule into the
+    // production stylesheet.
     expect(markup).toContain("opacity-45");
     // Phone widths are where the control actually collides with the text, so
     // it fades further there — the exact reverse of the old
