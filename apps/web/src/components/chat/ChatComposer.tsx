@@ -2172,23 +2172,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   }, [blurFocusedComposerElement, dismissMobileKeyboardOnSubmit]);
 
-  const dismissMobileKeyboardForSubmitTarget = useCallback(
-    (target: EventTarget | null) => {
-      if (!dismissMobileKeyboardOnSubmit || !(target instanceof Element)) return;
-      const submitButton = target.closest<HTMLButtonElement>('button[type="submit"]');
-      if (
-        !submitButton ||
-        submitButton.disabled ||
-        !composerFormRef.current?.contains(submitButton)
-      ) {
-        return;
-      }
-      // Run inside the originating touch/pointer gesture. Mobile WebKit may
-      // retain the software keyboard when the first blur waits for form submit.
-      dismissMobileKeyboardAfterSend();
-    },
-    [dismissMobileKeyboardAfterSend, dismissMobileKeyboardOnSubmit],
-  );
+  // The keyboard used to also be dismissed here, from a pointerdown/touchstart
+  // capture handler, to keep the blur inside the originating gesture — mobile
+  // WebKit can ignore a blur that waits on form submit. But blurring on
+  // pointerdown resizes the visual viewport mid-tap: the composer reflows
+  // downward and the finger is no longer over the send button when the click
+  // resolves, so the first tap only closed the keyboard and the message needed
+  // tapping send twice. `submitComposer` already dismisses after committing,
+  // from inside the click — itself a user gesture — so this was redundant as
+  // well as harmful.
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
@@ -3187,8 +3179,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <form
       ref={composerFormRef}
       onSubmit={submitComposer}
-      onPointerDownCapture={(event) => dismissMobileKeyboardForSubmitTarget(event.target)}
-      onTouchStartCapture={(event) => dismissMobileKeyboardForSubmitTarget(event.target)}
       className="chat-composer-measure min-w-0 overscroll-none"
       data-chat-composer-form="true"
     >

@@ -107,7 +107,9 @@ import {
 import {
   shouldCommitTimelineOlderNavigation,
   shouldMaintainTimelineVisibleContentPosition,
+  shouldClearOlderNavigationIntent,
   shouldReleaseTimelineLiveFollowForTouch,
+  shouldSnapTimelineToEndOnResize,
   shouldReleaseTimelineLiveFollowForWheel,
 } from "./timelineScrollAnchoring";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
@@ -461,6 +463,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [listRef],
   );
   const olderNavigationIntentRef = useRef(false);
+  // A finger on the list means the position is being decided by the user right
+  // now, so neither the resize correction nor the at-end bookkeeping may treat
+  // the current offset as settled.
+  const touchActiveRef = useRef(false);
   const handleScroll = useCallback(() => {
     const state = mountedListRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
@@ -473,7 +479,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ) {
         olderNavigationIntentRef.current = false;
         onManualNavigation(false);
-      } else if (isAtEnd) {
+      } else if (
+        shouldClearOlderNavigationIntent({
+          isAtEnd,
+          userGestureActive: touchActiveRef.current,
+        })
+      ) {
         olderNavigationIntentRef.current = false;
       }
       onIsAtEndChange(isAtEnd);
@@ -531,7 +542,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           positionReconcileFramesRef.current.second = null;
           const list = mountedListRef.current;
           if (!list) return;
-          if (followEnd) {
+          if (
+            shouldSnapTimelineToEndOnResize({
+              followEnd,
+              userGestureActive: touchActiveRef.current,
+              olderNavigationIntent: olderNavigationIntentRef.current,
+            })
+          ) {
             void list.scrollToEnd({ animated: false }).then(handleScroll);
             return;
           }
@@ -567,6 +584,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, []);
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    touchActiveRef.current = true;
     previousTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, []);
   const handleTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
@@ -578,6 +596,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, []);
   const handleTouchEnd = useCallback(() => {
+    touchActiveRef.current = false;
     previousTouchYRef.current = null;
   }, []);
 
