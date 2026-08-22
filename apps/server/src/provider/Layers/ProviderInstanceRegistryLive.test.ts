@@ -24,7 +24,7 @@
  */
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 import {
   type ClaudeSettings,
   type CodexSettings,
@@ -55,7 +55,7 @@ import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
 
-const FAKE_MCP_BRIDGE_FIXTURE = fileURLToPath(
+const FAKE_MCP_BRIDGE_FIXTURE = NodeURL.fileURLToPath(
   new URL("../mcpBridge/fixtures/fakeProviderBridge.mjs", import.meta.url),
 );
 

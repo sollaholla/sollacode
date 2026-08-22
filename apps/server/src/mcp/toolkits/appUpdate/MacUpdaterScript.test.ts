@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { expect, it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Effect from "effect/Effect";
 
 const updaterScriptPath = NodeURL.fileURLToPath(
   new URL(
@@ -51,54 +53,60 @@ async function makeFakeApp(path: string, version: string): Promise<void> {
   await NodeFSP.chmod(executable, 0o755);
 }
 
-it.skipIf(process.platform !== "darwin")(
-  "rejects a stale macOS update invocation without targeting the replacement app",
-  async () => {
-    const script = await NodeFSP.readFile(updaterScriptPath, "utf8");
-    expect(script).not.toContain("tell application id");
-    expect(script).not.toContain("open -na");
-    expect(script).toContain('/bin/kill -TERM "$wait_pid"');
+it.effect("rejects a stale macOS update invocation without targeting the replacement app", () =>
+  Effect.gen(function* () {
+    const platform = yield* HostProcessPlatform;
+    if (platform !== "darwin") return;
 
-    const baseDir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-updater-stale-"));
-    try {
-      const artifactPath = NodePath.join(baseDir, "Solla Code 2.0.0.app");
-      const targetPath = NodePath.join(baseDir, "Solla Code.app");
-      const logPath = NodePath.join(baseDir, "update.log");
-      await makeFakeApp(artifactPath, "2.0.0");
-      await makeFakeApp(targetPath, "1.0.0");
+    yield* Effect.promise(async () => {
+      const script = await NodeFSP.readFile(updaterScriptPath, "utf8");
+      expect(script).not.toContain("tell application id");
+      expect(script).not.toContain("open -na");
+      expect(script).toContain('/bin/kill -TERM "$wait_pid"');
 
-      const result = NodeChildProcess.spawnSync(
-        "/bin/zsh",
-        [
-          updaterScriptPath,
-          "--mode",
-          "install",
-          "--artifact",
-          artifactPath,
-          "--target",
-          targetPath,
-          "--wait-pid",
-          "999999",
-          "--wait-backend-pid",
-          "999998",
-          "--health-url",
-          "http://127.0.0.1:3773/",
-          "--log-path",
-          logPath,
-        ],
-        { encoding: "utf8" },
-      );
+      const baseDir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "solla-updater-stale-"));
+      try {
+        const artifactPath = NodePath.join(baseDir, "Solla Code 2.0.0.app");
+        const targetPath = NodePath.join(baseDir, "Solla Code.app");
+        const logPath = NodePath.join(baseDir, "update.log");
+        await makeFakeApp(artifactPath, "2.0.0");
+        await makeFakeApp(targetPath, "1.0.0");
 
-      expect(result.status).toBe(75);
-      expect(await NodeFSP.readFile(logPath, "utf8")).toContain(
-        "The Solla Code desktop process that requested this update is no longer running.",
-      );
-      expect(
-        await NodeFSP.readFile(NodePath.join(targetPath, "Contents", "Info.plist"), "utf8"),
-      ).toContain("<string>1.0.0</string>");
-      expect(await NodeFSP.readdir(baseDir)).not.toContain(".Solla Code.app.update-staged-999999");
-    } finally {
-      await NodeFSP.rm(baseDir, { recursive: true, force: true });
-    }
-  },
+        const result = NodeChildProcess.spawnSync(
+          "/bin/zsh",
+          [
+            updaterScriptPath,
+            "--mode",
+            "install",
+            "--artifact",
+            artifactPath,
+            "--target",
+            targetPath,
+            "--wait-pid",
+            "999999",
+            "--wait-backend-pid",
+            "999998",
+            "--health-url",
+            "http://127.0.0.1:3773/",
+            "--log-path",
+            logPath,
+          ],
+          { encoding: "utf8" },
+        );
+
+        expect(result.status).toBe(75);
+        expect(await NodeFSP.readFile(logPath, "utf8")).toContain(
+          "The Solla Code desktop process that requested this update is no longer running.",
+        );
+        expect(
+          await NodeFSP.readFile(NodePath.join(targetPath, "Contents", "Info.plist"), "utf8"),
+        ).toContain("<string>1.0.0</string>");
+        expect(await NodeFSP.readdir(baseDir)).not.toContain(
+          ".Solla Code.app.update-staged-999999",
+        );
+      } finally {
+        await NodeFSP.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  }),
 );

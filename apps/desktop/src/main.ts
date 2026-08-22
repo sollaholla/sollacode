@@ -65,7 +65,7 @@ import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
 // This must happen synchronously during module initialization. Windows shell
 // environment discovery is asynchronous and can otherwise cross Electron's
 // ready boundary before the capture backend override is registered.
-const disabledCaptureFeatureList = disabledCaptureFeatures(process.platform);
+const disabledCaptureFeatureList = disabledCaptureFeatures(Effect.runSync(HostProcessPlatform));
 if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }

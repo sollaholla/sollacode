@@ -12,7 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { setTimeout as delay } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import type { ServerConfig } from "../../config.ts";
 import {
@@ -118,7 +118,7 @@ class FakeBridgeClient implements McpBridgeClient {
           throw new Error("session was intentionally removed");
         }
         while (!this.turnStarted && (this.pages.get(sessionId)?.length ?? 0) > 0) {
-          await delay(1);
+          await NodeTimersPromises.setTimeout(1);
         }
         if (
           this.eventFailuresRemaining > 0 &&
@@ -130,7 +130,7 @@ class FakeBridgeClient implements McpBridgeClient {
         }
         const page = this.pages.get(sessionId)?.shift();
         if (page) return page;
-        await delay(10);
+        await NodeTimersPromises.setTimeout(10);
         return {
           protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
           sessionId,
@@ -518,10 +518,13 @@ it.effect("keeps an active turn alive across a transport drop and delivers its r
       yield* Stream.runForEach(adapter.streamEvents, (candidate) =>
         Effect.sync(() => {
           observed.push(candidate);
-          if (candidate.type === "turn.completed") {
-            Effect.runSync(Deferred.succeed(finished, undefined));
-          }
-        }),
+        }).pipe(
+          Effect.andThen(
+            candidate.type === "turn.completed"
+              ? Deferred.succeed(finished, undefined)
+              : Effect.void,
+          ),
+        ),
       ).pipe(Effect.forkScoped);
       yield* adapter.startSession({
         threadId,
@@ -598,10 +601,11 @@ it.effect("gives up on a turn once transport retries are exhausted", () =>
       yield* Stream.runForEach(adapter.streamEvents, (candidate) =>
         Effect.sync(() => {
           observed.push(candidate);
-          if (candidate.type === "turn.completed") {
-            Effect.runSync(Deferred.succeed(failed, undefined));
-          }
-        }),
+        }).pipe(
+          Effect.andThen(
+            candidate.type === "turn.completed" ? Deferred.succeed(failed, undefined) : Effect.void,
+          ),
+        ),
       ).pipe(Effect.forkScoped);
       yield* adapter.startSession({
         threadId,
@@ -687,10 +691,9 @@ it.effect("restarts the bridge session after an event-process failure", () =>
     Effect.gen(function* () {
       const fake = new FakeBridgeClient();
       fake.eventFailuresRemaining = 1;
-      const recovered = yield* Deferred.make<void>();
-      fake.onRecovery = () => {
-        Effect.runSync(Deferred.succeed(recovered, undefined));
-      };
+      const recovered = yield* Effect.callback<void>((resume) => {
+        fake.onRecovery = () => resume(Effect.void);
+      }).pipe(Effect.forkScoped);
       const threadId = ThreadId.make("external-thread-recovery");
       const adapter = yield* makeMcpBridgeAdapter({
         connection: fake,
@@ -703,7 +706,7 @@ it.effect("restarts the bridge session after an event-process failure", () =>
         runtimeMode: "approval-required",
         modelSelection: { instanceId, model: "fake-default" },
       });
-      yield* Deferred.await(recovered).pipe(Effect.timeout("2 seconds"));
+      yield* Fiber.join(recovered).pipe(Effect.timeout("2 seconds"));
       assert.equal(fake.sessionStartCount, 2);
       yield* adapter.stopSession(threadId);
     }),
@@ -755,13 +758,14 @@ it.effect("fails an active turn exactly once when the bridge process fails", () 
       yield* Stream.runForEach(adapter.streamEvents, (candidate) =>
         Effect.sync(() => {
           observed.push(candidate);
-          if (
+        }).pipe(
+          Effect.andThen(
             candidate.type === "runtime.warning" &&
-            candidate.payload.message === "post-recovery marker"
-          ) {
-            Effect.runSync(Deferred.succeed(marker, undefined));
-          }
-        }),
+              candidate.payload.message === "post-recovery marker"
+              ? Deferred.succeed(marker, undefined)
+              : Effect.void,
+          ),
+        ),
       ).pipe(Effect.forkScoped);
       yield* adapter.startSession({
         threadId,
@@ -823,15 +827,11 @@ it.effect("does not resurrect a turn that completes before turn_start returns", 
       });
       const observedTerminal = yield* Deferred.make<void>();
       yield* Stream.runForEach(adapter.streamEvents, (candidate) =>
-        Effect.sync(() => {
-          if (
-            candidate.type === "turn.completed" &&
-            candidate.turnId === TurnId.make(`turn-${threadId}`)
-          ) {
-            releaseTurnStart();
-            Effect.runSync(Deferred.succeed(observedTerminal, undefined));
-          }
-        }),
+        candidate.type === "turn.completed" && candidate.turnId === TurnId.make(`turn-${threadId}`)
+          ? Effect.sync(releaseTurnStart).pipe(
+              Effect.andThen(Deferred.succeed(observedTerminal, undefined)),
+            )
+          : Effect.void,
       ).pipe(Effect.forkScoped);
       yield* adapter.startSession({
         threadId,
@@ -872,9 +872,9 @@ it.effect("stops event polling before remote session teardown", () =>
       });
       const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
       while (!fake.stopStarted) {
-        yield* Effect.promise(() => delay(1));
+        yield* Effect.promise(() => NodeTimersPromises.setTimeout(1));
       }
-      yield* Effect.promise(() => delay(700));
+      yield* Effect.promise(() => NodeTimersPromises.setTimeout(700));
       assert.equal(fake.sessionStartCount, 1);
       releaseStop();
       yield* Fiber.join(stopFiber).pipe(Effect.timeout("2 seconds"));

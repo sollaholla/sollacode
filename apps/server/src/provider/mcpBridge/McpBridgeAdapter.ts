@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import { setTimeout as delay } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import type { ServerConfig } from "../../config.ts";
@@ -766,7 +766,7 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
               },
             } as ProviderRuntimeEvent);
           }
-          await delay(Math.min(4_000, 250 * 2 ** failures));
+          await NodeTimersPromises.setTimeout(Math.min(4_000, 250 * 2 ** failures));
           if (!context.active) break;
           try {
             await recoverSession(context);

@@ -1,7 +1,6 @@
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 
 import { runtime, runtimeContextLayer } from "./runtime";
 
@@ -19,12 +18,7 @@ describe("renderer runtime", () => {
     await runtime.runPromise(assertCryptoService);
   });
 
-  it("preserves browser crypto when embedded in the connection runtime", async () => {
-    const embedded = ManagedRuntime.make(runtimeContextLayer);
-    try {
-      await embedded.runPromise(assertCryptoService);
-    } finally {
-      await embedded.dispose();
-    }
-  });
+  it.effect("preserves browser crypto when embedded in the connection runtime", () =>
+    assertCryptoService.pipe(Effect.provide(runtimeContextLayer)),
+  );
 });

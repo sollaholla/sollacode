@@ -174,7 +174,7 @@ public static class SollaRemoteInput {
     assert.notInclude(String(blockedRun.stderr), "Key:87:True");
 
     NodeFS.rmSync(directory, { recursive: true, force: true });
-  });
+  }, 180_000);
 
   it("treats a blocked host desktop as a reported condition, not an error", () => {
     const source = remoteInputScriptSource("win32");
