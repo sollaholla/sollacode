@@ -29,6 +29,7 @@ import {
   reconcileRetainedMountedThreadIds,
   retainClosingSideChatThreadIds,
   shouldAutoFocusComposerOnThreadOpen,
+  shouldRestoreComposerFocus,
   describeThreadErrorAge,
   resolveDraftThreadCreateModelSelection,
   resolveVisibleServerThreadError,
@@ -999,5 +1000,17 @@ describe("shouldAutoFocusComposerOnThreadOpen", () => {
 
   it("does nothing without a thread", () => {
     expect(shouldAutoFocusComposerOnThreadOpen({ ...base, hasThread: false })).toBe(false);
+  });
+});
+
+describe("shouldRestoreComposerFocus", () => {
+  it("restores the caret where a keyboard is already there", () => {
+    expect(shouldRestoreComposerFocus({ usesOnScreenKeyboard: false })).toBe(true);
+  });
+
+  it("leaves focus alone where restoring it would raise a keyboard", () => {
+    // Every caller is an action settling — a menu closing, a branch picked.
+    // None of them is the user saying they want to type.
+    expect(shouldRestoreComposerFocus({ usesOnScreenKeyboard: true })).toBe(false);
   });
 });

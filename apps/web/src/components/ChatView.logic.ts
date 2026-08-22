@@ -693,3 +693,20 @@ export function shouldAutoFocusComposerOnThreadOpen(input: {
   if (input.terminalSurfaceActive) return false;
   return !input.usesOnScreenKeyboard;
 }
+
+/**
+ * Whether to put the caret back in the composer after a UI action.
+ *
+ * The app restores composer focus after all sorts of things settle — a mode
+ * or model change, picking a branch, dropping files, leaving the terminal
+ * surface, closing the command palette, opening a thread. With a hardware
+ * keyboard that is a courtesy: the menu closes and you can keep typing.
+ *
+ * With an on-screen one it is an interruption. Dismissing a menu makes the
+ * keyboard slide up over the conversation, and nothing the user did asked for
+ * it. Focus the user requested outright — tapping the composer, quoting a
+ * message, typing a character — does not come through here.
+ */
+export function shouldRestoreComposerFocus(input: { usesOnScreenKeyboard: boolean }): boolean {
+  return !input.usesOnScreenKeyboard;
+}
