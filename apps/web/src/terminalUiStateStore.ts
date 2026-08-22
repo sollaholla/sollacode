@@ -43,7 +43,6 @@ interface ThreadTerminalUiState {
    * the split/panel workspace stays the main surface.
    */
   terminalFullscreen: boolean;
-  terminalOpen: boolean;
   terminalHeight: number;
   /** Width of the group sidebar in pixels; clamped on normalization. */
   sidebarWidth: number;
@@ -237,7 +236,6 @@ function threadTerminalUiStateEqual(
   return (
     left.mainSurface === right.mainSurface &&
     left.terminalFullscreen === right.terminalFullscreen &&
-    left.terminalOpen === right.terminalOpen &&
     left.terminalHeight === right.terminalHeight &&
     left.sidebarWidth === right.sidebarWidth &&
     left.activeTerminalId === right.activeTerminalId &&
@@ -254,7 +252,6 @@ export const MAX_TERMINAL_SIDEBAR_WIDTH = 480;
 const DEFAULT_THREAD_TERMINAL_UI_STATE: ThreadTerminalUiState = Object.freeze({
   mainSurface: "chat" as ThreadMainSurface,
   terminalFullscreen: false,
-  terminalOpen: false,
   terminalHeight: DEFAULT_THREAD_TERMINAL_HEIGHT,
   sidebarWidth: DEFAULT_TERMINAL_SIDEBAR_WIDTH,
   terminalIds: [],
@@ -292,7 +289,6 @@ function normalizeThreadTerminalUiState(state: ThreadTerminalUiState): ThreadTer
   const normalized: ThreadTerminalUiState = {
     mainSurface: state.mainSurface === "terminal" ? "terminal" : "chat",
     terminalFullscreen: state.terminalFullscreen === true,
-    terminalOpen: state.terminalOpen,
     terminalHeight:
       Number.isFinite(state.terminalHeight) && state.terminalHeight > 0
         ? state.terminalHeight
@@ -371,7 +367,6 @@ function upsertTerminalIntoGroups(
     terminalGroups.push({ id: nextGroupId, terminalIds: [terminalId] });
     return normalizeThreadTerminalUiState({
       ...normalized,
-      terminalOpen: true,
       terminalIds,
       activeTerminalId: terminalId,
       terminalGroups,
@@ -434,21 +429,11 @@ function upsertTerminalIntoGroups(
 
   return normalizeThreadTerminalUiState({
     ...normalized,
-    terminalOpen: true,
     terminalIds,
     activeTerminalId: terminalId,
     terminalGroups,
     activeTerminalGroupId: destinationGroup.id,
   });
-}
-
-function setThreadTerminalOpen(state: ThreadTerminalUiState, open: boolean): ThreadTerminalUiState {
-  const normalized = normalizeThreadTerminalUiState(state);
-  if (open && normalized.terminalIds.length === 0) {
-    return upsertTerminalIntoGroups(normalized, DEFAULT_THREAD_TERMINAL_ID, "new");
-  }
-  if (normalized.terminalOpen === open) return normalized;
-  return { ...normalized, terminalOpen: open };
 }
 
 function setThreadTerminalHeight(
@@ -759,7 +744,6 @@ function closeThreadTerminal(
   return normalizeThreadTerminalUiState({
     mainSurface: normalized.mainSurface,
     terminalFullscreen: normalized.terminalFullscreen,
-    terminalOpen: normalized.terminalOpen,
     terminalHeight: normalized.terminalHeight,
     sidebarWidth: normalized.sidebarWidth,
     terminalIds: remainingTerminalIds,
@@ -974,7 +958,6 @@ interface TerminalUiStateStoreState {
    * after a reload the server list alone is authoritative.
    */
   pendingOpenTerminalIdsByThreadKey: Record<string, string[]>;
-  setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   setTerminalHeight: (threadRef: ScopedThreadRef, height: number) => void;
   splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
   splitTerminalVertical: (threadRef: ScopedThreadRef, terminalId: string) => void;
@@ -982,7 +965,7 @@ interface TerminalUiStateStoreState {
   ensureTerminal: (
     threadRef: ScopedThreadRef,
     terminalId: string,
-    options?: { open?: boolean; active?: boolean },
+    options?: { active?: boolean },
   ) => void;
   setActiveTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
   setMainSurface: (threadRef: ScopedThreadRef, surface: ThreadMainSurface) => void;
@@ -1034,7 +1017,7 @@ interface TerminalUiStateStoreState {
 
 export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
   persist(
-    (set, get) => {
+    (set) => {
       const updateTerminal = (
         threadRef: ScopedThreadRef,
         updater: (
@@ -1108,19 +1091,6 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
         terminalUiStateByThreadKey: {},
         suppressedTerminalIdsByThreadKey: {},
         pendingOpenTerminalIdsByThreadKey: {},
-        setTerminalOpen: (threadRef, open) => {
-          const terminalState = selectThreadTerminalUiState(
-            get().terminalUiStateByThreadKey,
-            threadRef,
-          );
-          updateTerminal(
-            threadRef,
-            (state) => setThreadTerminalOpen(state, open),
-            open && terminalState.terminalIds.length === 0
-              ? { terminalId: DEFAULT_THREAD_TERMINAL_ID, suppressed: false }
-              : undefined,
-          );
-        },
         setTerminalHeight: (threadRef, height) =>
           updateTerminal(threadRef, (state) => setThreadTerminalHeight(state, height)),
         splitTerminal: (threadRef, terminalId) =>
@@ -1156,9 +1126,6 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
               if (options?.active ?? true) {
                 nextState = setThreadActiveTerminal(nextState, terminalId);
               }
-              if (options?.open) {
-                nextState = setThreadTerminalOpen(nextState, true);
-              }
               return normalizeThreadTerminalUiState(nextState);
             },
             { terminalId, suppressed: false },
@@ -1171,10 +1138,8 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             if (normalized.mainSurface === surface) {
               return normalized;
             }
-            // Mode and the bottom drawer are independent: the header icon
-            // switches the main column, the panel-bottom control toggles
-            // the drawer. Fullscreen is a terminal-mode layout, so it
-            // resets when leaving that mode.
+            // Fullscreen is a terminal-mode layout, so it resets on the way
+            // back to chat.
             if (surface === "chat") {
               return {
                 ...normalized,
@@ -1182,12 +1147,11 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
                 terminalFullscreen: false,
               };
             }
-            const drawerWasOpen = normalized.terminalOpen;
             const next =
               normalized.terminalIds.length === 0
                 ? upsertTerminalIntoGroups(normalized, DEFAULT_THREAD_TERMINAL_ID, "new")
                 : normalized;
-            return { ...next, mainSurface: surface, terminalOpen: drawerWasOpen };
+            return { ...next, mainSurface: surface };
           }),
         setTerminalFullscreen: (threadRef, fullscreen) =>
           updateTerminal(threadRef, (state) => {

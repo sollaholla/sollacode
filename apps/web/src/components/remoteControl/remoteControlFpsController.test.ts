@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  createHeldInputTracker,
   diffHeldKeys,
   FPS_LOOK_SENSITIVITY_DEFAULT,
   FPS_STICK_CENTER,
@@ -176,5 +177,55 @@ describe("shouldShowFpsController", () => {
     // The movement stick is WASD. A pointer-only session would render a pad
     // whose entire left half silently does nothing.
     expect(shouldShowFpsController({ ...base, canKeyboard: false })).toBe(false);
+  });
+});
+
+describe("createHeldInputTracker", () => {
+  it("emits a press once however many times it arrives", () => {
+    // A finger that re-fires pointerdown (or a re-render mid-touch) must not
+    // stack duplicate downs on the host.
+    const tracker = createHeldInputTracker<string>();
+    expect(tracker.press("Space")).toBe(true);
+    expect(tracker.press("Space")).toBe(false);
+    expect(tracker.size()).toBe(1);
+  });
+
+  it("ignores a release for something never pressed", () => {
+    // Otherwise a stray pointercancel invents an up edge the host never had a
+    // down edge for.
+    const tracker = createHeldInputTracker<string>();
+    expect(tracker.release("Space")).toBe(false);
+  });
+
+  it("pairs every press with exactly one release", () => {
+    const tracker = createHeldInputTracker<string>();
+    tracker.press("ShiftLeft");
+    expect(tracker.release("ShiftLeft")).toBe(true);
+    expect(tracker.release("ShiftLeft")).toBe(false);
+    expect(tracker.size()).toBe(0);
+  });
+
+  it("drains everything outstanding, in press order, exactly once", () => {
+    // This is what teardown calls. Anything it misses stays down on the host
+    // for the rest of the session.
+    const tracker = createHeldInputTracker<string>();
+    tracker.press("KeyR");
+    tracker.press("Space");
+    tracker.press("ControlLeft");
+    tracker.release("Space");
+
+    expect(tracker.drain()).toEqual(["KeyR", "ControlLeft"]);
+    expect(tracker.drain()).toEqual([]);
+    expect(tracker.size()).toBe(0);
+  });
+
+  it("can be reused after a drain", () => {
+    // Leaving and re-entering FPS mode reuses the same tracker shape; a drain
+    // must not poison it.
+    const tracker = createHeldInputTracker<string>();
+    tracker.press("Space");
+    tracker.drain();
+    expect(tracker.press("Space")).toBe(true);
+    expect(tracker.isHeld("Space")).toBe(true);
   });
 });

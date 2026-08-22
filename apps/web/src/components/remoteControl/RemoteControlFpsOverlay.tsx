@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 import {
+  createHeldInputTracker,
   diffHeldKeys,
   FPS_LOOK_SENSITIVITY_DEFAULT,
   type FpsMovementCode,
@@ -75,8 +76,10 @@ export function RemoteControlFpsOverlay({
   const lookPointerRef = useRef<number | null>(null);
   const lookLastRef = useRef<{ x: number; y: number } | null>(null);
 
-  const heldActionsRef = useRef(new Set<string>());
-  const heldButtonsRef = useRef(new Set<"left" | "right">());
+  // Press/release input goes through the tracker so the "no stuck keys"
+  // invariant lives in tested code rather than in three hand-rolled Sets.
+  const heldActionsRef = useRef(createHeldInputTracker<string>());
+  const heldButtonsRef = useRef(createHeldInputTracker<"left" | "right">());
 
   // Handlers are read through refs by the unmount cleanup so that releasing
   // stuck input never depends on the identity of a prop callback.
@@ -108,13 +111,13 @@ export function RemoteControlFpsOverlay({
     () => () => {
       for (const code of heldMovementRef.current) onMovementKeyRef.current(code, "up");
       heldMovementRef.current = new Set();
-      for (const code of heldActionsRef.current) {
+      for (const code of heldActionsRef.current.drain()) {
         const action = ACTION_KEYS.find((entry) => entry.code === code);
         onActionKeyRef.current(code, action?.key ?? "", "up");
       }
-      heldActionsRef.current.clear();
-      for (const button of heldButtonsRef.current) onPointerButtonRef.current(button, "up");
-      heldButtonsRef.current.clear();
+      for (const button of heldButtonsRef.current.drain()) {
+        onPointerButtonRef.current(button, "up");
+      }
     },
     [],
   );
@@ -208,15 +211,14 @@ export function RemoteControlFpsOverlay({
     onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      if (heldButtonsRef.current.has(button)) return;
-      heldButtonsRef.current.add(button);
+      if (!heldButtonsRef.current.press(button)) return;
       event.currentTarget.setPointerCapture(event.pointerId);
       onPointerButton(button, "down");
     },
     onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!heldButtonsRef.current.delete(button)) return;
+      if (!heldButtonsRef.current.release(button)) return;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -224,7 +226,7 @@ export function RemoteControlFpsOverlay({
     },
     onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.stopPropagation();
-      if (!heldButtonsRef.current.delete(button)) return;
+      if (!heldButtonsRef.current.release(button)) return;
       onPointerButton(button, "up");
     },
   });
@@ -233,15 +235,14 @@ export function RemoteControlFpsOverlay({
     onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      if (heldActionsRef.current.has(code)) return;
-      heldActionsRef.current.add(code);
+      if (!heldActionsRef.current.press(code)) return;
       event.currentTarget.setPointerCapture(event.pointerId);
       onActionKey(code, key, "down");
     },
     onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!heldActionsRef.current.delete(code)) return;
+      if (!heldActionsRef.current.release(code)) return;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
@@ -249,7 +250,7 @@ export function RemoteControlFpsOverlay({
     },
     onPointerCancel: (event: ReactPointerEvent<HTMLButtonElement>) => {
       event.stopPropagation();
-      if (!heldActionsRef.current.delete(code)) return;
+      if (!heldActionsRef.current.release(code)) return;
       onActionKey(code, key, "up");
     },
   });
