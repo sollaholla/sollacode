@@ -131,6 +131,8 @@ import { Kbd, KbdGroup } from "./ui/kbd";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
+import { useOnScreenKeyboard } from "../hooks/useOnScreenKeyboard";
+import { shouldRestoreComposerFocus } from "./ChatView.logic";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { getProjectOrderKey, selectProjectGroupingSettings } from "../logicalProject";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
@@ -512,6 +514,7 @@ function CommandPaletteDialog(props: {
   readonly clearOpenIntent: () => void;
 }) {
   const composerHandleRef = useComposerHandleContext();
+  const usesOnScreenKeyboard = useOnScreenKeyboard();
 
   if (!props.open) {
     return null;
@@ -531,7 +534,13 @@ function CommandPaletteDialog(props: {
       data-palette-mode={props.mode}
       data-testid="command-palette"
       finalFocus={() => {
-        composerHandleRef?.current?.focusAtEnd();
+        // Returning the caret to the composer is a courtesy with a hardware
+        // keyboard. With a soft one it means dismissing the palette pops a
+        // keyboard over the thread, which is not what closing a dialog asks
+        // for.
+        if (shouldRestoreComposerFocus({ usesOnScreenKeyboard })) {
+          composerHandleRef?.current?.focusAtEnd();
+        }
         return false;
       }}
       onBackdropPointerDown={() => {

@@ -156,6 +156,7 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useOnScreenKeyboard } from "../hooks/useOnScreenKeyboard";
 import { shouldOfferAppVoiceCapture } from "./chat/appVoiceCaptureAvailability";
 import {
   composerViewportBottomInset,
@@ -384,6 +385,7 @@ import {
   deriveLockedProvider,
   retainClosingSideChatThreadIds,
   shouldAutoFocusComposerOnThreadOpen,
+  shouldRestoreComposerFocus,
   resolveDraftThreadCreateModelSelection,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
@@ -1924,13 +1926,7 @@ function ChatViewContent(props: ChatViewProps) {
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const hasCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const isPhonePortraitViewport = useMediaQuery(THIN_PORTRAIT_MOBILE_MEDIA_QUERY);
-  /**
-   * Whether typing here raises a keyboard over the content.
-   *
-   * A coarse pointer is the whole condition: every device with a soft keyboard
-   * has one, in any orientation and at any width.
-   */
-  const usesOnScreenKeyboard = useMediaQuery({ pointer: "coarse" });
+  const usesOnScreenKeyboard = useOnScreenKeyboard();
   const appVoiceCaptureEnabled = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
@@ -4044,9 +4040,24 @@ function ChatViewContent(props: ChatViewProps) {
     stopThreadSession,
   ]);
 
+  /**
+   * Put the caret back in the composer after something settles.
+   *
+   * Every caller is an action finishing rather than the user asking to type:
+   * a thread opening, a mode or model change, a branch picked, files dropped,
+   * the terminal surface closing. On a device with a soft keyboard each of
+   * those would slide a keyboard up over the conversation, so the whole family
+   * is suppressed at once here rather than at each call site — which is what
+   * left some of them still doing it.
+   *
+   * Focus the user asked for outright does not come through here: tapping the
+   * composer, quoting a message, and typing a character to start a draft all
+   * go straight to the editor handle.
+   */
   const focusComposer = useCallback(() => {
+    if (!shouldRestoreComposerFocus({ usesOnScreenKeyboard })) return;
     composerRef.current?.focusAtEnd();
-  }, [composerRef]);
+  }, [composerRef, usesOnScreenKeyboard]);
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
