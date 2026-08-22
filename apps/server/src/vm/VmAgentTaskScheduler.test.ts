@@ -28,7 +28,11 @@ import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentCollaborationStore } from "../persistence/Services/VmAgentCollaborations.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
-import { VmAgentTaskScheduler, VmAgentTaskSchedulerLive } from "./VmAgentTaskScheduler.ts";
+import {
+  MAX_RUN_START_RETRIES,
+  VmAgentTaskScheduler,
+  VmAgentTaskSchedulerLive,
+} from "./VmAgentTaskScheduler.ts";
 import { VmManager } from "./VmManager.ts";
 
 const iso = "2026-08-21T20:00:00.000Z";
@@ -266,8 +270,13 @@ it.effect("fails a running run whose turn never projected instead of retrying fo
       yield* scheduler.start();
       // Under the stall threshold nothing is failed; past it, the drain
       // terminalizes the run so the agent's schedule stops being starved.
-      yield* TestClock.adjust(Duration.minutes(3));
-      yield* scheduler.wake();
+      // Each stall window spends one retry, and this thread is busy so every
+      // retry no-ops at the pre-flight; the run only fails once the budget is
+      // gone. Waking once would just book the first retry.
+      for (let attempt = 0; attempt <= MAX_RUN_START_RETRIES; attempt += 1) {
+        yield* TestClock.adjust(Duration.minutes(3));
+        yield* scheduler.wake();
+      }
       yield* Deferred.await(failed);
       assert.strictEqual(completed?.status, "failed");
       assert.include(completed?.error ?? "", "never started");
@@ -351,8 +360,13 @@ it.effect("fails a running run whose projected turn never left pending", () =>
     yield* Effect.gen(function* () {
       const scheduler = yield* VmAgentTaskScheduler;
       yield* scheduler.start();
-      yield* TestClock.adjust(Duration.minutes(3));
-      yield* scheduler.wake();
+      // Each stall window spends one retry, and this thread is busy so every
+      // retry no-ops at the pre-flight; the run only fails once the budget is
+      // gone. Waking once would just book the first retry.
+      for (let attempt = 0; attempt <= MAX_RUN_START_RETRIES; attempt += 1) {
+        yield* TestClock.adjust(Duration.minutes(3));
+        yield* scheduler.wake();
+      }
       yield* Deferred.await(failed);
       assert.strictEqual(completed?.status, "failed");
       assert.include(completed?.error ?? "", "never started");
@@ -657,4 +671,181 @@ it.effect(
         assert.deepStrictEqual(order.slice(0, 3), ["cancel", "interrupt", "claim"]);
       }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
     }),
+);
+
+it.effect("re-dispatches a stalled run under a fresh command id so it can actually start", () =>
+  Effect.gen(function* () {
+    const retried = yield* Deferred.make<void>();
+    const commands: OrchestrationCommand[] = [];
+    // The run already posted its prompt and then stalled: the user is looking
+    // at a message that says "Queued". Retrying under the original command id
+    // is pointless — it was receipted, so the engine dedupes it to nothing.
+    const stuckRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-retry"),
+      status: "running",
+      messageId: MessageId.make("vm-task:run-retry"),
+      startedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          {
+            run: stuckRun,
+            projectionState: "pending",
+            projectionTurnId: null,
+            assistantText: null,
+          },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      setRunBooting: () => Effect.void,
+      setRunRunning: () => Effect.void,
+      completeRun: () => Effect.void,
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    // The thread has gone idle, so the retry's pre-flight lets it through.
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.succeed(
+          Option.some({ latestTurn: { state: "completed" }, pendingWork: null } as never),
+        ),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({
+      refresh: () => Effect.void,
+      snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+    });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: (command: OrchestrationCommand) =>
+        Effect.gen(function* () {
+          commands.push(command);
+          if (command.type === "thread.turn.start") yield* Deferred.succeed(retried, undefined);
+          return { sequence: commands.length } as never;
+        }),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      Layer.mock(VmManager)({ ensureRunning: () => Effect.succeed(agent) }),
+      workspaceLayer,
+      engineLayer,
+      collaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      yield* TestClock.adjust(Duration.minutes(3));
+      yield* scheduler.wake();
+      yield* Deferred.await(retried);
+
+      const start = commands.find((command) => command.type === "thread.turn.start");
+      assert.isDefined(start);
+      // Distinct from the original, or the engine's receipt swallows it.
+      assert.notStrictEqual(start?.commandId, `vm-task:${stuckRun.runId}`);
+      assert.include(start?.commandId ?? "", `vm-task:${stuckRun.runId}:retry:`);
+      // Same message id, so the prompt already on screen is updated in place
+      // rather than posted a second time.
+      assert.strictEqual(
+        start?.type === "thread.turn.start" ? start.message.messageId : null,
+        stuckRun.messageId,
+      );
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
+);
+
+it.effect("says in the thread when a run gives up, rather than leaving it reading Queued", () =>
+  Effect.gen(function* () {
+    const failed = yield* Deferred.make<void>();
+    const commands: OrchestrationCommand[] = [];
+    const stuckRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-explains"),
+      status: "running",
+      messageId: MessageId.make("vm-task:run-explains"),
+      startedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          {
+            run: stuckRun,
+            projectionState: "pending",
+            projectionTurnId: null,
+            assistantText: null,
+          },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      completeRun: () => Deferred.succeed(failed, undefined).pipe(Effect.asVoid),
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    // Permanently busy, so every retry no-ops and the budget runs out.
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.succeed(
+          Option.some({ latestTurn: { state: "running" }, pendingWork: null } as never),
+        ),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({
+      refresh: () => Effect.void,
+      snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+    });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: (command: OrchestrationCommand) =>
+        Effect.sync(() => {
+          commands.push(command);
+          return { sequence: commands.length } as never;
+        }),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      Layer.mock(VmManager)({ ensureRunning: () => Effect.succeed(agent) }),
+      workspaceLayer,
+      engineLayer,
+      Layer.mock(VmAgentCollaborationStore)({
+        getByRunId: () => Effect.succeed(Option.none()),
+        getByTaskId: () => Effect.succeed(Option.none()),
+        listExpired: () => Effect.succeed([]),
+        complete: () => Effect.void,
+      }),
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      for (let attempt = 0; attempt <= MAX_RUN_START_RETRIES; attempt += 1) {
+        yield* TestClock.adjust(Duration.minutes(3));
+        yield* scheduler.wake();
+      }
+      yield* Deferred.await(failed);
+
+      // The delivery indicator is receipt-driven, so without this the prompt
+      // sits on "Queued for <provider>" forever with nothing contradicting it.
+      const notice = commands.find((command) => command.type === "thread.message.assistant.delta");
+      assert.isDefined(notice, "expected the failure to be written into the thread");
+      assert.strictEqual(
+        notice?.type === "thread.message.assistant.delta" ? notice.threadId : null,
+        threadId,
+      );
+      assert.include(
+        notice?.type === "thread.message.assistant.delta" ? notice.delta : "",
+        "The scheduled task did not run.",
+      );
+      assert.isDefined(
+        commands.find((command) => command.type === "thread.message.assistant.complete"),
+      );
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
 );

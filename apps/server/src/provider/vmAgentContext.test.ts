@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildVmAgentContext, withVmAgentContext } from "./vmAgentContext";
+import { buildVmAgentContext, withVmAgentContext } from "./vmAgentContext.ts";
 
 const agent = { name: "Scout", purpose: "Watch the Okta tenant thread" };
 

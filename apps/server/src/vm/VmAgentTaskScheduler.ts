@@ -51,6 +51,18 @@ const MAX_CLAIMS_PER_DRAIN = 8;
  */
 const RUN_START_STALL_MS = 120_000;
 
+/**
+ * How many times a runless run is re-dispatched before it is failed.
+ *
+ * Failing it stops one stuck run starving the agent's schedule, but on its own
+ * it still leaves the user looking at a message that says "Queued" and never
+ * moves. The dedupe is on `commandId`, so a retry under a fresh one is not
+ * swallowed and the turn can actually start — which is the outcome anybody
+ * waiting on a scheduled task actually wants. Only once retrying has stopped
+ * helping is the run terminalized.
+ */
+export const MAX_RUN_START_RETRIES = 2;
+
 export interface VmAgentTaskSchedulerShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   readonly wake: () => Effect.Effect<void>;
@@ -64,7 +76,9 @@ export class VmAgentTaskScheduler extends Context.Service<
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 const runMessageId = (runId: VmAgentTaskRunId) => MessageId.make(`vm-task:${runId}`);
-const runCommandId = (runId: VmAgentTaskRunId) => CommandId.make(`vm-task:${runId}`);
+const runFailureMessageId = (runId: VmAgentTaskRunId) => MessageId.make(`vm-task-failed:${runId}`);
+const runCommandId = (runId: VmAgentTaskRunId, attempt = 0) =>
+  CommandId.make(attempt === 0 ? `vm-task:${runId}` : `vm-task:${runId}:retry:${attempt}`);
 
 const taskPrompt = (
   task: VmAgentTask,
@@ -115,6 +129,19 @@ export const make = Effect.gen(function* () {
   const wakeQueue = yield* Queue.sliding<void>(1);
   const started = yield* Ref.make(false);
   const activeRuns = new Map<string, Fiber.Fiber<void, never>>();
+  /**
+   * Start attempts already spent per run, for the stalled-dispatch retry.
+   *
+   * Deliberately not derived from `startedAt`: a retry goes through
+   * `setRunRunning`, which rewrites `started_at` to the retry's own timestamp,
+   * so elapsed time resets every attempt and a time-derived counter would
+   * retry forever instead of eventually giving up.
+   *
+   * In memory rather than on the row because the budget only needs to bound
+   * one process's retry loop. A restart relaunches the run from scratch, which
+   * is a fresh chance for it to start, so a fresh budget is the right reading.
+   */
+  const runStartAttempts = new Map<string, number>();
 
   const wake: VmAgentTaskSchedulerShape["wake"] = () =>
     Queue.offer(wakeQueue, undefined).pipe(Effect.asVoid);
@@ -236,6 +263,7 @@ export const make = Effect.gen(function* () {
           : {}),
       });
     }
+    runStartAttempts.delete(observation.run.runId);
     yield* workspace.refresh(observation.run.vmAgentId);
     return true;
   });
@@ -256,6 +284,65 @@ export const make = Effect.gen(function* () {
     return thread.value.latestTurn?.state !== "running" && thread.value.pendingWork == null;
   });
 
+  /**
+   * Says in the chat that a scheduled run failed.
+   *
+   * Only for runs that already posted their prompt. Such a run leaves a user
+   * message on screen whose delivery indicator reads "Queued" — and because
+   * that indicator is driven by provider receipts, a run that dies before the
+   * provider ever takes the prompt produces no receipt and no further output,
+   * so the message claims to be queued indefinitely with nothing anywhere
+   * saying otherwise. Terminalizing the run in the task list does not reach
+   * the person reading the thread; this does.
+   */
+  const postRunFailure = Effect.fn("VmAgentTaskScheduler.postRunFailure")(function* (
+    run: VmAgentTaskRun,
+    detail: string,
+    occurredAt: string,
+  ) {
+    // No message id means the run never got as far as posting the prompt, so
+    // there is nothing on screen that needs explaining.
+    if (run.messageId === null) return;
+    const delegation = yield* collaboration
+      .getByRunId(run.runId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    const agent = yield* agents
+      .getById(run.vmAgentId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    const threadId =
+      Option.isSome(delegation) &&
+      delegation.value.target.kind === "ephemeral" &&
+      delegation.value.workerThreadId !== null
+        ? delegation.value.workerThreadId
+        : Option.isSome(agent)
+          ? agent.value.threadId
+          : null;
+    if (threadId === null) return;
+    const messageId = runFailureMessageId(run.runId);
+    // Streamed then completed, which is the ordinary way an assistant message
+    // is written; the pair is keyed on the run id, so a duplicate call is
+    // absorbed by the projector's upsert rather than posting twice.
+    yield* engine
+      .dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`vm-task-failed:${run.runId}`),
+        threadId,
+        messageId,
+        delta: `The scheduled task did not run. ${detail}`,
+        createdAt: occurredAt,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+    yield* engine
+      .dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`vm-task-failed-end:${run.runId}`),
+        threadId,
+        messageId,
+        createdAt: occurredAt,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+  });
+
   const failRun = Effect.fn("VmAgentTaskScheduler.failRun")(function* (
     task: VmAgentTask | null,
     run: VmAgentTaskRun,
@@ -263,6 +350,7 @@ export const make = Effect.gen(function* () {
   ) {
     const detail = errorText(error);
     const completedAt = yield* nowIso;
+    yield* postRunFailure(run, detail, completedAt).pipe(Effect.ignoreCause({ log: true }));
     if (task) yield* createRunNotification(task, run, "failed", detail);
     yield* store
       .completeRun({
@@ -283,10 +371,11 @@ export const make = Effect.gen(function* () {
         completedAt,
       })
       .pipe(Effect.ignoreCause({ log: true }));
+    runStartAttempts.delete(run.runId);
     yield* workspace.refresh(run.vmAgentId);
   });
 
-  const executeRun = (run: VmAgentTaskRun) =>
+  const executeRun = (run: VmAgentTaskRun, attempt = 0) =>
     Effect.gen(function* () {
       const task = yield* getTask(run);
       if (!task) {
@@ -365,7 +454,7 @@ export const make = Effect.gen(function* () {
       const pendingMessage = delegationMessages.find((message) => message.delivery === "pending");
       yield* engine.dispatch({
         type: "thread.turn.start",
-        commandId: runCommandId(run.runId),
+        commandId: runCommandId(run.runId, attempt),
         threadId,
         message: {
           messageId,
@@ -398,10 +487,10 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const launch = (run: VmAgentTaskRun) =>
+  const launch = (run: VmAgentTaskRun, attempt = 0) =>
     Effect.gen(function* () {
       if (activeRuns.has(run.runId)) return;
-      const fiber = yield* executeRun(run).pipe(Effect.forkScoped);
+      const fiber = yield* executeRun(run, attempt).pipe(Effect.forkScoped);
       activeRuns.set(run.runId, fiber);
       yield* Fiber.await(fiber).pipe(
         Effect.ensuring(
@@ -462,12 +551,6 @@ export const make = Effect.gen(function* () {
       // check. Observed in the wild — a run stuck `running` for over an hour
       // against an idle `ready` session whose previous turn had completed 20
       // minutes earlier, so this is not only the already-running race below.
-      // `projectionTurnId`, not `projectionState`: a dispatch can also leave a
-      // projected turn sitting in `pending` with no turn id, which is just as
-      // unstarted as having no projection row at all but was invisible to this
-      // check. Observed in the wild — a run stuck `running` for over an hour
-      // against an idle `ready` session whose previous turn had completed 20
-      // minutes earlier, so this is not only the already-running race below.
       if (observation.run.status === "running" && observation.projectionTurnId === null) {
         const startedAt = observation.run.startedAt;
         const startedAtMs = (() => {
@@ -479,13 +562,24 @@ export const make = Effect.gen(function* () {
           }
         })();
         const nowMs = DateTime.toEpochMillis(DateTime.makeUnsafe(yield* nowIso));
-        if (startedAtMs !== null && nowMs - startedAtMs >= RUN_START_STALL_MS) {
+        const stalledForMs = startedAtMs === null ? null : nowMs - startedAtMs;
+        if (stalledForMs !== null && stalledForMs >= RUN_START_STALL_MS) {
+          const attempt = (runStartAttempts.get(observation.run.runId) ?? 0) + 1;
+          if (attempt <= MAX_RUN_START_RETRIES) {
+            runStartAttempts.set(observation.run.runId, attempt);
+            // `launch` re-runs the pre-flight, so this only proceeds if the
+            // thread is still idle; and the message id is carried on the run,
+            // so the retry updates the message already on screen in place
+            // rather than posting the prompt a second time.
+            yield* launch(observation.run, attempt);
+            continue;
+          }
           const task = yield* getTask(observation.run);
           yield* failRun(
             task,
             observation.run,
             new Error(
-              "The scheduled turn never started — it likely raced a turn that was already running. Run the task again or wait for its next occurrence.",
+              `The scheduled turn never started, and ${MAX_RUN_START_RETRIES} retries did not get it moving. Run the task again or wait for its next occurrence.`,
             ),
           ).pipe(Effect.ignoreCause({ log: true }));
           continue;
