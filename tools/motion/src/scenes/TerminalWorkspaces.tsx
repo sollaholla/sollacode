@@ -148,11 +148,9 @@ function Pane({
 
 export function TerminalWorkspaces() {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const enter = spring({ frame, fps, config: { damping: 200 }, durationInFrames: 25 });
 
   return (
-    <AppWindow style={{ opacity: enter }}>
+    <AppWindow>
       <Sidebar
         agentsExpanded
         threadsExpanded

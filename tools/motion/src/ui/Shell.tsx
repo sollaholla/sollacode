@@ -120,18 +120,20 @@ export function SectionHeader({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 4,
-        height: 16,
-        marginBottom: 4,
+        gap: 6,
+        height: 18,
+        marginBottom: 5,
         paddingLeft,
-        fontSize: 12,
-        fontWeight: 500,
-        color: muted,
+        // Reads as a header: same size as the rows beneath it, distinguished by
+        // weight and colour rather than by being smaller than its own contents.
+        fontSize: 14,
+        fontWeight: 600,
+        color: "color-mix(in srgb, var(--sidebar-foreground) 75%, transparent)",
       }}
     >
       <span>{expanded || count === undefined ? label : `${label} (${count})`}</span>
       <ChevronDownIcon
-        size={12}
+        size={14}
         style={{ transform: expanded ? "none" : "rotate(-90deg)", transition: "none" }}
       />
     </div>
@@ -227,7 +229,7 @@ export function Sidebar({
       </div>
 
       <div style={{ padding: "6px 8px 0" }}>
-        <SectionHeader label="Agents" expanded={agentsExpanded} paddingLeft={8} />
+        <SectionHeader label="Agents" expanded={agentsExpanded} />
         {agentsExpanded ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <div

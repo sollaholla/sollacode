@@ -77,7 +77,6 @@ function ProviderChip({
 export function ProviderFailover() {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const enter = spring({ frame, fps, config: { damping: 200 }, durationInFrames: 25 });
 
   // Usage climbs to the ceiling, the limit event lands, and the queued turn
   // resumes on the standby provider. No work is lost, which is the whole point.
@@ -107,7 +106,7 @@ export function ProviderFailover() {
   });
 
   return (
-    <AppWindow style={{ opacity: enter }}>
+    <AppWindow>
       <Sidebar
         agentsExpanded
         threadsExpanded

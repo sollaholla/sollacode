@@ -83,12 +83,10 @@ function Timeline() {
 
 export function CustomAgents() {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const enter = spring({ frame, fps, config: { damping: 200 }, durationInFrames: 25 });
   const delegations = frame > 30 && frame < 150 ? 1 : 0;
 
   return (
-    <AppWindow style={{ opacity: enter }}>
+    <AppWindow>
       <Sidebar
         agentsExpanded
         threadsExpanded

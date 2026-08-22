@@ -58,6 +58,41 @@ export function messageDeliveryState(input: {
 }
 
 /**
+ * Expands the receipt set using send order.
+ *
+ * The server coalesces messages sent while a turn is running: it joins the
+ * still-undelivered predecessors' text into the next provider prompt and sends
+ * one turn, tagged with only the newest message's id. The predecessors really
+ * are delivered — their text is in that same prompt — but only the newest one
+ * ever gets a receipt, so they sat on a single check reading "Queued" forever
+ * even after the agent had plainly answered them.
+ *
+ * Ordering settles it without a provider-contract change. A provider consumes
+ * prompts in order, so anything the user sent before a message that has been
+ * delivered was necessarily already in the loop. Everything at or before the
+ * newest receipt is therefore delivered too.
+ *
+ * @param orderedUserMessageIds User message ids in send order, oldest first.
+ */
+export function expandDeliveredMessageIds(
+  orderedUserMessageIds: readonly string[],
+  delivered: ReadonlySet<string>,
+): ReadonlySet<string> {
+  if (delivered.size === 0) return delivered;
+  let newestDeliveredIndex = -1;
+  for (const [index, messageId] of orderedUserMessageIds.entries()) {
+    if (delivered.has(messageId)) newestDeliveredIndex = index;
+  }
+  if (newestDeliveredIndex < 0) return delivered;
+  const expanded = new Set(delivered);
+  for (let index = 0; index < newestDeliveredIndex; index += 1) {
+    const messageId = orderedUserMessageIds[index];
+    if (messageId !== undefined) expanded.add(messageId);
+  }
+  return expanded;
+}
+
+/**
  * Whether a thread's provider reports delivery at all.
  *
  * Providers without a prompt queue never emit the receipt, and a permanently
