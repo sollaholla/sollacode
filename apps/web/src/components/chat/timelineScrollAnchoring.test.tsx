@@ -11,6 +11,8 @@ import {
   shouldMaintainTimelineVisibleContentPosition,
   shouldResumeTimelineLiveFollow,
   shouldSuppressTimelineAutoScroll,
+  shouldClearOlderNavigationIntent,
+  shouldSnapTimelineToEndOnResize,
 } from "./timelineScrollAnchoring";
 
 function buildState({
@@ -320,5 +322,54 @@ describe("shouldSuppressTimelineAutoScroll", () => {
     expect(
       shouldSuppressTimelineAutoScroll({ lastUserScrollAt: 60_000, nowMs: 10_000, cooldownMs }),
     ).toBe(false);
+  });
+});
+
+describe("shouldSnapTimelineToEndOnResize", () => {
+  const base = { followEnd: true, userGestureActive: false, olderNavigationIntent: false };
+
+  it("keeps following the live edge when nobody is touching the list", () => {
+    expect(shouldSnapTimelineToEndOnResize(base)).toBe(true);
+  });
+
+  it("does not snap while a finger is down", () => {
+    // A streaming turn resizes rows constantly; correcting mid-gesture drags
+    // the list out from under the scroll.
+    expect(shouldSnapTimelineToEndOnResize({ ...base, userGestureActive: true })).toBe(false);
+  });
+
+  it("does not snap once the user has asked for older content", () => {
+    // The intent is raised before the scroll position has moved off the end,
+    // so honouring it has to start here rather than a frame later.
+    expect(shouldSnapTimelineToEndOnResize({ ...base, olderNavigationIntent: true })).toBe(false);
+  });
+
+  it("never snaps when following is already off", () => {
+    expect(shouldSnapTimelineToEndOnResize({ ...base, followEnd: false })).toBe(false);
+  });
+});
+
+describe("shouldClearOlderNavigationIntent", () => {
+  it("clears a drag that never left the bottom", () => {
+    expect(shouldClearOlderNavigationIntent({ isAtEnd: true, userGestureActive: false })).toBe(
+      true,
+    );
+  });
+
+  it("keeps the intent while the finger is still down", () => {
+    // Being at the end mid-gesture is where the scroll started, not a decision
+    // to stay there — and a programmatic snap reports the same thing.
+    expect(shouldClearOlderNavigationIntent({ isAtEnd: true, userGestureActive: true })).toBe(
+      false,
+    );
+  });
+
+  it("keeps the intent away from the end, and when the position is unknown", () => {
+    expect(shouldClearOlderNavigationIntent({ isAtEnd: false, userGestureActive: false })).toBe(
+      false,
+    );
+    expect(shouldClearOlderNavigationIntent({ isAtEnd: undefined, userGestureActive: false })).toBe(
+      false,
+    );
   });
 });

@@ -212,3 +212,43 @@ export function getAnchoredTurnMetrics({
     scrollDeltaToRevealEnd,
   };
 }
+
+/**
+ * Whether a content resize may snap the timeline back to the live edge.
+ *
+ * Following the live edge is re-asserted whenever a row changes size, which
+ * during a streaming turn is continuously. That correction competes with the
+ * person scrolling: a drag toward older content raises the intent flag, but
+ * the very next resize scrolls to the end again, and the position lands back
+ * at the bottom before the scroll handler ever observes the list having left
+ * it. On a touch surface that happens on nearly every frame of a momentum
+ * scroll, so the timeline repeatedly hauls itself back down.
+ *
+ * A gesture in progress, or an intent already raised, means the position is
+ * the user's to decide until they return to the end themselves.
+ */
+export function shouldSnapTimelineToEndOnResize(input: {
+  readonly followEnd: boolean;
+  readonly userGestureActive: boolean;
+  readonly olderNavigationIntent: boolean;
+}): boolean {
+  if (!input.followEnd) return false;
+  return !input.userGestureActive && !input.olderNavigationIntent;
+}
+
+/**
+ * Whether sitting at the end should discard a pending older-navigation intent.
+ *
+ * The intent is cleared when the list is at the end so a drag that never
+ * actually left the bottom does not disable following. But a *programmatic*
+ * snap back to the end also reports `isAtEnd`, and clearing on that throws
+ * away the gesture that was still underway — which is the other half of the
+ * timeline fighting the scroll. While a finger is down, the position is not
+ * settled and says nothing about what the user wants.
+ */
+export function shouldClearOlderNavigationIntent(input: {
+  readonly isAtEnd: boolean | undefined;
+  readonly userGestureActive: boolean;
+}): boolean {
+  return input.isAtEnd === true && !input.userGestureActive;
+}
