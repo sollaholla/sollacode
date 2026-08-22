@@ -151,7 +151,11 @@ export const ChatHeader = memo(function ChatHeader({
         data-chat-header-actions
         className={cn(
           "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
-          rightPanelOpen ? "pr-0" : "pr-16",
+          // The panel toggles are absolutely positioned over this row when the
+          // right panel is closed, so the reserve has to track their real
+          // width. The old flat `pr-16` was 8px short on desktop and 16px
+          // short on phones, where the toggles grow to 2rem.
+          rightPanelOpen ? "pr-0" : "pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
         {mainSurface !== undefined && onMainSurfaceChange ? (

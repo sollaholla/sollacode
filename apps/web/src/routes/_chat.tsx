@@ -47,7 +47,8 @@ function ChatRouteGlobalShortcuts() {
   );
   const terminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
-      ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
+      ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef)
+          .mainSurface === "terminal"
       : false,
   );
   // The `previewOpen` shortcut-context flag here uses the store-only value;

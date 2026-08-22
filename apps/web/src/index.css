@@ -138,6 +138,24 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     var(--workspace-controls-left) + var(--workspace-titlebar-control-size) +
       var(--workspace-titlebar-control-gap)
   );
+
+  /* Mirror of the left inset, for the right-panel toggle parked absolutely at
+     the top right whenever the panel is closed. It is a `Toggle size="sm"`:
+     2rem wide below the `sm` breakpoint and 1.75rem at and above it. Header
+     content has to clear it, or the trailing action renders underneath rather
+     than beside it — worst on phones, where the toggle is at its widest. */
+  --workspace-titlebar-content-right: calc(
+    var(--workspace-controls-right) + 2rem + var(--workspace-titlebar-control-gap)
+  );
+}
+
+@media (min-width: 40rem) {
+  [data-slot="sidebar-wrapper"] {
+    --workspace-titlebar-content-right: calc(
+      var(--workspace-controls-right) + var(--workspace-titlebar-control-size) +
+        var(--workspace-titlebar-control-gap)
+    );
+  }
 }
 
 .wco {
