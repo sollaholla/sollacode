@@ -937,12 +937,12 @@ export function RemoteControlViewerDialog(props: {
                   : "Remote viewing session"}
             </DialogDescription>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {isApproved && displays.length > 1 ? (
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span className="sr-only">Monitor</span>
                 <select
-                  className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                  className="h-8 max-w-28 rounded-md border border-input bg-background px-2 text-xs text-foreground sm:max-w-none"
                   value={activeDisplayId ?? ""}
                   aria-label="Monitor to view"
                   onChange={(event) => {
@@ -963,7 +963,13 @@ export function RemoteControlViewerDialog(props: {
               </label>
             ) : null}
             <Button size="sm" variant="outline" onClick={() => void close()}>
-              {isApproved ? "Stop and close" : "Close"}
+              {isApproved ? (
+                <>
+                  Stop<span className="max-sm:hidden"> and close</span>
+                </>
+              ) : (
+                "Close"
+              )}
             </Button>
           </div>
         </DialogHeader>
@@ -1263,28 +1269,30 @@ export function RemoteControlViewerDialog(props: {
                   </span>
                 </button>
               </div>
-              <div className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
+              <div className="absolute bottom-3 left-3 flex max-w-[calc(100%-7.5rem)] items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                 <span
-                  className={`size-1.5 rounded-full ${
+                  className={`size-1.5 shrink-0 rounded-full ${
                     inputCaptured ? "bg-primary" : "bg-emerald-400"
                   }`}
                 />
-                {canControl
-                  ? fpsActive
-                    ? "FPS controller · left thumb moves, right thumb looks"
-                    : fpsArmed
-                      ? // Armed but idle. Without this the FPS button lights up
-                        // and nothing else happens, which reads as a dead
-                        // control rather than as waiting for the remote app.
-                        "FPS ready · starts when the remote game captures the mouse"
-                      : pointerLocked
-                        ? "Live · mouse captured — Esc releases"
-                        : remoteLocked && canPointer && inputCaptured
-                          ? "Live · click to capture your mouse"
-                          : inputCaptured
-                            ? "Live · input focused"
-                            : "Live · click to focus"
-                  : "Live · view only"}
+                <span className="truncate">
+                  {canControl
+                    ? fpsActive
+                      ? "FPS controller · left thumb moves, right thumb looks"
+                      : fpsArmed
+                        ? // Armed but idle. Without this the FPS button lights up
+                          // and nothing else happens, which reads as a dead
+                          // control rather than as waiting for the remote app.
+                          "FPS ready · starts when the remote game captures the mouse"
+                        : pointerLocked
+                          ? "Live · mouse captured — Esc releases"
+                          : remoteLocked && canPointer && inputCaptured
+                            ? "Live · click to capture your mouse"
+                            : inputCaptured
+                              ? "Live · input focused"
+                              : "Live · click to focus"
+                    : "Live · view only"}
+                </span>
               </div>
               {fpsActive ? (
                 <RemoteControlFpsOverlay
