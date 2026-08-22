@@ -383,6 +383,7 @@ import {
   cloneComposerImageForRetry,
   deriveLockedProvider,
   retainClosingSideChatThreadIds,
+  shouldAutoFocusComposerOnThreadOpen,
   resolveDraftThreadCreateModelSelection,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
@@ -1923,6 +1924,13 @@ function ChatViewContent(props: ChatViewProps) {
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const hasCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const isPhonePortraitViewport = useMediaQuery(THIN_PORTRAIT_MOBILE_MEDIA_QUERY);
+  /**
+   * Whether typing here raises a keyboard over the content.
+   *
+   * A coarse pointer is the whole condition: every device with a soft keyboard
+   * has one, in any orientation and at any width.
+   */
+  const usesOnScreenKeyboard = useMediaQuery({ pointer: "coarse" });
   const appVoiceCaptureEnabled = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
@@ -5496,14 +5504,22 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalMainSurfaceActive || isPhonePortraitViewport) return;
+    if (
+      !shouldAutoFocusComposerOnThreadOpen({
+        hasThread: Boolean(activeThread?.id),
+        terminalSurfaceActive: terminalMainSurfaceActive,
+        usesOnScreenKeyboard,
+      })
+    ) {
+      return;
+    }
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isPhonePortraitViewport, terminalMainSurfaceActive]);
+  }, [activeThread?.id, focusComposer, terminalMainSurfaceActive, usesOnScreenKeyboard]);
 
   useEffect(() => {
     if (!activeThread?.id) return;

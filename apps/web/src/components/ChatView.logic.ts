@@ -667,3 +667,29 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
 }
+
+/**
+ * Whether opening a thread should put the caret in the composer.
+ *
+ * With a real keyboard this is pure convenience — the thread opens and you can
+ * type. With an on-screen one it is not: a programmatic focus summons the
+ * keyboard, which covers half the viewport and pushes the conversation you
+ * just opened out of view, before you have said you want to write anything.
+ * Opening a thread is navigation; typing is a separate decision the user makes
+ * by tapping the composer.
+ *
+ * Keyed on the pointer being coarse, not on a phone-sized portrait viewport.
+ * Every device with a soft keyboard has the former; the latter also has to be
+ * narrow and upright, so it silently let tablets and landscape phones through
+ * — which is how this reached someone in the first place.
+ */
+export function shouldAutoFocusComposerOnThreadOpen(input: {
+  hasThread: boolean;
+  terminalSurfaceActive: boolean;
+  usesOnScreenKeyboard: boolean;
+}): boolean {
+  if (!input.hasThread) return false;
+  // The terminal owns the caret while it is the active surface.
+  if (input.terminalSurfaceActive) return false;
+  return !input.usesOnScreenKeyboard;
+}
