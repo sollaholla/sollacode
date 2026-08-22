@@ -68,6 +68,8 @@ export const ClientActivityReportInput = Schema.Struct({
   environmentId: Schema.optionalKey(EnvironmentId),
   clientId: ClientActivityClientId,
   clientKind: ClientKind,
+  /** True only when this client is attached through the environment's local primary target. */
+  environmentHost: Schema.optionalKey(Schema.Boolean),
   visible: Schema.Boolean,
   focused: Schema.Boolean,
   recentlyInteracted: Schema.Boolean,
@@ -86,6 +88,7 @@ export const ClientActivityLease = Schema.Struct({
   rpcClientId: RpcClientId,
   clientId: ClientActivityClientId,
   clientKind: ClientKind,
+  environmentHost: Schema.optionalKey(Schema.Boolean),
   visible: Schema.Boolean,
   focused: Schema.Boolean,
   recentlyInteracted: Schema.Boolean,

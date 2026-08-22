@@ -4,6 +4,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  VmAgentDelegationId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -640,6 +641,85 @@ describe("orchestration projector", () => {
     expect(afterStopped.threads[0]?.latestTurn?.completedAt).toBe(stoppedAt);
   });
 
+  it("clears a persisted session lastError when the session is stopped", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const failedAt = "2026-02-23T08:00:10.000Z";
+    const stoppedAt = "2026-02-24T06:00:00.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-error",
+          occurredAt: createdAt,
+          commandId: "cmd-error-create",
+          payload: {
+            threadId: "thread-error",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const afterError = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-error",
+          occurredAt: failedAt,
+          commandId: "cmd-error-set",
+          payload: {
+            threadId: "thread-error",
+            session: {
+              threadId: "thread-error",
+              status: "error",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: "Accessibility tree exposes no directly focusable chat composer",
+              updatedAt: failedAt,
+            },
+          },
+        }),
+      ),
+    );
+    expect(afterError.threads[0]?.session?.lastError).toContain("Accessibility tree");
+
+    const afterStop = await Effect.runPromise(
+      projectEvent(
+        afterError,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-stop-requested",
+          aggregateKind: "thread",
+          aggregateId: "thread-error",
+          occurredAt: stoppedAt,
+          commandId: "cmd-error-stop",
+          payload: {
+            threadId: "thread-error",
+            createdAt: stoppedAt,
+          },
+        }),
+      ),
+    );
+    expect(afterStop.threads[0]?.session?.status).toBe("stopped");
+    expect(afterStop.threads[0]?.session?.lastError).toBeNull();
+  });
+
   it("does not regress the latest turn when an older checkpoint arrives late", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const newerTurnStartedAt = "2026-02-23T08:02:00.000Z";
@@ -826,6 +906,7 @@ describe("orchestration projector", () => {
             messageId: "assistant:msg-1",
             role: "assistant",
             text: "hello",
+            delegationId: VmAgentDelegationId.make("delegation-projector"),
             turnId: "turn-1",
             streaming: true,
             createdAt: deltaAt,
@@ -862,6 +943,7 @@ describe("orchestration projector", () => {
     const message = afterComplete.threads[0]?.messages[0];
     expect(message?.id).toBe("assistant:msg-1");
     expect(message?.text).toBe("hello");
+    expect(message?.delegationId).toBe(VmAgentDelegationId.make("delegation-projector"));
     expect(message?.streaming).toBe(false);
     expect(message?.updatedAt).toBe(completeAt);
   });

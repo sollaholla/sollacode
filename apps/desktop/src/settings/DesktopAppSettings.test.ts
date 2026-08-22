@@ -29,6 +29,7 @@ const DesktopSettingsPatch = Schema.Struct({
   wslMode: Schema.optionalKey(Schema.Literals(["local", "wsl"])),
   wslDistro: Schema.optionalKey(Schema.NullOr(Schema.String)),
   wslOnly: Schema.optionalKey(Schema.Boolean),
+  permissionSetupVersion: Schema.optionalKey(Schema.Number),
 });
 
 const decodeDesktopSettingsPatch = Schema.decodeEffect(Schema.fromJsonString(DesktopSettingsPatch));
@@ -114,6 +115,8 @@ describe("DesktopSettings", () => {
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
+          orchestratorBubblePosition: null,
+          permissionSetupVersion: 0,
         } satisfies DesktopAppSettings.DesktopSettings);
 
         const exposure = yield* settings.setServerExposureMode("local-only");
@@ -209,6 +212,8 @@ describe("DesktopSettings", () => {
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
+          orchestratorBubblePosition: null,
+          permissionSetupVersion: 0,
         } satisfies DesktopAppSettings.DesktopSettings);
       }),
     ),
@@ -271,6 +276,8 @@ describe("DesktopSettings", () => {
           wslBackendEnabled: false,
           wslOnly: false,
           wslDistro: null,
+          orchestratorBubblePosition: null,
+          permissionSetupVersion: 0,
         } satisfies DesktopAppSettings.DesktopSettings);
       }),
     ),
@@ -347,6 +354,28 @@ describe("DesktopSettings", () => {
         const loaded = yield* settings.load;
         assert.equal(loaded.wslBackendEnabled, true);
         assert.equal(loaded.wslDistro, "Ubuntu-22.04");
+      }),
+    ),
+  );
+
+  it.effect("persists permission onboarding without rewriting a completed version", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+
+        const completed = yield* settings.setPermissionSetupVersion(1);
+        assert.isTrue(completed.changed);
+        assert.equal(completed.settings.permissionSetupVersion, 1);
+
+        const persisted = yield* decodeDesktopSettingsPatch(
+          yield* fileSystem.readFileString(environment.desktopSettingsPath),
+        );
+        assert.equal(persisted.permissionSetupVersion, 1);
+
+        const noop = yield* settings.setPermissionSetupVersion(1);
+        assert.isFalse(noop.changed);
       }),
     ),
   );

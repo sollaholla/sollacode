@@ -11,6 +11,7 @@ import {
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
+import { SETTINGS_UPDATE_MESSAGE_PREFIX } from "@t3tools/shared/settingsPrompt";
 import type { ThreadWorkKind } from "../persistence/Services/ThreadWorkObligations.ts";
 
 type AssistantMessageEvent = Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
@@ -81,7 +82,7 @@ interface TaskActivityPayload {
   readonly taskType?: unknown;
 }
 
-function taskActivityFields(activity: OrchestrationThreadActivity): {
+function taskActivityFields(activity: Pick<OrchestrationThreadActivity, "payload">): {
   readonly taskId: string;
   readonly taskType: string | null;
 } | null {
@@ -192,6 +193,140 @@ export function agentContinuationShouldAwaitBackgroundTask(input: {
     if (newest === null || at > newest.at) newest = { task, at };
   }
   return newest?.task ?? null;
+}
+
+/**
+ * A turn that carries one of these did something the thread can be resumed
+ * *from*. Everything else a turn emits — usage counters, context-window
+ * updates, checkpoints, the control activities below — is bookkeeping.
+ */
+const WORK_ACTIVITY_KIND_PREFIXES = ["tool.", "task."] as const;
+
+const CONTROL_ACTIVITY_KINDS = new Set(["provider.handoff.completed", "thread.settings.applied"]);
+
+/**
+ * Was applying a control change the *whole* turn?
+ *
+ * Switching provider or model while a thread is idle produces a turn whose
+ * only content is the agent acknowledging the change. Continuing from that
+ * would have the agent invent work off a bookkeeping reply, so the loop skips
+ * it. The control activity alone cannot decide that, though:
+ *
+ *   - `provider.handoff.completed` is stamped with the id of the turn the
+ *     handoff *starts*, and that turn normally carries the user's own prompt
+ *     (the handoff's `immediateRequirement`);
+ *   - a "Settings updated: …" message explicitly asks the agent to *continue
+ *     the current task*, and the turns after it inherit that user message
+ *     until the user types something new.
+ *
+ * Keying on the control marker alone therefore retired the agent loop after
+ * every provider switch and every settings change. Observed 2026-08-15 on
+ * thread dba3af80: a nine-minute turn with 146 tool activities had its
+ * continuation cancelled 117ms after it settled, and the thread sat idle.
+ * Across that ledger the two populations separate cleanly — 94 turns that ran
+ * work carried 8 or more tool/task activities, and all 22 genuine
+ * control-only turns carried none — so the presence of work is the signal.
+ */
+export function isControlOnlyAgentTurn(input: {
+  readonly activities: ReadonlyArray<Pick<OrchestrationThreadActivity, "kind" | "turnId">>;
+  readonly sourceTurnId: string;
+  readonly sourceUserMessageText?: string | undefined;
+}): boolean {
+  let carriesControlMarker =
+    input.sourceUserMessageText?.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX) === true;
+  for (const activity of input.activities) {
+    if (activity.turnId !== input.sourceTurnId) continue;
+    // Any real work rules the turn out immediately, whatever else it carries.
+    if (WORK_ACTIVITY_KIND_PREFIXES.some((prefix) => activity.kind.startsWith(prefix))) {
+      return false;
+    }
+    if (CONTROL_ACTIVITY_KINDS.has(activity.kind)) carriesControlMarker = true;
+  }
+  return carriesControlMarker;
+}
+
+/**
+ * How stale interrupted work may be and still be picked up at boot.
+ *
+ * A restart should recover the session the user was in the middle of, not
+ * resurrect every thread that ever ended holding a task. Six hours covers an
+ * overnight-adjacent working session and a long test run, while a thread left
+ * this way for days stays put until the user says something.
+ */
+export const KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
+
+/**
+ * Did this thread's last turn end waiting on a background task that can no
+ * longer report back?
+ *
+ * A turn that ends with a task still running is the agent deliberately signing
+ * off *to wait* — the harness re-invokes it when the task exits, which is why
+ * the continuation gate defers instead of dispatching. That contract has one
+ * owner: the process running the task. Kill it and the wake can never fire, so
+ * the thread sits at a reply like "I'll report back when they land" forever,
+ * through every subsequent restart. Reported 2026-08-12 on a thread waiting for
+ * Unity test runs; the boot scan never saw it, because that scan only looks at
+ * agent-mode threads whose turn ended `incomplete`, and this one is an ordinary
+ * completed turn.
+ *
+ * Two shapes count, matching the two ways a process goes away:
+ *   - a task with no terminal record at all (the process was killed outright);
+ *   - a task whose terminal record is non-`completed` and landed at or after
+ *     the turn settled (a graceful shutdown, where the provider reports its
+ *     tasks stopped on the way out).
+ * A task that genuinely finished, or that was already terminal before the turn
+ * ended, is not something the thread is waiting on.
+ */
+export function threadLostBackgroundTaskAtRestart(input: {
+  // Structural on purpose: the boot scan reads projection rows, which carry the
+  // same three fields under a different row type than the domain activity.
+  readonly activities: ReadonlyArray<
+    Pick<OrchestrationThreadActivity, "kind" | "payload"> & {
+      readonly createdAt: string;
+    }
+  >;
+  readonly turnCompletedAt: string;
+  readonly bootedAtEpochMs: number;
+  readonly maxAgeMs?: number;
+}): boolean {
+  const completedAtMs = Date.parse(input.turnCompletedAt);
+  if (!Number.isFinite(completedAtMs)) return false;
+  const maxAgeMs = input.maxAgeMs ?? KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS;
+  if (input.bootedAtEpochMs - completedAtMs > maxAgeMs) return false;
+
+  // Terminal record per task, in activity order; the last one wins so a
+  // provider that reports twice (a stop at shutdown, then a late sweep) is
+  // folded rather than double-counted.
+  const startedAt = new Map<string, number>();
+  const terminal = new Map<string, { readonly at: number; readonly status: string | null }>();
+  for (const activity of input.activities) {
+    const fields = taskActivityFields(activity);
+    if (fields === null || fields.taskType === PLAN_TASK_TYPE) continue;
+    const at = Date.parse(activity.createdAt);
+    if (!Number.isFinite(at)) continue;
+    if (activity.kind === "task.started") {
+      if (!startedAt.has(fields.taskId)) startedAt.set(fields.taskId, at);
+      terminal.delete(fields.taskId);
+      continue;
+    }
+    if (activity.kind === "task.completed") {
+      const payload = activity.payload as { readonly status?: unknown } | undefined;
+      terminal.set(fields.taskId, {
+        at,
+        status: typeof payload?.status === "string" ? payload.status : null,
+      });
+    }
+  }
+
+  for (const [taskId, taskStartedAt] of startedAt) {
+    // Only tasks the turn was actually waiting on: one announced after the
+    // turn settled belongs to whatever came next, not to this reply.
+    if (taskStartedAt > completedAtMs) continue;
+    const end = terminal.get(taskId);
+    if (end === undefined) return true;
+    if (end.status !== "completed" && end.at >= completedAtMs) return true;
+  }
+  return false;
 }
 
 /** Stable IDs make repeated finalization events and reconnect races idempotent. */

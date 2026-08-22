@@ -109,6 +109,30 @@ describe("terminal session reducers", () => {
     expect(selectRunningSubprocessTerminalIds([idleSession, activeSession])).toEqual(["term-2"]);
   });
 
+  it("does not treat an idle agent CLI summary as working", () => {
+    const summary = applyTerminalMetadataStreamEvent([], {
+      type: "snapshot",
+      terminals: [
+        {
+          threadId: BASE_SNAPSHOT.threadId,
+          terminalId: BASE_SNAPSHOT.terminalId,
+          cwd: BASE_SNAPSHOT.cwd,
+          worktreePath: BASE_SNAPSHOT.worktreePath,
+          status: "running",
+          pid: BASE_SNAPSHOT.pid,
+          exitCode: BASE_SNAPSHOT.exitCode,
+          exitSignal: BASE_SNAPSHOT.exitSignal,
+          updatedAt: BASE_SNAPSHOT.updatedAt,
+          hasRunningSubprocess: true,
+          working: false,
+          label: "claude",
+        },
+      ],
+    })[0]!;
+
+    expect(combineTerminalSessionState(summary, EMPTY_TERMINAL_BUFFER_STATE).working).toBe(false);
+  });
+
   it("reduces attach snapshots and output without an imperative session manager", () => {
     const snapshot = applyTerminalAttachStreamEvent(EMPTY_TERMINAL_BUFFER_STATE, {
       type: "snapshot",

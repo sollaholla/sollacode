@@ -408,16 +408,22 @@ export function ProviderInstanceCard({
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
     liveProvider?.auth.status === "authenticated" && Boolean(authEmail?.trim());
-  const authenticatedDetail = hasAuthenticatedEmail
-    ? (liveProvider?.auth.label ?? liveProvider?.auth.type ?? null)
-    : null;
-  const summary = rawSummary;
+  const rawAuthLabel =
+    liveProvider?.auth.status === "authenticated" ? liveProvider.auth.label?.trim() || null : null;
+  const sensitiveAuthLabel =
+    rawAuthLabel && rawAuthLabel !== authEmail?.trim() ? rawAuthLabel : null;
+  const authenticatedDetail = liveProvider?.auth.type ?? null;
+  const summary = sensitiveAuthLabel ? { ...rawSummary, headline: "Authenticated" } : rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
+  const runtimeCapabilities = liveProvider?.runtimeCapabilities;
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
-    instance.displayName?.trim() || driverOption?.label || String(instance.driver);
+    instance.displayName?.trim() ||
+    liveProvider?.displayName?.trim() ||
+    driverOption?.label ||
+    String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
   const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
     onCopy: ({ providerName }) => {
@@ -586,12 +592,28 @@ export function ProviderInstanceCard({
         <>
           <span>Authenticated as</span>
           <ProviderAuthEmail email={authEmail} />
+          {sensitiveAuthLabel ? (
+            <RedactedSensitiveText
+              value={sensitiveAuthLabel}
+              ariaLabel="Toggle account label visibility"
+              revealTooltip="Click to reveal account label"
+              hideTooltip="Click to hide account label"
+            />
+          ) : null}
           {authenticatedDetail ? <span>· {authenticatedDetail}</span> : null}
         </>
       ) : (
         <>
           <span>{summary.headline}</span>
           <ProviderAuthEmail email={authEmail} separator prefix="Email" />
+          {sensitiveAuthLabel ? (
+            <RedactedSensitiveText
+              value={sensitiveAuthLabel}
+              ariaLabel="Toggle account label visibility"
+              revealTooltip="Click to reveal account label"
+              hideTooltip="Click to hide account label"
+            />
+          ) : null}
         </>
       )}
       {summary.detail ? <span>- {summary.detail}</span> : null}
@@ -780,6 +802,32 @@ export function ProviderInstanceCard({
               />
             ) : null}
 
+            {runtimeCapabilities ? (
+              <div aria-label="Provider runtime capabilities">
+                <div className="text-xs font-medium text-foreground">Capabilities</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {[
+                    ["Turn stop", runtimeCapabilities.taskStop],
+                    ["Text generation", runtimeCapabilities.textGeneration],
+                    ["Rollback", runtimeCapabilities.threadRollback],
+                    ["Fork", runtimeCapabilities.threadFork],
+                  ].map(([label, supported]) => (
+                    <Badge
+                      key={String(label)}
+                      variant={supported ? "secondary" : "outline"}
+                      size="sm"
+                    >
+                      {label}: {supported ? "yes" : "no"}
+                    </Badge>
+                  ))}
+                  <Badge variant="outline" size="sm">
+                    Model switch:{" "}
+                    {runtimeCapabilities.modelSwitchRequiresNewThread ? "new thread" : "in session"}
+                  </Badge>
+                </div>
+              </div>
+            ) : null}
+
             {driverOption !== undefined ? (
               <ProviderModelsSection
                 instanceId={instanceId}
@@ -793,6 +841,7 @@ export function ProviderInstanceCard({
                 onHiddenModelsChange={onHiddenModelsChange}
                 onFavoriteModelsChange={onFavoriteModelsChange}
                 onModelOrderChange={onModelOrderChange}
+                allowCustomModels={String(instance.driver) !== "mcpBridge"}
               />
             ) : (
               <div>

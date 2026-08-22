@@ -99,8 +99,8 @@ export function shouldShowDeliveryIndicator(input: {
   if (input.isOptimistic) return input.isNewestUserMessage;
   // An unconfirmed one is only honest when this provider is known to emit
   // receipts, or this thread has already demonstrated that it does. The
-  // provider capability closes the first-message gap: a queued Codex or Claude
-  // send remains explained even before the thread has produced its first
+  // provider capability closes the first-message gap: a queued Codex, Claude,
+  // or Grok send remains explained even before the thread has produced its first
   // receipt.
   return (
     input.isNewestUserMessage &&

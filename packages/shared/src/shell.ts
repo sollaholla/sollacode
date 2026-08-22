@@ -567,7 +567,7 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
   });
 });
 
-export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(function* (
+export const resolveSpawnCommand = Effect.fnUntraced(function* (
   command: string,
   args: ReadonlyArray<string>,
   options: CommandAvailabilityOptions = {},

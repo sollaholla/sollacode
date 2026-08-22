@@ -519,13 +519,29 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     method: string,
     payload: unknown,
   ) {
-    yield* offerOutgoing({
-      _tag: "Request",
-      id: "",
-      tag: method,
-      payload,
-      headers: [],
+    // JSON-RPC 2.0 notifications must omit `id`. Encoding them as Effect RPC
+    // Requests with an empty id produced `{"id":"","headers":[]}`, which Grok
+    // (and other strict ACP agents) ignore — Stop never reached the CLI.
+    const decoded = {
+      jsonrpc: "2.0" as const,
+      method,
+      ...(payload === undefined ? {} : { params: payload }),
+    };
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "decoded",
+      payload: { _tag: "Notification", tag: method, payload },
     });
+    const encoded = yield* Effect.try({
+      try: () => `${JSON.stringify(decoded)}\n`,
+      catch: (cause) => AcpError.AcpProtocolParseError.fromEncodingError(method, undefined, cause),
+    });
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "raw",
+      payload: encoded,
+    });
+    yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {

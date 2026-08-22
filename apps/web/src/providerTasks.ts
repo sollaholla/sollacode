@@ -236,11 +236,11 @@ export function isProviderTaskActive(task: ProviderTask): boolean {
 /**
  * Provider drivers whose runtime can kill one task by id.
  *
- * Only the Claude runtime exposes a per-task stop control request; the others
- * can end a turn but not a single task inside it. The panel's stop control is
- * gated on this so it never claims to reach work it cannot.
+ * Claude and Grok expose a per-task kill; the others can end a turn but not a
+ * single task inside it. The panel's stop control is gated on this so it never
+ * claims to reach work it cannot.
  */
-const TASK_STOP_CAPABLE_DRIVER_KINDS: ReadonlySet<string> = new Set(["claudeAgent"]);
+const TASK_STOP_CAPABLE_DRIVER_KINDS: ReadonlySet<string> = new Set(["claudeAgent", "grok"]);
 
 /**
  * Whether the panel may offer to actually stop this row.
@@ -455,4 +455,18 @@ export function providerTaskStatusLabel(task: ProviderTask, nowMs: number = Date
     case "stopped":
       return "Stopped";
   }
+}
+
+/**
+ * Prompt shown when the user sends while background work is still running.
+ *
+ * Sending interrupts the turn that owns those tasks, so they die with it. That
+ * is usually what the user wants — they are steering — but it is destructive
+ * and invisible: the tasks simply vanish from the panel. Naming the count and
+ * the consequence makes the trade explicit before anything is cancelled.
+ */
+export function describeSendOverRunningTasks(count: number): string {
+  const subject = count === 1 ? "1 background task is" : `${count} background tasks are`;
+  const object = count === 1 ? "it" : "them";
+  return `${subject} still running. Sending now will cancel ${object}. Send anyway?`;
 }

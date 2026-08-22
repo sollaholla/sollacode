@@ -300,6 +300,119 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("separates conversations when the user comes back after a long silence", () => {
+    const userEntry = (id: string, createdAt: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "user" as const,
+        text: "Hello",
+        turnId: null as never,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        userEntry("user-1", "2026-01-01T09:00:00Z"),
+        userEntry("user-2", "2026-01-01T09:05:00Z"),
+        userEntry("user-3", "2026-01-01T14:00:00Z"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      showConversationBoundaries: true,
+    });
+
+    const boundaries = rows.filter((row) => row.kind === "conversation-boundary");
+    expect(boundaries).toHaveLength(1);
+    // Above the message that opens the new sitting, never above the first line.
+    expect(rows.findIndex((row) => row.kind === "conversation-boundary")).toBe(2);
+    expect(boundaries[0]?.createdAt).toBe("2026-01-01T14:00:00Z");
+  });
+
+  it("does not split a turn where the agent simply worked for a long time", () => {
+    // Work entries are not a new conversation however long the gap: only a
+    // person coming back starts one, and agents routinely run for hours.
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-1-entry",
+          kind: "message",
+          createdAt: "2026-01-01T09:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user",
+            text: "Refactor everything",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T09:00:00Z",
+            updatedAt: "2026-01-01T09:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "late-work",
+          kind: "work",
+          createdAt: "2026-01-01T12:00:00Z",
+          entry: {
+            id: "late-work",
+            createdAt: "2026-01-01T12:00:00Z",
+            turnId: "turn-1" as never,
+            label: "Edited src/index.ts",
+            tone: "info" as const,
+            sourceActivityKind: "tool.completed",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      showConversationBoundaries: true,
+    });
+
+    expect(rows.some((row) => row.kind === "conversation-boundary")).toBe(false);
+  });
+
+  it("draws no conversation separators in an ordinary thread", () => {
+    // Only the orchestrator has one permanent thread holding many separate
+    // conversations. Everywhere else the thread *is* the conversation, and a
+    // long pause is someone coming back to the same work.
+    const userEntry = (id: string, createdAt: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: id as never,
+        role: "user" as const,
+        text: "Hello",
+        turnId: null as never,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    });
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        userEntry("user-1", "2026-01-01T09:00:00Z"),
+        userEntry("user-2", "2026-01-01T14:00:00Z"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      // Deliberately omitting showConversationBoundaries: off is the default.
+    });
+
+    expect(rows.some((row) => row.kind === "conversation-boundary")).toBe(false);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

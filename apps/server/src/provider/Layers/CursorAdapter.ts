@@ -55,6 +55,7 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
+  makeAcpReasoningItemEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
   makeAcpToolCallEvent,
@@ -138,6 +139,7 @@ interface CursorSessionContext {
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
   stopped: boolean;
+  reasoningAnnounced: boolean;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -785,6 +787,7 @@ export function makeCursorAdapter(
             activeTurnId: undefined,
             promptsInFlight: 0,
             stopped: false,
+            reasoningAnnounced: false,
           };
 
           const nf = yield* Stream.runDrain(
@@ -853,6 +856,8 @@ export function makeCursorAdapter(
                       }),
                     );
                     return;
+                  case "UsageUpdated":
+                    return;
                   case "ContentDelta":
                     yield* logNative(
                       ctx.threadId,
@@ -868,9 +873,22 @@ export function makeCursorAdapter(
                         turnId: ctx.activeTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         text: event.text,
+                        streamKind: event.streamKind,
                         rawPayload: event.rawPayload,
                       }),
                     );
+                    if (event.streamKind === "reasoning_text" && !ctx.reasoningAnnounced) {
+                      ctx.reasoningAnnounced = true;
+                      yield* offerRuntimeEvent(
+                        makeAcpReasoningItemEvent({
+                          stamp: yield* makeEventStamp(),
+                          provider: PROVIDER,
+                          threadId: ctx.threadId,
+                          turnId: ctx.activeTurnId,
+                          rawPayload: event.rawPayload,
+                        }),
+                      );
+                    }
                     return;
                 }
               }),
@@ -950,6 +968,7 @@ export function makeCursorAdapter(
           ctx.activeTurnId = turnId;
           if (steeringTurnId === undefined) {
             ctx.lastPlanFingerprint = undefined;
+            ctx.reasoningAnnounced = false;
           }
           ctx.session = {
             ...ctx.session,

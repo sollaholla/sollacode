@@ -15,6 +15,7 @@ export interface TerminalMenuSession {
   readonly cwd: string | null;
   readonly status: "starting" | "running" | "exited" | "error" | "closed";
   readonly hasRunningSubprocess: boolean;
+  readonly working: boolean;
   /** Server-authoritative title with the same fallback rules as web. */
   readonly displayLabel: string;
   readonly updatedAt: string | null;
@@ -45,9 +46,10 @@ export function basename(input: string | null): string | null {
 export function getTerminalStatusLabel(input: {
   readonly status: TerminalMenuSession["status"];
   readonly hasRunningSubprocess?: boolean;
+  readonly working?: boolean;
 }): string {
   if (input.status === "running") {
-    return input.hasRunningSubprocess ? "Task running" : "Ready";
+    return input.working ? "Working" : "Ready";
   }
   if (input.status === "starting") {
     return "Starting";
@@ -102,6 +104,7 @@ export function buildTerminalMenuSessions(input: {
       cwd: session.state.summary?.cwd ?? input.workspaceRoot,
       status: session.state.status,
       hasRunningSubprocess: session.state.hasRunningSubprocess,
+      working: session.state.working,
       displayLabel: resolveTerminalSessionLabel(session.target.terminalId, session.state.summary),
       updatedAt: session.state.updatedAt,
     });

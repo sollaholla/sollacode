@@ -6,6 +6,9 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_UNIFIED_SETTINGS,
+  McpBridgeSettings,
+  OrchestratorSettings,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
@@ -15,6 +18,8 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeMcpBridgeSettings = Schema.decodeUnknownSync(McpBridgeSettings);
+const decodeOrchestratorSettings = Schema.decodeUnknownSync(OrchestratorSettings);
 
 describe("ClientSettings voice transcription", () => {
   it("defaults auto-send off and accepts an explicit opt-in", () => {
@@ -73,6 +78,28 @@ describe("ClientSettings glass opacity", () => {
   it.each([40, 75, 100])("accepts a glass opacity within the supported range: %s", (value) => {
     expect(decodeClientSettings({ glassOpacity: value }).glassOpacity).toBe(value);
     expect(decodeClientSettingsPatch({ glassOpacity: value }).glassOpacity).toBe(value);
+  });
+});
+
+describe("ClientSettings sound cues", () => {
+  it("defaults cues on at full designed volume, with the dictation mute on", () => {
+    const settings = decodeClientSettings({});
+    expect(settings.soundCues).toBe(true);
+    expect(settings.soundCueVolume).toBe(100);
+    expect(settings.pushToTalkMutesSystemAudio).toBe(true);
+  });
+
+  it("accepts opting each one out", () => {
+    expect(decodeClientSettingsPatch({ soundCues: false }).soundCues).toBe(false);
+    expect(decodeClientSettingsPatch({ soundCueVolume: 0 }).soundCueVolume).toBe(0);
+    expect(
+      decodeClientSettingsPatch({ pushToTalkMutesSystemAudio: false }).pushToTalkMutesSystemAudio,
+    ).toBe(false);
+  });
+
+  it.each([-5, 101, 62.5])("rejects an invalid cue volume: %s", (value) => {
+    expect(() => decodeClientSettings({ soundCueVolume: value })).toThrow();
+    expect(() => decodeClientSettingsPatch({ soundCueVolume: value })).toThrow();
   });
 });
 
@@ -191,6 +218,19 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+
+  it("decodes the generic MCP bridge command fields without interpreting argv", () => {
+    const decoded = decodeMcpBridgeSettings({
+      command: "  /opt/example/provider-bridge  ",
+      arguments: "--profile\nwork value\n*literal*",
+      workingDirectory: "  /srv/workspace  ",
+    });
+    expect(decoded).toMatchObject({
+      command: "/opt/example/provider-bridge",
+      arguments: "--profile\nwork value\n*literal*",
+      workingDirectory: "/srv/workspace",
+    });
   });
 });
 
@@ -344,5 +384,67 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
+  });
+});
+
+describe("orchestrator voice provider", () => {
+  it("defaults to OpenAI so a settings file written before the field existed still works", () => {
+    const decoded = decodeOrchestratorSettings({});
+    expect(decoded.provider).toBe("openai");
+    expect(decoded.model).toBe("gpt-realtime");
+    expect(decoded.apiKeyConfigured).toBe(false);
+    expect(decoded.openAiApiKeyConfigured).toBe(false);
+    expect(decoded.xaiApiKeyConfigured).toBe(false);
+  });
+
+  it("keeps a configured Grok backend", () => {
+    const decoded = decodeOrchestratorSettings({
+      provider: "xai",
+      model: "grok-voice-latest",
+      voice: "eve",
+    });
+    expect(decoded.provider).toBe("xai");
+    expect(decoded.model).toBe("grok-voice-latest");
+    expect(decoded.voice).toBe("eve");
+  });
+
+  it("decodes independent write-only credentials in a settings patch", () => {
+    const decoded = decodeServerSettingsPatch({
+      orchestrator: {
+        openAiApiKey: "sk-openai",
+        xaiApiKey: "xai-secret",
+      },
+    });
+    expect(decoded.orchestrator).toEqual({
+      openAiApiKey: "sk-openai",
+      xaiApiKey: "xai-secret",
+    });
+  });
+});
+
+describe("orchestrator silence timeout", () => {
+  it("closes the microphone after 30 seconds by default", () => {
+    // A realtime session bills for streamed silence, so leaving this off by
+    // default would quietly charge for an idle open microphone.
+    expect(DEFAULT_UNIFIED_SETTINGS.orchestrator.autoDisableOnSilence).toBe(true);
+    expect(DEFAULT_UNIFIED_SETTINGS.orchestrator.silenceTimeoutSeconds).toBe(30);
+  });
+
+  it("decodes a settings file written before the option existed", () => {
+    const decoded = decodeOrchestratorSettings({});
+    expect(decoded.autoDisableOnSilence).toBe(true);
+    expect(decoded.silenceTimeoutSeconds).toBe(30);
+  });
+
+  it("keeps a configured timeout", () => {
+    const decoded = decodeOrchestratorSettings({ silenceTimeoutSeconds: 120 });
+    expect(decoded.silenceTimeoutSeconds).toBe(120);
+  });
+
+  it("rejects a timeout outside the supported range", () => {
+    // Zero would mean "never", which the switch already expresses; a huge value
+    // defeats the point of the feature.
+    expect(() => decodeOrchestratorSettings({ silenceTimeoutSeconds: 0 })).toThrow();
+    expect(() => decodeOrchestratorSettings({ silenceTimeoutSeconds: 10_000 })).toThrow();
   });
 });

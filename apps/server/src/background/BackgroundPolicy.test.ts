@@ -78,6 +78,61 @@ function makeLayer(
 }
 
 describe("BackgroundPolicy", () => {
+  it.effect("gives a focused desktop host terminal-layout authority until it yields focus", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const desktopSession = AuthSessionId.make("desktop-session");
+      const mobileSession = AuthSessionId.make("mobile-session");
+      const desktopRpcClient = RpcClientId.make(1);
+      const mobileRpcClient = RpcClientId.make(2);
+
+      yield* policy.reportClientActivity(
+        desktopSession,
+        desktopRpcClient,
+        makeReport({
+          clientId: "z-host",
+          clientKind: "desktop-renderer",
+          environmentHost: true,
+        }),
+      );
+      yield* policy.reportClientActivity(
+        mobileSession,
+        mobileRpcClient,
+        makeReport({ clientId: "a-remote", clientKind: "desktop-renderer" }),
+      );
+
+      assert.equal(
+        yield* BackgroundPolicy.mayPublishTerminalLayout(policy, desktopSession, desktopRpcClient),
+        true,
+      );
+      assert.equal(
+        yield* BackgroundPolicy.mayPublishTerminalLayout(policy, mobileSession, mobileRpcClient),
+        false,
+      );
+
+      yield* policy.reportClientActivity(
+        desktopSession,
+        desktopRpcClient,
+        makeReport({
+          clientId: "z-host",
+          clientKind: "desktop-renderer",
+          environmentHost: true,
+          visible: true,
+          focused: false,
+        }),
+      );
+
+      assert.equal(
+        yield* BackgroundPolicy.mayPublishTerminalLayout(policy, desktopSession, desktopRpcClient),
+        false,
+      );
+      assert.equal(
+        yield* BackgroundPolicy.mayPublishTerminalLayout(policy, mobileSession, mobileRpcClient),
+        true,
+      );
+    }).pipe(Effect.provide(makeLayer(nominalHostPower))),
+  );
+
   it.effect("records foreground scoped client demand", () =>
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;

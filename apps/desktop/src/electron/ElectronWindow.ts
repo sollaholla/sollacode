@@ -84,6 +84,14 @@ export class ElectronWindow extends Context.Service<
     readonly main: Effect.Effect<Option.Option<Electron.BrowserWindow>>;
     readonly currentMainOrFirst: Effect.Effect<Option.Option<Electron.BrowserWindow>>;
     readonly focusedMainOrFirst: Effect.Effect<Option.Option<Electron.BrowserWindow>>;
+    /**
+     * Exclude a window from every "main or first" fallback and from appearance
+     * syncing. For auxiliary surfaces (the floating voice orb) that must never
+     * stand in for the main window — with the main window closed, an untagged
+     * auxiliary window would swallow dock activations and menu actions, and
+     * appearance sync would paint its transparent background opaque.
+     */
+    readonly markAuxiliary: (window: Electron.BrowserWindow) => Effect.Effect<void>;
     readonly setMain: (window: Electron.BrowserWindow) => Effect.Effect<void>;
     readonly clearMain: (window: Option.Option<Electron.BrowserWindow>) => Effect.Effect<void>;
     readonly reveal: (window: Electron.BrowserWindow) => Effect.Effect<void>;
@@ -98,6 +106,9 @@ export class ElectronWindow extends Context.Service<
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcessPlatform;
   const mainWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  // Window ids never repeat within a session, so tagged ids are simply left
+  // behind after their window closes.
+  const auxiliaryWindowIds = new Set<number>();
 
   const listWindows = Effect.try({
     try: () => Electron.BrowserWindow.getAllWindows(),
@@ -138,11 +149,16 @@ export const make = Effect.gen(function* () {
       return main;
     }
 
-    const first = Option.fromNullishOr((yield* listWindows)[0] ?? null);
-    if (Option.isNone(first) || (yield* isWindowDestroyed(first.value))) {
-      return Option.none<Electron.BrowserWindow>();
+    const candidates = yield* listWindows;
+    for (const candidate of candidates) {
+      if (auxiliaryWindowIds.has(candidate.id)) {
+        continue;
+      }
+      if (!(yield* isWindowDestroyed(candidate))) {
+        return Option.some(candidate);
+      }
     }
-    return first;
+    return Option.none<Electron.BrowserWindow>();
   });
 
   const focusedMainOrFirst = Effect.gen(function* () {
@@ -157,7 +173,11 @@ export const make = Effect.gen(function* () {
           cause,
         }),
     }).pipe(Effect.orDie);
-    if (Option.isSome(focused) && !(yield* isWindowDestroyed(focused.value))) {
+    if (
+      Option.isSome(focused) &&
+      !auxiliaryWindowIds.has(focused.value.id) &&
+      !(yield* isWindowDestroyed(focused.value))
+    ) {
       return focused;
     }
     return yield* currentMainOrFirst;
@@ -197,6 +217,10 @@ export const make = Effect.gen(function* () {
     currentMainOrFirst,
     focusedMainOrFirst,
     setMain: (window) => Ref.set(mainWindowRef, Option.some(window)),
+    markAuxiliary: (window) =>
+      Effect.sync(() => {
+        auxiliaryWindowIds.add(window.id);
+      }),
     clearMain: (window) =>
       Ref.update(mainWindowRef, (current) => {
         if (Option.isNone(current)) {
@@ -276,7 +300,7 @@ export const make = Effect.gen(function* () {
     ) {
       const windows = yield* listWindows;
       for (const window of windows) {
-        if (yield* isWindowDestroyed(window)) {
+        if (auxiliaryWindowIds.has(window.id) || (yield* isWindowDestroyed(window))) {
           continue;
         }
         yield* sync(window);

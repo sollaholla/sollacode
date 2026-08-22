@@ -33,6 +33,8 @@ export interface ServerDerivedPaths {
   readonly providerStatusCacheDir: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
+  /** Immutable, revisioned files published by thread agents for remote viewing. */
+  readonly artifactsDir: string;
   readonly logsDir: string;
   readonly serverLogPath: string;
   readonly serverTracePath: string;
@@ -43,6 +45,31 @@ export interface ServerDerivedPaths {
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
   readonly secretsDir: string;
+  /**
+   * Root for Agent Stack per-agent VM disks and golden images. Each named
+   * agent's VM (and its persisted logins/credentials) lives under here.
+   */
+  readonly vmsDir: string;
+  /** Workspace root for the reserved project that holds agent chat threads. */
+  readonly agentsWorkspaceDir: string;
+  /**
+   * Root for each agent's persistent, isolated browser profile (its "computer":
+   * cookies, logins, and storage survive here across restarts, walled off per
+   * agent). The profile dir IS the agent's persisted-login home.
+   */
+  readonly agentBrowsersDir: string;
+  /**
+   * Working directory the orchestrator thread's provider runs in.
+   *
+   * Derived here rather than in the seed so exactly one place owns the path
+   * and `ensureServerDirectories` can create it. The seed only runs on a
+   * fresh install (it returns early once the thread exists), so a directory
+   * created there would never appear on machines seeded by an older build --
+   * and spawning a provider with a cwd that does not exist fails as
+   * `spawn <binary> ENOENT`, which reads as a missing binary and sends you
+   * looking in entirely the wrong place.
+   */
+  readonly orchestratorWorkspaceDir: string;
 }
 
 export interface DeriveServerPathsOptions {
@@ -108,6 +135,7 @@ export const deriveServerPaths = Effect.fn(function* (
   );
   const dbPath = join(stateDir, "state.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
+  const artifactsDir = join(stateDir, "artifacts");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");
   const providerStatusCacheDir = join(baseDir, "caches");
@@ -119,6 +147,7 @@ export const deriveServerPaths = Effect.fn(function* (
     providerStatusCacheDir,
     worktreesDir: join(baseDir, "worktrees"),
     attachmentsDir,
+    artifactsDir,
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
     serverTracePath: join(logsDir, "server.trace.ndjson"),
@@ -129,6 +158,10 @@ export const deriveServerPaths = Effect.fn(function* (
     environmentIdPath: join(stateDir, "environment-id"),
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
     secretsDir: join(stateDir, "secrets"),
+    orchestratorWorkspaceDir: join(stateDir, "orchestrator"),
+    vmsDir: join(baseDir, "vms"),
+    agentsWorkspaceDir: join(stateDir, "agents"),
+    agentBrowsersDir: join(stateDir, "agent-browsers"),
   };
 });
 
@@ -143,12 +176,17 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(derivedPaths.providerLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.attachmentsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.artifactsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.worktreesDir, { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.keybindingsConfigPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.settingsPath), { recursive: true }),
       fs.makeDirectory(derivedPaths.providerStatusCacheDir, { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),
+      fs.makeDirectory(derivedPaths.orchestratorWorkspaceDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.vmsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.agentsWorkspaceDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.agentBrowsersDir, { recursive: true }),
     ],
     { concurrency: "unbounded" },
   );

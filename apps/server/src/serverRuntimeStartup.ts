@@ -35,6 +35,8 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import * as ThreadWorkScheduler from "./orchestration/Services/ThreadWorkScheduler.ts";
+import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
+import { seedOrchestratorThread } from "./orchestrator/OrchestratorSeed.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -296,6 +298,7 @@ export const make = Effect.gen(function* () {
   const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
   const threadWorkScheduler = yield* ThreadWorkScheduler.ThreadWorkScheduler;
+  const vmAgentTaskScheduler = yield* VmAgentTaskScheduler.VmAgentTaskScheduler;
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -346,6 +349,7 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
         yield* threadWorkScheduler.start().pipe(Scope.provide(reactorScope));
+        yield* vmAgentTaskScheduler.start().pipe(Scope.provide(reactorScope));
         yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
       }),
     );
@@ -368,6 +372,25 @@ export const make = Effect.gen(function* () {
           ...welcomeBase,
         },
       }),
+    );
+
+    // The orchestrator must exist on every install, so this runs unconditionally
+    // rather than under `autoBootstrapProjectFromCwd` (which defaults to false).
+    // Forked and failure-tolerant: a workspace that cannot seed the orchestrator
+    // should still boot normally.
+    yield* Effect.forkScoped(
+      runStartupPhase(
+        "orchestrator.seed",
+        seedOrchestratorThread.pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.tap(({ created }) =>
+            created
+              ? Effect.logInfo("orchestrator thread seeded")
+              : Effect.logDebug("orchestrator thread already present"),
+          ),
+          Effect.catchCause((cause) => Effect.logWarning("orchestrator seed failed", { cause })),
+        ),
+      ),
     );
 
     if (serverConfig.autoBootstrapProjectFromCwd) {

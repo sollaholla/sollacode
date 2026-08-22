@@ -53,6 +53,25 @@ describe("ProviderStatusBanner", () => {
     expect(markup).toContain('data-variant="warning"');
   });
 
+  it("presents a transient provider check timeout as usable and retrying", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderStatusBanner
+        status={{
+          ...warningProvider(),
+          auth: { status: "unknown" },
+          message:
+            "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
+        }}
+        onDismiss={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('data-variant="warning"');
+    expect(markup).toContain("Codex can still be used");
+    expect(markup).toContain("The next provider refresh will try again");
+    expect(markup).not.toContain('data-variant="error"');
+  });
+
   it("labels error dismiss controls with the correct severity", () => {
     const markup = renderToStaticMarkup(
       <ProviderStatusBanner

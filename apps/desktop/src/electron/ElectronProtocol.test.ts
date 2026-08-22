@@ -132,7 +132,7 @@ describe("ElectronProtocol", () => {
             backendOrigin: new URL("http://127.0.0.1:3773/"),
           });
           const target = encodeURIComponent(
-            "http://10.2.1.249:3773/api/assets/signed-token/check_knuckle.png",
+            "http://192.0.2.10:3773/api/assets/signed-token/check_knuckle.png",
           );
           return yield* Effect.promise(() =>
             handler!(
@@ -154,7 +154,7 @@ describe("ElectronProtocol", () => {
       assert.equal(yield* Effect.promise(() => response.text()), "image-bytes");
       assert.equal(
         netFetchMock.mock.calls[0]?.[0],
-        "http://10.2.1.249:3773/api/assets/signed-token/check_knuckle.png",
+        "http://192.0.2.10:3773/api/assets/signed-token/check_knuckle.png",
       );
       const init = netFetchMock.mock.calls[0]?.[1];
       const headers = new Headers(init?.headers);
@@ -168,6 +168,88 @@ describe("ElectronProtocol", () => {
       );
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
+
+  it.effect("keeps artifact bundle CSS on the signed remote revision", () =>
+    Effect.gen(function* () {
+      let handler: ((request: Request) => Promise<Response>) | undefined;
+      handleMock.mockImplementation((_scheme, nextHandler) => {
+        handler = nextHandler;
+      });
+      netFetchMock.mockImplementation((url: string) =>
+        Promise.resolve(
+          new Response(
+            url.endsWith(".css") ? "body{color:gold}" : "<link rel=stylesheet href=styles.css>",
+            {
+              headers: {
+                "access-control-allow-origin": "*",
+                "content-type": url.endsWith(".css") ? "text/css" : "text/html",
+              },
+            },
+          ),
+        ),
+      );
+
+      const signedRoot = "http://192.0.2.10:3773/api/assets/payload.signature/";
+      const encodedRoot = Buffer.from(signedRoot).toString("base64url");
+      const entryUrl = new URL(
+        `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/site/index.html`,
+      );
+      const styleUrl = new URL("styles.css", entryUrl);
+
+      const [entryResponse, styleResponse] = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* ElectronProtocol.ElectronProtocol;
+          yield* protocol.registerDesktopProtocol({
+            scheme: "sollacode",
+            targetOrigin: new URL("http://127.0.0.1:3773/"),
+            backendOrigin: new URL("http://127.0.0.1:3773/"),
+          });
+          return yield* Effect.promise(() =>
+            Promise.all([handler!(new Request(entryUrl)), handler!(new Request(styleUrl))]),
+          );
+        }),
+      );
+
+      assert.equal(
+        yield* Effect.promise(() => entryResponse.text()),
+        "<link rel=stylesheet href=styles.css>",
+      );
+      assert.equal(yield* Effect.promise(() => styleResponse.text()), "body{color:gold}");
+      assert.deepEqual(
+        netFetchMock.mock.calls.map((call) => call[0]),
+        [
+          "http://192.0.2.10:3773/api/assets/payload.signature/site/index.html",
+          "http://192.0.2.10:3773/api/assets/payload.signature/site/styles.css",
+        ],
+      );
+      const policy = entryResponse.headers.get("content-security-policy") ?? "";
+      assert.include(policy, "connect-src 'none'");
+      assert.include(
+        policy,
+        `style-src sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/ 'unsafe-inline'`,
+      );
+      assert.notInclude(policy, "style-src sollacode: 'unsafe-inline'");
+    }).pipe(Effect.provide(ElectronProtocol.layer)),
+  );
+
+  it("rejects artifact bundle targets outside one signed asset capability", () => {
+    const signedRoot = "https://environment.example/api/assets/payload.signature/";
+    const encodedRoot = Buffer.from(signedRoot).toString("base64url");
+    const entry = new URL(
+      `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${encodedRoot}/nested/index.html`,
+    );
+    assert.equal(
+      ElectronProtocol.resolveRemoteArtifactProxyTarget(entry)?.toString(),
+      "https://environment.example/api/assets/payload.signature/nested/index.html",
+    );
+    assert.isNull(
+      ElectronProtocol.resolveRemoteArtifactProxyTarget(
+        new URL(
+          `sollacode://app${ElectronProtocol.DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${Buffer.from("https://environment.example/api/auth/").toString("base64url")}/session`,
+        ),
+      ),
+    );
+  });
 
   it("rejects malformed and non-asset remote proxy targets", () => {
     assert.isNull(

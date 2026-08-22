@@ -217,6 +217,7 @@ function buildProps() {
     onCompactAndContinue: () => {},
     isCompactAndContinueBusy: false,
     resumableAssistantMessageId: null,
+    resumableRuntimeErrorActivityId: null,
     onResumeIncompleteTurn: () => {},
     isResumeIncompleteTurnBusy: false,
     isResumeIncompleteTurnDisabled: false,
@@ -411,6 +412,37 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("AGENT_STOP");
   });
 
+  it("still badges the stop when a stray provider footer follows the token", () => {
+    // The LANChat browser bridge read ChatGPT's page footer as the reply's
+    // last line, so the token stopped being terminal: the badge vanished and
+    // the raw control token rendered to the user as prose (reported
+    // 2026-08-16). The Agent loop had stopped on it either way.
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-agent-stop-footer",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-agent-stop-footer"),
+              role: "assistant",
+              text: "I won't invent tool results.\n\nAGENT_STOP\n\nChatGPT is AI and can make mistakes. Check important info.",
+              turnId: TurnId.make("turn-agent-stop-footer"),
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain('data-agent-stop-badge="true"');
+    expect(markup).toContain("invent tool results.");
+    expect(markup).not.toContain("AGENT_STOP");
+  });
+
   it("renders an accessible Resume action directly under the eligible assistant message", () => {
     const assistantMessageId = MessageId.make("message-incomplete");
     const timelineEntries = [
@@ -495,6 +527,37 @@ describe("MessagesTimeline", () => {
       />,
     );
     expect(markup).not.toContain("Resume incomplete response");
+  });
+
+  it("renders a quick Resume action directly below a terminal runtime error", () => {
+    const runtimeErrorActivityId = "runtime-error-activity";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: runtimeErrorActivityId,
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: runtimeErrorActivityId,
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: TurnId.make("turn-runtime-error"),
+              label: "Runtime error",
+              detail: "Provider process exited",
+              tone: "error",
+              sourceActivityKind: "runtime.error",
+            },
+          },
+        ]}
+        resumableRuntimeErrorActivityId={runtimeErrorActivityId}
+      />,
+    );
+
+    expect(markup).toContain('data-runtime-error-resume="true"');
+    expect(markup).toContain('aria-label="Resume after runtime error"');
+    expect(markup).toContain("Runtime error");
+    expect(markup.indexOf("Runtime error")).toBeLessThan(markup.indexOf(">Resume</button>"));
   });
 
   it("uses the larger leading inset only when the top fade is enabled", () => {
@@ -632,6 +695,29 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineMinimapInteractiveWidth(0)).toBe(0);
     expect(resolveTimelineMinimapInteractiveWidth(14)).toBe(14);
     expect(resolveTimelineMinimapInteractiveWidth(40)).toBe(40);
+  });
+
+  // A thread on an offline host reports last-known state. Pulsing dots and a
+  // counter that keeps climbing claim live progress the client cannot observe,
+  // and the user has no way to stop a turn on a machine they cannot reach.
+  it("stops claiming live progress while the host is unreachable", () => {
+    const timelineEntries = [buildUserTimelineEntry("Publish the release")];
+    const reachable = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} isWorking timelineEntries={timelineEntries} />,
+    );
+    const unreachable = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        environmentUnreachable
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    expect(reachable).toContain("animate-status-pulse");
+    expect(unreachable).not.toContain("animate-status-pulse");
+    expect(unreachable).toContain("reconnecting");
+    expect(unreachable).not.toContain("Working for");
   });
 
   it("disables LegendList live-follow after the user opts out during streaming", () => {
@@ -839,6 +925,33 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("<element_context");
   });
 
+  it("badges a message that cancelled background work, without leaking the block", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          buildUserTimelineEntry(
+            [
+              "stop and check the build",
+              "",
+              "<interrupted_background_tasks>",
+              "Sending this message cancelled the background tasks listed below. Restart any that are still needed.",
+              "- Ran command: npm test",
+              "- Searched text",
+              "</interrupted_background_tasks>",
+            ].join("\n"),
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("2 background tasks interrupted");
+    expect(markup).toContain("stop and check the build");
+    // The block is machinery for the agent; it must never reach the transcript.
+    expect(markup).not.toContain("interrupted_background_tasks");
+    expect(markup).not.toContain("Restart any that are still needed");
+  });
+
   it("keeps the copy button for collapsed long user messages", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -850,6 +963,47 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Copy link"');
     expect(markup).toContain('data-user-message-collapsed="true"');
     expect(markup).toContain('data-user-message-footer="true"');
+  });
+
+  it("keeps message timestamps and copy actions visible without hover", () => {
+    const userMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Always visible user metadata")]}
+      />,
+    );
+    expect(userMarkup).toContain('class="flex shrink-0 items-center gap-2"');
+    expect(userMarkup).not.toContain(
+      'class="flex shrink-0 items-center gap-2 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100"',
+    );
+
+    const assistantMarkup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-visible-assistant-meta",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            message: {
+              id: MessageId.make("message-visible-assistant-meta"),
+              role: "assistant",
+              text: "Always visible assistant metadata",
+              turnId: TurnId.make("turn-visible-assistant-meta"),
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+    expect(assistantMarkup).toContain(
+      'class="mt-1.5 flex items-center gap-2 text-xs tabular-nums"',
+    );
+    expect(assistantMarkup).not.toContain(
+      'class="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100"',
+    );
   });
 
   it("renders context compaction entries in the normal work log", () => {

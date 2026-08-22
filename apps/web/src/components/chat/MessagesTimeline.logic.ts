@@ -7,6 +7,7 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
+import { findConversationBoundaries } from "../../orchestrator/conversationBoundary";
 import {
   type MessageId,
   type OrchestrationLatestTurn,
@@ -207,6 +208,12 @@ export type MessagesTimelineRow =
       label: string;
       detail: string | null;
     }
+  /**
+   * A long silence, then the user came back. Drawn like a provider transition
+   * because it means the same sort of thing: what follows is a fresh start,
+   * not a continuation of the line above it.
+   */
+  | { kind: "conversation-boundary"; id: string; createdAt: string }
   | { kind: "working"; id: string; createdAt: string | null };
 
 function isProviderTransitionWorkEntry(entry: WorkLogEntry): boolean {
@@ -311,6 +318,39 @@ export function deriveResumableAssistantMessageId(input: {
   return latestTurn.state === "incomplete" ? candidate.id : null;
 }
 
+/**
+ * Identify a terminal runtime-error row that can safely start a fresh
+ * continuation turn. The error must be the final visible timeline entry, and
+ * both the projected turn and provider session must agree that no work is
+ * still running.
+ */
+export function deriveResumableRuntimeErrorActivityId(input: {
+  timelineEntries: ReadonlyArray<TimelineEntry>;
+  latestTurn: OrchestrationLatestTurn | null;
+  session: Pick<OrchestrationSession, "status" | "activeTurnId"> | null;
+}): string | null {
+  const { latestTurn, session } = input;
+  if (!latestTurn || latestTurn.state !== "error") {
+    return null;
+  }
+  if (session?.status === "running" || session?.status === "starting" || session?.activeTurnId) {
+    return null;
+  }
+
+  const lastEntry = input.timelineEntries.at(-1);
+  if (
+    lastEntry?.kind !== "work" ||
+    lastEntry.entry.sourceActivityKind !== "runtime.error" ||
+    (lastEntry.entry.turnId !== null &&
+      lastEntry.entry.turnId !== undefined &&
+      lastEntry.entry.turnId !== latestTurn.turnId)
+  ) {
+    return null;
+  }
+
+  return lastEntry.entry.id;
+}
+
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;
@@ -382,7 +422,8 @@ function deriveUnsettledTurnId(
 /**
  * Settled turns fold their commentary and tool activity behind a
  * "Worked for ..." row anchored at the turn's first foldable entry; the
- * terminal assistant message stays visible below the fold.
+ * terminal assistant message or terminal runtime error stays visible below
+ * the fold.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -393,6 +434,7 @@ function deriveTurnFolds(input: {
   interface TurnGroup {
     entries: Array<TimelineEntry>;
     terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
+    terminalRuntimeErrorEntry: Extract<TimelineEntry, { kind: "work" }> | null;
     hasStreamingMessage: boolean;
     /**
      * The user message that kicked the turn off. Entry timestamps alone
@@ -426,6 +468,7 @@ function deriveTurnFolds(input: {
       group = {
         entries: [],
         terminalEntry: null,
+        terminalRuntimeErrorEntry: null,
         hasStreamingMessage: false,
         // Each user boundary starts at most one turn; a second turn after the
         // same user message (e.g. a steer-superseded continuation) falls back
@@ -443,6 +486,8 @@ function deriveTurnFolds(input: {
       if (entry.message.streaming) {
         group.hasStreamingMessage = true;
       }
+    } else if (entry.kind === "work" && entry.entry.sourceActivityKind === "runtime.error") {
+      group.terminalRuntimeErrorEntry = entry;
     }
   }
 
@@ -456,7 +501,10 @@ function deriveTurnFolds(input: {
     }
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id !== group.terminalEntry?.id) {
+      if (
+        entry.id !== group.terminalEntry?.id &&
+        entry.id !== group.terminalRuntimeErrorEntry?.id
+      ) {
         hiddenEntryIds.add(entry.id);
       }
     }
@@ -512,6 +560,8 @@ function deriveTurnFolds(input: {
   return foldsByAnchorEntryId;
 }
 
+const EMPTY_BOUNDARIES: ReadonlySet<number> = new Set();
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
@@ -524,6 +574,17 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /**
+   * Draw a separator where a new conversation begins. Off by default, and only
+   * ever on for the orchestrator.
+   *
+   * The orchestrator has one permanent thread that every conversation the user
+   * has ever had with it shares, so without a separator its transcript reads as
+   * one endless exchange. An ordinary thread is already scoped to one piece of
+   * work — a half-hour pause in it is someone coming back to the same task, not
+   * starting a new conversation, and marking it is noise.
+   */
+  showConversationBoundaries?: boolean;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const durationStartByMessageId = computeMessageDurationStart(
@@ -550,10 +611,34 @@ export function deriveMessagesTimelineRows(input: {
     }
   }
 
+  // Only a user's message may open a conversation. Keying off any entry would
+  // split a turn in half whenever an agent worked quietly for longer than the
+  // gap, which is ordinary behaviour here rather than a new sitting.
+  const conversationBoundaryIndexes =
+    input.showConversationBoundaries === true
+      ? findConversationBoundaries(input.timelineEntries, {
+          opensConversation: (entry) => entry.kind === "message" && entry.message.role === "user",
+        })
+      : EMPTY_BOUNDARIES;
+
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
     if (!timelineEntry) {
       continue;
+    }
+
+    // Above the fold header, so the separator stays outside the turn it opens.
+    // Suppressed for a collapsed entry that is not itself a fold anchor: the
+    // separator would be pointing at something the user cannot see.
+    if (
+      conversationBoundaryIndexes.has(index) &&
+      (foldsByAnchorEntryId.has(timelineEntry.id) || !collapsedEntryIds.has(timelineEntry.id))
+    ) {
+      nextRows.push({
+        kind: "conversation-boundary",
+        id: `conversation-boundary:${timelineEntry.id}`,
+        createdAt: timelineEntry.createdAt,
+      });
     }
 
     const turnFold = foldsByAnchorEntryId.get(timelineEntry.id);
@@ -741,6 +826,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bp = b as typeof a;
       return a.createdAt === bp.createdAt && a.label === bp.label && a.detail === bp.detail;
     }
+
+    case "conversation-boundary":
+      return a.createdAt === (b as typeof a).createdAt;
 
     case "work-toggle": {
       const bw = b as typeof a;

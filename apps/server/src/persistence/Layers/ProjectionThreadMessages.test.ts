@@ -49,6 +49,63 @@ layer("ProjectionThreadMessageRepository", (it) => {
     }),
   );
 
+  it.effect("round-trips the voice-transcript marker and keeps it sticky", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-voice-transcript");
+      const messageId = MessageId.make("message-voice-transcript");
+      const createdAt = "2026-08-16T17:00:00.000Z";
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Rover is still building.",
+        voiceTranscript: true,
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      // A later upsert without the flag (any generic rewrite of the row) must
+      // not silently strip the provenance — the reactor's digest query keys
+      // on it.
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Rover is still building.",
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-08-16T17:00:01.000Z",
+      });
+
+      const row = yield* repository.getByMessageId({ messageId });
+      assert.equal(row._tag, "Some");
+      if (row._tag === "Some") {
+        assert.equal(row.value.voiceTranscript, true);
+      }
+
+      const plain = MessageId.make("message-typed");
+      yield* repository.upsert({
+        messageId: plain,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "typed",
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const plainRow = yield* repository.getByMessageId({ messageId: plain });
+      assert.equal(plainRow._tag, "Some");
+      if (plainRow._tag === "Some") {
+        assert.equal(plainRow.value.voiceTranscript, undefined);
+      }
+    }),
+  );
+
   it.effect("preserves existing attachments when upsert omits attachments", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

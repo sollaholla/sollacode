@@ -470,6 +470,38 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   );
 }
 
+export function CommandPaletteOverlay(props: {
+  readonly open: boolean;
+  readonly mode: SearchOverlayMode;
+  readonly openIntent: CommandPaletteOpenIntent | null;
+  readonly setOpen: (open: boolean) => void;
+  readonly toggleMode: (mode: SearchOverlayMode) => void;
+  readonly clearOpenIntent: () => void;
+}) {
+  return (
+    <CommandDialog
+      open={props.open}
+      onOpenChange={(open, eventDetails) => {
+        if (!open && eventDetails.reason === "escape-key" && props.mode !== "command") {
+          eventDetails.cancel();
+          props.toggleMode("command");
+          return;
+        }
+        props.setOpen(open);
+      }}
+    >
+      <CommandPaletteDialog
+        open={props.open}
+        mode={props.mode}
+        openIntent={props.openIntent}
+        setOpen={props.setOpen}
+        openOverlayMode={props.toggleMode}
+        clearOpenIntent={props.clearOpenIntent}
+      />
+    </CommandDialog>
+  );
+}
+
 function CommandPaletteDialog(props: {
   readonly open: boolean;
   readonly mode: SearchOverlayMode;

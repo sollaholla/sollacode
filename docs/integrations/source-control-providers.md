@@ -1,6 +1,6 @@
 # Source Control Integrations
 
-Solla Code connects directly to your Git hosting provider so you can create pull requests, review code, and manage repositories without leaving your editor. Work stays in flow—no more jumping between browser tabs and terminal windows.
+Solla Code connects directly to your Git hosting provider so you can create pull requests, review code, and manage repositories without leaving your editor. Work stays in flow - no more jumping between browser tabs and terminal windows.
 
 ## Supported Providers
 
@@ -24,7 +24,7 @@ Solla Code works with the platforms your team already uses:
 **Publish local projects to the cloud**
 
 - Have a local Git repository without a remote?
-- Use the **Publish Repository** action to create a new hosted repository (GitHub, GitLab, Bitbucket, or Azure DevOps), add it as your origin remote, and push—all in one flow
+- Use the **Publish Repository** action to create a new hosted repository (GitHub, GitLab, Bitbucket, or Azure DevOps), add it as your origin remote, and push - all in one flow
 - Perfect for turning a weekend prototype into a real project
 
 ### Manage Code Reviews Without Context Switching
@@ -65,7 +65,7 @@ Run a quick **Rescan** after setting up a new machine or changing credentials.
    ```
 3. Open **Settings → Source Control** in Solla Code and verify GitHub shows as authenticated
 
-That's it—you can now clone, publish, and create pull requests.
+That's it - you can now clone, publish, and create pull requests.
 
 ### For GitLab
 

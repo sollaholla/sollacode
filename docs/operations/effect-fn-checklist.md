@@ -44,8 +44,8 @@ Effect.fn("name")(
 - [ ] `apps/server/src/provider/Layers/ProviderService.ts`
 - [x] `apps/server/src/provider/Layers/ClaudeAdapter.ts`
 - [x] `apps/server/src/provider/Layers/CodexAdapter.ts`
-- [x] `apps/server/src/git/Layers/GitCore.ts`
-- [x] `apps/server/src/git/Layers/GitManager.ts`
+- [x] `apps/server/src/vcs/GitVcsDriverCore.ts`
+- [x] `apps/server/src/git/GitManager.ts`
 - [x] `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts`
 - [x] `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`
 - [ ] `apps/server/src/orchestration/Layers/OrchestrationEngine.ts`
@@ -66,26 +66,26 @@ Effect.fn("name")(
 - [x] [stopSession](../../apps/server/src/provider/Layers/ClaudeAdapter.ts#L3039)
 - [x] Internal helpers and callback wrappers in this file
 
-### `apps/server/src/git/Layers/GitCore.ts` (`58`)
+### `apps/server/src/vcs/GitVcsDriverCore.ts` (`58`)
 
-- [x] [makeGitCore](../../apps/server/src/git/Layers/GitCore.ts#L513)
-- [x] [handleTraceLine](../../apps/server/src/git/Layers/GitCore.ts#L324)
-- [x] [emitCompleteLines](../../apps/server/src/git/Layers/GitCore.ts#L455)
-- [x] [commit](../../apps/server/src/git/Layers/GitCore.ts#L1190)
-- [x] [pushCurrentBranch](../../apps/server/src/git/Layers/GitCore.ts#L1223)
-- [x] [pullCurrentBranch](../../apps/server/src/git/Layers/GitCore.ts#L1323)
-- [x] [checkoutBranch](../../apps/server/src/git/Layers/GitCore.ts#L1727)
+- [x] [makeGitVcsDriverCore](../../apps/server/src/vcs/GitVcsDriverCore.ts#L699)
+- [x] [handleTraceLine](../../apps/server/src/vcs/GitVcsDriverCore.ts#L487)
+- [x] [emitCompleteLines](../../apps/server/src/vcs/GitVcsDriverCore.ts#L632)
+- [x] [commit](../../apps/server/src/vcs/GitVcsDriverCore.ts#L1840)
+- [x] [pushCurrentBranch](../../apps/server/src/vcs/GitVcsDriverCore.ts#L1873)
+- [x] [pullCurrentBranch](../../apps/server/src/vcs/GitVcsDriverCore.ts#L1995)
+- [x] [switchRef](../../apps/server/src/vcs/GitVcsDriverCore.ts#L2746)
 - [x] Service methods and callback wrappers in this file
 
-### `apps/server/src/git/Layers/GitManager.ts` (`28`)
+### `apps/server/src/git/GitManager.ts` (`28`)
 
-- [x] [configurePullRequestHeadUpstream](../../apps/server/src/git/Layers/GitManager.ts#L387)
-- [x] [materializePullRequestHeadBranch](../../apps/server/src/git/Layers/GitManager.ts#L428)
-- [x] [findOpenPr](../../apps/server/src/git/Layers/GitManager.ts#L576)
-- [x] [findLatestPr](../../apps/server/src/git/Layers/GitManager.ts#L602)
-- [x] [runCommitStep](../../apps/server/src/git/Layers/GitManager.ts#L728)
-- [x] [runPrStep](../../apps/server/src/git/Layers/GitManager.ts#L842)
-- [x] [runFeatureBranchStep](../../apps/server/src/git/Layers/GitManager.ts#L1106)
+- [x] [configurePullRequestHeadUpstream](../../apps/server/src/git/GitManager.ts#L673)
+- [x] [materializePullRequestHeadBranch](../../apps/server/src/git/GitManager.ts#L746)
+- [x] [findOpenPr](../../apps/server/src/git/GitManager.ts#L1172)
+- [x] [findLatestPrForHeadContext](../../apps/server/src/git/GitManager.ts#L1211)
+- [x] [runCommitStep](../../apps/server/src/git/GitManager.ts#L1435)
+- [x] [runPrStep](../../apps/server/src/git/GitManager.ts#L1548)
+- [x] [runFeatureBranchStep](../../apps/server/src/git/GitManager.ts#L1892)
 - [x] Remaining helpers and nested callback wrappers in this file
 
 ### `apps/server/src/orchestration/Layers/ProjectionPipeline.ts` (`25`)
@@ -172,24 +172,24 @@ Effect.fn("name")(
 ### Smaller clusters
 
 - [ ] [packages/shared/src/DrainableWorker.ts](../../packages/shared/src/DrainableWorker.ts) (`4`)
-- [ ] [apps/server/src/wsServer/pushBus.ts](../../apps/server/src/wsServer/pushBus.ts) (`4`)
-- [ ] [apps/server/src/wsServer.ts](../../apps/server/src/wsServer.ts) (`4`)
+- [ ] `apps/server/src/wsServer/pushBus.ts` (`4`, removed after this scan)
+- [ ] [apps/server/src/ws.ts](../../apps/server/src/ws.ts) (`4`)
 - [ ] [apps/server/src/provider/Layers/ProviderRegistry.ts](../../apps/server/src/provider/Layers/ProviderRegistry.ts) (`4`)
 - [ ] [apps/server/src/persistence/Layers/Sqlite.ts](../../apps/server/src/persistence/Layers/Sqlite.ts) (`4`)
 - [ ] [apps/server/src/orchestration/Layers/ProviderCommandReactor.ts](../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts) (`4`)
-- [ ] [apps/server/src/main.ts](../../apps/server/src/main.ts) (`4`)
+- [ ] [apps/server/src/server.ts](../../apps/server/src/server.ts) (`4`)
 - [ ] [apps/server/src/keybindings.ts](../../apps/server/src/keybindings.ts) (`4`)
-- [ ] [apps/server/src/git/Layers/CodexTextGeneration.ts](../../apps/server/src/git/Layers/CodexTextGeneration.ts) (`4`)
-- [ ] [apps/server/src/serverLayers.ts](../../apps/server/src/serverLayers.ts) (`3`)
-- [ ] [apps/server/src/telemetry/Layers/AnalyticsService.ts](../../apps/server/src/telemetry/Layers/AnalyticsService.ts) (`2`)
+- [ ] [apps/server/src/textGeneration/CodexTextGeneration.ts](../../apps/server/src/textGeneration/CodexTextGeneration.ts) (`4`)
+- [ ] `apps/server/src/serverLayers.ts` (`3`, removed after this scan)
+- [ ] [apps/server/src/telemetry/AnalyticsService.ts](../../apps/server/src/telemetry/AnalyticsService.ts) (`2`)
 - [ ] [apps/server/src/telemetry/Identify.ts](../../apps/server/src/telemetry/Identify.ts) (`2`)
 - [ ] [apps/server/src/provider/Layers/ProviderAdapterRegistry.ts](../../apps/server/src/provider/Layers/ProviderAdapterRegistry.ts) (`2`)
 - [ ] [apps/server/src/provider/Layers/CodexProvider.ts](../../apps/server/src/provider/Layers/CodexProvider.ts) (`2`)
 - [ ] [apps/server/src/provider/Layers/ClaudeProvider.ts](../../apps/server/src/provider/Layers/ClaudeProvider.ts) (`2`)
 - [ ] [apps/server/src/persistence/NodeSqliteClient.ts](../../apps/server/src/persistence/NodeSqliteClient.ts) (`2`)
 - [ ] [apps/server/src/persistence/Migrations.ts](../../apps/server/src/persistence/Migrations.ts) (`2`)
-- [ ] [apps/server/src/open.ts](../../apps/server/src/open.ts) (`2`)
-- [ ] [apps/server/src/git/Layers/ClaudeTextGeneration.ts](../../apps/server/src/git/Layers/ClaudeTextGeneration.ts) (`2`)
+- [ ] `apps/server/src/open.ts` (`2`, removed after this scan)
+- [ ] [apps/server/src/textGeneration/ClaudeTextGeneration.ts](../../apps/server/src/textGeneration/ClaudeTextGeneration.ts) (`2`)
 - [ ] [apps/server/src/checkpointing/CheckpointDiffQuery.ts](../../apps/server/src/checkpointing/CheckpointDiffQuery.ts) (`2`)
 - [ ] [apps/server/src/provider/makeManagedServerProvider.ts](../../apps/server/src/provider/makeManagedServerProvider.ts) (`1`)
 

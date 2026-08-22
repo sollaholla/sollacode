@@ -386,16 +386,34 @@ export async function writeComposerTransferToClipboard(
   const ClipboardItemConstructor = globalThis.ClipboardItem;
   const firstImage = images.find((file) => file.type.startsWith("image/"));
 
-  // Image drafts prefer the async API because the synchronous copy event cannot
-  // carry binary data. The token still travels in `text/html`.
-  if (
-    firstImage &&
-    clipboard &&
-    typeof clipboard.write === "function" &&
-    ClipboardItemConstructor
-  ) {
+  // The desktop bridge uses Electron's atomic clipboard.write({ text, html,
+  // image }). Chromium's async ClipboardItem route can report success on macOS
+  // while leaving only the image on the native pasteboard, which removes the
+  // marker needed to restore the complete cut.
+  if (firstImage) {
     const png = await toPngBlob(firstImage);
     if (png) {
+      const desktopWrite =
+        typeof window === "undefined" ? undefined : window.desktopBridge?.writeComposerClipboard;
+      if (desktopWrite) {
+        try {
+          return await desktopWrite({
+            text: transfer.prompt,
+            html,
+            imagePng: new Uint8Array(await png.arrayBuffer()),
+          });
+        } catch {
+          // Never clear an image draft after a failed native write. Unlike the
+          // string-only fallbacks below, this route promises the real bitmap.
+          return false;
+        }
+      }
+
+      // Browser and remote clients do not have the desktop bridge. Their best
+      // available route is the standards-based async clipboard API.
+      if (!clipboard || typeof clipboard.write !== "function" || !ClipboardItemConstructor) {
+        return false;
+      }
       try {
         await clipboard.write([
           new ClipboardItemConstructor({
@@ -406,9 +424,13 @@ export async function writeComposerTransferToClipboard(
         ]);
         return true;
       } catch {
-        // Fall through: a rejected write must not lose the draft entirely.
+        return false;
       }
     }
+
+    // A non-PNG source that cannot be decoded cannot be represented safely on
+    // the system clipboard. Keep the draft intact instead of copying only text.
+    return false;
   }
 
   if (writeWithCopyEvent({ token: transfer.token, prompt: transfer.prompt, html })) {
@@ -431,6 +453,42 @@ export async function writeComposerTransferToClipboard(
     }
   }
   return false;
+}
+
+/**
+ * Reads native image entries from a paste event without assuming Chromium put
+ * them in `DataTransfer.files`. On macOS and Windows clipboard images may be
+ * exposed only as file-kind `items`, even though a normal file drop populates
+ * both collections.
+ */
+export function readClipboardImageFiles(
+  clipboardData: Pick<DataTransfer, "files" | "items">,
+): File[] {
+  let files: File[] = [];
+  try {
+    files = Array.from(clipboardData.files).filter((file) => file.type.startsWith("image/"));
+  } catch {
+    // Some synthetic and restricted clipboard objects throw while enumerating.
+  }
+  if (files.length > 0) return files;
+
+  try {
+    return Array.from(clipboardData.items).flatMap((item) => {
+      const declaredType = item.type.toLowerCase();
+      if (!declaredType.startsWith("image/")) return [];
+      const file = item.getAsFile();
+      if (!file) return [];
+      if (file.type.startsWith("image/")) return [file];
+      return [
+        new File([file], file.name || "clipboard-image", {
+          type: declaredType,
+          lastModified: file.lastModified,
+        }),
+      ];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export function readComposerTransferFromClipboard(

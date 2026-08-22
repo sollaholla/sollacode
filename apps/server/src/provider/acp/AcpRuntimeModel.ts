@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import { deriveToolActivityPresentation } from "@t3tools/shared/toolActivity";
+import { deriveToolActivityPresentation, isGenericToolTitle } from "@t3tools/shared/toolActivity";
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -107,6 +107,13 @@ export type AcpParsedSessionEvent =
       readonly _tag: "ContentDelta";
       readonly itemId?: string;
       readonly text: string;
+      readonly streamKind: "assistant_text" | "reasoning_text";
+      readonly rawPayload: unknown;
+    }
+  | {
+      readonly _tag: "UsageUpdated";
+      readonly used: number;
+      readonly size: number;
       readonly rawPayload: unknown;
     };
 
@@ -327,10 +334,7 @@ function makeToolCallState(
   const title = input.title?.trim() || undefined;
   const command = extractToolCallCommand(input.rawInput, title);
   const textContent = extractTextContentFromToolCallContent(input.content);
-  const normalizedTitle =
-    title && title.toLowerCase() !== "terminal" && title.toLowerCase() !== "tool call"
-      ? title
-      : undefined;
+  const normalizedTitle = title && !isGenericToolTitle(title) ? title : undefined;
   const data: Record<string, unknown> = { toolCallId };
   const kind = normalizeToolKind(input.kind);
   if (kind) {
@@ -569,6 +573,29 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
         events.push({
           _tag: "ContentDelta",
           text: upd.content.text,
+          streamKind: "assistant_text",
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "agent_thought_chunk": {
+      if (upd.content.type === "text" && upd.content.text.length > 0) {
+        events.push({
+          _tag: "ContentDelta",
+          text: upd.content.text,
+          streamKind: "reasoning_text",
+          rawPayload: params,
+        });
+      }
+      break;
+    }
+    case "usage_update": {
+      if (Number.isFinite(upd.used) && upd.used >= 0) {
+        events.push({
+          _tag: "UsageUpdated",
+          used: upd.used,
+          size: Number.isFinite(upd.size) ? upd.size : 0,
           rawPayload: params,
         });
       }

@@ -3,7 +3,11 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 
-import { ClaudeExecutableFileCheck, resolveClaudeSdkExecutablePath } from "./ClaudeExecutable.ts";
+import {
+  ClaudeExecutableFileCheck,
+  isMissingClaudeSdkExecutable,
+  resolveClaudeSdkExecutablePath,
+} from "./ClaudeExecutable.ts";
 
 const NPM_DIR = "C:\\Users\\dev\\AppData\\Roaming\\npm";
 const NPM_SHIM = `${NPM_DIR}\\claude.cmd`;
@@ -119,6 +123,40 @@ describe("resolveClaudeSdkExecutablePath", () => {
           withWindowsResolution({ resolvedCommand: undefined }),
         ),
       ).toBe("claude");
+    }),
+  );
+
+  it.effect("treats a bare Windows command name as missing", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* isMissingClaudeSdkExecutable("claude").pipe(
+          withWindowsResolution({ resolvedCommand: undefined }),
+        ),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("treats a Windows npm shim as missing", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* isMissingClaudeSdkExecutable(NPM_SHIM).pipe(
+          withWindowsResolution({ resolvedCommand: NPM_SHIM }),
+        ),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("accepts an existing native Windows executable", () =>
+    Effect.gen(function* () {
+      const nativeBinary = "C:\\Users\\dev\\.local\\bin\\claude.exe";
+      expect(
+        yield* isMissingClaudeSdkExecutable(nativeBinary).pipe(
+          withWindowsResolution({
+            resolvedCommand: nativeBinary,
+            existingFiles: [nativeBinary],
+          }),
+        ),
+      ).toBe(false);
     }),
   );
 });

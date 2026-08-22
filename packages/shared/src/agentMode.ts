@@ -45,6 +45,19 @@ export function extractAgentStopSignoff(text: string): AgentStopSignoff {
   const metadataMatch = AGENT_TRAILING_HIDDEN_METADATA_PATTERN.exec(text);
   const metadata = metadataMatch?.[0] ?? "";
   const visibleText = metadataMatch ? text.slice(0, metadataMatch.index).trimEnd() : text.trimEnd();
+  const withMetadata = (body: string): string =>
+    metadata.length > 0 ? `${body}${body.length > 0 ? "\n" : ""}${metadata.trimStart()}` : body;
+
+  const terminal = extractTerminalStopSignoff(visibleText, text, withMetadata);
+  if (terminal.hasStop) return terminal;
+  return extractStandaloneStopLine(visibleText, text, withMetadata);
+}
+
+function extractTerminalStopSignoff(
+  visibleText: string,
+  text: string,
+  withMetadata: (body: string) => string,
+): AgentStopSignoff {
   const tokenIndex = visibleText.lastIndexOf(AGENT_STOP_TOKEN);
   if (tokenIndex < 0) return { hasStop: false, text };
 
@@ -64,12 +77,54 @@ export function extractAgentStopSignoff(text: string): AgentStopSignoff {
   while (signoffStart > 0 && /[*_`~'"“‘([{<]/u.test(visibleText[signoffStart - 1] ?? "")) {
     signoffStart -= 1;
   }
-  const body = visibleText.slice(0, signoffStart).trimEnd();
-  return {
-    hasStop: true,
-    text:
-      metadata.length > 0 ? `${body}${body.length > 0 ? "\n" : ""}${metadata.trimStart()}` : body,
-  };
+  return { hasStop: true, text: withMetadata(visibleText.slice(0, signoffStart).trimEnd()) };
+}
+
+/** A stop token alone on its own line, optionally wrapped in Markdown or quotes. */
+const AGENT_STOP_STANDALONE_LINE_PATTERN = new RegExp(
+  `^[*_\`~'"“”‘’([{<]*${AGENT_STOP_TOKEN}[\\s.!?,;:…*_\`~'"“”‘’)\\]}>]*$`,
+  "u",
+);
+
+/**
+ * A stop token on a line of its own, with something still following it.
+ *
+ * The terminal rule only fires when nothing at all comes after the token,
+ * which is exactly what one stray trailing line breaks. Observed live on
+ * 2026-08-16: the provider's page footer ("ChatGPT is AI and can make
+ * mistakes.") was read as the reply's last line, so a signoff the agent really
+ * had emitted lost its badge and rendered to the user as the raw word
+ * AGENT_STOP. The Agent loop had already stopped on it — only the display
+ * disagreed.
+ *
+ * A token occupying a line by itself is never prose: a reply that *discusses*
+ * the protocol keeps it inside a sentence, and that case still falls through
+ * untouched. Scoped to the same trailing window the loop uses, so display and
+ * behaviour cannot disagree about whether the agent stopped.
+ */
+function extractStandaloneStopLine(
+  visibleText: string,
+  text: string,
+  withMetadata: (body: string) => string,
+): AgentStopSignoff {
+  const windowStart = Math.max(0, visibleText.length - AGENT_STOP_LENIENT_WINDOW_CHARS);
+  const lines = visibleText.split("\n");
+  const starts: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    starts.push(cursor);
+    cursor += line.length + 1;
+  }
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if ((starts[index] ?? 0) < windowStart) break;
+    if (!AGENT_STOP_STANDALONE_LINE_PATTERN.test((lines[index] ?? "").trim())) continue;
+    const body = [...lines.slice(0, index), ...lines.slice(index + 1)]
+      .join("\n")
+      .replace(/\n{3,}/gu, "\n\n")
+      .trim();
+    return { hasStop: true, text: withMetadata(body) };
+  }
+  return { hasStop: false, text };
 }
 
 /**
@@ -172,4 +227,56 @@ export function shouldAgentContinueAfterReply(text: string): boolean {
     classifyAgentLoopReplyFailure(trimmed) === null &&
     !emittedAgentStop(trimmed)
   );
+}
+
+/**
+ * A provider refusing to start any further turn until a human intervenes.
+ *
+ * Distinct from a transient upstream wobble: the provider is not failing at
+ * random, it has tripped its own circuit breaker and is stating that retrying
+ * cannot work. Feeding that into the ordinary failure-retry path re-attempts
+ * it every 15 seconds, so the thread emits "Provider turn start failed" on a
+ * loop while showing "Auto-resuming thread…", and the user has nothing to
+ * cancel because each attempt is a fresh one. Reported 2026-08-15 against the
+ * LANChat bridge ("this session has failed 5 turns in a row; refusing to start
+ * another until the cause is fixed").
+ *
+ * Retirement is the honest response: the resume stops, the error stays on
+ * screen, and the next real user message starts a turn normally.
+ */
+const PROVIDER_TERMINAL_REFUSAL_SIGNATURES = [
+  /\brefus(?:es|ing|ed) to start\b/i,
+  /\buntil the cause is fixed\b/i,
+  /\bfailed \d+ turns? in a row\b/i,
+  /\bis disabled by the operator\b/i,
+  /\bisn't installed\b/i,
+  /\bis not installed\b/i,
+  /\bnative binary not found\b/i,
+];
+
+/** Cap for the same reason as the authentication check: prose is not a status. */
+const PROVIDER_TERMINAL_REFUSAL_MAX_CHARS = 400;
+
+export function isTerminalProviderRefusal(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > PROVIDER_TERMINAL_REFUSAL_MAX_CHARS) return false;
+  return PROVIDER_TERMINAL_REFUSAL_SIGNATURES.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * The live provider process has tripped and will keep refusing until it is
+ * replaced. Reusing that process on the next send is how a dismissed banner
+ * comes straight back.
+ */
+export function sessionNeedsProviderReset(
+  session:
+    | {
+        readonly status: string;
+        readonly lastError: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!session) return false;
+  return session.status === "error" || isTerminalProviderRefusal(session.lastError ?? "");
 }

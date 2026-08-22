@@ -27,6 +27,7 @@ import {
   Files,
   Globe2,
   MessagesSquare,
+  Package,
   Plus,
   TerminalSquare,
   X,
@@ -47,7 +48,15 @@ import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "~/components/ui/menu";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { faviconUrlForOrigin } from "~/lib/favicon";
 import { useTheme } from "~/hooks/useTheme";
@@ -56,6 +65,7 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
+import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 
 export interface SideChatTabStatus {
   readonly hasConversation: boolean;
@@ -71,6 +81,12 @@ export function shouldShowSideChatProviderIcon(status: SideChatTabStatus | null)
   return status?.hasConversation === true && status.provider !== null;
 }
 
+export interface TerminalTabStatus {
+  readonly working: boolean;
+  readonly driverKind: ProviderDriverKind | null;
+  readonly displayName: string | null;
+}
+
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
   maximized?: boolean;
@@ -80,15 +96,18 @@ interface RightPanelTabsProps {
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   terminalLabelsById: ReadonlyMap<string, string>;
+  terminalStatusById?: ReadonlyMap<string, TerminalTabStatus>;
   sideChatStatusByThreadId: ReadonlyMap<string, SideChatTabStatus>;
   onActivate: (surface: RightPanelSurface) => void;
   onCloseSurface: (surface: RightPanelSurface) => void;
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
   onCloseSurfacesToRight: (surface: RightPanelSurface) => void;
   onCloseAllSurfaces: () => void;
+  onRenameSurface: (surface: RightPanelSurface, title: string) => void;
   /** Moves `surface` to the slot currently held by `overSurfaceId`. */
   onReorderSurface: (surface: RightPanelSurface, overSurfaceId: string) => void;
   onCopyFilePath: (relativePath: string) => void;
+  onCopySideChatId: (threadId: string) => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -98,6 +117,10 @@ interface RightPanelTabsProps {
   diffAvailable: boolean;
   filesAvailable: boolean;
   sideChatAvailable: boolean;
+  /** Thread artifacts live below the general-purpose surface tab strip. */
+  artifactShelf?: ReactNode;
+  /** Artifact choices shown in the new-surface menu. */
+  artifactMenu?: ReactNode;
   children: ReactNode;
   /**
    * Rendered below the surface content, splitting this column vertically.
@@ -114,7 +137,55 @@ const SURFACE_DISABLED_REASONS = {
   sideChat: "Side Chat requires a server thread on an updated Solla Code server.",
 } as const;
 
-type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
+type TabContextMenuAction =
+  | "copy-path"
+  | "copy-chat-id"
+  | "rename"
+  | "reset-name"
+  | "close"
+  | "close-others"
+  | "close-to-right"
+  | "close-all";
+
+export function rightPanelTabContextMenuItems(
+  surface: RightPanelSurface,
+  surfaceIndex: number,
+  surfaceCount: number,
+): ContextMenuItem<TabContextMenuAction>[] {
+  const items: ContextMenuItem<TabContextMenuAction>[] = [];
+  if (surface.kind === "file") {
+    items.push({ id: "copy-path", label: "Copy path" });
+  }
+  // A side chat's id is the only way to address it from another chat (the
+  // collaboration tools take one), and the tab is the only place it is
+  // visible at all — the title is user-editable and says nothing about it.
+  if (surface.kind === "side-chat") {
+    items.push({ id: "copy-chat-id", label: "Copy chat ID" });
+  }
+  items.push({ id: "rename", label: "Rename" });
+  if (surface.customTitle) {
+    items.push({ id: "reset-name", label: "Reset name" });
+  }
+  items.push(
+    { id: "close", label: "Close" },
+    {
+      id: "close-others",
+      label: "Close others",
+      disabled: surfaceCount <= 1,
+    },
+    {
+      id: "close-to-right",
+      label: "Close to the right",
+      disabled: surfaceIndex >= surfaceCount - 1,
+    },
+    {
+      id: "close-all",
+      label: "Close all",
+      disabled: surfaceCount === 0,
+    },
+  );
+  return items;
+}
 
 export function resolveHorizontalTabWheelDelta(input: {
   readonly deltaX: number;
@@ -223,6 +294,34 @@ export function routeCapturedHorizontalTabWheel(
   return routeHorizontalTabWheel(viewport, event);
 }
 
+export type RightPanelNewSurfaceKind =
+  | "browser"
+  | "terminal"
+  | "files"
+  | "artifact"
+  | "diff"
+  | "side-chat";
+
+export function rightPanelNewSurfaceKinds(
+  artifactMenuAvailable: boolean,
+): readonly RightPanelNewSurfaceKind[] {
+  return [
+    "browser",
+    "terminal",
+    "files",
+    ...(artifactMenuAvailable ? (["artifact"] as const) : []),
+    "diff",
+    "side-chat",
+  ];
+}
+
+export function shouldShowArtifactShelf(
+  surfaces: readonly RightPanelSurface[],
+  activeSurfaceId: string | null,
+): boolean {
+  return surfaces.find((surface) => surface.id === activeSurfaceId)?.kind !== "artifact";
+}
+
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
   return (
     <Tooltip>
@@ -314,7 +413,7 @@ export function RightPanelEmptyState(props: {
             Choose what to show in the right panel.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
           {actions.map((action) => {
             const Icon = action.icon;
             const content = (
@@ -361,11 +460,12 @@ export function RightPanelEmptyState(props: {
   );
 }
 
-function surfaceTitle(
+export function resolveRightPanelSurfaceTitle(
   surface: RightPanelSurface,
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
+  if (surface.customTitle) return surface.customTitle;
   switch (surface.kind) {
     case "diff":
       return "Diff";
@@ -382,6 +482,8 @@ function surfaceTitle(
       return "Plan";
     case "side-chat":
       return surface.title;
+    case "artifact":
+      return surface.title;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -393,6 +495,52 @@ function surfaceTitle(
       }
     }
   }
+}
+
+function TabTitleEditor(props: {
+  title: string;
+  onCommit: (title: string) => void;
+  onCancel: () => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(props.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const finishedRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const commit = () => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    props.onCommit(draftTitle);
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      value={draftTitle}
+      aria-label={`Rename ${props.title} tab`}
+      className="h-5 min-w-0 flex-1 rounded-sm border border-primary/50 bg-background px-1 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary/40"
+      onChange={(event) => setDraftTitle(event.currentTarget.value)}
+      onBlur={commit}
+      onClick={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+          return;
+        }
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        finishedRef.current = true;
+        props.onCancel();
+      }}
+    />
+  );
 }
 
 function PreviewFavicon({ url }: { url: string | null }) {
@@ -415,11 +563,13 @@ function SurfaceIcon({
   surface,
   sessions,
   sideChatStatus,
+  terminalStatus = null,
   theme,
 }: {
   surface: RightPanelSurface;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   sideChatStatus: SideChatTabStatus | null;
+  terminalStatus?: TerminalTabStatus | null;
   theme: "light" | "dark";
 }) {
   switch (surface.kind) {
@@ -442,9 +592,18 @@ function SurfaceIcon({
         />
       );
     case "terminal":
-      return <TerminalSquare className="size-3.5 shrink-0" />;
+      return (
+        <TerminalSessionIcon
+          className="size-3.5"
+          working={terminalStatus?.working === true}
+          driverKind={terminalStatus?.driverKind ?? null}
+          displayName={terminalStatus?.displayName ?? null}
+        />
+      );
     case "plan":
       return <ClipboardList className="size-3.5 shrink-0" />;
+    case "artifact":
+      return <Package className="size-3.5 shrink-0" />;
     case "side-chat": {
       const icon =
         shouldShowSideChatProviderIcon(sideChatStatus) && sideChatStatus?.provider ? (
@@ -496,6 +655,9 @@ function SortableTab(props: {
   onTabMouseDown: (event: ReactMouseEvent) => void;
   onTabAuxClick: (event: ReactMouseEvent, surface: RightPanelSurface) => void;
   onTabContextMenu: (event: ReactMouseEvent, surface: RightPanelSurface) => void;
+  renaming: boolean;
+  onRename: (surface: RightPanelSurface, title: string) => void;
+  onCancelRename: () => void;
 }) {
   const {
     attributes,
@@ -530,35 +692,60 @@ function SortableTab(props: {
         isOver && !isDragging && "ring-1 ring-primary/40",
       )}
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              ref={setActivatorNodeRef}
-              className="flex min-w-0 flex-1 items-center gap-1.5"
-              onClick={() => {
-                if (props.dragSuppressedRef.current) {
-                  props.dragSuppressedRef.current = false;
-                  return;
-                }
-                props.onActivate(props.surface);
-              }}
-              {...attributes}
-              {...listeners}
-            >
-              <SurfaceIcon
-                surface={props.surface}
-                sessions={props.sessions}
-                sideChatStatus={props.sideChatStatus}
-                theme={props.theme}
-              />
-              <span className="truncate">{props.title}</span>
-            </button>
-          }
-        />
-        <TooltipPopup>{props.title}</TooltipPopup>
-      </Tooltip>
+      {props.renaming ? (
+        <>
+          <SurfaceIcon
+            surface={props.surface}
+            sessions={props.sessions}
+            sideChatStatus={props.sideChatStatus}
+            theme={props.theme}
+          />
+          <TabTitleEditor
+            title={props.title}
+            onCommit={(title) => props.onRename(props.surface, title)}
+            onCancel={props.onCancelRename}
+          />
+        </>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                ref={setActivatorNodeRef}
+                className="flex min-w-0 flex-1 items-center gap-1.5"
+                onClick={() => {
+                  if (props.dragSuppressedRef.current) {
+                    props.dragSuppressedRef.current = false;
+                    return;
+                  }
+                  props.onActivate(props.surface);
+                }}
+                {...attributes}
+                {...listeners}
+              >
+                <SurfaceIcon
+                  surface={props.surface}
+                  sessions={props.sessions}
+                  sideChatStatus={props.sideChatStatus}
+                  theme={props.theme}
+                />
+                <span className="truncate">{props.title}</span>
+              </button>
+            }
+          />
+          <TooltipPopup>
+            {props.title}
+            {props.surface.kind === "side-chat" ? (
+              // Named in the one place the thread is visible at all. A side
+              // chat is absent from the sidebar, so without this the only
+              // signal that it is not an ordinary thread is which panel it
+              // happens to be docked in.
+              <span className="block text-xs opacity-70">Side chat</span>
+            ) : null}
+          </TooltipPopup>
+        </Tooltip>
+      )}
       <button
         type="button"
         className={cn(
@@ -585,6 +772,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
   const { resolvedTheme } = useTheme();
   const tabListRef = useRef<HTMLDivElement>(null);
+  const [renamingSurfaceId, setRenamingSurfaceId] = useState<string | null>(null);
 
   const handleTabContextMenu = useCallback(
     async (event: ReactMouseEvent, surface: RightPanelSurface) => {
@@ -597,33 +785,22 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       const surfaceIndex = props.surfaces.findIndex((entry) => entry.id === surface.id);
       if (surfaceIndex < 0) return;
 
-      const items: ContextMenuItem<TabContextMenuAction>[] = [];
-      if (surface.kind === "file") {
-        items.push({ id: "copy-path", label: "Copy path" });
-      }
-      items.push(
-        { id: "close", label: "Close" },
-        {
-          id: "close-others",
-          label: "Close others",
-          disabled: props.surfaces.length <= 1,
-        },
-        {
-          id: "close-to-right",
-          label: "Close to the right",
-          disabled: surfaceIndex >= props.surfaces.length - 1,
-        },
-        {
-          id: "close-all",
-          label: "Close all",
-          disabled: props.surfaces.length === 0,
-        },
-      );
+      const items = rightPanelTabContextMenuItems(surface, surfaceIndex, props.surfaces.length);
 
       const action = await api.contextMenu.show(items, { x: event.clientX, y: event.clientY });
       switch (action) {
         case "copy-path":
           if (surface.kind === "file") props.onCopyFilePath(surface.relativePath);
+          break;
+        case "copy-chat-id":
+          if (surface.kind === "side-chat") props.onCopySideChatId(surface.resourceId);
+          break;
+        case "rename":
+          setRenamingSurfaceId(surface.id);
+          break;
+        case "reset-name":
+          props.onRenameSurface(surface, "");
+          setRenamingSurfaceId((current) => (current === surface.id ? null : current));
           break;
         case "close":
           props.onCloseSurface(surface);
@@ -674,6 +851,13 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       event.preventDefault();
       event.stopPropagation();
       props.onCloseSurface(surface);
+    },
+    [props],
+  );
+  const handleRenameSurface = useCallback(
+    (surface: RightPanelSurface, title: string) => {
+      props.onRenameSurface(surface, title);
+      setRenamingSurfaceId(null);
     },
     [props],
   );
@@ -741,7 +925,11 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     surface={surface}
                     active={surface.id === props.activeSurfaceId}
                     pending={props.pendingSurfaceIds.has(surface.id)}
-                    title={surfaceTitle(surface, props.previewSessions, props.terminalLabelsById)}
+                    title={resolveRightPanelSurfaceTitle(
+                      surface,
+                      props.previewSessions,
+                      props.terminalLabelsById,
+                    )}
                     sideChatStatus={
                       surface.kind === "side-chat"
                         ? (props.sideChatStatusByThreadId.get(surface.resourceId) ?? null)
@@ -755,6 +943,9 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     onTabMouseDown={handleTabMouseDown}
                     onTabAuxClick={handleTabAuxClick}
                     onTabContextMenu={handleTabContextMenu}
+                    renaming={surface.id === renamingSurfaceId}
+                    onRename={handleRenameSurface}
+                    onCancelRename={() => setRenamingSurfaceId(null)}
                   />
                 ))}
               </SortableContext>
@@ -768,42 +959,75 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   <Plus className="size-4" />
                 </MenuTrigger>
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
-                  <SurfaceMenuItem
-                    available={props.browserAvailable}
-                    disabledReason={SURFACE_DISABLED_REASONS.browser}
-                    onClick={props.onAddBrowser}
-                  >
-                    <Globe2 />
-                    Browser
-                  </SurfaceMenuItem>
-                  <SurfaceMenuItem available onClick={props.onAddTerminal}>
-                    <TerminalSquare />
-                    Terminal
-                  </SurfaceMenuItem>
-                  <SurfaceMenuItem
-                    available={props.filesAvailable}
-                    disabledReason={SURFACE_DISABLED_REASONS.files}
-                    onClick={props.onAddFiles}
-                  >
-                    <Files />
-                    Files
-                  </SurfaceMenuItem>
-                  <SurfaceMenuItem
-                    available={props.diffAvailable}
-                    disabledReason={SURFACE_DISABLED_REASONS.diff}
-                    onClick={props.onAddDiff}
-                  >
-                    <FileDiff />
-                    Diff
-                  </SurfaceMenuItem>
-                  <SurfaceMenuItem
-                    available={props.sideChatAvailable}
-                    disabledReason={SURFACE_DISABLED_REASONS.sideChat}
-                    onClick={props.onAddSideChat}
-                  >
-                    <MessagesSquare />
-                    Side Chat
-                  </SurfaceMenuItem>
+                  {rightPanelNewSurfaceKinds(props.artifactMenu != null).map((kind) => {
+                    switch (kind) {
+                      case "browser":
+                        return (
+                          <SurfaceMenuItem
+                            key={kind}
+                            available={props.browserAvailable}
+                            disabledReason={SURFACE_DISABLED_REASONS.browser}
+                            onClick={props.onAddBrowser}
+                          >
+                            <Globe2 />
+                            Browser
+                          </SurfaceMenuItem>
+                        );
+                      case "terminal":
+                        return (
+                          <SurfaceMenuItem key={kind} available onClick={props.onAddTerminal}>
+                            <TerminalSquare />
+                            Terminal
+                          </SurfaceMenuItem>
+                        );
+                      case "files":
+                        return (
+                          <SurfaceMenuItem
+                            key={kind}
+                            available={props.filesAvailable}
+                            disabledReason={SURFACE_DISABLED_REASONS.files}
+                            onClick={props.onAddFiles}
+                          >
+                            <Files />
+                            Files
+                          </SurfaceMenuItem>
+                        );
+                      case "artifact":
+                        return (
+                          <MenuSub key={kind}>
+                            <MenuSubTrigger>
+                              <Package />
+                              Artifacts
+                            </MenuSubTrigger>
+                            <MenuSubPopup className="min-w-64">{props.artifactMenu}</MenuSubPopup>
+                          </MenuSub>
+                        );
+                      case "diff":
+                        return (
+                          <SurfaceMenuItem
+                            key={kind}
+                            available={props.diffAvailable}
+                            disabledReason={SURFACE_DISABLED_REASONS.diff}
+                            onClick={props.onAddDiff}
+                          >
+                            <FileDiff />
+                            Diff
+                          </SurfaceMenuItem>
+                        );
+                      case "side-chat":
+                        return (
+                          <SurfaceMenuItem
+                            key={kind}
+                            available={props.sideChatAvailable}
+                            disabledReason={SURFACE_DISABLED_REASONS.sideChat}
+                            onClick={props.onAddSideChat}
+                          >
+                            <MessagesSquare />
+                            Side Chat
+                          </SurfaceMenuItem>
+                        );
+                    }
+                  })}
                 </MenuPopup>
               </Menu>
             ) : null}
@@ -811,6 +1035,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         </ScrollArea>
         {props.layoutControls}
       </div>
+      {shouldShowArtifactShelf(props.surfaces, props.activeSurfaceId) ? props.artifactShelf : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState

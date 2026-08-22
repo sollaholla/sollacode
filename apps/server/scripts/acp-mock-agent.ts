@@ -23,6 +23,7 @@ const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLET
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
 const hangFirstPromptForever = process.env.T3_ACP_HANG_FIRST_PROMPT_FOREVER === "1";
+const announceHangingPrompt = process.env.T3_ACP_ANNOUNCE_HANGING_PROMPT === "1";
 const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANCEL === "1";
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
@@ -38,6 +39,7 @@ const emitOverlappingXAiPromptCompleteOutOfOrder =
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
+const emitGrokBackgroundTasks = process.env.T3_ACP_EMIT_GROK_BACKGROUND_TASKS;
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const permissionOptionIds = {
@@ -46,6 +48,11 @@ const permissionOptionIds = {
   rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
 };
 const sessionId = "mock-session-1";
+
+const grokAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
+  { modelId: "grok-build", name: "Grok Build" },
+  { modelId: "grok-mock-alt", name: "Grok Mock Alt" },
+];
 
 let currentModeId = "ask";
 let currentModelId = "default";
@@ -56,6 +63,70 @@ let currentFast = false;
 let promptCount = 0;
 let overlappingFirstPromptId: string | undefined;
 const cancelledSessions = new Set<string>();
+const hangingGrokBackgroundTasks = new Set<string>();
+
+const MOCK_GROK_BACKGROUND_TASK_ID = "call-mock-bg-1";
+
+function grokBackgroundTaskSnapshot(input: {
+  readonly explicitlyKilled?: boolean;
+  readonly exitCode?: number;
+}) {
+  return {
+    task_id: MOCK_GROK_BACKGROUND_TASK_ID,
+    command: "sleep 30",
+    cwd: process.cwd(),
+    output: input.explicitlyKilled === true ? "" : "mock background command finished\n",
+    output_file: "/tmp/mock-bg.log",
+    truncated: false,
+    output_total_bytes: 0,
+    exit_code: input.exitCode ?? (input.explicitlyKilled === true ? 137 : 0),
+    signal: input.explicitlyKilled === true ? "SIGTERM" : null,
+    completed: true,
+    kind: "bash",
+    block_waited: false,
+    explicitly_killed: input.explicitlyKilled === true,
+    kill_result_delivered: input.explicitlyKilled === true,
+    description: "Run mock background command",
+    is_backgrounded: true,
+  };
+}
+
+function emitGrokBackgroundTaskNotification(
+  sessionId: string,
+  kind: "backgrounded" | "completed",
+  options?: { readonly explicitlyKilled?: boolean },
+): void {
+  const viaDedicated = emitGrokBackgroundTasks === "dedicated";
+  if (kind === "backgrounded") {
+    const update = {
+      sessionUpdate: "task_backgrounded",
+      tool_call_id: MOCK_GROK_BACKGROUND_TASK_ID,
+      task_id: MOCK_GROK_BACKGROUND_TASK_ID,
+      command: "sleep 30",
+      cwd: process.cwd(),
+      output_file: "/tmp/mock-bg.log",
+      description: "Run mock background command",
+    };
+    if (viaDedicated) {
+      writeJsonRpcNotification("_x.ai/task_backgrounded", { sessionId, ...update });
+      return;
+    }
+    writeJsonRpcNotification("_x.ai/session/update", { sessionId, update });
+    return;
+  }
+  const update = {
+    sessionUpdate: "task_completed",
+    task_snapshot: grokBackgroundTaskSnapshot({
+      explicitlyKilled: options?.explicitlyKilled === true,
+    }),
+    will_wake: false,
+  };
+  if (viaDedicated) {
+    writeJsonRpcNotification("_x.ai/task_completed", { sessionId, ...update });
+    return;
+  }
+  writeJsonRpcNotification("_x.ai/session/update", { sessionId, update });
+}
 
 function promptIdFromRequestMeta(
   request: Pick<AcpSchema.PromptRequest, "_meta">,
@@ -207,19 +278,20 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
     }
   }
 
+  const grokModelId = grokAcpModels.some((model) => model.modelId === currentModelId)
+    ? currentModelId
+    : "grok-build";
   return [
     {
       id: "model",
       name: "Model",
       category: "model",
       type: "select" as const,
-      currentValue: currentModelId,
-      options: [
-        { value: "default", name: "Auto" },
-        { value: "composer-2", name: "Composer 2" },
-        { value: "composer-2[fast=true]", name: "Composer 2 Fast" },
-        { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
-      ],
+      currentValue: grokModelId,
+      options: grokAcpModels.map((model) => ({
+        value: model.modelId,
+        name: model.name,
+      })),
     },
   ];
 }
@@ -277,11 +349,6 @@ function modeState(): AcpSchema.SessionModeState {
     availableModes,
   };
 }
-
-const grokAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
-  { modelId: "grok-build", name: "Grok Build" },
-  { modelId: "grok-mock-alt", name: "Grok Mock Alt" },
-];
 
 function modelState(): AcpSchema.SessionModelState {
   const modelId = grokAcpModels.some((model) => model.modelId === currentModelId)
@@ -531,6 +598,15 @@ const program = Effect.gen(function* () {
       }
 
       if (hangPromptForever || (hangFirstPromptForever && promptCount === 1)) {
+        if (announceHangingPrompt) {
+          writeJsonRpcNotification("session/update", {
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: `hanging-prompt-${promptCount}` },
+            },
+          });
+        }
         return yield* Effect.never;
       }
 
@@ -885,6 +961,14 @@ const program = Effect.gen(function* () {
         },
       });
 
+      if (emitGrokBackgroundTasks === "1" || emitGrokBackgroundTasks === "dedicated") {
+        emitGrokBackgroundTaskNotification(requestedSessionId, "backgrounded");
+        emitGrokBackgroundTaskNotification(requestedSessionId, "completed");
+      } else if (emitGrokBackgroundTasks === "hang") {
+        hangingGrokBackgroundTasks.add(requestedSessionId);
+        emitGrokBackgroundTaskNotification(requestedSessionId, "backgrounded");
+      }
+
       return { stopReason: "end_turn" };
     }),
   );
@@ -894,6 +978,85 @@ const program = Effect.gen(function* () {
       return Effect.succeed({
         models: availableModels(),
       });
+    }
+
+    if (method === "_x.ai/billing" || method === "x.ai/billing") {
+      return Effect.succeed({
+        config: {
+          creditUsagePercent: 6,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-15T00:00:00+00:00",
+            end: "2026-08-22T00:00:00+00:00",
+          },
+          onDemandCap: { val: 0 },
+          onDemandUsed: { val: 0 },
+          prepaidBalance: { val: 0 },
+          isUnifiedBillingUser: true,
+          billingPeriodStart: "2026-08-15T00:00:00+00:00",
+          billingPeriodEnd: "2026-08-22T00:00:00+00:00",
+        },
+        subscription_tier: "SuperGrok Plus",
+      });
+    }
+
+    if (method === "_x.ai/session/info" || method === "x.ai/session/info") {
+      const requestedSessionId =
+        typeof params === "object" &&
+        params !== null &&
+        "sessionId" in params &&
+        typeof params.sessionId === "string"
+          ? params.sessionId
+          : sessionId;
+      return Effect.succeed({
+        result: {
+          sessionId: requestedSessionId,
+          context: {
+            used: 4051,
+            total: 500000,
+            systemPromptTokens: 1516,
+            toolDefinitionsTokens: 8448,
+            messageTokens: 2535,
+            usagePct: 1,
+            autoCompactThresholdPercent: 80,
+          },
+        },
+      });
+    }
+
+    if (method === "_x.ai/session/usage" || method === "x.ai/session/usage") {
+      return Effect.succeed({
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      });
+    }
+
+    if (method === "_x.ai/auth/check_subscription" || method === "x.ai/auth/check_subscription") {
+      return Effect.succeed({
+        authenticated: true,
+        meta: {
+          email: "grok-mock@example.com",
+          subscription_tier: "SuperGrok Plus",
+        },
+      });
+    }
+
+    if (method === "_x.ai/task/kill" || method === "x.ai/task/kill") {
+      const requestedSessionId =
+        typeof params === "object" &&
+        params !== null &&
+        "sessionId" in params &&
+        typeof params.sessionId === "string"
+          ? params.sessionId
+          : sessionId;
+      hangingGrokBackgroundTasks.delete(requestedSessionId);
+      emitGrokBackgroundTaskNotification(requestedSessionId, "completed", {
+        explicitlyKilled: true,
+      });
+      return Effect.succeed({ killed: true });
     }
 
     if (method !== "session/mode/set") {

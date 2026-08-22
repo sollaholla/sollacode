@@ -1,8 +1,7 @@
-import { BlurTargetView } from "expo-blur";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
-import { StatusBar, useColorScheme } from "react-native";
+import { type PropsWithChildren, useEffect } from "react";
+import { Platform, StatusBar, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -10,7 +9,6 @@ import { createStaticNavigation, DarkTheme, DefaultTheme } from "@react-navigati
 
 import { RegistryContext } from "@effect/atom-react";
 import { ConfirmDialogHost } from "./components/ConfirmDialogHost";
-import { prepareNativeShowcaseCapture } from "./features/showcase/nativeShowcaseScene";
 import { IncomingShareProvider } from "./features/sharing/IncomingShareProvider";
 import {
   AppearancePreferencesProvider,
@@ -25,6 +23,8 @@ import { useThemeColor } from "./lib/useThemeColor";
 import "../global.css";
 
 if (process.env.EXPO_PUBLIC_SHOWCASE === "1") {
+  const { prepareNativeShowcaseCapture } =
+    require("./features/showcase/nativeShowcaseScene") as typeof import("./features/showcase/nativeShowcaseScene");
   prepareNativeShowcaseCapture();
 }
 
@@ -45,6 +45,18 @@ const appLinking = {
 };
 
 const Navigation = createStaticNavigation(RootStack);
+
+function AppBlurTarget(props: PropsWithChildren) {
+  if (Platform.OS !== "android") {
+    return <View style={{ flex: 1 }}>{props.children}</View>;
+  }
+  const { BlurTargetView } = require("expo-blur") as typeof import("expo-blur");
+  return (
+    <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
+      {props.children}
+    </BlurTargetView>
+  );
+}
 
 function SplashScreenCoordinator() {
   const { isReady } = useAppearancePreferences();
@@ -78,7 +90,7 @@ export default function App() {
                     header (glass buttons, title, materials) is forced light even when
                     the system is in dark mode. */}
               {/* Blur target for Android dropdown backdrops — see appBlurTarget.ts. */}
-              <BlurTargetView ref={appBlurTargetRef} style={{ flex: 1 }}>
+              <AppBlurTarget>
                 <IncomingShareProvider>
                   <Navigation
                     linking={appLinking}
@@ -86,7 +98,7 @@ export default function App() {
                   />
                 </IncomingShareProvider>
                 <ConfirmDialogHost />
-              </BlurTargetView>
+              </AppBlurTarget>
               {/* Anchored-menu overlays render here — in-window, so the
                     keyboard stays up while a dropdown is open. */}
               <OverlayPortalHost />

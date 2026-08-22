@@ -1,11 +1,14 @@
 import type {
   EnvironmentId,
   TerminalAttachStreamEvent,
+  TerminalLayoutStreamEvent,
   TerminalMetadataStreamEvent,
   TerminalSessionSnapshot,
   TerminalSummary,
+  TerminalThreadLayout,
   ThreadId,
 } from "@t3tools/contracts";
+import { terminalSubprocessIsWorking } from "@t3tools/shared/terminalProvider";
 
 export interface TerminalSessionState {
   readonly summary: TerminalSummary | null;
@@ -13,6 +16,7 @@ export interface TerminalSessionState {
   readonly status: TerminalSessionSnapshot["status"] | "closed";
   readonly error: string | null;
   readonly hasRunningSubprocess: boolean;
+  readonly working: boolean;
   readonly updatedAt: string | null;
   readonly version: number;
 }
@@ -58,6 +62,7 @@ export const EMPTY_TERMINAL_SESSION_STATE = Object.freeze<TerminalSessionState>(
   status: "closed",
   error: null,
   hasRunningSubprocess: false,
+  working: false,
   updatedAt: null,
   version: 0,
 });
@@ -117,6 +122,11 @@ export function combineTerminalSessionState(
     status: buffer.version > 0 ? buffer.status : (summary?.status ?? buffer.status),
     error: buffer.error,
     hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
+    working: terminalSubprocessIsWorking({
+      hasRunningSubprocess: summary?.hasRunningSubprocess ?? false,
+      command: summary?.label,
+      ...(summary?.working !== undefined ? { working: summary.working } : {}),
+    }),
     updatedAt: latestTimestamp(summary?.updatedAt ?? null, buffer.updatedAt),
     version: buffer.version,
   };
@@ -170,6 +180,17 @@ export function applyTerminalAttachStreamEvent(
     case "activity":
       return current;
   }
+}
+
+export function applyTerminalLayoutStreamEvent(
+  current: ReadonlyArray<TerminalThreadLayout>,
+  event: TerminalLayoutStreamEvent,
+): ReadonlyArray<TerminalThreadLayout> {
+  if (event.type === "snapshot") {
+    return event.layouts;
+  }
+  const next = current.filter((layout) => layout.threadId !== event.layout.threadId);
+  return [...next, event.layout];
 }
 
 export function applyTerminalMetadataStreamEvent(

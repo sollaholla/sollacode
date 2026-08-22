@@ -7,7 +7,7 @@
  * @module textGenerationPrompts
  */
 import * as Schema from "effect/Schema";
-import type { ChatAttachment } from "@t3tools/contracts";
+import { type ChatAttachment, VmAgentTaskPromptGenerationResult } from "@t3tools/contracts";
 
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
@@ -215,6 +215,42 @@ export interface PlanRefreshPromptInput {
   transcript: string;
   currentSteps: ReadonlyArray<{ step: string; status: string }>;
   policy?: TextGenerationPolicy | undefined;
+}
+
+export interface VmAgentTaskPromptInput {
+  agentName: string;
+  agentPurpose: string;
+  request: string;
+  currentTime: string;
+}
+
+export function buildVmAgentTaskPrompt(input: VmAgentTaskPromptInput) {
+  const prompt = [
+    "You design one durable automation task for a custom agent that owns a persistent computer.",
+    "Return a JSON object with keys: title, prompt, schedule, completionCriteria, notificationPolicy.",
+    "",
+    `Agent: ${input.agentName}`,
+    `Agent purpose: ${limitSection(input.agentPurpose, 2_000)}`,
+    `Current time: ${input.currentTime}`,
+    "",
+    "User request:",
+    limitSection(input.request, 8_000),
+    "",
+    "Rules:",
+    "- title is a specific action, at most 200 characters",
+    "- prompt is a self-contained instruction the agent can execute later without this conversation",
+    "- preserve concrete systems, pages, constraints, and stopping conditions from the request",
+    "- never invent credentials or secrets; say to stop at login when the request requires user entry",
+    "- completionCriteria is a short array of no more than 50 observable outcomes",
+    "- notificationPolicy is always, failure, or never; default to always",
+    "- schedule is null for an unscheduled task",
+    "- a one-time schedule is { kind: once, runAt: ISO-8601 timestamp }",
+    "- a recurring schedule is { kind: interval, everyMinutes: integer from 1 to 525600 }",
+    "- convert hourly/daily/weekly recurrence to 60/1440/10080 minutes",
+    "- if timing is ambiguous, use null instead of guessing",
+  ].join("\n");
+
+  return { prompt, outputSchema: VmAgentTaskPromptGenerationResult };
 }
 
 /**

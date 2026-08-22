@@ -7,6 +7,7 @@ import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 
 import {
   buildTerminalMenuSessions,
+  getTerminalStatusLabel,
   nextOpenTerminalId,
   nextTerminalId,
   previousLiveTerminalId,
@@ -23,6 +24,7 @@ function makeMenuSession(input: {
     cwd: null,
     status: input.status,
     hasRunningSubprocess: false,
+    working: false,
     displayLabel: getTerminalLabel(input.terminalId),
     updatedAt: null,
   };
@@ -60,6 +62,7 @@ function makeKnownSession(input: {
       status: input.status,
       error: null,
       hasRunningSubprocess: false,
+      working: false,
       updatedAt: input.updatedAt ?? "2026-04-15T20:00:00.000Z",
       version: 1,
     },
@@ -92,6 +95,7 @@ describe("buildTerminalMenuSessions", () => {
         cwd: "/workspace/feature",
         status: "running",
         hasRunningSubprocess: false,
+        working: false,
         displayLabel: "Terminal 3",
         updatedAt: "2026-04-15T20:05:00.000Z",
       },
@@ -108,6 +112,7 @@ describe("buildTerminalMenuSessions", () => {
           cwd: "/workspace/exited",
           status: "exited",
           hasRunningSubprocess: false,
+          working: false,
           displayLabel: "Terminal 4",
           updatedAt: "2026-04-15T20:07:00.000Z",
         },
@@ -118,10 +123,20 @@ describe("buildTerminalMenuSessions", () => {
         cwd: "/workspace/exited",
         status: "exited",
         hasRunningSubprocess: false,
+        working: false,
         displayLabel: "Terminal 4",
         updatedAt: "2026-04-15T20:07:00.000Z",
       },
     ]);
+  });
+});
+
+describe("getTerminalStatusLabel", () => {
+  it("does not treat an idle agent TUI as working", () => {
+    expect(getTerminalStatusLabel({ status: "running", hasRunningSubprocess: true })).toBe("Ready");
+    expect(
+      getTerminalStatusLabel({ status: "running", hasRunningSubprocess: true, working: true }),
+    ).toBe("Working");
   });
 });
 

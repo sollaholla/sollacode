@@ -7,6 +7,11 @@
       "command": "vp i && ln -sf $T3CODE_PROJECT_ROOT/.env .env && ln -sf $T3CODE_PROJECT_ROOT/infra/relay/.env infra/relay/.env",
       "icon": "configure",
       "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Build & Relaunch Release",
+      "command": "env -u ELECTRON_RUN_AS_NODE node scripts/build-install-desktop-release.ts",
+      "icon": "build"
     }
   ]
 }

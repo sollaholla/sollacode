@@ -148,7 +148,12 @@ export const make = Effect.fn("NodePtyAdapter.make")(function* (
             cols: input.cols,
             rows: input.rows,
             env: input.env,
-            name: platform === "win32" ? "xterm-color" : "xterm-256color",
+            // One TERM everywhere: the surface is always xterm.js, which
+            // renders 256-color/truecolor regardless of host platform. The
+            // old win32 "xterm-color" advertised an 8-color terminal with
+            // limited caps, so TUIs (claude, codex) chose degraded
+            // renderers on Windows only.
+            name: "xterm-256color",
           }),
         catch: (cause) =>
           new PtyAdapter.PtySpawnError({

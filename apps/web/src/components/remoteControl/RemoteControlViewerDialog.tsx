@@ -9,7 +9,7 @@ import type {
   RemoteControlSession,
   RemoteControlVideoChunk,
 } from "@t3tools/contracts";
-import { MonitorIcon, ShieldCheckIcon } from "lucide-react";
+import { MaximizeIcon, MinimizeIcon, MonitorIcon, ShieldCheckIcon } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -41,17 +41,26 @@ import {
   normalizeRemoteControlKeyCode,
   normalizedRemotePoint,
   remotePointerButton,
+  shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
 import { createRemoteControlInputScheduler } from "./remoteControlInputScheduler";
 import { describeHostStatus } from "./remoteControlHostStatus";
 import { clampPointerDelta } from "./remoteControlPointerMotion";
+import { resolveRemoteControlSurface } from "./remoteControlSurfaceState";
 import {
   createRemoteControlVideoSink,
   describeUnsupportedCodec,
   formatVideoStats,
   type RemoteControlVideoSink,
 } from "./remoteControlPlayer";
+
+/**
+ * How long an approved session may show nothing before the spinner admits that
+ * this is longer than it should be. Comfortably past the 5s video watchdog, so
+ * a session that merely fell back to JPEG never trips it.
+ */
+const FIRST_FRAME_SLOW_MS = 12_000;
 
 function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]): string {
   const cause = squashAtomCommandFailure(result);
@@ -86,6 +95,7 @@ export function RemoteControlViewerDialog(props: {
   const [remoteLocked, setRemoteLocked] = useState(false);
   const [pointerLocked, setPointerLocked] = useState(false);
   const pointerLockedRef = useRef(false);
+  const programmaticPointerUnlockRef = useRef(false);
   const surfaceElementRef = useRef<HTMLDivElement | null>(null);
   const requestStartedRef = useRef(false);
   const frameImageRef = useRef<HTMLImageElement>(null);
@@ -96,11 +106,22 @@ export function RemoteControlViewerDialog(props: {
   const pendingChunksRef = useRef<RemoteControlVideoChunk[]>([]);
   // Set once video is confirmed undecodable here, which permanently hands the
   // session back to the JPEG frames the host also understands.
+  //
+  // Deliberately not shown to the user. Falling back is the session working as
+  // designed — the picture arrives either way — so the string is a diagnostic,
+  // surfaced on the surface element as a data attribute for debugging and
+  // nowhere else. It used to render as an amber banner over the desktop and as
+  // a headline explaining itself, which read as a failure at the exact moment
+  // the viewer was successfully recovering.
   const [videoUnavailable, setVideoUnavailable] = useState<string | null>(null);
   const videoUnavailableRef = useRef<string | null>(null);
   videoUnavailableRef.current = videoUnavailable;
   const decodedRef = useRef(false);
-  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  // Whether anything has actually been painted yet, by either path. Until this
+  // flips, the surface is a black rectangle that looks broken.
+  const [hasRenderedFrame, setHasRenderedFrame] = useState(false);
+  const [firstFrameSlow, setFirstFrameSlow] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
@@ -134,7 +155,8 @@ export function RemoteControlViewerDialog(props: {
     requestStartedRef.current = true;
     setError(null);
     setFrameData(null);
-    setNoticeDismissed(false);
+    setHasRenderedFrame(false);
+    setFirstFrameSlow(false);
 
     void (async () => {
       const result = await requestAccess({
@@ -374,17 +396,37 @@ export function RemoteControlViewerDialog(props: {
    * window entirely. Pointer lock also unlocks `movementX/Y`, which is the
    * only way to get the relative deltas mouse-look needs.
    *
-   * Escape exits pointer lock natively; `pointerlockchange` below is what
-   * observes it, so the browser's own gesture stays the release path and no
-   * key interception is needed.
+   * Escape exits pointer lock natively and the browser consumes that key event.
+   * `pointerlockchange` is therefore also the only reliable place to forward
+   * the same Escape edge to the host. Programmatic exits are marked separately
+   * so closing the dialog or leaving control mode never invents a key press.
    */
   useEffect(() => {
     const handlePointerLockChange = () => {
+      const wasLocked = pointerLockedRef.current;
       const locked = document.pointerLockElement === surfaceElementRef.current;
+      const programmatic = programmaticPointerUnlockRef.current;
+      programmaticPointerUnlockRef.current = false;
       pointerLockedRef.current = locked;
       setPointerLocked(locked);
       // A mode edge invalidates any unsent motion sampled in the previous mode.
       inputScheduler.discardPointerMotion();
+      if (
+        shouldForwardEscapeOnPointerUnlock({
+          wasLocked,
+          isLocked: locked,
+          programmatic,
+          inputCaptured: inputCapturedRef.current,
+          keyboardGranted:
+            sessionRef.current?.status === "approved" &&
+            sessionRef.current.grantedCapabilities.includes("keyboard"),
+          documentVisible: document.visibilityState === "visible",
+          documentFocused: document.hasFocus(),
+        })
+      ) {
+        enqueueInput({ type: "key", action: "down", code: "Escape", key: "Escape", repeat: false });
+        enqueueInput({ type: "key", action: "up", code: "Escape", key: "Escape", repeat: false });
+      }
     };
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     return () => {
@@ -392,7 +434,7 @@ export function RemoteControlViewerDialog(props: {
       pointerLockedRef.current = false;
       inputScheduler.discardPointerMotion();
     };
-  }, [inputScheduler]);
+  }, [enqueueInput, inputScheduler]);
 
   useEffect(() => {
     if (!inputCaptured) return;
@@ -450,6 +492,13 @@ export function RemoteControlViewerDialog(props: {
   const canPointer = isApproved && session?.grantedCapabilities.includes("pointer") === true;
   const canKeyboard = isApproved && session?.grantedCapabilities.includes("keyboard") === true;
   const canControl = canPointer || canKeyboard;
+  const surface = resolveRemoteControlSurface({
+    isApproved,
+    videoMimeType,
+    videoUnavailable,
+    frameData,
+    hasRenderedFrame,
+  });
 
   useEffect(() => {
     const surface = surfaceElementRef.current;
@@ -463,12 +512,66 @@ export function RemoteControlViewerDialog(props: {
       }
       return;
     }
-    if (document.pointerLockElement === surface) document.exitPointerLock();
+    if (document.pointerLockElement === surface) {
+      programmaticPointerUnlockRef.current = true;
+      document.exitPointerLock();
+    }
   }, [canPointer, inputCaptured, remoteLocked]);
 
   useEffect(() => {
     if (!canControl && inputCaptured) releaseInputCapture();
   }, [canControl, inputCaptured, releaseInputCapture]);
+
+  /**
+   * Says so when the first frame is taking unusually long.
+   *
+   * The 5s video watchdog hands the session to JPEG silently, which fixes most
+   * stalls without the user ever knowing. This covers the case that outlives
+   * even that: approved, connected, and still nothing painted. It stays a
+   * notice rather than an error — the session is not dead and frames may yet
+   * arrive — so it only adds a line under the spinner.
+   */
+  useEffect(() => {
+    if (!isApproved || hasRenderedFrame) {
+      setFirstFrameSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setFirstFrameSlow(true), FIRST_FRAME_SLOW_MS);
+    return () => window.clearTimeout(timer);
+  }, [hasRenderedFrame, isApproved]);
+
+  /**
+   * Full screen is driven by the browser, not by us: the user can leave with
+   * Escape or the system chrome without touching our button, so the flag is
+   * only ever a mirror of `document.fullscreenElement`.
+   */
+  useEffect(() => {
+    const sync = () => setIsFullScreen(document.fullscreenElement === surfaceElementRef.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  const toggleFullScreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void Promise.resolve(document.exitFullscreen()).catch(() => undefined);
+      return;
+    }
+    const surface = surfaceElementRef.current;
+    if (!surface) return;
+    // Refusable (needs a user gesture, and can be blocked by policy). A refusal
+    // just leaves the viewer windowed, which is the state it was already in.
+    void Promise.resolve(surface.requestFullscreen({ navigationUI: "hide" })).catch(
+      () => undefined,
+    );
+  }, []);
+
+  // Leaving the dialog while still full screen would strand the browser there.
+  useEffect(() => {
+    if (open) return;
+    if (document.fullscreenElement === surfaceElementRef.current && document.fullscreenElement) {
+      void Promise.resolve(document.exitFullscreen()).catch(() => undefined);
+    }
+  }, [open]);
 
   const sendPointer = (
     event: ReactPointerEvent<HTMLDivElement>,
@@ -667,21 +770,14 @@ export function RemoteControlViewerDialog(props: {
                 </p>
               </div>
             </div>
-          ) : videoUnavailable && !frameData && isApproved ? (
-            <div className="max-w-md space-y-4 text-center">
-              <Spinner className="mx-auto size-8" />
-              <div>
-                <p className="font-medium">Switching to image frames</p>
-                <p className="mt-1 text-sm text-muted-foreground">{videoUnavailable}</p>
-              </div>
-            </div>
-          ) : (frameData || (videoMimeType && !videoUnavailable)) && isApproved ? (
+          ) : surface.showSurface ? (
             <div
               ref={surfaceElementRef}
               role="application"
               aria-label={`Remote desktop control for ${environmentLabel}`}
               data-remote-input-capture={inputCaptured ? "active" : "inactive"}
               data-remote-pointer-lock={pointerLocked ? "locked" : "unlocked"}
+              data-remote-video-fallback={videoUnavailable ?? undefined}
               className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-lg bg-black outline-hidden overscroll-none ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
@@ -736,24 +832,70 @@ export function RemoteControlViewerDialog(props: {
               }}
               onWheel={sendWheel}
             >
-              {videoMimeType && !videoUnavailable ? (
+              {surface.media === "video" ? (
                 <video
                   ref={frameVideoRef}
                   aria-label={`Live desktop view from ${environmentLabel}`}
                   autoPlay
                   muted
                   playsInline
+                  // `loadeddata` is the first moment a frame is actually
+                  // decoded, which is also what the 5s watchdog is waiting to
+                  // hear about — marking it here spares the fallback.
+                  onLoadedData={() => {
+                    decodedRef.current = true;
+                    setHasRenderedFrame(true);
+                  }}
+                  onPlaying={() => setHasRenderedFrame(true)}
                   className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
                 />
-              ) : (
+              ) : surface.media === "image" ? (
                 <img
                   ref={frameImageRef}
                   src={frameData ?? undefined}
                   alt={`Live desktop view from ${environmentLabel}`}
                   draggable={false}
+                  // Receiving bytes is not the same as painting them. Keep the
+                  // loading overlay up until the browser has decoded the first
+                  // JPEG, otherwise a slow image decode still exposes black.
+                  onLoad={() => setHasRenderedFrame(true)}
                   className="pointer-events-none max-h-full max-w-full touch-none select-none object-contain"
                 />
-              )}
+              ) : null}
+              {surface.showLoadingOverlay ? (
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 text-center">
+                  <Spinner className="size-8 text-white" />
+                  <p className="text-sm text-white/80">Starting the live desktop stream…</p>
+                  {firstFrameSlow ? (
+                    <p className="max-w-sm text-xs text-white/60">
+                      This is taking longer than usual. If {environmentLabel} is a Mac, it may need
+                      System Settings → Privacy &amp; Security → Screen Recording enabled for Solla
+                      Code.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
+                // Bottom right, opposite the status pill: the top edge belongs
+                // to the host/input notices, which span the full width.
+                className="absolute right-3 bottom-3 flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
+                onClick={(event) => {
+                  // The surface below forwards clicks to the remote desktop;
+                  // pressing this must not also click over there.
+                  event.stopPropagation();
+                  toggleFullScreen();
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                {isFullScreen ? (
+                  <MinimizeIcon className="size-3.5" />
+                ) : (
+                  <MaximizeIcon className="size-3.5" />
+                )}
+                {isFullScreen ? "Exit full screen" : "Full screen"}
+              </button>
               <div className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                 <span
                   className={`size-1.5 rounded-full ${
@@ -775,30 +917,7 @@ export function RemoteControlViewerDialog(props: {
                 <div className="absolute inset-x-3 top-3 rounded-lg border border-destructive/35 bg-background/95 px-3 py-2 text-sm text-destructive shadow-lg">
                   {inputError}
                 </div>
-              ) : videoUnavailable && !noticeDismissed ? (
-                <div className="absolute inset-x-3 top-3 flex items-start gap-3 rounded-lg border border-amber-500/35 bg-background/95 px-3 py-2 text-sm text-amber-600 shadow-lg dark:text-amber-400">
-                  <span className="min-w-0 flex-1 break-words">{videoUnavailable}</span>
-                  <button
-                    type="button"
-                    className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-xs font-medium text-amber-600/80 hover:bg-amber-500/10 hover:text-amber-600 dark:text-amber-400/80 dark:hover:text-amber-400"
-                    aria-label="Dismiss video notice"
-                    onClick={(event) => {
-                      // The surface below owns pointer input; a dismissal must
-                      // not also register as a click on the remote desktop.
-                      event.stopPropagation();
-                      setNoticeDismissed(true);
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    Dismiss
-                  </button>
-                </div>
               ) : null}
-            </div>
-          ) : isApproved ? (
-            <div className="space-y-3 text-center">
-              <Spinner className="mx-auto size-8" />
-              <p className="text-sm text-muted-foreground">Starting the live desktop stream…</p>
             </div>
           ) : isTerminal ? (
             <div className="space-y-3 text-center">

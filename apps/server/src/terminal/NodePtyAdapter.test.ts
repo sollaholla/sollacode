@@ -53,7 +53,9 @@ it.effect("spawns through the public adapter with the provided host references",
         cols: 120,
         rows: 40,
         env: {},
-        name: "xterm-color",
+        // Same TERM on every platform — xterm.js is the surface everywhere;
+        // the old win32 "xterm-color" made TUIs pick degraded renderers.
+        name: "xterm-256color",
       },
     ]);
   }).pipe(Effect.provide(testLayer)),

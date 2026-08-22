@@ -1,5 +1,5 @@
 import { LoaderIcon, RefreshCwIcon } from "lucide-react";
-import type { ServerProvider } from "@t3tools/contracts";
+import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
 
 import { ProviderUsageDetails, type ProviderUsageSummary } from "../chat/ProviderUsageBar";
 import { Button } from "../ui/button";
@@ -16,17 +16,29 @@ export const IDLE_PROVIDER_USAGE_REFRESH_STATE: ProviderUsageRefreshState = {
   error: null,
 };
 
+export function shouldShowProviderSettingsUsage(
+  driverKind: ProviderDriverKind,
+  summary: ProviderUsageSummary | undefined,
+): boolean {
+  const supportedDriver =
+    driverKind === "codex" || driverKind === "claudeAgent" || driverKind === "grok";
+  return supportedDriver && summary?.state !== "unsupported";
+}
+
 export function ProviderSettingsUsage(props: {
   readonly displayName: string;
+  readonly driverKind: ProviderDriverKind;
   readonly provider: ServerProvider | undefined;
   readonly summary: ProviderUsageSummary | undefined;
   readonly refreshState: ProviderUsageRefreshState;
   readonly onRefresh: (() => void) | undefined;
 }) {
-  const { displayName, provider, summary, refreshState, onRefresh } = props;
+  const { displayName, driverKind, provider, summary, refreshState, onRefresh } = props;
   const canRefresh =
     provider !== undefined && isProviderUsageRefreshEligible(provider) && onRefresh !== undefined;
   const refreshing = refreshState.status === "loading";
+
+  if (!shouldShowProviderSettingsUsage(driverKind, summary)) return null;
 
   if (!provider || !summary) {
     return (

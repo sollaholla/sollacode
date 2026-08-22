@@ -70,8 +70,10 @@ import {
 } from "../../attachmentStore.ts";
 import {
   activeTurnWorkSourceId,
+  KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   startupResumeSourceTurnId,
   STARTUP_RESUME_SIGNED_OFF_REASON,
+  threadLostBackgroundTaskAtRestart,
   threadWorkObligationId,
 } from "../agentModeContinuation.ts";
 import {
@@ -625,6 +627,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const refreshActionableProposedPlanSummary = Effect.fn("refreshActionableProposedPlanSummary")(
       function* (threadId: ThreadId) {
+        // Only the latest turn's unimplemented plan is actionable. An older
+        // leftover plan is history, not a wait — falling back to "any plan on
+        // the thread" made almost every thread look blocked.
         yield* sql`
           UPDATE projection_threads
           SET has_actionable_proposed_plan = COALESCE((
@@ -643,22 +648,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                     WHERE latest_turn_plan.thread_id = projection_threads.thread_id
                       AND latest_turn_plan.turn_id = projection_threads.latest_turn_id
                     ORDER BY latest_turn_plan.updated_at DESC, latest_turn_plan.plan_id DESC
-                    LIMIT 1
-                  ) IS NULL
-                    THEN 1
-                    ELSE 0
-                  END
-              WHEN EXISTS (
-                SELECT 1
-                FROM projection_thread_proposed_plans AS any_plan
-                WHERE any_plan.thread_id = projection_threads.thread_id
-              )
-                THEN CASE
-                  WHEN (
-                    SELECT latest_plan.implemented_at
-                    FROM projection_thread_proposed_plans AS latest_plan
-                    WHERE latest_plan.thread_id = projection_threads.thread_id
-                    ORDER BY latest_plan.updated_at DESC, latest_plan.plan_id DESC
                     LIMIT 1
                   ) IS NULL
                     THEN 1
@@ -969,8 +958,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            // Voice-transcript rows must not count as user activity: this
+            // timestamp gates the agent continuation, boot recovery, and
+            // settle/snooze, all of which expect a message that started (or
+            // will start) provider work — a spoken exchange never does.
             latestUserMessageAt:
               event.payload.role === "user" &&
+              event.payload.voiceTranscript !== true &&
               (existingRow.value.latestUserMessageAt === null ||
                 event.payload.createdAt > existingRow.value.latestUserMessageAt)
                 ? event.payload.createdAt
@@ -1215,6 +1209,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : previousMessage?.inputOrigin !== undefined
                 ? { inputOrigin: previousMessage.inputOrigin }
                 : {}),
+            ...(event.payload.delegationId !== undefined
+              ? { delegationId: event.payload.delegationId }
+              : previousMessage?.delegationId !== undefined
+                ? { delegationId: previousMessage.delegationId }
+                : {}),
+            ...(event.payload.voiceTranscript === true || previousMessage?.voiceTranscript === true
+              ? { voiceTranscript: true }
+              : {}),
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
@@ -1410,6 +1412,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadSessionsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadSessionsProjection",
     )(function* (event, _attachmentSideEffects) {
+      if (event.type === "thread.session-stop-requested") {
+        const existing = yield* projectionThreadSessionRepository.getByThreadId({
+          threadId: event.payload.threadId,
+        });
+        if (Option.isNone(existing)) {
+          return;
+        }
+        yield* projectionThreadSessionRepository.upsert({
+          ...existing.value,
+          status: "stopped",
+          activeTurnId: null,
+          lastError: null,
+          failureKind: null,
+          updatedAt: event.payload.createdAt,
+        });
+        return;
+      }
       if (event.type !== "thread.session-set") {
         return;
       }
@@ -1468,6 +1487,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sourceProposedPlanId: event.payload.sourceProposedPlan?.planId ?? null,
             requestedAt: event.payload.createdAt,
           });
+          return;
+        }
+
+        case "thread.session-stop-requested": {
+          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+            threadId: event.payload.threadId,
+          });
+          const existingTurns = yield* projectionTurnRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          yield* Effect.forEach(
+            existingTurns.filter((turn) => turn.turnId !== null && turn.state === "running"),
+            (turn) =>
+              turn.turnId === null
+                ? Effect.void
+                : projectionTurnRepository.upsertByTurnId({
+                    ...turn,
+                    turnId: turn.turnId,
+                    state: "incomplete",
+                    completedAt: event.payload.createdAt,
+                  }),
+            { concurrency: 1 },
+          );
           return;
         }
 
@@ -2081,19 +2123,34 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         event.type === "thread.session-stop-requested" ||
         event.type === "thread.turn-interrupt-requested"
       ) {
+        const interruptionTargetsRunningTurn =
+          event.type === "thread.turn-interrupt-requested"
+            ? event.payload.turnId !== undefined ||
+              (yield* projectionThreadSessionRepository
+                .getByThreadId({ threadId: event.payload.threadId })
+                .pipe(
+                  Effect.map(
+                    (session) =>
+                      Option.isSome(session) &&
+                      session.value.status === "running" &&
+                      session.value.activeTurnId !== null,
+                  ),
+                ))
+            : false;
         yield* threadWorkObligationRepository.cancelByThread({
           threadId: event.payload.threadId,
           updatedAt: event.occurredAt,
           blockedReason: event.type,
-          // Stops and interrupts end the *current* work, but a user message
-          // still parked for delivery ("Sent — waiting") must survive them and
-          // dispatch once the thread is idle — cancelling it here silently
-          // dropped real user input. Only deleting or settling the thread may
-          // discard those deliveries.
+          // Interrupting a running turn preserves later user messages parked
+          // behind it. When no provider turn exists, however, Stop refers to
+          // the pending delivery itself and must cancel it; otherwise the
+          // scheduler immediately starts the work again behind the user's back.
           mode:
             event.type === "thread.deleted" || event.type === "thread.settled"
               ? "thread-terminal"
-              : "turn-interrupt",
+              : event.type === "thread.turn-interrupt-requested" && !interruptionTargetsRunningTurn
+                ? "pending-start-interrupt"
+                : "turn-interrupt",
         });
         return;
       }
@@ -2327,8 +2384,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
-    const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
-      projector: ProjectorDefinition,
+    const runProjectorsForEvent = Effect.fn("runProjectorsForEvent")(function* (
+      selectedProjectors: ReadonlyArray<ProjectorDefinition>,
       event: OrchestrationEvent,
     ) {
       const attachmentSideEffects: AttachmentSideEffects = {
@@ -2338,21 +2395,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       };
 
       yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
-          Effect.flatMap(() =>
-            projectionStateRepository.upsert({
-              projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
-            }),
-          ),
+        Effect.forEach(
+          selectedProjectors,
+          (projector) =>
+            projector.apply(event, attachmentSideEffects).pipe(
+              Effect.flatMap(() =>
+                projectionStateRepository.upsert({
+                  projector: projector.name,
+                  lastAppliedSequence: event.sequence,
+                  updatedAt: event.occurredAt,
+                }),
+              ),
+            ),
+          { concurrency: 1, discard: true },
         ),
       );
 
       yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
-            projector: projector.name,
+            projectors: selectedProjectors.map((projector) => projector.name),
             sequence: event.sequence,
             eventType: event.type,
             cause,
@@ -2361,15 +2423,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
-    const refreshAllThreadShellSummaries = Effect.gen(function* () {
-      const threadRows = yield* sql<{ readonly threadId: string }>`
-        SELECT thread_id AS "threadId"
-        FROM projection_threads
-        ORDER BY thread_id
-      `;
+    const refreshThreadShellSummaries = Effect.fn("refreshThreadShellSummaries")(function* (
+      threadIds: ReadonlySet<string>,
+    ) {
       yield* Effect.forEach(
-        threadRows,
-        ({ threadId }) => refreshThreadShellSummary(ThreadId.make(threadId)),
+        threadIds,
+        (threadId) => refreshThreadShellSummary(ThreadId.make(threadId)),
         { concurrency: 1 },
       );
     });
@@ -2421,6 +2480,41 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updated_at = ${settledAt}
         WHERE status IN ('running', 'starting')
       `;
+
+      // A session left in `error` belongs to the process that just died. The
+      // continuation gate treats `error` as terminal so a genuinely failing
+      // provider is never hammered — but after a restart there is no live CLI
+      // left to fail: resuming spawns a fresh one, exactly as it does for a
+      // `stopped` session. Leaving the row `error` meant any turn our own
+      // shutdown killed ("Claude runtime stream failed") could never
+      // auto-resume. Observed 2026-08-15 across four in-place updates: the
+      // continuation was enqueued as the turn settled and then cancelled about
+      // a second after boot with "source turn is no longer continuable",
+      // stranding the thread until the user typed.
+      //
+      // Authentication failures keep their `error` status. Those are not stale
+      // — they need the user to log in — and the recovery scan below routes
+      // them to a blocked-authentication obligation instead of a resume.
+      const staleErroredSessions = yield* sql<{
+        readonly threadId: string;
+        readonly lastError: string | null;
+      }>`
+        SELECT thread_id AS "threadId", last_error AS "lastError"
+        FROM projection_thread_sessions
+        WHERE status = 'error'
+      `;
+      for (const session of staleErroredSessions) {
+        if (isProviderAuthenticationFailure(session.lastError ?? "")) continue;
+        // `last_error` is deliberately preserved: it still explains what went
+        // wrong, and the recovery scan reads it to classify the thread.
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET status = 'stopped',
+              active_turn_id = NULL,
+              updated_at = ${settledAt}
+          WHERE thread_id = ${session.threadId}
+        `;
+      }
 
       // Re-arm resumes that were retired without the thread ever recovering.
       //
@@ -2612,12 +2706,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly sessionUpdatedAt: string | null;
           readonly sessionLastError: string | null;
           readonly providerInstanceId: string | null;
+          readonly interactionMode: string;
+          readonly turnRuntimeErrors: number;
         }>`
           SELECT
             threads.thread_id AS "threadId",
             turns.turn_id AS "turnId",
             turns.state AS "turnState",
             turns.completed_at AS "completedAt",
+            (
+              SELECT COUNT(*)
+              FROM projection_thread_activities failure
+              WHERE failure.turn_id = turns.turn_id
+                AND failure.kind = 'runtime.error'
+            ) AS "turnRuntimeErrors",
             assistant.text AS "assistantText",
             assistant.updated_at AS "assistantUpdatedAt",
             source.text AS "sourceMessageText",
@@ -2628,7 +2730,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             COALESCE(
               sessions.provider_instance_id,
               json_extract(threads.model_selection_json, '$.instanceId')
-            ) AS "providerInstanceId"
+            ) AS "providerInstanceId",
+            threads.interaction_mode AS "interactionMode"
           FROM projection_threads AS threads
           INNER JOIN projection_turns AS turns
             ON turns.thread_id = threads.thread_id
@@ -2647,7 +2750,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           LEFT JOIN projection_thread_sessions AS sessions
             ON sessions.thread_id = threads.thread_id
           WHERE threads.thread_id > ${afterThreadId}
-            AND threads.interaction_mode = 'agent'
             AND threads.deleted_at IS NULL
             AND threads.archived_at IS NULL
             AND COALESCE(threads.settled_override, '') != 'settled'
@@ -2676,6 +2778,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               row.turnState === "incomplete" ||
               row.turnState === "error");
           const isAgentContinuation =
+            row.interactionMode === "agent" &&
             !authenticationFailure &&
             row.turnState === "completed" &&
             row.completedAt !== null &&
@@ -2693,10 +2796,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // startup-resume handler was already registered. A deliberate user
           // interrupt settles as "interrupted" and is excluded by the query,
           // so it is never resumed here.
+          // A turn killed before it produced a single assistant token settles
+          // as "completed" — the shutdown path closes it out — while the
+          // failure is recorded beside it as a `runtime.error` activity and a
+          // session `last_error`. That combination matched no branch: the
+          // continuation branch requires assistant text to continue *from*,
+          // and the startup-resume branch required "incomplete"/"error". The
+          // LEFT JOIN above was widened for exactly this shape (see its
+          // comment) so the row survives the query, but both predicates still
+          // rejected it, so the deadest turns still never resumed. Observed
+          // 2026-08-15 on thread ed9e1e19: an in-place app update killed the
+          // CLI 68s into a turn, the turn settled "completed" with zero
+          // assistant messages, and the thread sat on an unanswered user
+          // message with no obligation of any kind ever created.
+          const diedBeforeProducingOutput =
+            row.turnState === "completed" &&
+            row.assistantText === null &&
+            row.turnRuntimeErrors > 0;
           const isStartupResume =
             !authenticationFailure &&
             !isAgentContinuation &&
-            (row.turnState === "incomplete" || row.turnState === "error") &&
+            (row.turnState === "incomplete" ||
+              row.turnState === "error" ||
+              diedBeforeProducingOutput) &&
             // An assistant that signed off with AGENT_STOP deliberately ended
             // its loop; resuming it here contradicts the stop contract the
             // user saw (observed 2026-08-05: a restart resumed a signed-off
@@ -2756,44 +2878,234 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         afterThreadId = rows.at(-1)!.threadId;
         if (rows.length < 128) break;
       }
+
+      yield* backfillKilledBackgroundTaskResumes;
     });
 
-    const bootstrapProjector = (projector: ProjectorDefinition) => {
-      const bootstrapDefinition =
+    /**
+     * Recover threads whose last turn ended waiting on a background task.
+     *
+     * These are invisible to the scan above, which only looks at agent-mode
+     * threads whose turn ended `incomplete` or `error`. A turn that backgrounds
+     * a task and signs off to wait ends perfectly normally, in any interaction
+     * mode — the wake it is waiting for comes from the provider harness
+     * re-invoking the agent when the task exits, and that owner dies with the
+     * process. Nothing else in the system ever fires for it, so the thread sits
+     * on "I'll report back when they land" across every later restart.
+     */
+    const backfillKilledBackgroundTaskResumes = Effect.gen(function* () {
+      const bootedAt = yield* DateTime.now;
+      const bootedAtEpochMs = DateTime.toEpochMillis(bootedAt);
+      const oldestCompletedAt = DateTime.formatIso(
+        DateTime.subtract(bootedAt, { milliseconds: KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS }),
+      );
+
+      let afterThreadId = "";
+      while (true) {
+        const rows = yield* sql<{
+          readonly threadId: string;
+          readonly turnId: string;
+          readonly completedAt: string;
+          readonly assistantText: string | null;
+          readonly providerInstanceId: string | null;
+        }>`
+          SELECT
+            threads.thread_id AS "threadId",
+            turns.turn_id AS "turnId",
+            turns.completed_at AS "completedAt",
+            assistant.text AS "assistantText",
+            COALESCE(
+              sessions.provider_instance_id,
+              json_extract(threads.model_selection_json, '$.instanceId')
+            ) AS "providerInstanceId"
+          FROM projection_threads AS threads
+          INNER JOIN projection_turns AS turns
+            ON turns.thread_id = threads.thread_id
+            AND turns.turn_id = threads.latest_turn_id
+          LEFT JOIN projection_thread_messages AS assistant
+            ON assistant.message_id = turns.assistant_message_id
+            AND assistant.role = 'assistant'
+            AND assistant.is_streaming = 0
+          LEFT JOIN projection_thread_sessions AS sessions
+            ON sessions.thread_id = threads.thread_id
+          WHERE threads.thread_id > ${afterThreadId}
+            AND threads.deleted_at IS NULL
+            AND threads.archived_at IS NULL
+            AND COALESCE(threads.settled_override, '') != 'settled'
+            AND threads.pending_approval_count = 0
+            AND threads.pending_user_input_count = 0
+            AND turns.state = 'completed'
+            AND turns.completed_at IS NOT NULL
+            AND turns.completed_at >= ${oldestCompletedAt}
+            -- A newer user message supersedes the wait; that send carries its
+            -- own delivery obligation.
+            AND (
+              threads.latest_user_message_at IS NULL
+              OR threads.latest_user_message_at <= turns.completed_at
+            )
+            -- Cheap narrowing on (thread_id, kind, created_at) so the scan only
+            -- reads activities for threads that ever backgrounded work before
+            -- their last turn settled.
+            AND EXISTS (
+              SELECT 1
+              FROM projection_thread_activities AS started
+              WHERE started.thread_id = threads.thread_id
+                AND started.kind = 'task.started'
+                AND started.created_at <= turns.completed_at
+            )
+          ORDER BY threads.thread_id ASC
+          LIMIT 128
+        `;
+        if (rows.length === 0) break;
+
+        for (const row of rows) {
+          if (row.providerInstanceId === null) continue;
+          // The stop contract wins over any recovery: an assistant that signed
+          // off with AGENT_STOP ended its loop on purpose, task or no task.
+          if (row.assistantText !== null && emittedAgentStop(row.assistantText)) continue;
+
+          // Only the task rows, only recent ones, newest first: a long-lived
+          // thread can hold tens of thousands of activities (86k on the thread
+          // this was reported from), and reading them all per candidate would
+          // put that on the boot path. Taking the newest rows can only drop a
+          // `task.started` whose pair is still present, which makes the task
+          // invisible rather than falsely stranded.
+          const taskRows = yield* sql<{
+            readonly kind: string;
+            readonly createdAt: string;
+            readonly taskId: string | null;
+            readonly taskType: string | null;
+            readonly status: string | null;
+          }>`
+            SELECT
+              kind,
+              created_at AS "createdAt",
+              json_extract(payload_json, '$.taskId') AS "taskId",
+              json_extract(payload_json, '$.taskType') AS "taskType",
+              json_extract(payload_json, '$.status') AS "status"
+            FROM projection_thread_activities
+            WHERE thread_id = ${row.threadId}
+              AND kind IN ('task.started', 'task.completed')
+              AND created_at >= ${oldestCompletedAt}
+              AND json_valid(payload_json)
+            ORDER BY created_at DESC, activity_id DESC
+            LIMIT 500
+          `;
+          if (
+            !threadLostBackgroundTaskAtRestart({
+              activities: taskRows
+                .map((taskRow) => ({
+                  kind: taskRow.kind,
+                  createdAt: taskRow.createdAt,
+                  payload: {
+                    ...(taskRow.taskId === null ? {} : { taskId: taskRow.taskId }),
+                    ...(taskRow.taskType === null ? {} : { taskType: taskRow.taskType }),
+                    ...(taskRow.status === null ? {} : { status: taskRow.status }),
+                  },
+                }))
+                .toReversed(),
+              turnCompletedAt: row.completedAt,
+              bootedAtEpochMs,
+            })
+          ) {
+            continue;
+          }
+
+          const threadId = ThreadId.make(row.threadId);
+          const sourceTurnId = TurnId.make(row.turnId);
+          const kind = "startup-resume" as const;
+          // Keyed on the settled turn, so a thread recovered once is not
+          // recovered again on the next boot: the obligation row survives as
+          // completed and the insert is a no-op.
+          yield* threadWorkObligationRepository
+            .insert({
+              obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
+              threadId,
+              sourceTurnId,
+              kind,
+              state: "pending",
+              providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
+              attempt: 0,
+              nextAttemptAt: null,
+              claimedAt: null,
+              leaseExpiresAt: null,
+              blockedReason: null,
+              createdAt: row.completedAt,
+              updatedAt: row.completedAt,
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("boot recovery scan could not enqueue killed-task resume", {
+                  threadId: row.threadId,
+                  sourceTurnId: row.turnId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+        }
+
+        afterThreadId = rows.at(-1)!.threadId;
+        if (rows.length < 128) break;
+      }
+    });
+
+    const bootstrapProjectors = Effect.gen(function* () {
+      const bootstrapDefinitions = projectors.map((projector) =>
         projector.name === ORCHESTRATION_PROJECTOR_NAMES.threads
           ? {
               ...projector,
               apply: (event: OrchestrationEvent, attachmentSideEffects: AttachmentSideEffects) =>
                 applyThreadsProjection(event, attachmentSideEffects, true),
             }
-          : projector;
+          : projector,
+      );
+      const stateRows = yield* projectionStateRepository.listAll();
+      const lastAppliedByProjector = new Map(
+        stateRows.map((row) => [row.projector, row.lastAppliedSequence]),
+      );
+      const firstUnappliedSequence = Math.min(
+        ...bootstrapDefinitions.map((projector) => lastAppliedByProjector.get(projector.name) ?? 0),
+      );
+      const shellSummaryThreadIds = new Set<string>();
 
-      return projectionStateRepository
-        .getByProjector({
-          projector: projector.name,
-        })
-        .pipe(
-          Effect.flatMap((stateRow) =>
-            Stream.runForEach(
-              eventStore.readFromSequence(
-                Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
-                Number.MAX_SAFE_INTEGER,
-              ),
-              (event) => runProjectorForEvent(bootstrapDefinition, event),
+      yield* Stream.runForEach(
+        eventStore.readFromSequence(firstUnappliedSequence, Number.MAX_SAFE_INTEGER),
+        (event) => {
+          const selectedProjectors = bootstrapDefinitions.filter(
+            (projector) => (lastAppliedByProjector.get(projector.name) ?? 0) < event.sequence,
+          );
+          if (selectedProjectors.length === 0) return Effect.void;
+
+          if (
+            event.aggregateKind === "thread" &&
+            selectedProjectors.some(
+              (projector) => projector.name === ORCHESTRATION_PROJECTOR_NAMES.threads,
+            )
+          ) {
+            shellSummaryThreadIds.add(event.aggregateId);
+          }
+
+          return runProjectorsForEvent(selectedProjectors, event).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                for (const projector of selectedProjectors) {
+                  lastAppliedByProjector.set(projector.name, event.sequence);
+                }
+              }),
             ),
-          ),
-          Effect.andThen(
-            projector.name === ORCHESTRATION_PROJECTOR_NAMES.threads
-              ? refreshAllThreadShellSummaries
-              : Effect.void,
-          ),
-        );
-    };
+          );
+        },
+      );
+
+      // Replay defers summary derivation because several projector tables must
+      // reach the same sequence first. Only threads touched by this replay can
+      // have changed; refreshing every historical thread made an already
+      // caught-up startup perform five writes per thread for no state change.
+      yield* refreshThreadShellSummaries(shellSummaryThreadIds);
+    });
 
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
+      runProjectorsForEvent(projectors, event).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
@@ -2803,11 +3115,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.forEach(
-      projectors,
-      bootstrapProjector,
-      { concurrency: 1 },
-    ).pipe(
+    const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = bootstrapProjectors.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),

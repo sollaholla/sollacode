@@ -6,6 +6,10 @@ import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  DEFAULT_ORCHESTRATOR_VOICE_PROVIDER,
+  OrchestratorVoiceProvider,
+} from "./orchestratorVoice.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -58,6 +62,17 @@ export const GlassOpacity = Schema.Int.check(
 );
 export type GlassOpacity = typeof GlassOpacity.Type;
 export const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
+
+export const MIN_SOUND_CUE_VOLUME = 0;
+export const MAX_SOUND_CUE_VOLUME = 100;
+export const SoundCueVolume = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_SOUND_CUE_VOLUME,
+    maximum: MAX_SOUND_CUE_VOLUME,
+  }),
+);
+export type SoundCueVolume = typeof SoundCueVolume.Type;
+export const DEFAULT_SOUND_CUE_VOLUME: SoundCueVolume = 100;
 export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill", "none"]);
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
@@ -74,6 +89,10 @@ export const AutoCompactionThresholdPercentage = Schema.Int.check(
 export type AutoCompactionThresholdPercentage = typeof AutoCompactionThresholdPercentage.Type;
 
 export const ClientSettingsSchema = Schema.Struct({
+  // Master switch for the Agent Stack feature (named autonomous VM agents shown
+  // in their own sidebar section below the orchestrator). On by default; turning
+  // it off hides the entire surface without deleting any agents.
+  agentStackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoSendVoiceTranscription: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -115,6 +134,11 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // Whether holding push-to-talk on the desktop mutes the machine's output for
+  // the duration of the recording. On by default — music bleeding into a
+  // dictation is the surprise — but it is the only place the app touches
+  // system volume, so it must be possible to turn off.
+  pushToTalkMutesSystemAudio: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
@@ -142,6 +166,14 @@ export const ClientSettingsSchema = Schema.Struct({
   // default could never reach them.
   sidebarV2ConfiguredByUser: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   showResumeThreadsOnStartup: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // The synthesized cue tones: the voice orchestrator's state cues and the
+  // push-to-talk recording-start blip. One switch for both, because to the
+  // user they are one vocabulary. Per-device deliberately — how loud a cue
+  // should be depends on the machine it plays from.
+  soundCues: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  soundCueVolume: SoundCueVolume.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SOUND_CUE_VOLUME)),
+  ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
@@ -416,6 +448,59 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+/**
+ * Configuration for a user-owned external provider bridge speaking the
+ * `solla.provider-bridge/1` application contract over MCP stdio.
+ *
+ * Arguments deliberately remain a newline-delimited string at the settings
+ * boundary. The server turns each non-empty line into exactly one argv entry;
+ * it never invokes a shell or tokenizes the line further.
+ */
+export const McpBridgeSettings = makeProviderSettingsSchema(
+  {
+    command: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Command",
+        description:
+          "Required absolute path to an external MCP provider bridge executable or script.",
+        providerSettingsForm: {
+          placeholder: "/absolute/path/to/provider-bridge",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    arguments: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Arguments",
+        description:
+          "Optional arguments, one literal argument per line. Lines are not shell-parsed.",
+        providerSettingsForm: {
+          control: "textarea",
+          placeholder: "--profile\nwork",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    workingDirectory: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Working directory",
+        description: "Optional absolute working directory for the external bridge process.",
+        providerSettingsForm: {
+          placeholder: "/absolute/path/to/project",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+  },
+  {
+    order: ["command", "arguments", "workingDirectory"],
+  },
+);
+export type McpBridgeSettings = typeof McpBridgeSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -481,6 +566,134 @@ export const BackgroundActivitySettings = Schema.Struct({
   overrides: BackgroundActivityOverrides.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
+
+// ── Orchestrator (voice + text master agent) ─────────────────
+//
+// The orchestrator is a single always-available agent that spans every thread
+// in the workspace. It is driven either by speech (OpenAI Realtime or Grok
+// Voice via xAI) or by text typed into its dedicated thread, and both share
+// one transcript.
+//
+// These live in `ServerSettings` rather than `ClientSettings` for two reasons:
+// the API key must never be persisted client-side, and the orchestrator's
+// behaviour (which events it announces, how much authority it has) must be
+// identical from every client that connects to this environment.
+
+export const OrchestratorActivationMode = Schema.Literals(["toggle", "wake-word"]);
+export type OrchestratorActivationMode = typeof OrchestratorActivationMode.Type;
+export const DEFAULT_ORCHESTRATOR_ACTIVATION_MODE: OrchestratorActivationMode = "toggle";
+
+/**
+ * How much the orchestrator is allowed to do without leaving the user's chair.
+ * `read-only` can answer questions; `send` adds writing messages into threads;
+ * `full` adds interrupting turns, stopping tasks, answering approvals and
+ * settling threads.
+ */
+export const OrchestratorAuthority = Schema.Literals(["read-only", "send", "full"]);
+export type OrchestratorAuthority = typeof OrchestratorAuthority.Type;
+export const DEFAULT_ORCHESTRATOR_AUTHORITY: OrchestratorAuthority = "full";
+
+export const DEFAULT_ORCHESTRATOR_REALTIME_MODEL = "gpt-realtime";
+export const DEFAULT_ORCHESTRATOR_VOICE = "marin";
+export const DEFAULT_ORCHESTRATOR_WAKE_WORD = "hey solla";
+// ISO-639-1. Pinned in both the spoken instructions and the input-audio
+// transcription config: with no pin the realtime model free-picks a language
+// from ambiguous audio and has answered users in French unprompted.
+export const DEFAULT_ORCHESTRATOR_LANGUAGE = "en";
+
+/**
+ * Per-event proactivity. Each flag gates one class of unprompted speech, so a
+ * user who only wants to hear about blocked work can silence the rest.
+ */
+export const OrchestratorSpokenEvents = Schema.Struct({
+  threadFinished: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  taskCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  approvalNeeded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  inputNeeded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  threadFailed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  autoResumeStuck: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type OrchestratorSpokenEvents = typeof OrchestratorSpokenEvents.Type;
+
+/** Seconds of complete silence before the voice session closes itself. */
+export const DEFAULT_ORCHESTRATOR_SILENCE_TIMEOUT_SECONDS = 30;
+
+export const OrchestratorSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Backward-compatible presence flag for the currently selected provider.
+  // New clients render the two provider-specific flags below so switching
+  // voice backends never replaces or clears the other backend's credential.
+  apiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  openAiApiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  xaiApiKeyConfigured: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Which realtime backend mints the voice session. Defaults to OpenAI so
+  // existing settings files keep working. `xai` is Grok Voice.
+  provider: OrchestratorVoiceProvider.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_VOICE_PROVIDER)),
+  ),
+  model: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_REALTIME_MODEL)),
+  ),
+  voice: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_VOICE))),
+  language: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_LANGUAGE)),
+  ),
+  activation: OrchestratorActivationMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_ACTIVATION_MODE)),
+  ),
+  wakeWord: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_WAKE_WORD)),
+  ),
+  authority: OrchestratorAuthority.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_AUTHORITY)),
+  ),
+  // Speech recognition mishears. Under `full` authority a misheard "stop the
+  // rover thread" would kill real work, so destructive tool calls re-ask by
+  // default before executing.
+  confirmDestructiveActions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // The desktop's floating voice orb. Lives here rather than in client settings
+  // so the same switch governs every client of this environment, like the rest
+  // of the orchestrator's behaviour.
+  floatingBubble: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // A realtime session bills for streamed silence, and an open microphone left
+  // running after a conversation ends is both a cost and a privacy surprise.
+  // On by default for that reason.
+  autoDisableOnSilence: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  silenceTimeoutSeconds: Schema.Number.pipe(
+    Schema.check(Schema.isGreaterThanOrEqualTo(5), Schema.isLessThanOrEqualTo(600)),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_SILENCE_TIMEOUT_SECONDS)),
+  ),
+  // Reopens the microphone when work the orchestrator said it would report back
+  // on actually finishes. Without it, "I'll tell you when it's done" silently
+  // became "you will never hear about this again" the moment the silence
+  // timeout closed the session — the user is left waiting on a promise nothing
+  // was ever going to keep. Only ever fires for work the orchestrator itself
+  // was waiting on, and only after the *timeout* closed the session: a session
+  // the user stopped by hand stays stopped.
+  wakeOnAwaitedResult: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Whether talking over the orchestrator cuts it off. On by default, because
+  // being unable to interrupt a long wrong answer is worse than the occasional
+  // false trigger.
+  //
+  // Turning it off does two things: it stops barge-in, and it *closes the
+  // microphone while the assistant speaks*. That second part is the only
+  // reliable cure for the assistant hearing its own voice through a speaker and
+  // answering itself — browser echo cancellation is requested and still loses on
+  // a phone, and every client-side filter can only judge the echo after it has
+  // already been uploaded and turned into a user turn by the server.
+  interruptWhileSpeaking: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Runs the microphone through a noise gate before it is sent.
+   *
+   * Off by default and rolled out deliberately: it sits in the outgoing audio
+   * path, so a fault costs the user their voice rather than degrading it. The
+   * platform's own `voiceIsolation` constraint is separate and always asked
+   * for — this is the in-process stage on top of it.
+   */
+  voiceIsolation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  spokenEvents: OrchestratorSpokenEvents,
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type OrchestratorSettings = typeof OrchestratorSettings.Type;
 
 export const ServerSettings = Schema.Struct({
   autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage.pipe(
@@ -551,6 +764,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  orchestrator: OrchestratorSettings,
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -644,6 +858,45 @@ const OpenCodeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const OrchestratorSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  // Legacy write-only field. Older clients save it into whichever provider is
+  // selected by the same patch/current settings. New clients use the two
+  // explicit fields below. None of these are ever read back out.
+  apiKey: Schema.optionalKey(TrimmedString),
+  openAiApiKey: Schema.optionalKey(TrimmedString),
+  xaiApiKey: Schema.optionalKey(TrimmedString),
+  provider: Schema.optionalKey(OrchestratorVoiceProvider),
+  model: Schema.optionalKey(TrimmedString),
+  voice: Schema.optionalKey(TrimmedString),
+  language: Schema.optionalKey(TrimmedString),
+  activation: Schema.optionalKey(OrchestratorActivationMode),
+  wakeWord: Schema.optionalKey(TrimmedString),
+  authority: Schema.optionalKey(OrchestratorAuthority),
+  confirmDestructiveActions: Schema.optionalKey(Schema.Boolean),
+  floatingBubble: Schema.optionalKey(Schema.Boolean),
+  autoDisableOnSilence: Schema.optionalKey(Schema.Boolean),
+  silenceTimeoutSeconds: Schema.optionalKey(
+    Schema.Number.pipe(
+      Schema.check(Schema.isGreaterThanOrEqualTo(5), Schema.isLessThanOrEqualTo(600)),
+    ),
+  ),
+  wakeOnAwaitedResult: Schema.optionalKey(Schema.Boolean),
+  interruptWhileSpeaking: Schema.optionalKey(Schema.Boolean),
+  voiceIsolation: Schema.optionalKey(Schema.Boolean),
+  spokenEvents: Schema.optionalKey(
+    Schema.Struct({
+      threadFinished: Schema.optionalKey(Schema.Boolean),
+      taskCompleted: Schema.optionalKey(Schema.Boolean),
+      approvalNeeded: Schema.optionalKey(Schema.Boolean),
+      inputNeeded: Schema.optionalKey(Schema.Boolean),
+      threadFailed: Schema.optionalKey(Schema.Boolean),
+      autoResumeStuck: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+});
+export type OrchestratorSettingsPatch = typeof OrchestratorSettingsPatch.Type;
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
@@ -693,10 +946,12 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  orchestrator: Schema.optionalKey(OrchestratorSettingsPatch),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  agentStackEnabled: Schema.optionalKey(Schema.Boolean),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   autoSendVoiceTranscription: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
@@ -725,6 +980,7 @@ export const ClientSettingsPatch = Schema.Struct({
       }),
     ),
   ),
+  pushToTalkMutesSystemAudio: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
@@ -736,6 +992,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarV2Enabled: Schema.optionalKey(Schema.Boolean),
   sidebarV2ConfiguredByUser: Schema.optionalKey(Schema.Boolean),
   showResumeThreadsOnStartup: Schema.optionalKey(Schema.Boolean),
+  soundCues: Schema.optionalKey(Schema.Boolean),
+  soundCueVolume: Schema.optionalKey(SoundCueVolume),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

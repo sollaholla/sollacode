@@ -86,6 +86,7 @@ export function wasRecentlyInteracted(lastInteractionAtMs: number, observedAtMs:
 
 function createActivityReport(
   environmentId: EnvironmentId,
+  environmentHost: boolean,
   lastInteractionAtMs: number,
   observedAtMs: number,
 ): ClientActivityReportInput {
@@ -99,6 +100,7 @@ function createActivityReport(
     environmentId,
     clientId: getClientId(),
     clientKind: resolveClientKind(),
+    environmentHost,
     visible: document.visibilityState === "visible",
     focused: document.hasFocus(),
     recentlyInteracted: wasRecentlyInteracted(lastInteractionAtMs, observedAtMs),
@@ -196,14 +198,19 @@ export const backgroundActivityReporterLayer = Layer.effectDiscard(
       const observedAtMs = yield* Clock.currentTimeMillis;
       const entries = yield* SubscriptionRef.get(registry.entries);
       yield* Effect.forEach(
-        entries.keys(),
-        (environmentId) =>
+        entries,
+        ([environmentId, entry]) =>
           registry
             .run(
               environmentId,
               request(
                 WS_METHODS.serverReportClientActivity,
-                createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
+                createActivityReport(
+                  environmentId,
+                  entry.target._tag === "PrimaryConnectionTarget",
+                  lastInteractionAtMs,
+                  observedAtMs,
+                ),
               ),
             )
             // A dropped report is not cosmetic: without a lease the server

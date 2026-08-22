@@ -219,13 +219,16 @@ export function BranchToolbarBranchSelector({
   );
   const trimmedBranchQuery = branchQuery.trim();
   const deferredTrimmedBranchQuery = deferredBranchQuery.trim();
+  const needsWorktreeBaseRef =
+    effectiveEnvMode === "worktree" && !activeWorktreePath && !activeThreadBranch;
+  const shouldLoadBranchRefs = isBranchMenuOpen || needsWorktreeBaseRef;
   const branchRefTarget = useMemo(
     () => ({
-      environmentId,
-      cwd: branchCwd,
+      environmentId: shouldLoadBranchRefs ? environmentId : null,
+      cwd: shouldLoadBranchRefs ? branchCwd : null,
       query: deferredTrimmedBranchQuery,
     }),
-    [branchCwd, deferredTrimmedBranchQuery, environmentId],
+    [branchCwd, deferredTrimmedBranchQuery, environmentId, shouldLoadBranchRefs],
   );
   const branchRefState = usePaginatedBranches(branchRefTarget);
   const refs = branchRefState.refs;
@@ -297,8 +300,11 @@ export function BranchToolbarBranchSelector({
   );
   const listedActiveBranch =
     resolvedActiveBranch === null ? null : (branchByName.get(resolvedActiveBranch) ?? null);
+  const shouldResolveActiveBranchKind =
+    isBranchMenuOpen ||
+    (effectiveEnvMode === "worktree" && !activeWorktreePath && resolvedActiveBranch !== null);
   const activeBranchRefQuery = useEnvironmentQuery(
-    branchCwd !== null && resolvedActiveBranch !== null
+    shouldResolveActiveBranchKind && branchCwd !== null && resolvedActiveBranch !== null
       ? vcsEnvironment.listRefs({
           environmentId,
           input: {

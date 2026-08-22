@@ -807,7 +807,13 @@ export const make = Effect.gen(function* () {
         client: toClientMetadata(row.value.client),
         expiresAt: expiresAt.value,
         subject: claims.sub,
-        scopes: claims.scopes,
+        // The persisted session is the authorization source of truth. Signed
+        // cookies prove the session identity, but their embedded scope list can
+        // become stale when a compatibility migration grants a new standard
+        // capability. WebSocket tickets already resolve scopes from this row;
+        // direct same-origin cookie upgrades must behave the same way so an
+        // existing paired browser does not need to be paired again.
+        scopes: row.value.scopes,
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
       } satisfies VerifiedSession;
     },

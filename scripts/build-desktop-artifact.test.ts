@@ -13,6 +13,8 @@ import {
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   createBuildConfig,
+  LOCAL_MAC_ADHOC_IDENTITY,
+  MACOS_PRIVACY_USAGE_DESCRIPTIONS,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
@@ -36,6 +38,7 @@ import {
   resolveResourceMonitorRustTargets,
   resourceMonitorExecutableName,
   resolvePackageManagerUserAgent,
+  selectLocalMacSigningIdentity,
   stageLinuxIconSize,
   STAGE_INSTALL_ARGS,
   WINDOWS_ASAR_UNPACK,
@@ -267,6 +270,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("limits Electron locales and excludes the unused Claude SDK executable", () => {
     assert.deepStrictEqual(DESKTOP_ELECTRON_LANGUAGES, ["en-US"]);
     assert.deepStrictEqual(DESKTOP_FILE_EXCLUSIONS, [
+      "!**/*.map",
       "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
     ]);
   });
@@ -274,18 +278,43 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("applies platform-specific packaging to the build config", () =>
     Effect.gen(function* () {
       const mac = yield* createBuildConfig("mac", "dmg", "1.2.3", false, undefined);
+      const stableMac = yield* createBuildConfig("mac", "dmg", "1.2.3", false, {
+        entitlementsPath: "/tmp/entitlements.mac.plist",
+        identity: "Apple Development: Local Developer (ABC1234567)",
+      });
       const linux = yield* createBuildConfig("linux", "AppImage", "1.2.3", false, undefined);
       const win = yield* createBuildConfig("win", "nsis", "1.2.3", false, undefined);
 
       assert.notProperty(mac, "asarUnpack");
       assert.notProperty(linux, "asarUnpack");
       assert.deepStrictEqual(win.asarUnpack, WINDOWS_ASAR_UNPACK);
+      const macConfig = mac.mac as Record<string, unknown>;
+      const stableMacConfig = stableMac.mac as Record<string, unknown>;
+      assert.equal(macConfig.identity, LOCAL_MAC_ADHOC_IDENTITY);
+      assert.equal(stableMacConfig.identity, "Apple Development: Local Developer (ABC1234567)");
+      assert.equal(stableMacConfig.entitlements, "/tmp/entitlements.mac.plist");
+      assert.equal(macConfig.hardenedRuntime, true);
+      assert.equal(macConfig.gatekeeperAssess, false);
       for (const config of [mac, linux, win]) {
         assert.deepStrictEqual(config.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
         assert.deepStrictEqual(config.files, DESKTOP_FILE_EXCLUSIONS);
       }
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
+
+  it("prefers a stable Apple Development identity for local macOS builds", () => {
+    const identities = `
+      1) 1111111111111111111111111111111111111111 "Developer ID Application: Release Team (ZZZ9999999)"
+      2) 2222222222222222222222222222222222222222 "Apple Development: Local Developer (ABC1234567)"
+         2 valid identities found
+    `;
+
+    assert.equal(
+      selectLocalMacSigningIdentity(identities),
+      "Apple Development: Local Developer (ABC1234567)",
+    );
+    assert.isUndefined(selectLocalMacSigningIdentity("0 valid identities found"));
+  });
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {
     const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> = [];
@@ -335,11 +364,42 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.sollacode.app",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
     });
+  });
+
+  it("decodes live Clerk publishable keys and rejects ones with no key prefix", () => {
+    const live = resolveMacPasskeySigningConfiguration({
+      T3CODE_APPLE_TEAM_ID: "ABC1234567",
+      T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+      T3CODE_CLERK_PUBLISHABLE_KEY: `pk_live_${btoa("clerk.example.com$")}`,
+    });
+    assert.deepStrictEqual(live.rpDomains, ["clerk.example.com"]);
+
+    // A bare hostname is valid base64-ish text, so without the prefix check it
+    // would decode to garbage and be entitled as a domain rather than refused.
+    assert.throws(
+      () =>
+        resolveMacPasskeySigningConfiguration({
+          T3CODE_APPLE_TEAM_ID: "ABC1234567",
+          T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+          T3CODE_CLERK_PUBLISHABLE_KEY: "clerk.example.com",
+        }),
+      /T3CODE_CLERK_PUBLISHABLE_KEY is invalid\./u,
+    );
+
+    assert.throws(
+      () =>
+        resolveMacPasskeySigningConfiguration({
+          T3CODE_APPLE_TEAM_ID: "ABC1234567",
+          T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+          T3CODE_CLERK_PUBLISHABLE_KEY: `pk_test_${btoa("$")}`,
+        }),
+      /T3CODE_CLERK_PUBLISHABLE_KEY is invalid\./u,
+    );
   });
 
   it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
@@ -355,7 +415,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.sollacode.app</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
@@ -443,7 +503,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.notInclude(error.message, secret);
   });
 
-  it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
+  it.effect("adds passkey entitlements and the production URL scheme to signed macOS builds", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, {
         entitlementsPath: "/tmp/entitlements.mac.plist",
@@ -451,16 +511,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       });
 
       const mac = config.mac as Record<string, unknown>;
-      assert.equal(config.appId, "com.t3tools.t3code");
+      assert.equal(config.appId, "com.sollacode.app");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
-      assert.deepStrictEqual(mac.extendInfo, {
-        NSMicrophoneUsageDescription:
-          "Solla Code uses the microphone only while you hold the push-to-talk shortcut.",
-      });
-      assert.deepStrictEqual(mac.protocols, [
-        { name: "Solla Code", schemes: ["t3code", "t3code-dev"] },
-      ]);
+      assert.deepStrictEqual(mac.extendInfo, MACOS_PRIVACY_USAGE_DESCRIPTIONS);
+      assert.property(mac.extendInfo as Record<string, unknown>, "NSAppDataUsageDescription");
+      assert.notProperty(mac.extendInfo as Record<string, unknown>, "NSCameraUsageDescription");
+      assert.notProperty(mac.extendInfo as Record<string, unknown>, "NSContactsUsageDescription");
+      assert.notProperty(mac.extendInfo as Record<string, unknown>, "NSAppleMusicUsageDescription");
+      // Only the production scheme. A shipped artifact claiming the
+      // development scheme would register itself system-wide as the handler
+      // for URLs it never serves.
+      assert.deepStrictEqual(mac.protocols, [{ name: "Solla Code", schemes: ["sollacode"] }]);
+      assert.notProperty(mac, "identity");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -476,11 +539,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it("stages the resource monitor as an external executable resource", () => {
+  it("stages native helper resources outside the asar archive", () => {
     assert.deepStrictEqual(DESKTOP_EXTRA_RESOURCES, [
       {
         from: "apps/desktop/prod-resources/resource-monitor",
         to: "resource-monitor",
+      },
+      {
+        from: "apps/desktop/prod-resources/app-update",
+        to: "app-update",
       },
     ]);
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [

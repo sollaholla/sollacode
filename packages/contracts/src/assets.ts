@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { EventId, MessageId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadArtifactSummary } from "./artifacts.ts";
 
 const ASSET_PATH_MAX_LENGTH = 1024;
 
@@ -17,6 +18,8 @@ export const AssetResource = Schema.Union([
   Schema.TaggedStruct("project-favicon", {
     cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
+  ThreadArtifactSummary.fields.entryResource,
+  ThreadArtifactSummary.fields.iconResource,
 ]);
 export type AssetResource = typeof AssetResource.Type;
 

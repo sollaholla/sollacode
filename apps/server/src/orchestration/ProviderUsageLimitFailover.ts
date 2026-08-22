@@ -7,12 +7,14 @@ import type {
   ServerProviderModel,
   ThreadId,
 } from "@t3tools/contracts";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 
 import { contextRecoveryReminder } from "../provider/contextRecovery.ts";
 
 export const PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS = 32_000;
 export const PROVIDER_HANDOFF_MAX_MESSAGES = 24;
 export const PROVIDER_HANDOFF_MAX_MESSAGE_CHARS = 2_000;
+export const PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS = PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
 
 const METADATA_STRING_MAX_CHARS = 256;
 const CONTINUITY_STRING_MAX_CHARS = 512;
@@ -128,6 +130,20 @@ function detectClaudeExhaustion(rateLimits: unknown): ProviderUsageLimitExhausti
   };
 }
 
+function detectGrokExhaustion(rateLimits: unknown): ProviderUsageLimitExhaustion | null {
+  const envelope = asRecord(rateLimits);
+  const config = asRecord(envelope?.config) ?? envelope;
+  const usedPercent = finiteNumber(config?.creditUsagePercent);
+  if (usedPercent === undefined || usedPercent < 100) {
+    return null;
+  }
+  const period = asRecord(config?.currentPeriod);
+  return {
+    reason: "weekly_usage_pool_exhausted",
+    resetsAt: epochMilliseconds(period?.end) ?? epochMilliseconds(config?.billingPeriodEnd) ?? null,
+  };
+}
+
 /**
  * Returns an exhaustion signal only for provider adapters that expose a typed,
  * canonical account rate-limit event. Text matching provider errors is
@@ -143,6 +159,8 @@ export function detectProviderUsageLimitExhaustion(
       return detectCodexExhaustion(rateLimits);
     case "claudeAgent":
       return detectClaudeExhaustion(rateLimits);
+    case "grok":
+      return detectGrokExhaustion(rateLimits);
     default:
       return null;
   }
@@ -552,10 +570,54 @@ export function buildProviderHandoffTurnInput(input: {
   readonly summary: string;
   readonly currentRequest: string;
 }): string {
-  return JSON.stringify({
-    version: 1,
-    kind: "t3.provider-handoff-turn",
-    context: JSON.parse(input.summary) as unknown,
-    currentRequest: input.currentRequest,
-  });
+  const context = JSON.parse(input.summary) as unknown;
+  let currentRequest = input.currentRequest;
+
+  // A failed provider switch can be retried from its persisted user message.
+  // Older builds wrapped that already-wrapped transport input again, growing
+  // the prompt on every attempt until provider validation rejected it. Peel
+  // only our exact private envelope; ordinary user-authored JSON is untouched.
+  for (let depth = 0; depth < 8; depth += 1) {
+    try {
+      const parsed = asRecord(JSON.parse(currentRequest) as unknown);
+      if (
+        parsed?.kind !== "t3.provider-handoff-turn" ||
+        typeof parsed.currentRequest !== "string"
+      ) {
+        break;
+      }
+      currentRequest = parsed.currentRequest;
+    } catch {
+      break;
+    }
+  }
+
+  const serialize = (request: string) =>
+    JSON.stringify({
+      version: 1,
+      kind: "t3.provider-handoff-turn",
+      context,
+      currentRequest: request,
+    });
+  const serialized = serialize(currentRequest);
+  if (serialized.length <= PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS) {
+    return serialized;
+  }
+
+  const truncationNotice =
+    "\n\n[Request truncated for provider transport. Query persisted thread history for the full text.]";
+  let lower = 0;
+  let upper = currentRequest.length;
+  let bounded = serialize(truncationNotice);
+  while (lower <= upper) {
+    const midpoint = Math.floor((lower + upper) / 2);
+    const candidate = serialize(`${currentRequest.slice(0, midpoint)}${truncationNotice}`);
+    if (candidate.length <= PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS) {
+      bounded = candidate;
+      lower = midpoint + 1;
+    } else {
+      upper = midpoint - 1;
+    }
+  }
+  return bounded;
 }

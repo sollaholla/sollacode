@@ -25,6 +25,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
@@ -88,7 +89,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh",
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt",
     value: unknown,
     detail: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -119,7 +121,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh";
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -382,11 +385,24 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
+  const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
+    Effect.fn("ClaudeTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
+      const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
+      return yield* runClaudeJson({
+        operation: "generateVmAgentTaskPrompt",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generatePlanRefresh,
+    generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

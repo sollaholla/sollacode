@@ -197,7 +197,16 @@ export const make = Effect.fn("MobilePreferencesStore.make")(function* () {
   });
 
   const loadUnlocked = Effect.gen(function* () {
-    const databaseResult = yield* Effect.result(database.loadPreferencesJson);
+    // These stores are independent. The preference result gates the splash
+    // screen, so read both concurrently instead of adding secure-storage I/O
+    // to the SQLite preference-query critical path on every cold start.
+    const [databaseResult, fallbackResult] = yield* Effect.all(
+      [
+        Effect.result(database.loadPreferencesJson),
+        Effect.result(secureStorage.getItem(PREFERENCES_FALLBACK_KEY)),
+      ],
+      { concurrency: "unbounded" },
+    );
     const databaseAvailable = databaseResult._tag === "Success";
     const storedJson = databaseAvailable
       ? databaseResult.success
@@ -208,7 +217,6 @@ export const make = Effect.fn("MobilePreferencesStore.make")(function* () {
       );
     }
 
-    const fallbackResult = yield* Effect.result(secureStorage.getItem(PREFERENCES_FALLBACK_KEY));
     let fallbackJson: string | null = null;
     if (fallbackResult._tag === "Success") {
       fallbackJson = fallbackResult.success;

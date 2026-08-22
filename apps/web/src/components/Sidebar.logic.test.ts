@@ -6,6 +6,7 @@ import {
   createThreadJumpHintVisibilityController,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
+  isSidebarListedThread,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getVisibleThreadsForProject,
@@ -17,6 +18,7 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
+  AUTO_RESUME_LABEL_MIN_AGE_MS,
   resolveAutoResumeStartedAt,
   resolveSidebarV2Status,
   resolveThreadStatusPill,
@@ -34,6 +36,7 @@ import {
 import {
   EnvironmentId,
   OrchestrationLatestTurn,
+  ORCHESTRATOR_THREAD_ID,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -529,6 +532,28 @@ describe("resolveAdjacentThreadId", () => {
         direction: "previous",
       }),
     ).toBeNull();
+  });
+});
+
+describe("isSidebarListedThread", () => {
+  it("keeps ordinary threads, including ones that never set the flag", () => {
+    expect(isSidebarListedThread({ isSideChat: false })).toBe(true);
+    expect(isSidebarListedThread({})).toBe(true);
+    expect(isSidebarListedThread({ isSideChat: undefined })).toBe(true);
+  });
+
+  it("drops side chats, which belong to their parent thread's row", () => {
+    expect(isSidebarListedThread({ isSideChat: true })).toBe(false);
+  });
+
+  it("drops the orchestrator, which has its own pinned row above the list", () => {
+    expect(isSidebarListedThread({ id: ORCHESTRATOR_THREAD_ID })).toBe(false);
+    // Listing it would also duplicate it and expose it to bulk selection.
+    expect(isSidebarListedThread({ id: ORCHESTRATOR_THREAD_ID, isSideChat: false })).toBe(false);
+  });
+
+  it("keeps threads whose id merely resembles the orchestrator", () => {
+    expect(isSidebarListedThread({ id: `${ORCHESTRATOR_THREAD_ID}-2` })).toBe(true);
   });
 });
 
@@ -1474,5 +1499,104 @@ describe("sortLogicalProjectsForSidebar", () => {
         (project) => project.projectKey,
       ),
     ).toEqual(["logical-newer", "logical-older"]);
+  });
+});
+
+describe("resolveSidebarV2Status — unreachable host", () => {
+  const running = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    session: { status: "running" } as never,
+  };
+
+  it("reports working while the host is reachable", () => {
+    expect(resolveSidebarV2Status({ ...running })).toBe("working");
+  });
+
+  // Reported 2026-08-15: a row read "Working 3h 4m" for a host that was
+  // offline, counting up state nobody could observe or stop.
+  it("stops claiming working once the host is unreachable", () => {
+    expect(resolveSidebarV2Status({ ...running, environmentUnreachable: true })).toBe("ready");
+  });
+
+  it("still surfaces work that needs the user", () => {
+    expect(
+      resolveSidebarV2Status({
+        ...running,
+        hasPendingApprovals: true,
+        environmentUnreachable: true,
+      }),
+    ).toBe("approval");
+  });
+
+  // The chat derives "working" from the turn; the sidebar read only the
+  // session, so a row went blank while the conversation said "Working for 3m".
+  it("reports working from an in-flight turn even when the session lags", () => {
+    expect(
+      resolveSidebarV2Status({
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        session: { status: "ready" } as never,
+        latestTurn: { startedAt: "2026-08-15T20:00:00.000Z", completedAt: null } as never,
+      }),
+    ).toBe("working");
+  });
+
+  it("does not keep Working after the session has stopped", () => {
+    expect(
+      resolveSidebarV2Status({
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        session: { status: "stopped" } as never,
+        latestTurn: { startedAt: "2026-08-15T20:00:00.000Z", completedAt: null } as never,
+      }),
+    ).toBe("ready");
+  });
+});
+
+describe("resolveAutoResumeStartedAt — settling delay", () => {
+  const startedAt = "2026-08-15T20:00:00.000Z";
+  const startedMs = Date.parse(startedAt);
+
+  // Reported 2026-08-15: the label strobed on the sidebar once per agent-loop
+  // hand-off, in the gap between one turn settling and the next starting.
+  it("stays quiet for a resume younger than the delay", () => {
+    expect(
+      resolveAutoResumeStartedAt({
+        ownStatus: "ready",
+        startupResumeStartedAt: startedAt,
+        nowMs: startedMs + AUTO_RESUME_LABEL_MIN_AGE_MS - 1,
+      }),
+    ).toBeNull();
+  });
+
+  it("shows a resume that genuinely outlived the delay", () => {
+    expect(
+      resolveAutoResumeStartedAt({
+        ownStatus: "ready",
+        startupResumeStartedAt: startedAt,
+        nowMs: startedMs + AUTO_RESUME_LABEL_MIN_AGE_MS,
+      }),
+    ).toBe(startedAt);
+  });
+
+  it("never labels a row that is running its own turn", () => {
+    expect(
+      resolveAutoResumeStartedAt({
+        ownStatus: "working",
+        startupResumeStartedAt: startedAt,
+        nowMs: startedMs + 60_000,
+      }),
+    ).toBeNull();
+  });
+
+  it("shows an unparseable stamp rather than hiding queued work", () => {
+    expect(
+      resolveAutoResumeStartedAt({
+        ownStatus: "ready",
+        startupResumeStartedAt: "not-a-date",
+        nowMs: startedMs,
+      }),
+    ).toBe("not-a-date");
   });
 });

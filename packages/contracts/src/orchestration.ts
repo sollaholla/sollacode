@@ -23,6 +23,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { VmAgentDelegationId } from "./vm.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -243,6 +244,13 @@ export const OrchestrationMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+  /** Server-owned correlation for bounded VM-agent delegated work. */
+  delegationId: Schema.optional(VmAgentDelegationId),
+  // True for orchestrator voice-conversation rows recorded outside any turn.
+  // A new optional field rather than a new `inputOrigin` literal: literal-union
+  // growth breaks old clients' decode of the whole thread, an optional key is
+  // silently dropped by them.
+  voiceTranscript: Schema.optional(Schema.Boolean),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
@@ -519,6 +527,31 @@ export const OrchestrationResyncRequiredStreamItem = Schema.Struct({
 export type OrchestrationResyncRequiredStreamItem =
   typeof OrchestrationResyncRequiredStreamItem.Type;
 
+/**
+ * A correction for `pendingWork` — the one shell field the event log cannot
+ * report.
+ *
+ * Every other shell field changes only as a consequence of a domain event, so
+ * refetching the thread's shell whenever one lands keeps clients exact. Work
+ * obligations are scheduler state: they transition without appending anything,
+ * and a *terminal* transition is the one that matters, because it is what turns
+ * "auto-resuming" back into "ready". Observed 2026-08-11: a startup resume was
+ * still queued when its thread's last event landed, so every connected client
+ * latched "Auto-resuming"; the obligation was cancelled four minutes later with
+ * no event behind it, and the rows kept counting up for the next four hours.
+ *
+ * Carries no `sequence`: it is not a log position and must not advance the
+ * client's cursor. Clients apply it to the named thread if they hold it and
+ * ignore it otherwise.
+ */
+export const OrchestrationThreadPendingWorkStreamItem = Schema.Struct({
+  kind: Schema.Literal("thread-pending-work"),
+  threadId: ThreadId,
+  pendingWork: Schema.NullOr(OrchestrationThreadPendingWork),
+});
+export type OrchestrationThreadPendingWorkStreamItem =
+  typeof OrchestrationThreadPendingWorkStreamItem.Type;
+
 export const OrchestrationShellStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("synchronized"),
@@ -528,6 +561,7 @@ export const OrchestrationShellStreamItem = Schema.Union([
     snapshot: OrchestrationShellSnapshot,
   }),
   OrchestrationResyncRequiredStreamItem,
+  OrchestrationThreadPendingWorkStreamItem,
   OrchestrationShellStreamEvent,
 ]);
 export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.Type;
@@ -547,6 +581,12 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
    * snapshot or catch-up replay and before it begins emitting live events.
    */
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Opts into `thread-pending-work` items. A client that predates that variant
+   * decodes the stream against a union without it, so the server only sends it
+   * to clients that ask — the flag is the client saying it can decode one.
+   */
+  requestPendingWorkUpdates: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
@@ -758,6 +798,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literal("user"),
     text: Schema.String,
     inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+    delegationId: Schema.optional(VmAgentDelegationId),
     attachments: Schema.Array(ChatAttachment),
   }),
   modelSelection: Schema.optional(ModelSelection),
@@ -862,6 +903,30 @@ const ThreadPlanRefreshCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Record spoken orchestrator conversation into the thread's message history.
+ *
+ * Deliberately NOT a turn: the voice model already answered aloud, so nothing
+ * may reach a provider or create work obligations. The decider re-emits these
+ * as plain `thread.message-sent` events with `turnId: null` — every
+ * turn-sensitive consumer (turn settling, the agent continuation gate) already
+ * guards on a non-null turn id, so the entries land as history and nothing else.
+ */
+const ThreadVoiceTranscriptRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.voice-transcript.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  entries: Schema.Array(
+    Schema.Struct({
+      messageId: MessageId,
+      role: Schema.Literals(["user", "assistant"]),
+      text: TrimmedNonEmptyString,
+    }),
+  ).check(Schema.isMinLength(1)),
+  createdAt: IsoDateTime,
+});
+export type ThreadVoiceTranscriptRecordCommand = typeof ThreadVoiceTranscriptRecordCommand.Type;
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -886,6 +951,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadPlanRefreshCommand,
+  ThreadVoiceTranscriptRecordCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -914,6 +980,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadPlanRefreshCommand,
+  ThreadVoiceTranscriptRecordCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1168,6 +1235,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   inputOrigin: Schema.optional(OrchestrationMessageInputOrigin),
+  delegationId: Schema.optional(VmAgentDelegationId),
+  voiceTranscript: Schema.optional(Schema.Boolean),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,

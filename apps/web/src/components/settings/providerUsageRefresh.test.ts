@@ -34,6 +34,14 @@ const codex = () =>
 describe("provider settings usage refresh coordinator", () => {
   it("only refreshes enabled, available, potentially authenticated supported providers", () => {
     expect(isProviderUsageRefreshEligible(codex())).toBe(true);
+    expect(
+      isProviderUsageRefreshEligible(
+        provider({
+          driver: ProviderDriverKind.make("grok"),
+          instanceId: ProviderInstanceId.make("grok"),
+        }),
+      ),
+    ).toBe(true);
     expect(isProviderUsageRefreshEligible({ ...codex(), enabled: false })).toBe(false);
     expect(isProviderUsageRefreshEligible({ ...codex(), status: "disabled" })).toBe(false);
     expect(

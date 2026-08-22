@@ -608,12 +608,32 @@ describe("EnvironmentThreads", () => {
         phase: "connecting",
         stage: "synchronizing",
         attempt: 1,
-        generation: 0,
+        generation: 1,
         lastFailure: null,
         retryAt: null,
       });
       yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
       yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+
+      // The supervisor and thread stream are observed by separate fibers. A
+      // mobile browser can resume with the connection's progress notification
+      // still queued even though the thread completion marker already landed.
+      // That late phase belongs to the generation we just synchronized and
+      // must not put the thread back into "Catching up".
+      yield* SubscriptionRef.set(harness.supervisorState, {
+        desired: true,
+        network: "online",
+        phase: "connecting",
+        stage: "opening",
+        attempt: 1,
+        generation: 1,
+        lastFailure: null,
+        retryAt: null,
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect((yield* Ref.get(harness.latest)).status).toBe("live");
 
       yield* SubscriptionRef.set(harness.supervisorState, {
         desired: true,

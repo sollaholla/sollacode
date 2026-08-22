@@ -16,6 +16,10 @@ export function shouldBundleCliDependency(id: string): boolean {
   return bundledPackagePrefixes.some((prefix) => id.startsWith(prefix));
 }
 
+export function shouldEmitSourceMaps(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true";
+}
+
 const repoEnv = loadRepoEnv();
 const cliBuildChannel = packageJson.version.includes("-nightly.") ? "nightly" : "latest";
 
@@ -34,7 +38,10 @@ export default mergeConfig(
     pack: {
       entry: ["src/bin.ts"],
       outDir: "dist",
-      sourcemap: true,
+      // Published source maps more than double the server package transfer.
+      // Keep them available for diagnostic builds without shipping them to
+      // every install by default.
+      sourcemap: shouldEmitSourceMaps(process.env.T3CODE_BUILD_SOURCEMAPS),
       clean: true,
       deps: {
         alwaysBundle: shouldBundleCliDependency,

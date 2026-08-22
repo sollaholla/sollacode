@@ -1,6 +1,7 @@
 import {
   ContextMenuItemSchema,
   DesktopAppBrandingSchema,
+  DesktopComposerClipboardInputSchema,
   DesktopEnvironmentBootstrapSchema,
   DesktopThemeSchema,
   PickFolderOptionsSchema,
@@ -316,6 +317,16 @@ export const revealFile = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.window.revealFile")(function* (path) {
     yield* Effect.sync(() => Electron.shell.showItemInFolder(path));
+  }),
+});
+
+export const writeComposerClipboard = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL,
+  payload: DesktopComposerClipboardInputSchema,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.writeComposerClipboard")(function* (input) {
+    const electronShell = yield* ElectronShell.ElectronShell;
+    return yield* electronShell.writeComposerClipboard(input);
   }),
 });
 

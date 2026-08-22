@@ -44,9 +44,19 @@ import {
   setTheme,
   startFileDrag,
   showContextMenu,
+  writeComposerClipboard,
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import {
+  endOrchestratorBubbleDrag,
+  moveOrchestratorBubble,
+  openOrchestratorFromBubble,
+  publishOrchestratorBubbleState,
+  setOrchestratorBubbleVisible,
+  toggleOrchestratorVoiceFromBubble,
+} from "./methods/orchestratorBubble.ts";
+import {
+  activateRemoteControlHost,
   captureRemoteControlFrame,
   listRemoteControlCaptureSources,
   readRemoteControlPointerLock,
@@ -54,6 +64,13 @@ import {
   sendRemoteControlInput,
 } from "./methods/remoteControl.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
+import {
+  completeDesktopPermissionsOnboarding,
+  getDesktopPermissions,
+  openDesktopPermissionSettings,
+  relaunchForDesktopPermissions,
+  requestDesktopPermission,
+} from "./methods/permissions.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -94,6 +111,12 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setWslDistro);
   yield* ipc.handle(setWslOnly);
 
+  yield* ipc.handle(getDesktopPermissions);
+  yield* ipc.handle(requestDesktopPermission);
+  yield* ipc.handle(openDesktopPermissionSettings);
+  yield* ipc.handle(completeDesktopPermissionsOnboarding);
+  yield* ipc.handle(relaunchForDesktopPermissions);
+
   yield* ipc.handle(pickFolder);
   yield* ipc.handle(confirm);
   yield* ipc.handle(setTheme);
@@ -101,13 +124,21 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(openExternal);
   yield* ipc.handle(saveThreadExportJson);
   yield* ipc.handle(revealFile);
+  yield* ipc.handle(writeComposerClipboard);
   yield* ipc.handle(setPushToTalkSystemAudioMuted);
   yield* ipc.handle(captureRemoteControlFrame);
   yield* ipc.handle(listRemoteControlCaptureSources);
+  yield* ipc.handle(activateRemoteControlHost);
   yield* ipc.handle(sendRemoteControlInput);
   yield* ipc.handle(readRemoteControlPointerLock);
   yield* ipc.handle(resetRemoteControlInput);
   yield* ipc.handle(startFileDrag);
+  yield* ipc.handle(setOrchestratorBubbleVisible);
+  yield* ipc.handle(publishOrchestratorBubbleState);
+  yield* ipc.handle(moveOrchestratorBubble);
+  yield* ipc.handle(endOrchestratorBubbleDrag);
+  yield* ipc.handle(openOrchestratorFromBubble);
+  yield* ipc.handle(toggleOrchestratorVoiceFromBubble);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }

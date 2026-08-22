@@ -6,11 +6,13 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  VmAgentDelegationId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -2280,6 +2282,84 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         (yield* snapshotQuery.searchThreads({ query: "user needle" })).matches,
         [],
       );
+    }),
+  );
+
+  it.effect("resolves delegation provenance from only the exact active turn message", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`INSERT INTO projection_projects (
+        project_id, title, workspace_root, default_model_selection_json, scripts_json,
+        created_at, updated_at, deleted_at
+      ) VALUES (
+        'project-delegation-provenance', 'Delegation', '/tmp/delegation',
+        '{"provider":"codex","model":"gpt-5"}', '[]',
+        '2026-08-21T20:00:00.000Z', '2026-08-21T20:00:00.000Z', NULL
+      )`;
+      yield* sql`INSERT INTO projection_threads (
+        thread_id, project_id, title, model_selection_json, runtime_mode,
+        interaction_mode, branch, worktree_path, latest_turn_id, latest_user_message_at,
+        pending_approval_count, pending_user_input_count, has_actionable_proposed_plan,
+        created_at, updated_at, deleted_at
+      ) VALUES (
+        'thread-delegation-provenance', 'project-delegation-provenance', 'Target Agent',
+        '{"provider":"codex","model":"gpt-5"}', 'full-access', 'agent', NULL, NULL,
+        'turn-ordinary', '2026-08-21T20:00:02.000Z', 0, 0, 0,
+        '2026-08-21T20:00:00.000Z', '2026-08-21T20:00:02.000Z', NULL
+      )`;
+      yield* sql`INSERT INTO projection_thread_messages (
+        message_id, thread_id, turn_id, role, text, is_streaming,
+        created_at, updated_at, delegation_id
+      ) VALUES
+        ('message-delegated', 'thread-delegation-provenance', 'turn-delegated', 'user',
+         'Delegated request', 0, '2026-08-21T20:00:01.000Z',
+         '2026-08-21T20:00:01.000Z', 'delegation-provenance'),
+        ('message-ordinary', 'thread-delegation-provenance', 'turn-ordinary', 'user',
+         'Ordinary request', 0, '2026-08-21T20:00:02.000Z',
+         '2026-08-21T20:00:02.000Z', NULL)
+      `;
+      yield* sql`INSERT INTO projection_turns (
+        thread_id, turn_id, pending_message_id, assistant_message_id, state,
+        requested_at, started_at, completed_at, checkpoint_files_json
+      ) VALUES
+        ('thread-delegation-provenance', 'turn-delegated', 'message-delegated', NULL,
+         'running', '2026-08-21T20:00:01.000Z', '2026-08-21T20:00:01.000Z', NULL, '[]'),
+        ('thread-delegation-provenance', 'turn-ordinary', 'message-ordinary', NULL,
+         'running', '2026-08-21T20:00:02.000Z', '2026-08-21T20:00:02.000Z', NULL, '[]')
+      `;
+      yield* sql`INSERT INTO projection_thread_sessions (
+        thread_id, status, provider_name, provider_session_id, provider_thread_id,
+        runtime_mode, active_turn_id, last_error, updated_at
+      ) VALUES (
+        'thread-delegation-provenance', 'running', 'codex', 'session-provenance',
+        'provider-thread-provenance', 'full-access', 'turn-delegated', NULL,
+        '2026-08-21T20:00:02.000Z'
+      )`;
+
+      const getActiveTurnDelegation = snapshotQuery.getActiveTurnDelegation;
+      if (getActiveTurnDelegation === undefined) {
+        return yield* Effect.die("getActiveTurnDelegation is not configured");
+      }
+      const delegated = yield* getActiveTurnDelegation(
+        ThreadId.make("thread-delegation-provenance"),
+      );
+      assert.deepStrictEqual(Option.getOrNull(delegated), {
+        delegationId: VmAgentDelegationId.make("delegation-provenance"),
+      });
+
+      yield* sql`UPDATE projection_thread_sessions SET active_turn_id = 'turn-ordinary'
+        WHERE thread_id = 'thread-delegation-provenance'`;
+      const ordinary = yield* getActiveTurnDelegation(
+        ThreadId.make("thread-delegation-provenance"),
+      );
+      assert.isTrue(Option.isNone(ordinary));
     }),
   );
 });

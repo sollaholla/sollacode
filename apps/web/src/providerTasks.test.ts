@@ -7,6 +7,7 @@ import {
   PROVIDER_TASK_PAGE_SIZE,
   canStopProviderTask,
   countActiveProviderTasks,
+  describeSendOverRunningTasks,
   deriveProviderTasks,
   providerTaskChipLabel,
   providerTaskStatusLabel,
@@ -440,6 +441,7 @@ describe("canStopProviderTask", () => {
 
   it("allows stopping a running task on a runtime with a per-task kill", () => {
     NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "claudeAgent" }), true);
+    NodeAssert.equal(canStopProviderTask({ task: task(), driverKind: "grok" }), true);
   });
 
   it("refuses when the driver has no per-task stop channel", () => {
@@ -461,6 +463,19 @@ describe("canStopProviderTask", () => {
     NodeAssert.equal(
       canStopProviderTask({ task: task({ taskType: "plan-refresh" }), driverKind: "claudeAgent" }),
       false,
+    );
+  });
+});
+
+describe("describeSendOverRunningTasks", () => {
+  it("names the count and the consequence", () => {
+    NodeAssert.equal(
+      describeSendOverRunningTasks(1),
+      "1 background task is still running. Sending now will cancel it. Send anyway?",
+    );
+    NodeAssert.equal(
+      describeSendOverRunningTasks(3),
+      "3 background tasks are still running. Sending now will cancel them. Send anyway?",
     );
   });
 });

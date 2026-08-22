@@ -347,6 +347,17 @@ export const make = Effect.gen(function* () {
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
       webPreferences: {
         preload: environment.preloadPath,
+        // This window is not just a UI. It hosts remote control — the consent
+        // handshake, the screen encoder, and the input/status pollers all live
+        // in this renderer — and it drives live sessions the user is watching
+        // from another device. Chromium's default throttling suspends timers
+        // and starves the capture pipeline the moment the window is minimized,
+        // which is precisely when someone is controlling this machine from
+        // their phone: approvals never settled, so the phone kept asking for
+        // consent the user had already given, and the stream sat black until
+        // the window was brought back to the foreground (reported 2026-08-12).
+        // Preview's picture-in-picture window opts out for the same reason.
+        backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -529,6 +540,51 @@ export const make = Effect.gen(function* () {
       }
       return { action: "deny" };
     });
+
+    // Electron defaults to granting every permission a renderer asks for. Now
+    // that the app can hold the microphone open for a whole orchestrator
+    // conversation, be explicit: allow what the app actually uses, and deny
+    // everything else rather than inheriting a blanket yes.
+    //
+    // `clipboard-sanitized-write` is the permission behind
+    // `navigator.clipboard.writeText()` — not `clipboard-write`, which is not a
+    // valid Electron permission name. Denying it broke every copy button in the
+    // app with "Write permission denied". Async clipboard writes consult the
+    // permission *check* handler as well as the request handler, so both have to
+    // allow it; see the same pairing in `preview/BrowserSession.ts`.
+    const allowedRendererPermissions: ReadonlySet<string> = new Set([
+      "clipboard-read",
+      "clipboard-sanitized-write",
+    ]);
+    const isAudioOnlyMediaRequest = (details: unknown): boolean => {
+      const requested = (details as { mediaTypes?: ReadonlyArray<string> }).mediaTypes ?? [];
+      // The app never captures video, so a video request is a signal something
+      // unexpected is happening.
+      return requested.every((type) => type === "audio");
+    };
+    window.webContents.session.setPermissionRequestHandler(
+      (_webContents, permission, callback, details) => {
+        if (permission === "media") {
+          callback(isAudioOnlyMediaRequest(details));
+          return;
+        }
+        callback(allowedRendererPermissions.has(permission));
+      },
+    );
+    window.webContents.session.setPermissionCheckHandler(
+      (_webContents, permission, _origin, details) => {
+        if (permission === "media") {
+          // Only an explicit video check is refused. Chromium also runs this
+          // check with `mediaType: "unknown"` — device enumeration, label
+          // exposure — and answering no there tells the app the microphone is
+          // unavailable. The request handler above is the real gate for capture,
+          // so this stays deliberately permissive rather than risking a mute.
+          const mediaType = (details as { mediaType?: string } | undefined)?.mediaType;
+          return mediaType !== "video";
+        }
+        return allowedRendererPermissions.has(permission);
+      },
+    );
     window.webContents.on("will-navigate", (event, url) => {
       if (
         isSameOriginRendererNavigation({

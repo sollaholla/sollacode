@@ -5,11 +5,13 @@ export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 export const SAVE_THREAD_EXPORT_JSON_CHANNEL = "desktop:save-thread-export-json";
 export const REVEAL_FILE_CHANNEL = "desktop:reveal-file";
+export const WRITE_COMPOSER_CLIPBOARD_CHANNEL = "desktop:write-composer-clipboard";
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
 export const SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL =
   "desktop:set-push-to-talk-system-audio-muted";
 export const REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL = "desktop:remote-control-capture-frame";
 export const REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL = "desktop:remote-control-capture-sources";
+export const REMOTE_CONTROL_ACTIVATE_HOST_CHANNEL = "desktop:remote-control-activate-host";
 export const REMOTE_CONTROL_SEND_INPUT_CHANNEL = "desktop:remote-control-send-input";
 export const REMOTE_CONTROL_RESET_INPUT_CHANNEL = "desktop:remote-control-reset-input";
 export const REMOTE_CONTROL_POINTER_LOCK_CHANNEL = "desktop:remote-control-pointer-lock";
@@ -17,6 +19,12 @@ export const MENU_ACTION_CHANNEL = "desktop:menu-action";
 export const GET_WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:get-window-fullscreen-state";
 export const WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:window-fullscreen-state";
 export const INTENTIONAL_SHUTDOWN_CHANNEL = "desktop:intentional-shutdown";
+export const GET_DESKTOP_PERMISSIONS_CHANNEL = "desktop:get-permissions";
+export const REQUEST_DESKTOP_PERMISSION_CHANNEL = "desktop:request-permission";
+export const OPEN_DESKTOP_PERMISSION_SETTINGS_CHANNEL = "desktop:open-permission-settings";
+export const COMPLETE_DESKTOP_PERMISSIONS_ONBOARDING_CHANNEL =
+  "desktop:complete-permissions-onboarding";
+export const RELAUNCH_FOR_DESKTOP_PERMISSIONS_CHANNEL = "desktop:relaunch-for-permissions";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
 export const GET_LOCAL_ENVIRONMENT_BOOTSTRAPS_CHANNEL = "desktop:get-local-environment-bootstraps";
 export const GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL =
@@ -90,3 +98,13 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+export const ORCHESTRATOR_BUBBLE_SET_VISIBLE_CHANNEL = "desktop:orchestrator-bubble-set-visible";
+export const ORCHESTRATOR_BUBBLE_PUBLISH_STATE_CHANNEL =
+  "desktop:orchestrator-bubble-publish-state";
+export const ORCHESTRATOR_BUBBLE_STATE_CHANNEL = "desktop:orchestrator-bubble-state";
+export const ORCHESTRATOR_BUBBLE_MOVE_CHANNEL = "desktop:orchestrator-bubble-move";
+export const ORCHESTRATOR_BUBBLE_DRAG_END_CHANNEL = "desktop:orchestrator-bubble-drag-end";
+export const ORCHESTRATOR_BUBBLE_OPEN_CHANNEL = "desktop:orchestrator-bubble-open";
+export const ORCHESTRATOR_BUBBLE_TOGGLE_VOICE_CHANNEL = "desktop:orchestrator-bubble-toggle-voice";
+/** Main-process → main-window push. The bubble cannot host a voice session. */
+export const ORCHESTRATOR_VOICE_TOGGLE_CHANNEL = "desktop:orchestrator-voice-toggle";

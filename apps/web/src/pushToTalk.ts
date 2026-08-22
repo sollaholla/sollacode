@@ -1,3 +1,5 @@
+import { playCueOnce, type VoiceCuePolicy } from "./orchestrator/voiceCues";
+
 export interface PushToTalkShortcutEvent {
   readonly code?: string;
   readonly key: string;
@@ -49,6 +51,34 @@ export function shouldHandlePushToTalkForSurface(input: {
   return input.embeddedSideChat
     ? input.targetWithinOwnSurface
     : !input.targetWithinEmbeddedSideChat;
+}
+
+/**
+ * A focused control being replaced or focus moving to another control is not
+ * an app focus loss. React updates, dialogs, and live Agent UI changes can all
+ * emit `focusout` with no next target while the document itself remains
+ * focused; stopping a held recorder there makes dictation end at random.
+ */
+export function shouldStopPushToTalkAfterFocusOut(input: {
+  readonly relatedTarget: EventTarget | null;
+  readonly documentHasFocus: boolean;
+}): boolean {
+  return input.relatedTarget === null && !input.documentHasFocus;
+}
+
+/**
+ * A held push-to-talk transcript goes to the selected terminal instead of the
+ * composer when the chord was pressed with a terminal focused, or while the
+ * thread's main surface is the terminal workspace (where no composer is
+ * visible to receive it).
+ */
+export function shouldRouteTranscriptToTerminal(input: {
+  readonly targetWithinTerminalSurface: boolean;
+  readonly terminalMainSurfaceActive: boolean;
+  readonly activeTerminalId: string;
+}): boolean {
+  if (!input.activeTerminalId) return false;
+  return input.targetWithinTerminalSurface || input.terminalMainSurfaceActive;
 }
 
 export function downmixAudioChannels(channels: ReadonlyArray<Float32Array>): Float32Array {
@@ -163,32 +193,49 @@ export function withTranscriptionDeadline<T>(
 
 type RecorderStartTarget = Pick<MediaRecorder, "start" | "state">;
 
-export async function playRecordingStartCue(): Promise<void> {
-  if (typeof AudioContext === "undefined") return;
+/**
+ * The dictation "recording started" sound: the same `mic-open` cue the voice
+ * orchestrator plays, from the same table.
+ *
+ * It used to be a separate 740 Hz blip with its own volume — two different
+ * sounds for "the microphone just opened, talk now" depending on which feature
+ * opened it. One vocabulary, one sound. Resolves only after the tone has
+ * finished, which the desktop caller relies on: it must not mute system audio
+ * underneath the very cue that confirms recording began.
+ */
+export async function playRecordingStartCue(policy?: VoiceCuePolicy): Promise<void> {
+  await playCueOnce("mic-open", policy);
+}
 
-  const context = new AudioContext();
-  try {
-    if (context.state === "suspended") {
-      await context.resume();
-    }
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    const now = context.currentTime;
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(740, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.035, now + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.06);
-    await new Promise<void>((resolve) => {
-      oscillator.addEventListener("ended", () => resolve(), { once: true });
-    });
-  } finally {
-    await context.close();
-  }
+/**
+ * Runs the recording-start cue in full, and only then the system-audio mute.
+ *
+ * The mute used to be requested before the recorder even existed, so on macOS
+ * the one sound that says "recording has started" played into an output that
+ * had just been silenced — inaudible exactly where push-to-talk is most used.
+ * The cue is still best-effort: a failed tone must not cost the mute, which
+ * protects the transcription rather than the ear.
+ *
+ * The two `recordingActive` checks close a race: a tap-and-release can end the
+ * recording while the cue or the mute IPC is still in flight, and a mute that
+ * lands after the stop handler already ran would stay until the safety timer.
+ */
+export async function cueThenMuteSystemAudio(input: {
+  readonly playCue: () => Promise<void>;
+  /** Null when there is no desktop bridge or the user turned the mute off. */
+  readonly muteSystemAudio: (() => Promise<unknown>) | null;
+  readonly recordingActive: () => boolean;
+  /** Marks the mute as requested, so the recorder's stop path restores it. */
+  readonly noteMuteRequested: () => void;
+  /** Undoes a mute that landed after the recording already ended. */
+  readonly restoreSystemAudio: () => void;
+}): Promise<void> {
+  await input.playCue().catch(() => undefined);
+  if (input.muteSystemAudio === null) return;
+  if (!input.recordingActive()) return;
+  input.noteMuteRequested();
+  await input.muteSystemAudio();
+  if (!input.recordingActive()) input.restoreSystemAudio();
 }
 
 export function startRecorderWithCue(

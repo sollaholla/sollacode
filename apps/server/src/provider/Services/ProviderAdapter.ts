@@ -44,6 +44,15 @@ export interface ProviderAdapterCapabilities {
    * previously only offered "dismiss".
    */
   readonly taskStop?: boolean;
+
+  /** Whether the provider can destructively roll back persisted turns. */
+  readonly threadRollback?: boolean;
+
+  /** Whether the provider can materialize an independent conversation fork. */
+  readonly threadFork?: boolean;
+
+  /** Whether this instance may be selected for auxiliary text generation. */
+  readonly textGeneration?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

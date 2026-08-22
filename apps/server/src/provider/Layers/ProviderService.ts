@@ -26,6 +26,7 @@ import {
   type ProviderSession,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -49,6 +50,7 @@ import {
 import {
   type ProviderAdapterError,
   ProviderAdapterRequestError,
+  ProviderAdapterSessionNotFoundError,
   ProviderValidationError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
@@ -61,6 +63,8 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { withSideChatAgentContext } from "../sideChatContext.ts";
+import { withVmAgentContext } from "../vmAgentContext.ts";
+import { VmAgentStore } from "../../persistence/Services/VmAgents.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 function forkResumeCursor(provider: ProviderDriverKind, value: unknown): unknown | undefined {
@@ -247,17 +251,48 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
-      Effect.tap((credential) =>
-        credential
-          ? Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config))
-          : Effect.void,
-      ),
-    );
+    Effect.gen(function* () {
+      const previous = McpProviderSession.readMcpProviderSession(threadId);
+      if (previous) {
+        yield* McpSessionRegistry.revokeActiveMcpProviderSession(previous.providerSessionId);
+        McpProviderSession.clearMcpProviderSession(threadId);
+      }
+      // Only a bound VM agent's thread gets the "vm" capability — so vm_computer
+      // is exposed there and nowhere else. VmAgentStore is optional (absent in
+      // unit tests, where no thread is a VM agent anyway).
+      const isVmAgent = yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
+        onNone: () => Effect.succeed(false),
+        onSome: (store) =>
+          store.getByThreadId(threadId).pipe(
+            Effect.map(Option.isSome),
+            Effect.orElseSucceed(() => false),
+          ),
+      });
+      const credential = yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId,
+        ...(isVmAgent
+          ? {
+              capabilities: new Set([
+                ...McpSessionRegistry.DEFAULT_MCP_CAPABILITIES,
+                "vm" as const,
+              ]),
+            }
+          : {}),
+      });
+      if (credential) {
+        McpProviderSession.setMcpProviderSession(credential.config);
+      }
+      return credential;
+    });
   const clearMcpSession = (threadId: ThreadId) =>
-    McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
-      Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
-    );
+    Effect.gen(function* () {
+      const current = McpProviderSession.readMcpProviderSession(threadId);
+      if (current) {
+        yield* McpSessionRegistry.revokeActiveMcpProviderSession(current.providerSessionId);
+      }
+      McpProviderSession.clearMcpProviderSession(threadId);
+    });
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -419,28 +454,46 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
       }
 
-      if (!hasResumeCursor) {
+      const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
+      const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
+      if (!hasResumeCursor && persistedCwd === undefined) {
         return yield* toValidationError(
           input.operation,
           `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
         );
       }
 
-      const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
-      const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
+      const startRecoveredSession = (resumeCursor: unknown | undefined) =>
+        adapter
+          .startSession({
+            threadId: input.binding.threadId,
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
+            ...(resumeCursor !== undefined && resumeCursor !== null ? { resumeCursor } : {}),
+            runtimeMode: input.binding.runtimeMode ?? "full-access",
+          })
+          .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
 
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
-      const resumed = yield* adapter
-        .startSession({
-          threadId: input.binding.threadId,
-          provider: input.binding.provider,
-          providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
-          ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
-        })
-        .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
+      const resumed = hasResumeCursor
+        ? yield* startRecoveredSession(input.binding.resumeCursor).pipe(
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause) || persistedCwd === undefined) {
+                return Effect.failCause(cause);
+              }
+              return Effect.logWarning(
+                "provider.session.recover-resume-failed; starting a fresh session",
+                {
+                  threadId: input.binding.threadId,
+                  provider: input.binding.provider,
+                  errorTag: causeErrorTag(cause),
+                },
+              ).pipe(Effect.flatMap(() => startRecoveredSession(undefined)));
+            }),
+          )
+        : yield* startRecoveredSession(undefined);
       if (resumed.provider !== adapter.provider) {
         yield* clearMcpSession(input.binding.threadId);
         return yield* toValidationError(
@@ -622,6 +675,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        // Stop the previous provider first. If both are live, listSessions used
+        // to treat that as fatal and every thread's turn start died with it.
+        yield* stopStaleSessionsForThread({
+          threadId,
+          currentInstanceId: resolvedInstanceId,
+        });
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
@@ -644,10 +703,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           providerInstanceId: resolvedInstanceId,
         };
 
-        yield* stopStaleSessionsForThread({
-          threadId,
-          currentInstanceId: resolvedInstanceId,
-        });
         yield* upsertSessionBinding(sessionWithInstance, threadId, {
           modelSelection: input.modelSelection,
         });
@@ -681,9 +736,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       payload: rawInput,
     });
 
+    // A VM agent's thread gets its identity + "you own a computer" context so the
+    // model knows who it is and to drive its VM with `vm_computer` (mutually
+    // exclusive with side chat). VmAgentStore is optional: absent in unit tests,
+    // where no thread is a VM agent anyway.
+    const vmAgentIdentity =
+      parsed.isSideChat === true
+        ? null
+        : yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
+            onNone: () => Effect.succeed(null),
+            onSome: (store) =>
+              store.getByThreadId(parsed.threadId).pipe(
+                Effect.map(Option.getOrNull),
+                Effect.orElseSucceed(() => null),
+              ),
+          });
+
     const input = {
       ...parsed,
-      ...(parsed.isSideChat === true ? { input: withSideChatAgentContext(parsed.input) } : {}),
+      ...(parsed.isSideChat === true
+        ? { input: withSideChatAgentContext(parsed.input) }
+        : vmAgentIdentity
+          ? { input: withVmAgentContext(parsed.input, vmAgentIdentity) }
+          : {}),
       attachments: parsed.attachments ?? [],
     };
     if (!input.input && input.attachments.length === 0) {
@@ -718,7 +793,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // rather than issuing a new one: sessions that go a long time between
       // browser tool calls used to lose the toolkit outright.
       yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-      const turn = yield* routed.adapter.sendTurn(input);
+      const turn = yield* routed.adapter.sendTurn(input).pipe(
+        Effect.catchIf(
+          (error): error is ProviderAdapterSessionNotFoundError =>
+            error._tag === "ProviderAdapterSessionNotFoundError",
+          () =>
+            Effect.gen(function* () {
+              // After an app restart the adapter map is empty. Recovery may
+              // have just started a session that then vanished (instance
+              // rebuild, failed ACP resume), or hasSession raced a stop.
+              // Recreate once instead of failing the turn as unknown.
+              yield* Effect.logWarning("provider.sendTurn.session-missing; recovering", {
+                threadId: input.threadId,
+                provider: routed.adapter.provider,
+              });
+              const bindingOption = yield* directory.getBinding(input.threadId);
+              const binding = Option.getOrUndefined(bindingOption);
+              if (!binding) {
+                return yield* new ProviderAdapterSessionNotFoundError({
+                  provider: routed.adapter.provider,
+                  threadId: input.threadId,
+                });
+              }
+              const recovered = yield* recoverSessionForThread({
+                binding,
+                operation: "ProviderService.sendTurn",
+              });
+              return yield* recovered.adapter.sendTurn(input);
+            }),
+        ),
+      );
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
@@ -811,7 +915,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       "provider.task_id": input.taskId,
     });
     const stop = routed.adapter.stopTask;
-    if (stop === undefined) {
+    if (stop === undefined || routed.adapter.capabilities.taskStop === false) {
       // Surfaced rather than swallowed: the caller renders a stop control and
       // must be able to tell the user the kill did not land, instead of
       // hiding the row and leaving the task running.
@@ -919,6 +1023,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);
         }
+        yield* stopStaleSessionsForThread({
+          threadId: input.threadId,
+          currentInstanceId: routed.instanceId,
+        });
         yield* clearMcpSession(input.threadId);
         yield* directory.upsert({
           threadId: input.threadId,
@@ -1005,19 +1113,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "ProviderService.listSessions",
           binding,
         );
-        if (binding.provider !== session.provider) {
-          return yield* Effect.die(
-            new Error(
-              `ProviderService.listSessions: thread '${session.threadId}' is active on provider '${session.provider}' but persisted binding names provider '${binding.provider}'.`,
-            ),
-          );
-        }
-        if (overrides.providerInstanceId !== session.providerInstanceId) {
-          return yield* Effect.die(
-            new Error(
-              `ProviderService.listSessions: thread '${session.threadId}' is active on provider instance '${session.providerInstanceId}' but persisted binding names '${overrides.providerInstanceId}'.`,
-            ),
-          );
+        // Leftovers from a provider switch are expected for a moment (and can
+        // linger if stop fails). Turn start, checkpointing, and the session
+        // reaper all list every session at once, so dying here makes the rest
+        // of the app unable to start chats.
+        if (
+          binding.provider !== session.provider ||
+          overrides.providerInstanceId !== session.providerInstanceId
+        ) {
+          yield* Effect.logWarning("provider.session.list.skipped-stale", {
+            threadId: session.threadId,
+            activeProvider: session.provider,
+            activeInstanceId: session.providerInstanceId,
+            boundProvider: binding.provider,
+            boundInstanceId: overrides.providerInstanceId,
+          });
+          continue;
         }
         if (session.resumeCursor === undefined && binding.resumeCursor !== undefined) {
           overrides.resumeCursor = binding.resumeCursor;
@@ -1062,6 +1173,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.rollback_turns": input.numTurns,
       });
+      if (routed.adapter.capabilities.threadRollback === false) {
+        return yield* new ProviderAdapterRequestError({
+          provider: routed.adapter.provider,
+          method: "thread/rollback",
+          detail: `Provider '${routed.adapter.provider}' does not support thread rollback.`,
+        });
+      }
       yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
       yield* analytics.record("provider.conversation.rolled_back", {
         provider: routed.adapter.provider,
@@ -1140,6 +1258,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const adapter = yield* registry.getByInstance(providerInstanceId);
     const cwd = readPersistedCwd(sourceBinding.value.runtimePayload);
     const modelSelection = readPersistedModelSelection(sourceBinding.value.runtimePayload);
+    if (adapter.capabilities.threadFork === false) {
+      return yield* new ProviderAdapterRequestError({
+        provider: adapter.provider,
+        method: "thread/fork",
+        detail: `Provider '${adapter.provider}' does not support thread forking.`,
+      });
+    }
     if (adapter.forkSession) {
       const session = yield* adapter.forkSession({
         sourceThreadId: input.sourceThreadId,

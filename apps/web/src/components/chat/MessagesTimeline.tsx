@@ -1,5 +1,6 @@
 import {
   EventId,
+  isOrchestratorThreadId,
   type EnvironmentId,
   type MessageId,
   type ScopedThreadRef,
@@ -8,6 +9,10 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  describeInterruptedTasks,
+  extractTrailingInterruptedTasksNotice,
+} from "../../lib/interruptedTasksNotice";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -62,6 +67,7 @@ import {
   LoaderCircleIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
+  OctagonXIcon,
   PaintbrushIcon,
   CircleStopIcon,
   MinusIcon,
@@ -187,6 +193,7 @@ interface TimelineRowSharedState {
   onCompactAndContinue: () => void;
   isCompactAndContinueBusy: boolean;
   resumableAssistantMessageId: MessageId | null;
+  resumableRuntimeErrorActivityId: string | null;
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
   isResumeIncompleteTurnDisabled: boolean;
@@ -195,6 +202,7 @@ interface TimelineRowSharedState {
 interface TimelineRowActivityState {
   isWorking: boolean;
   workingStatusLabel: string | null;
+  environmentUnreachable: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
   latestTurnId: TurnId | null;
@@ -218,6 +226,11 @@ interface MessagesTimelineProps {
   /** Auto-resume gap: latest turn settled but the server will start a continuation turn. */
   pendingContinuation?: boolean;
   workingStatusLabel?: string | null;
+  /**
+   * The environment hosting this thread is offline or reconnecting, so its
+   * state is last-known rather than live.
+   */
+  environmentUnreachable?: boolean;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
@@ -256,6 +269,7 @@ interface MessagesTimelineProps {
   onCompactAndContinue: () => void;
   isCompactAndContinueBusy: boolean;
   resumableAssistantMessageId: MessageId | null;
+  resumableRuntimeErrorActivityId: string | null;
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
   isResumeIncompleteTurnDisabled: boolean;
@@ -269,6 +283,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
   pendingContinuation = false,
   workingStatusLabel = null,
+  environmentUnreachable = false,
   activeTurnInProgress,
   activeTurnStartedAt,
   listRef,
@@ -304,6 +319,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onCompactAndContinue,
   isCompactAndContinueBusy,
   resumableAssistantMessageId,
+  resumableRuntimeErrorActivityId,
   onResumeIncompleteTurn,
   isResumeIncompleteTurnBusy,
   isResumeIncompleteTurnDisabled,
@@ -389,6 +405,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, [latestTurn]);
 
+  // The orchestrator's single permanent thread is the only one that holds many
+  // separate conversations; everywhere else a thread *is* the conversation.
+  const isOrchestratorTimeline = useMemo(() => {
+    const parsed = parseScopedThreadKey(routeThreadKey);
+    return parsed !== null && isOrchestratorThreadId(parsed.threadId);
+  }, [routeThreadKey]);
+
   const rawRows = useMemo(
     () =>
       deriveMessagesTimelineRows({
@@ -402,6 +425,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        showConversationBoundaries: isOrchestratorTimeline,
       }),
     [
       timelineEntries,
@@ -415,6 +439,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
+      isOrchestratorTimeline,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -609,6 +634,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCompactAndContinue,
       isCompactAndContinueBusy,
       resumableAssistantMessageId,
+      resumableRuntimeErrorActivityId,
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
       isResumeIncompleteTurnDisabled,
@@ -634,6 +660,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onCompactAndContinue,
       isCompactAndContinueBusy,
       resumableAssistantMessageId,
+      resumableRuntimeErrorActivityId,
       onResumeIncompleteTurn,
       isResumeIncompleteTurnBusy,
       isResumeIncompleteTurnDisabled,
@@ -643,12 +670,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     () => ({
       isWorking,
       workingStatusLabel,
+      environmentUnreachable,
       isRevertingCheckpoint,
       activeTurnInProgress,
       latestTurnId: latestTurn?.turnId ?? null,
     }),
     [
       activeTurnInProgress,
+      environmentUnreachable,
       isRevertingCheckpoint,
       isWorking,
       latestTurn?.turnId,
@@ -1074,6 +1103,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
       {row.kind === "provider-transition" ? <ProviderTransitionTimelineRow row={row} /> : null}
+      {row.kind === "conversation-boundary" ? <ConversationBoundaryTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -1105,11 +1135,56 @@ function ProviderTransitionTimelineRow({
   );
 }
 
+/**
+ * Where one sitting ended and the next began.
+ *
+ * The orchestrator thread never closes, so without this the transcript reads as
+ * one endless conversation when it is really dozens — and both the reader and
+ * the model lose track of which exchange a line belongs to. Styled like the
+ * provider transition above because it carries the same instruction: what
+ * follows starts over.
+ */
+const CONVERSATION_BOUNDARY_FORMAT = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+function ConversationBoundaryTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "conversation-boundary" }>;
+}) {
+  const startedAt = Date.parse(row.createdAt);
+  const when = Number.isFinite(startedAt)
+    ? CONVERSATION_BOUNDARY_FORMAT.format(new Date(startedAt))
+    : null;
+  return (
+    <div
+      className="flex items-center gap-3 py-2 text-muted-foreground"
+      role="separator"
+      aria-label={when ? `New conversation, ${when}` : "New conversation"}
+    >
+      <span className="h-px min-w-4 flex-1 bg-border/70" aria-hidden="true" />
+      <span className="min-w-0 text-center">
+        <span className="block font-medium text-foreground/80 text-xs">New conversation</span>
+        {when ? <span className="mt-0.5 block text-[11px]">{when}</span> : null}
+      </span>
+      <span className="h-px min-w-4 flex-1 bg-border/70" aria-hidden="true" />
+    </div>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const [syntheticPromptExpanded, setSyntheticPromptExpanded] = useState(false);
   const userImages = row.message.attachments ?? [];
-  const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+  const [interruptedExpanded, setInterruptedExpanded] = useState(false);
+  // Stripped first. `deriveDisplayedUserMessageState` needs `<element_context>`
+  // to be the trailing block, and this one is appended after it at send time.
+  const interrupted = extractTrailingInterruptedTasksNotice(row.message.text);
+  const displayedUserMessage = deriveDisplayedUserMessageState(interrupted.promptText);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
   let visibleText = displayedUserMessage.visibleText;
@@ -1134,13 +1209,18 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     isOptimistic: ctx.pendingMessageIds.has(row.message.id),
     isDelivered,
   });
-  const showDeliveryIndicator = shouldShowDeliveryIndicator({
-    isOptimistic: ctx.pendingMessageIds.has(row.message.id),
-    isDelivered,
-    isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
-    providerReportsDelivery: ctx.deliveryReceiptsExpected,
-    threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
-  });
+  const showDeliveryIndicator =
+    // Voice-transcript rows are history of a conversation that already
+    // happened aloud — they are never dispatched to a provider, so a delivery
+    // indicator would show "Queued" forever.
+    row.message.voiceTranscript !== true &&
+    shouldShowDeliveryIndicator({
+      isOptimistic: ctx.pendingMessageIds.has(row.message.id),
+      isDelivered,
+      isNewestUserMessage: ctx.newestUserMessageId === row.message.id,
+      providerReportsDelivery: ctx.deliveryReceiptsExpected,
+      threadReportsDelivery: threadReportsDelivery(ctx.deliveredMessageIds),
+    });
 
   const settingsUpdate = parseSettingsUpdatePrompt(row.message.text);
   if (settingsUpdate !== null) {
@@ -1256,6 +1336,39 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           skills={ctx.skills}
           markdownCwd={ctx.markdownCwd}
         />
+        {interrupted.titles.length > 0 ? (
+          <div className="mt-2 flex flex-col items-start gap-1">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+              aria-expanded={interruptedExpanded}
+              data-scroll-anchor-ignore
+              onClick={() => setInterruptedExpanded((expanded) => !expanded)}
+            >
+              <OctagonXIcon className="size-3 shrink-0" aria-hidden />
+              <span>{describeInterruptedTasks(interrupted.titles)}</span>
+            </button>
+            {interruptedExpanded ? (
+              <div className="rounded-md border border-border/70 bg-background/60 px-2 py-1.5 text-[11px] text-muted-foreground">
+                <p className="mb-1">
+                  Sending this message cancelled these. The agent was told to restart any that are
+                  still needed.
+                </p>
+                <ul className="list-inside list-disc space-y-0.5">
+                  {interrupted.titles.map((title, index) => (
+                    // Index is part of the key on purpose: two tasks can carry
+                    // the same title, and this list is parsed from immutable
+                    // message text, so it never reorders or grows.
+                    // eslint-disable-next-line react/no-array-index-key
+                    <li key={`${index}:${title}`} className="truncate">
+                      {title}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {row.message.inputOrigin === "transcription" ? (
           <div className="mt-2 flex justify-start">
             <span className="rounded-full border border-border/70 bg-background/55 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -1265,7 +1378,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         ) : null}
       </div>
       <div className="flex w-full max-w-[80%] items-center justify-end gap-1.5 pe-1 text-xs tabular-nums">
-        <div className="flex shrink-0 items-center gap-2 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+        <div className="flex shrink-0 items-center gap-2">
           <Tooltip>
             <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
               {formatShortTimestamp(row.message.createdAt, ctx.timestampFormat)}
@@ -1462,7 +1575,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           </div>
         ) : null}
         {row.showAssistantMeta ? (
-          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
+          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums">
             <AssistantCopyButton row={row} />
             {!row.message.streaming && (
               <Tooltip>
@@ -1518,7 +1631,26 @@ function ProposedPlanTimelineRow({
 }
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { workingStatusLabel } = use(TimelineRowActivityCtx);
+  const { workingStatusLabel, environmentUnreachable } = use(TimelineRowActivityCtx);
+  // While the host is unreachable this thread's state is last-known, not live:
+  // the turn may have finished, failed, or still be going, and there is no way
+  // to find out or to stop it from here. Animating a pulse and counting the
+  // seconds up claims live progress we cannot observe, so the row goes static
+  // and says what is actually true.
+  if (environmentUnreachable) {
+    return (
+      <div className="py-0.5 pl-1.5">
+        <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/50">
+          <span className="inline-flex items-center gap-[3px]">
+            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
+            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
+            <span className="h-1 w-1 rounded-full bg-muted-foreground/25" />
+          </span>
+          <span>Was working when the host went offline — reconnecting…</span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="py-0.5 pl-1.5">
       <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
@@ -1582,7 +1714,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const ctx = use(TimelineRowCtx);
+  const { workspaceRoot } = ctx;
   const nonEmptyEntries = useMemo(
     () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
     [groupedEntries],
@@ -1593,6 +1726,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
       ? "1 tool call"
       : `${nonEmptyEntries.length} tool calls`
     : "Work Log";
+  const showsResumableRuntimeError = nonEmptyEntries.some(
+    (entry) => entry.id === ctx.resumableRuntimeErrorActivityId,
+  );
 
   if (nonEmptyEntries.length === 0) return null;
 
@@ -1612,6 +1748,39 @@ const WorkGroupSection = memo(function WorkGroupSection({
           />
         ))}
       </div>
+      {showsResumableRuntimeError ? (
+        <div className="ms-7 pt-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            aria-label={
+              ctx.isResumeIncompleteTurnBusy
+                ? "Resuming after runtime error"
+                : ctx.isResumeIncompleteTurnDisabled
+                  ? "Resume unavailable while the remote machine is disconnected"
+                  : "Resume after runtime error"
+            }
+            aria-busy={ctx.isResumeIncompleteTurnBusy}
+            disabled={ctx.isResumeIncompleteTurnBusy || ctx.isResumeIncompleteTurnDisabled}
+            onClick={ctx.onResumeIncompleteTurn}
+            title={
+              ctx.isResumeIncompleteTurnDisabled
+                ? "Reconnect the remote machine to resume this task."
+                : undefined
+            }
+            className="h-7 gap-1.5 rounded-lg bg-card/80 text-foreground shadow-sm disabled:text-muted-foreground disabled:opacity-55"
+            data-runtime-error-resume="true"
+          >
+            {ctx.isResumeIncompleteTurnBusy ? (
+              <LoaderCircleIcon aria-hidden="true" className="size-3.5 animate-spin" />
+            ) : (
+              <FastForwardIcon aria-hidden="true" className="size-3.5" />
+            )}
+            {ctx.isResumeIncompleteTurnBusy ? "Resuming…" : "Resume"}
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 });

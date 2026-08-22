@@ -13,15 +13,52 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Electron from "electron";
 
+import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import { remoteInputControllerForPlatform } from "../../app/RemoteInput.ts";
 
 const SCREEN_RECORDING_PERMISSION_HELP = REMOTE_CONTROL_SCREEN_PERMISSION_HELP;
 const ACCESSIBILITY_PERMISSION_HELP = REMOTE_CONTROL_ACCESSIBILITY_PERMISSION_HELP;
+const REMOTE_CONTROL_FOREGROUND_PULSE_MS = 750;
+
+type RemoteControlHostWindow = Pick<
+  Electron.BrowserWindow,
+  "focus" | "isAlwaysOnTop" | "isDestroyed" | "moveTop" | "setAlwaysOnTop"
+>;
+
+/**
+ * Briefly promotes the Windows host above an elevated foreground window.
+ *
+ * `BrowserWindow.focus()` alone is advisory on Windows and is commonly ignored
+ * while an administrator-owned window is in front. A bounded topmost pulse
+ * gives the remote-control capture a real foreground surface without turning
+ * Solla Code into a permanently always-on-top app.
+ */
+export function pulseRemoteControlHostWindow(
+  window: RemoteControlHostWindow,
+  scheduleReset: (callback: () => void, delayMs: number) => unknown = setTimeout,
+): void {
+  if (window.isDestroyed()) return;
+
+  const restoreTopmost = !window.isAlwaysOnTop();
+  try {
+    if (restoreTopmost) window.setAlwaysOnTop(true);
+    window.moveTop();
+    window.focus();
+    if (!restoreTopmost) return;
+    scheduleReset(() => {
+      if (!window.isDestroyed()) window.setAlwaysOnTop(false);
+    }, REMOTE_CONTROL_FOREGROUND_PULSE_MS);
+  } catch (cause) {
+    if (restoreTopmost && !window.isDestroyed()) window.setAlwaysOnTop(false);
+    throw cause;
+  }
+}
 
 class DesktopRemoteControlCaptureError extends Schema.TaggedErrorClass<DesktopRemoteControlCaptureError>()(
   "DesktopRemoteControlCaptureError",
@@ -241,6 +278,34 @@ export const listRemoteControlCaptureSources = DesktopIpc.makeIpcMethod({
       },
       catch: captureError,
     });
+  }),
+});
+
+/**
+ * Makes the local Solla window the initial foreground surface for a newly
+ * approved remote-control session. This is intentionally a separate one-shot
+ * IPC method: capture-frame is a hot loop, so focusing from there would steal
+ * focus every frame and make the host unusable.
+ */
+export const activateRemoteControlHost = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.REMOTE_CONTROL_ACTIVATE_HOST_CHANNEL,
+  payload: Schema.Struct({}),
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.remoteControl.activateHost")(function* () {
+    const platform = yield* HostProcessPlatform;
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const target = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(target)) return;
+
+    // Foreground activation is helpful but must never prevent capture from
+    // starting if the OS refuses it (for example while the secure UAC desktop
+    // is visible).
+    yield* Effect.gen(function* () {
+      yield* electronWindow.reveal(target.value);
+      if (platform === "win32") {
+        yield* Effect.sync(() => pulseRemoteControlHostWindow(target.value));
+      }
+    }).pipe(Effect.catchCause(() => Effect.void));
   }),
 });
 

@@ -2,16 +2,114 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { reorderSurfaces } from "~/rightPanelStore";
+import { reorderSurfaces, type RightPanelSurface } from "~/rightPanelStore";
 
 import {
   isPointerOverTabStrip,
+  rightPanelNewSurfaceKinds,
   resolveHorizontalTabWheelDelta,
+  resolveRightPanelSurfaceTitle,
+  rightPanelTabContextMenuItems,
   RightPanelEmptyState,
   routeCapturedHorizontalTabWheel,
   routeHorizontalTabWheel,
+  shouldShowArtifactShelf,
   shouldShowSideChatProviderIcon,
 } from "./RightPanelTabs";
+
+describe("right-panel artifact access", () => {
+  const artifactSurface: RightPanelSurface = {
+    id: "artifact:artifact-1",
+    kind: "artifact",
+    resourceId: "artifact-1",
+    revision: 2,
+    title: "Feature tour",
+  };
+  const terminalSurface: RightPanelSurface = {
+    id: "terminal:term-1",
+    kind: "terminal",
+    resourceId: "term-1",
+    terminalIds: ["term-1"],
+    activeTerminalId: "term-1",
+  };
+
+  it("hides the artifact shelf only while an artifact tab is active", () => {
+    const surfaces = [terminalSurface, artifactSurface];
+
+    expect(shouldShowArtifactShelf(surfaces, artifactSurface.id)).toBe(false);
+    expect(shouldShowArtifactShelf(surfaces, terminalSurface.id)).toBe(true);
+    expect(shouldShowArtifactShelf([terminalSurface], null)).toBe(true);
+  });
+
+  it("adds an Artifacts picker to the new-surface menu when choices are available", () => {
+    expect(rightPanelNewSurfaceKinds(true)).toEqual([
+      "browser",
+      "terminal",
+      "files",
+      "artifact",
+      "diff",
+      "side-chat",
+    ]);
+    expect(rightPanelNewSurfaceKinds(false)).not.toContain("artifact");
+  });
+});
+
+describe("right-panel tab naming", () => {
+  const terminalSurface: RightPanelSurface = {
+    id: "terminal:term-1",
+    kind: "terminal",
+    resourceId: "term-1",
+    terminalIds: ["term-1"],
+    activeTerminalId: "term-1",
+  };
+
+  it("offers Rename from the tab context menu and Reset name for an override", () => {
+    expect(rightPanelTabContextMenuItems(terminalSurface, 0, 2).map((item) => item.id)).toEqual([
+      "rename",
+      "close",
+      "close-others",
+      "close-to-right",
+      "close-all",
+    ]);
+    expect(
+      rightPanelTabContextMenuItems({ ...terminalSurface, customTitle: "Build logs" }, 0, 2).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["rename", "reset-name", "close", "close-others", "close-to-right", "close-all"]);
+  });
+
+  it("offers Copy chat ID only for a side chat, whose id is otherwise unreachable", () => {
+    const sideChat: RightPanelSurface = {
+      id: "side-chat:thread-7",
+      kind: "side-chat",
+      resourceId: "thread-7",
+      title: "Research",
+    };
+    expect(rightPanelTabContextMenuItems(sideChat, 0, 2).map((item) => item.id)).toEqual([
+      "copy-chat-id",
+      "rename",
+      "close",
+      "close-others",
+      "close-to-right",
+      "close-all",
+    ]);
+    expect(rightPanelTabContextMenuItems(terminalSurface, 0, 2)).not.toContainEqual(
+      expect.objectContaining({ id: "copy-chat-id" }),
+    );
+  });
+
+  it("keeps a custom name ahead of a changing live terminal label", () => {
+    const liveLabels = new Map([["term-1", "codex"]]);
+    expect(resolveRightPanelSurfaceTitle(terminalSurface, {}, liveLabels)).toBe("codex");
+    expect(
+      resolveRightPanelSurfaceTitle(
+        { ...terminalSurface, customTitle: "Deployment" },
+        {},
+        liveLabels,
+      ),
+    ).toBe("Deployment");
+  });
+});
 
 describe("RightPanelEmptyState", () => {
   it("offers Side Chat as the fifth right-panel surface", () => {

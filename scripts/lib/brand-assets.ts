@@ -1,4 +1,6 @@
 export const BRAND_ASSET_PATHS = {
+  sharedGoldSMarkPng: "assets/source/solla-code-gold-s-master.png",
+
   developmentIconComposerProject: "assets/dev/app-icon.icon",
   developmentIosIconPng: "assets/dev/blueprint-ios-1024.png",
   developmentUniversalIconPng: "assets/dev/blueprint-universal-1024.png",

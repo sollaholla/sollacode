@@ -1,4 +1,6 @@
 import {
+  type ClientOrchestrationCommand,
+  CommandId,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadDetailSnapshot,
@@ -13,6 +15,18 @@ import * as Schema from "effect/Schema";
 
 import type { ConnectionRegistration } from "../connection/catalog.ts";
 import type { ConnectionTarget } from "../connection/model.ts";
+
+export type DeferredThreadCommand = Extract<
+  ClientOrchestrationCommand,
+  {
+    readonly type: "thread.archive" | "thread.unarchive" | "thread.settle" | "thread.unsettle";
+  }
+>;
+
+export interface DeferredThreadCommandEntry {
+  readonly command: DeferredThreadCommand;
+  readonly enqueuedAt: string;
+}
 
 export class ConnectionPersistenceError extends Schema.TaggedErrorClass<ConnectionPersistenceError>()(
   "ConnectionPersistenceError",
@@ -32,6 +46,10 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
       "save-vcs-refs",
       "remove-vcs-refs",
       "clear-vcs-refs",
+      "load-deferred-thread-commands",
+      "save-deferred-thread-command",
+      "remove-deferred-thread-command",
+      "clear-deferred-thread-commands",
       "clear-environment",
     ]),
     message: Schema.String,
@@ -121,6 +139,34 @@ export class EnvironmentCacheStore extends Context.Service<
     ) => Effect.Effect<void, ConnectionPersistenceError>;
   }
 >()("@t3tools/client-runtime/platform/persistence/EnvironmentCacheStore") {}
+
+/**
+ * Durable client-side intent for reversible thread lifecycle commands.
+ *
+ * Archive/unarchive and settle/unsettle each form a last-write-wins axis for
+ * one thread. Implementations compact an axis when enqueueing so an offline
+ * user can reverse their choice without replaying contradictory commands when
+ * the environment reconnects.
+ */
+export class DeferredThreadCommandStore extends Context.Service<
+  DeferredThreadCommandStore,
+  {
+    readonly list: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<ReadonlyArray<DeferredThreadCommandEntry>, ConnectionPersistenceError>;
+    readonly enqueue: (
+      environmentId: EnvironmentId,
+      entry: DeferredThreadCommandEntry,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly remove: (
+      environmentId: EnvironmentId,
+      commandId: CommandId,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly clear: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+  }
+>()("@t3tools/client-runtime/platform/persistence/DeferredThreadCommandStore") {}
 
 export class EnvironmentOwnedDataCleanup extends Context.Reference<{
   readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void>;

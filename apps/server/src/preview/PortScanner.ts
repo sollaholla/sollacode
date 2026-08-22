@@ -348,7 +348,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
   );
 
   const registerTerminalProcesses: PortDiscovery["Service"]["registerTerminalProcesses"] =
-    Effect.fn("PortDiscovery.registerTerminalProcesses")(function* (input) {
+    Effect.fnUntraced(function* (input) {
       const owner = {
         threadId: ThreadId.make(input.threadId),
         terminalId: input.terminalId,
@@ -357,8 +357,19 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
         input.processIds.filter((processId) => Number.isInteger(processId) && processId > 0),
       );
       yield* Ref.update(stateRef, (state) => {
-        const terminalProcesses = new Map(state.terminalProcesses);
         const key = terminalOwnerKey(owner);
+        const current = state.terminalProcesses.get(key);
+        if (
+          current !== undefined &&
+          current.processIds.size === processIds.size &&
+          [...processIds].every((processId) => current.processIds.has(processId))
+        ) {
+          return state;
+        }
+        if (current === undefined && processIds.size === 0) {
+          return state;
+        }
+        const terminalProcesses = new Map(state.terminalProcesses);
         if (processIds.size === 0) {
           terminalProcesses.delete(key);
         } else {

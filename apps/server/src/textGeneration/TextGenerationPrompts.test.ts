@@ -5,6 +5,7 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import { normalizeCliError, sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { TextGenerationError } from "@t3tools/contracts";
@@ -174,6 +175,24 @@ describe("buildThreadTitlePrompt", () => {
     expect(result.prompt).toContain("thread.png");
     expect(result.prompt).toContain("image/png");
     expect(result.prompt).toContain("67890 bytes");
+  });
+});
+
+describe("buildVmAgentTaskPrompt", () => {
+  it("keeps agent identity, timing, approvals, and credential boundaries explicit", () => {
+    const result = buildVmAgentTaskPrompt({
+      agentName: "Scout",
+      agentPurpose: "Monitor the Auth0 dashboard",
+      request: "Every day check Auth0, but stop at login if credentials are needed.",
+      currentTime: "2026-08-21T21:00:00.000Z",
+    });
+
+    expect(result.prompt).toContain("Agent: Scout");
+    expect(result.prompt).toContain("Monitor the Auth0 dashboard");
+    expect(result.prompt).toContain("2026-08-21T21:00:00.000Z");
+    expect(result.prompt).toContain("stop at login");
+    expect(result.prompt).toContain("everyMinutes");
+    expect(result.prompt).toContain("never invent credentials");
   });
 });
 

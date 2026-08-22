@@ -13,7 +13,12 @@ import * as Effect from "effect/Effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect } from "vite-plus/test";
 
-import { makeGrokAcpRuntime } from "./GrokAcpSupport.ts";
+import {
+  applyGrokAcpModelSelection,
+  currentGrokModelIdFromSessionSetup,
+  makeGrokAcpRuntime,
+  resolveGrokAcpBaseModelId,
+} from "./GrokAcpSupport.ts";
 
 const makeProbeRuntime = Effect.gen(function* () {
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -64,6 +69,25 @@ describe.runIf(process.env.T3_GROK_ACP_PROBE === "1")("Grok ACP CLI probe", () =
       // No-op switch — selecting the model the session already runs on must
       // succeed against every Grok build that implements `session/set_model`.
       yield* runtime.setSessionModel(currentModelId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("maps Solla grok-build onto an advertised Grok model id", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeProbeRuntime;
+      const started = yield* runtime.start();
+      const currentModelId = currentGrokModelIdFromSessionSetup(started.sessionSetupResult);
+      expect(currentModelId).toBeDefined();
+
+      const boundSelection = yield* applyGrokAcpModelSelection({
+        runtime,
+        currentModelId,
+        requestedModelId: resolveGrokAcpBaseModelId("grok-build"),
+        sessionSetupResult: started.sessionSetupResult,
+        mapError: (cause) => cause,
+      });
+
+      expect(boundSelection.modelId).toBe(currentModelId);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

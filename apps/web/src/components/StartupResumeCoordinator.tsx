@@ -1,44 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
-import {
-  useClientSettings,
-  useClientSettingsHydrated,
-  useUpdateClientSettings,
-} from "../hooks/useSettings";
+import { useClientSettings, useClientSettingsHydrated } from "../hooks/useSettings";
 import { newMessageId } from "../lib/utils";
 import { RESUME_PROMPT } from "../resumePrompt";
-import {
-  useAllEnvironmentShellsBootstrapped,
-  useProjects,
-  useThreadShells,
-} from "../state/entities";
+import { useAllEnvironmentShellsBootstrapped, useThreadShells } from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useStartupResumeStore } from "../startupResumeStore";
-import { Button } from "./ui/button";
-import { Checkbox } from "./ui/checkbox";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "./ui/dialog";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
   deriveStartupResumableThreads,
   isStartupAutoResumeRequested,
   isStartupAutoResumeStalled,
-  pruneStartupResumeSelection,
-  shouldAutoCloseStartupResume,
+  shouldAutomaticallyResumeOnStartup,
   shouldClearStartupResumePending,
   startupAutoResumeIds,
 } from "./StartupResumeCoordinator.logic";
@@ -69,17 +49,11 @@ export function StartupResumeCoordinator() {
   const autoResumeRequested = useMemo(() => isStartupAutoResumeRequested(window.location.href), []);
   const settingsHydrated = useClientSettingsHydrated();
   const showOnStartup = useClientSettings((settings) => settings.showResumeThreadsOnStartup);
-  const updateClientSettings = useUpdateClientSettings();
   const shellsBootstrapped = useAllEnvironmentShellsBootstrapped();
   const threads = useThreadShells();
-  const projects = useProjects();
   const { environments } = useEnvironments();
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const openedRef = useRef(false);
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
-  const [keepShowingOnStartup, setKeepShowingOnStartup] = useState(true);
+  const dispatchedRef = useRef(false);
 
   const connectedEnvironmentIds = useMemo(
     () =>
@@ -96,23 +70,6 @@ export function StartupResumeCoordinator() {
         connectedEnvironmentIds.has(thread.environmentId),
       ),
     [connectedEnvironmentIds, threads],
-  );
-  const projectTitleByKey = useMemo(
-    () =>
-      new Map(
-        projects.map((project) => [threadKey(project.environmentId, project.id), project.title]),
-      ),
-    [projects],
-  );
-  const environmentLabelById = useMemo(
-    () =>
-      new Map(environments.map((environment) => [environment.environmentId, environment.label])),
-    [environments],
-  );
-
-  const candidateKeys = useMemo(
-    () => candidates.map((thread) => threadKey(thread.environmentId, thread.id)),
-    [candidates],
   );
 
   useEffect(() => {
@@ -145,51 +102,13 @@ export function StartupResumeCoordinator() {
     return () => clearInterval(interval);
   }, []);
 
-  // Keep the footer count honest when only some candidates drain away. Selection
-  // is seeded once on open, so without this the stale keys keep the Resume
-  // button enabled over rows that are no longer listed.
-  useEffect(() => {
-    if (!open || busy) return;
-    setSelectedKeys((current) => {
-      const pruned = pruneStartupResumeSelection(current, candidateKeys);
-      return pruned.size === current.size ? current : pruned;
-    });
-  }, [busy, candidateKeys, open]);
-
-  const persistShowOnStartupChoice = useCallback(() => {
-    if (keepShowingOnStartup !== showOnStartup) {
-      updateClientSettings({ showResumeThreadsOnStartup: keepShowingOnStartup });
-    }
-  }, [keepShowingOnStartup, showOnStartup, updateClientSettings]);
-
-  const dismiss = () => {
-    if (busy) return;
-    persistShowOnStartupChoice();
-    setOpen(false);
-  };
-
-  // Close once there is nothing left to resume — the threads were resumed
-  // elsewhere, their environment dropped, or they left the store. Routed through
-  // `dismiss` so the "Show on startup" choice is still persisted, and gated on
-  // `busy` so it cannot race `resumeSelected`, which drains the list itself.
-  useEffect(() => {
-    if (!shouldAutoCloseStartupResume({ open, busy, candidateCount: candidates.length })) return;
-    persistShowOnStartupChoice();
-    setOpen(false);
-  }, [busy, candidates.length, open, keepShowingOnStartup, showOnStartup]);
-
   const resumeThreads = useCallback(
-    async (
-      selected: typeof candidates,
-      options: { readonly persistStartupChoice: boolean; readonly dedupeAcrossClients: boolean },
-    ) => {
+    async (selected: typeof candidates) => {
       if (selected.length === 0) return;
 
-      setBusy(true);
       useStartupResumeStore
         .getState()
         .markPending(selected.map((thread) => threadKey(thread.environmentId, thread.id)));
-      if (options.persistStartupChoice) persistShowOnStartupChoice();
       const results = await Promise.all(
         selected.map(async (thread) => {
           const key = threadKey(thread.environmentId, thread.id);
@@ -197,7 +116,7 @@ export function StartupResumeCoordinator() {
             const createdAt = new Date().toISOString();
             const incompleteTurnId = thread.latestTurn?.turnId;
             const resumeIds =
-              options.dedupeAcrossClients && incompleteTurnId !== undefined
+              incompleteTurnId !== undefined
                 ? startupAutoResumeIds({ threadId: thread.id, incompleteTurnId })
                 : null;
             const result = await startThreadTurn({
@@ -236,8 +155,6 @@ export function StartupResumeCoordinator() {
         }),
       );
       const failures = results.filter((result): result is string => result !== null);
-      setBusy(false);
-      setOpen(false);
 
       if (failures.length === 0) {
         toastManager.add(
@@ -259,47 +176,26 @@ export function StartupResumeCoordinator() {
         }),
       );
     },
-    [persistShowOnStartupChoice, startThreadTurn],
+    [startThreadTurn],
   );
-
-  const resumeSelected = async () => {
-    if (busy) return;
-    const selected = candidates.filter((thread) =>
-      selectedKeys.has(threadKey(thread.environmentId, thread.id)),
-    );
-    await resumeThreads(selected, {
-      persistStartupChoice: true,
-      dedupeAcrossClients: false,
-    });
-  };
 
   useEffect(() => {
     if (
-      openedRef.current ||
+      dispatchedRef.current ||
       !settingsHydrated ||
       !shellsBootstrapped ||
-      (!showOnStartup && !autoResumeRequested) ||
+      !shouldAutomaticallyResumeOnStartup({
+        showOnStartup,
+        autoResumeRequested,
+      }) ||
       candidates.length === 0 ||
       wasPromptHandledThisStartup()
     ) {
       return;
     }
-    openedRef.current = true;
+    dispatchedRef.current = true;
     markPromptHandledThisStartup();
-
-    if (autoResumeRequested) {
-      void resumeThreads(candidates, {
-        persistStartupChoice: false,
-        dedupeAcrossClients: true,
-      });
-      return;
-    }
-
-    setKeepShowingOnStartup(true);
-    setSelectedKeys(
-      new Set(candidates.map((thread) => threadKey(thread.environmentId, thread.id))),
-    );
-    setOpen(true);
+    void resumeThreads(candidates);
   }, [
     autoResumeRequested,
     candidates,
@@ -309,73 +205,5 @@ export function StartupResumeCoordinator() {
     showOnStartup,
   ]);
 
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) dismiss();
-      }}
-    >
-      <DialogPopup className="w-[min(34rem,calc(100vw-2rem))]" showCloseButton={false}>
-        <DialogHeader>
-          <DialogTitle>Resume unfinished threads?</DialogTitle>
-          <DialogDescription>
-            Solla Code found work that stopped before its response completed. Choose which threads
-            should continue now.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel className="space-y-2">
-          {candidates.map((thread) => {
-            const key = threadKey(thread.environmentId, thread.id);
-            const projectTitle =
-              projectTitleByKey.get(threadKey(thread.environmentId, thread.projectId)) ??
-              "Unknown project";
-            const environmentLabel = environmentLabelById.get(thread.environmentId);
-            return (
-              <label
-                key={key}
-                className="flex cursor-pointer items-start gap-3 rounded-xl border border-border/70 bg-muted/20 p-3 hover:bg-muted/35"
-              >
-                <Checkbox
-                  checked={selectedKeys.has(key)}
-                  onCheckedChange={(checked) => {
-                    setSelectedKeys((current) => {
-                      const next = new Set(current);
-                      if (checked) next.add(key);
-                      else next.delete(key);
-                      return next;
-                    });
-                  }}
-                  aria-label={`Resume ${thread.title}`}
-                />
-                <span className="min-w-0">
-                  <span className="block truncate font-medium text-sm">{thread.title}</span>
-                  <span className="block truncate text-muted-foreground text-xs">
-                    {projectTitle}
-                    {environmentLabel ? ` · ${environmentLabel}` : ""}
-                  </span>
-                </span>
-              </label>
-            );
-          })}
-          <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm">
-            <Checkbox
-              checked={keepShowingOnStartup}
-              onCheckedChange={(checked) => setKeepShowingOnStartup(Boolean(checked))}
-              aria-label="Show resume prompt on startup"
-            />
-            <span>Show on startup</span>
-          </label>
-        </DialogPanel>
-        <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={dismiss}>
-            No
-          </Button>
-          <Button disabled={busy || selectedKeys.size === 0} onClick={() => void resumeSelected()}>
-            {busy ? "Resuming…" : `Resume${selectedKeys.size > 0 ? ` (${selectedKeys.size})` : ""}`}
-          </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
-  );
+  return null;
 }

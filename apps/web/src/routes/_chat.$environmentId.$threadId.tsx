@@ -1,10 +1,18 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  lazyRouteComponent,
+  useLocation,
+  useNavigate,
+} from "@tanstack/react-router";
 import { useEffect } from "react";
 
-import ChatView from "../components/ChatView";
-import { threadHasStarted } from "../components/ChatView.logic";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
-import { resolveThreadRouteRef, resolveThreadRouteRenderState } from "../threadRoutes";
+import {
+  buildThreadRouteParams,
+  canonicalizeOrchestratorThreadRef,
+  resolveThreadRouteRef,
+  resolveThreadRouteRenderState,
+} from "../threadRoutes";
 import { resolveThreadSyncPhase } from "../threadSync";
 import { SidebarInset } from "~/components/ui/sidebar";
 import {
@@ -15,12 +23,29 @@ import {
 } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { environmentShell } from "../state/shell";
+import { usePrimaryEnvironmentId } from "../state/environments";
+
+const ChatView = lazyRouteComponent(() => import("../components/ChatView"));
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
-  const threadRef = Route.useParams({
+  const artifact = useLocation({
+    select: (location) => {
+      const value = (location.search as Record<string, unknown>).artifact;
+      return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 128
+        ? value.trim()
+        : undefined;
+    },
+  });
+  const requestedThreadRef = Route.useParams({
     select: (params) => resolveThreadRouteRef(params),
   });
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const threadRef = canonicalizeOrchestratorThreadRef(requestedThreadRef, primaryEnvironmentId);
+  const routeNeedsCanonicalEnvironment =
+    requestedThreadRef !== null &&
+    threadRef !== null &&
+    requestedThreadRef.environmentId !== threadRef.environmentId;
   const shell = useEnvironmentQuery(
     threadRef === null ? null : environmentShell.stateAtom(threadRef.environmentId),
   );
@@ -54,8 +79,18 @@ function ChatThreadRouteView() {
     shellExists: serverThreadShell !== null,
     status: serverThreadStatus,
   });
-  const serverThreadStarted = threadHasStarted(serverThreadDetail);
+  const serverThreadExists = serverThreadDetail !== null || serverThreadShell !== null;
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
+
+  useEffect(() => {
+    if (!routeNeedsCanonicalEnvironment || threadRef === null) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+      ...(artifact ? { search: { artifact } } : {}),
+      replace: true,
+    });
+  }, [artifact, navigate, routeNeedsCanonicalEnvironment, threadRef]);
 
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) {
@@ -68,11 +103,11 @@ function ChatThreadRouteView() {
   }, [bootstrapComplete, environmentHasAnyThreads, navigate, renderState, threadRef]);
 
   useEffect(() => {
-    if (!threadRef || !serverThreadStarted || !draftThread) {
+    if (!threadRef || !serverThreadExists || !draftThread) {
       return;
     }
     finalizePromotedDraftThreadByRef(threadRef);
-  }, [draftThread, serverThreadStarted, threadRef]);
+  }, [draftThread, serverThreadExists, threadRef]);
 
   if (!threadRef) {
     return null;
@@ -86,6 +121,7 @@ function ChatThreadRouteView() {
           threadId={threadRef.threadId}
           routeKind="server"
           threadSyncPhase={threadSyncPhase}
+          {...(artifact ? { artifactId: artifact } : {})}
         />
       ) : null}
     </SidebarInset>

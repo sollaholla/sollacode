@@ -154,14 +154,95 @@ function isEquivalent(left: string | undefined, right: string | undefined): bool
   return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
 }
 
+const GENERIC_TOOL_TITLES = new Set(["tool", "tool call", "tool_call", "terminal"]);
+
+export function isGenericToolTitle(title: string | null | undefined): boolean {
+  const normalized = asTrimmedString(title)?.toLowerCase();
+  return normalized === undefined || GENERIC_TOOL_TITLES.has(normalized);
+}
+
+function extractDeclaredToolName(data: Record<string, unknown> | undefined): string | undefined {
+  const rawInput = asRecord(data?.rawInput);
+  const item = asRecord(data?.item);
+  const itemInput = asRecord(item?.input);
+  const meta = asRecord(data?._meta) ?? asRecord(rawInput?._meta);
+  const candidates = [
+    rawInput?.name,
+    rawInput?.tool,
+    rawInput?.toolName,
+    rawInput?.tool_name,
+    rawInput?.function,
+    rawInput?.functionName,
+    item?.name,
+    itemInput?.name,
+    meta?.name,
+    meta?.toolName,
+    data?.name,
+    data?.toolName,
+  ];
+  for (const candidate of candidates) {
+    const name = asTrimmedString(candidate);
+    if (name && !isGenericToolTitle(name)) {
+      return name;
+    }
+  }
+  return undefined;
+}
+
+function normalizeToolNameToken(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+}
+
+function classifyFromToolName(
+  name: string | undefined,
+): "command" | "read" | "file_change" | "search" | undefined {
+  if (!name) {
+    return undefined;
+  }
+  const token = normalizeToolNameToken(name);
+  if (/^(bash|shell|zsh|sh|exec|command|run_command|run_terminal_cmd|terminal)$/u.test(token)) {
+    return "command";
+  }
+  if (/(^|_)(read|read_file|view|cat|open)(_|$)/u.test(token) || token === "readfile") {
+    return "read";
+  }
+  if (/(write|edit|str_replace|apply_patch|delete|move|update_file)/u.test(token)) {
+    return "file_change";
+  }
+  if (/(grep|glob|find|search|rg|list_dir|ls|codebase|fetch)/u.test(token)) {
+    return "search";
+  }
+  return undefined;
+}
+
+function humanizeToolName(name: string): string {
+  const spaced = name.replace(/[_-]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (spaced.length === 0) {
+    return name;
+  }
+  return spaced.replace(/\b\w/gu, (character) => character.toUpperCase());
+}
+
+function looksLikeSearchDetail(detail: string | undefined): boolean {
+  return detail !== undefined && /\bfound\s+\d+/iu.test(detail);
+}
+
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
+  readonly detail?: string | undefined;
   readonly data?: Record<string, unknown> | undefined;
-}): "command" | "read" | "file_change" | "search" | "other" {
+  readonly command?: string | undefined;
+}): "command" | "read" | "file_change" | "search" | "think" | "other" {
   const itemType = input.itemType ?? undefined;
   const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
-  const title = asTrimmedString(input.title)?.toLowerCase();
+  const title = isGenericToolTitle(input.title)
+    ? undefined
+    : asTrimmedString(input.title)?.toLowerCase();
+  const declaredName = extractDeclaredToolName(input.data);
   if (itemType === "command_execution" || kind === "execute" || title === "terminal") {
     return "command";
   }
@@ -177,8 +258,30 @@ function classifyToolAction(input: {
   ) {
     return "file_change";
   }
-  if (itemType === "web_search" || kind === "search" || title === "find" || title === "grep") {
+  if (
+    itemType === "web_search" ||
+    kind === "search" ||
+    kind === "fetch" ||
+    title === "find" ||
+    title === "grep"
+  ) {
     return "search";
+  }
+  if (kind === "think") {
+    return "think";
+  }
+  const namedAction = classifyFromToolName(declaredName) ?? classifyFromToolName(input.title);
+  if (namedAction) {
+    return namedAction;
+  }
+  if (input.command) {
+    return "command";
+  }
+  if (looksLikeSearchDetail(input.detail)) {
+    return "search";
+  }
+  if (extractPrimaryPath(input.data)) {
+    return "read";
   }
   return "other";
 }
@@ -199,63 +302,80 @@ export interface ToolActivityPresentation {
 export function deriveToolActivityPresentation(
   input: ToolActivityPresentationInput,
 ): ToolActivityPresentation {
-  const title = asTrimmedString(input.title);
+  const rawTitle = asTrimmedString(input.title);
+  const title = isGenericToolTitle(rawTitle) ? undefined : rawTitle;
   const detail = stripTrailingExitCode(asTrimmedString(input.detail));
-  const fallbackSummary = asTrimmedString(input.fallbackSummary) ?? "Tool";
+  const rawFallback = asTrimmedString(input.fallbackSummary);
+  const fallbackSummary = isGenericToolTitle(rawFallback) ? undefined : rawFallback;
   const data = asRecord(input.data);
+  const declaredName = extractDeclaredToolName(data);
+  const namedSummary = declaredName ? humanizeToolName(declaredName) : undefined;
   const command = extractToolCommand(data, title);
   const primaryPath = extractPrimaryPath(data);
   const action = classifyToolAction({
     itemType: input.itemType,
     title,
+    detail,
     data,
+    command,
   });
+  const summaryFor = (category: string): string => namedSummary ?? category;
 
   if (action === "command") {
     return {
-      summary: "Ran command",
+      summary: summaryFor("Ran command"),
       ...(command ? { detail: command } : {}),
     };
   }
 
   if (action === "read") {
-    if (primaryPath) {
-      return {
-        summary: "Read file",
-        detail: primaryPath,
-      };
-    }
     return {
-      summary: "Read file",
+      summary: summaryFor("Read file"),
+      ...(primaryPath ? { detail: primaryPath } : {}),
     };
   }
 
   if (action === "file_change") {
     return {
-      summary: "Changed files",
+      summary: summaryFor("Changed files"),
       ...(primaryPath ? { detail: primaryPath } : {}),
     };
   }
 
   if (action === "search") {
+    const rawInput = asRecord(data?.rawInput);
     const query =
-      asTrimmedString(asRecord(data?.rawInput)?.query) ??
-      asTrimmedString(asRecord(data?.rawInput)?.pattern) ??
-      asTrimmedString(asRecord(data?.rawInput)?.searchTerm);
+      asTrimmedString(rawInput?.query) ??
+      asTrimmedString(rawInput?.pattern) ??
+      asTrimmedString(rawInput?.searchTerm) ??
+      asTrimmedString(rawInput?.glob);
     return {
-      summary: "Searched files",
-      ...(query ? { detail: query } : {}),
+      summary: summaryFor("Searched files"),
+      ...(query ? { detail: query } : !isEquivalent(detail, title) && detail ? { detail } : {}),
+    };
+  }
+
+  if (action === "think") {
+    return {
+      summary: summaryFor("Thought"),
+    };
+  }
+
+  if (namedSummary) {
+    return {
+      summary: namedSummary,
+      ...(detail && !isEquivalent(detail, namedSummary) ? { detail } : {}),
     };
   }
 
   if (detail && !isEquivalent(detail, title) && !isEquivalent(detail, fallbackSummary)) {
     return {
-      summary: title ?? fallbackSummary,
+      summary: title ?? fallbackSummary ?? "Tool",
       detail,
     };
   }
 
   return {
-    summary: title ?? fallbackSummary,
+    summary: title ?? fallbackSummary ?? "Tool",
   };
 }

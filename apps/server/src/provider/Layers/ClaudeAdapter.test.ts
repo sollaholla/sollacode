@@ -22,6 +22,10 @@ import {
   ThreadId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import {
+  ACTION_APPROVAL_CHOICE,
+  ACTION_APPROVAL_QUESTION_ID,
+} from "@t3tools/shared/actionApproval";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -41,7 +45,9 @@ import { HEIC_FIXTURE_BASE64 } from "../../modelImageCompatibility.test-fixture.
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { classifyClaudeStreamFailure } from "./ClaudeAdapter.ts";
 import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
+import { markProcessShuttingDown, resetProcessShutdownForTesting } from "../processShutdown.ts";
 import {
   isClaudeInterruptedResult,
   makeClaudeAdapter,
@@ -212,6 +218,7 @@ function makeHarness(config?: {
   readonly instanceId?: ProviderInstanceId;
   readonly forkSession?: ClaudeAdapterLiveOptions["forkSession"];
   readonly createMcpProxy?: ClaudeAdapterLiveOptions["createMcpProxy"];
+  readonly createQuery?: ClaudeAdapterLiveOptions["createQuery"];
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -225,7 +232,7 @@ function makeHarness(config?: {
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
     createQuery: (input) => {
       createInput = input;
-      return query;
+      return config?.createQuery?.(input) ?? query;
     },
     ...(config?.forkSession ? { forkSession: config.forkSession } : {}),
     ...(config?.createMcpProxy ? { createMcpProxy: config.createMcpProxy } : {}),
@@ -391,6 +398,57 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
+    );
+  });
+
+  it.effect("starts a fresh Claude session when a persisted resume id no longer exists", () => {
+    const staleSessionId = "753dc54b-e06f-464c-8dfc-d003e8bf3707";
+    const query = new FakeClaudeQuery();
+    const queryOptions: Array<ClaudeQueryOptions> = [];
+    const harness = makeHarness({
+      createQuery: (input) => {
+        queryOptions.push(input.options);
+        if (queryOptions.length === 1) {
+          throw new Error(
+            `Claude Code returned an error result: No conversation found with session ID: ${staleSessionId}`,
+          );
+        }
+        return query;
+      },
+    });
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: {
+          threadId: RESUME_THREAD_ID,
+          resume: staleSessionId,
+          resumeSessionAt: "assistant-before-runtime-loss",
+          turnCount: 8,
+        },
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(queryOptions.length, 2);
+      assert.equal(queryOptions[0]?.resume, staleSessionId);
+      assert.equal(queryOptions[0]?.sessionId, undefined);
+      assert.equal(queryOptions[1]?.resume, undefined);
+      assert.equal(queryOptions[1]?.forkSession, undefined);
+      assert.match(
+        queryOptions[1]?.sessionId ?? "",
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+      );
+      assert.notEqual(queryOptions[1]?.sessionId, staleSessionId);
+      assert.deepEqual(session.resumeCursor, {
+        threadId: RESUME_THREAD_ID,
+        resume: queryOptions[1]?.sessionId,
+        turnCount: 8,
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
     );
   });
 
@@ -1884,6 +1942,53 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("blames no one when the stream dies because the app is quitting", () => {
+    // Every app update produced a red "Runtime error": the installer quits the
+    // app mid-turn, the pipe breaks, and the turn it interrupted recorded the
+    // agent as having failed. The adapter's own teardown flag cannot catch this
+    // — the socket dies before the teardown path runs.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+
+      markProcessShuttingDown();
+      harness.query.fail(new Error("write EPIPE"));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      // Nothing is recorded at all: the turn was interrupted by the shutdown,
+      // and startup settles turns left running as incomplete.
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "turn.completed"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(resetProcessShutdownForTesting)),
+    );
+  });
+
   it.effect("keeps Claude stream failure events structural", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1917,10 +2022,17 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(runtimeError?.type, "runtime.error");
       if (runtimeError?.type === "runtime.error") {
         assert.equal(runtimeError.payload.message, "Claude runtime stream failed.");
+        // A classification is derived from the cause and safe to keep; the
+        // cause text itself is not, which is what the message assertion above
+        // and the leak check below are guarding.
         assert.deepEqual(runtimeError.payload.detail, {
           failureCount: 1,
           failureTags: ["ProviderAdapterProcessError"],
+          failureReason: "unknown",
         });
+        // The message equality above and this exact-shape detail together are
+        // the leak check: any field carrying the cause would break one of them.
+        assert.equal(runtimeError.payload.message.includes("credential material"), false);
       }
 
       const completed = runtimeEvents.find((event) => event.type === "turn.completed");
@@ -1928,6 +2040,104 @@ describe("ClaudeAdapterLive", () => {
       if (completed?.type === "turn.completed") {
         assert.equal(completed.payload.state, "failed");
         assert.equal(completed.payload.errorMessage, "Claude runtime stream failed.");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("treats a restart tearing down the transport as an interruption", () => {
+    // A restart kills the CLI, the pipe breaks, and the SDK iterable rejects
+    // before the shutdown flag is set. That surfaced to the user as a red
+    // "Claude runtime stream failed." toast for a restart they asked for.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.fail(new Error("write EPIPE"));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      // No error is reported at all: nothing failed, the process went away.
+      assert.equal(
+        runtimeEvents.find((event) => event.type === "runtime.error"),
+        undefined,
+      );
+
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.state, "interrupted");
+        // Says which kind of interruption, so it does not read as the user
+        // having hit stop either.
+        assert.equal(
+          completed.payload.errorMessage,
+          "Claude runtime stopped because the session was restarted.",
+        );
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("still reports a genuine stream failure as an error", () => {
+    // The guard must not swallow real failures: only transport-teardown shapes
+    // are reclassified.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.fail(new Error("model returned an invalid response"));
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const runtimeError = runtimeEvents.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.type, "runtime.error");
+      const completed = runtimeEvents.find((event) => event.type === "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.state, "failed");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -4531,6 +4741,97 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "routes action approval elicitation through user-input and preserves corrections",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+        const onElicitation = harness.getLastCreateQueryInput()?.options.onElicitation;
+        assert.equal(typeof onElicitation, "function");
+        if (!onElicitation) return;
+
+        const message = [
+          "Approve sending this email?",
+          "",
+          "To: customer@example.com",
+          "Subject: Project update",
+          "",
+          "The release is ready.",
+        ].join("\n");
+        const elicitationPromise = onElicitation(
+          {
+            serverName: "t3-code",
+            mode: "form",
+            message,
+            requestedSchema: {
+              type: "object",
+              properties: {
+                [ACTION_APPROVAL_QUESTION_ID]: {
+                  type: "string",
+                  default: ACTION_APPROVAL_CHOICE,
+                },
+              },
+              required: [ACTION_APPROVAL_QUESTION_ID],
+            },
+          },
+          { signal: new AbortController().signal },
+        );
+
+        const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
+        assert.equal(requestedEvent._tag, "Some");
+        if (
+          requestedEvent._tag !== "Some" ||
+          requestedEvent.value.type !== "user-input.requested"
+        ) {
+          assert.fail("Expected user-input.requested event");
+          return;
+        }
+        assert.equal(requestedEvent.value.payload.questions[0]?.id, ACTION_APPROVAL_QUESTION_ID);
+        assert.equal(requestedEvent.value.payload.questions[0]?.question, message);
+        assert.equal(
+          requestedEvent.value.payload.questions[0]?.options[0]?.label,
+          ACTION_APPROVAL_CHOICE,
+        );
+        const requestId = requestedEvent.value.requestId;
+        if (!requestId) {
+          assert.fail("Expected action approval request id");
+          return;
+        }
+
+        yield* adapter.respondToUserInput(session.threadId, ApprovalRequestId.make(requestId), {
+          [ACTION_APPROVAL_QUESTION_ID]: "Change the subject to Launch update.",
+        });
+
+        const resolvedEvent = yield* Stream.runHead(adapter.streamEvents);
+        assert.equal(resolvedEvent._tag, "Some");
+        if (resolvedEvent._tag === "Some" && resolvedEvent.value.type === "user-input.resolved") {
+          assert.deepEqual(resolvedEvent.value.payload.answers, {
+            [ACTION_APPROVAL_QUESTION_ID]: "Change the subject to Launch update.",
+          });
+        }
+
+        assert.deepEqual(yield* Effect.promise(() => elicitationPromise), {
+          action: "accept",
+          content: {
+            [ACTION_APPROVAL_QUESTION_ID]: "Change the subject to Launch update.",
+          },
+        });
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("denies AskUserQuestion when the waiting turn is aborted", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4699,5 +5000,36 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+});
+
+describe("classifying a Claude stream failure", () => {
+  it("names a broken pipe as the transport going away", () => {
+    assert.equal(classifyClaudeStreamFailure(["write EPIPE"]), "transport-teardown");
+    assert.equal(classifyClaudeStreamFailure(["Error: socket hang up"]), "transport-teardown");
+  });
+
+  it("tells a spent account apart from a rate limit", () => {
+    assert.equal(classifyClaudeStreamFailure(["401 unauthorized"]), "authentication");
+    assert.equal(classifyClaudeStreamFailure(["your credit balance is too low"]), "authentication");
+    assert.equal(classifyClaudeStreamFailure(["429 rate limit exceeded"]), "rate-limit");
+  });
+
+  it("names a name-resolution failure as network", () => {
+    assert.equal(
+      classifyClaudeStreamFailure(["getaddrinfo ENOTFOUND api.anthropic.com"]),
+      "network",
+    );
+  });
+
+  it("prefers the teardown reading when a torn-down pipe mentions something else", () => {
+    // A killed process can surface almost any text on its way out; the reason
+    // it went away outranks whatever it was doing at the time.
+    assert.equal(classifyClaudeStreamFailure(["SIGTERM while handling 429"]), "transport-teardown");
+  });
+
+  it("says nothing it cannot tell", () => {
+    assert.equal(classifyClaudeStreamFailure(["something went wrong"]), "unknown");
+    assert.equal(classifyClaudeStreamFailure([]), "unknown");
   });
 });

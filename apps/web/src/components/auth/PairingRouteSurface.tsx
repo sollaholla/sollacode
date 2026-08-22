@@ -13,6 +13,7 @@ import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 
 export function PairingPendingSurface() {
   return (
@@ -130,6 +131,7 @@ export function PairingRouteSurface({
             </label>
             <Input
               id="pairing-token"
+              type="password"
               autoCapitalize="none"
               autoComplete="off"
               autoCorrect="off"
@@ -263,7 +265,16 @@ export function HostedPairingRouteSurface() {
 
         {request ? (
           <div className="mt-5 rounded-lg border border-border/70 bg-background/55 px-3 py-3 text-xs leading-relaxed text-muted-foreground">
-            Host: <span className="font-mono text-foreground/80">{request.host}</span>
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              Host:
+              <RedactedSensitiveText
+                value={request.host}
+                ariaLabel="Toggle pairing host visibility"
+                revealTooltip="Click to reveal host"
+                hideTooltip="Click to hide host"
+                className="max-w-full truncate text-xs leading-normal text-foreground/80"
+              />
+            </span>
           </div>
         ) : null}
 

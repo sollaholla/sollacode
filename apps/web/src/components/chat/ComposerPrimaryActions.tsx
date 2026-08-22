@@ -1,8 +1,15 @@
-import { memo, type KeyboardEventHandler, type PointerEventHandler } from "react";
+import type { ContextMenuItem } from "@t3tools/contracts";
+import {
+  memo,
+  type KeyboardEventHandler,
+  type MouseEventHandler,
+  type PointerEventHandler,
+} from "react";
 import { ChevronDownIcon, ChevronLeftIcon, MicIcon, RefreshCwIcon } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
+import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
@@ -17,6 +24,7 @@ interface PendingActionState {
   canAdvance: boolean;
   isResponding: boolean;
   isComplete: boolean;
+  submitLabel?: string;
 }
 
 interface ComposerPrimaryActionsProps {
@@ -43,6 +51,7 @@ interface ComposerPrimaryActionsProps {
   onPushToTalkStart?: () => void;
   onPushToTalkStop?: () => void;
   onApplySettings?: () => void;
+  onRevertSettings?: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -53,6 +62,7 @@ export const formatPendingPrimaryActionLabel = (input: {
   isLastQuestion: boolean;
   isResponding: boolean;
   questionIndex: number;
+  submitLabel?: string;
 }) => {
   if (input.isResponding) {
     return "Submitting...";
@@ -62,6 +72,9 @@ export const formatPendingPrimaryActionLabel = (input: {
   }
   if (!input.isLastQuestion) {
     return "Next question";
+  }
+  if (input.submitLabel) {
+    return input.submitLabel;
   }
   return input.questionIndex > 0 ? "Submit answers" : "Submit answer";
 };
@@ -89,6 +102,24 @@ export const formatPushToTalkActionLabel = (
       return `Unmute microphone — hold to record (${shortcut})`;
   }
 };
+
+type SettingsUpdateContextMenuAction = "revert";
+
+export const SETTINGS_UPDATE_CONTEXT_MENU_ITEMS = [
+  { id: "revert", label: "Revert" },
+] as const satisfies readonly ContextMenuItem<SettingsUpdateContextMenuAction>[];
+
+export async function showSettingsUpdateContextMenu(input: {
+  readonly position: { readonly x: number; readonly y: number };
+  readonly showContextMenu: (
+    items: readonly ContextMenuItem<SettingsUpdateContextMenuAction>[],
+    position: { readonly x: number; readonly y: number },
+  ) => Promise<SettingsUpdateContextMenuAction | null>;
+  readonly onRevert: () => void;
+}): Promise<void> {
+  const action = await input.showContextMenu(SETTINGS_UPDATE_CONTEXT_MENU_ITEMS, input.position);
+  if (action === "revert") input.onRevert();
+}
 
 const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
@@ -120,6 +151,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   onPushToTalkStart = noop,
   onPushToTalkStop = noop,
   onApplySettings = noop,
+  onRevertSettings = noop,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -169,6 +201,17 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+  };
+  const showSettingsContextMenu: MouseEventHandler<HTMLButtonElement> = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const api = readLocalApi();
+    if (!api) return;
+    void showSettingsUpdateContextMenu({
+      position: { x: event.clientX, y: event.clientY },
+      showContextMenu: api.contextMenu.show,
+      onRevert: onRevertSettings,
+    });
   };
   const microphoneAction = showAppMicrophone ? (
     <Tooltip>
@@ -228,6 +271,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
               isPreparingWorktree
             }
             onClick={onApplySettings}
+            onContextMenu={showSettingsContextMenu}
             aria-label={`Apply conversation changes: ${settingsUpdateLabel}`}
           />
         }
@@ -292,6 +336,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             isLastQuestion: pendingAction.isLastQuestion,
             isResponding: pendingAction.isResponding,
             questionIndex: pendingAction.questionIndex,
+            ...(pendingAction.submitLabel ? { submitLabel: pendingAction.submitLabel } : {}),
           })}
         </Button>
       </div>

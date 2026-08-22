@@ -96,6 +96,88 @@ describe("provider usage summaries", () => {
     );
   });
 
+  it("normalizes Grok SuperGrok weekly billing into a usage window", () => {
+    const grok = {
+      ...makeProvider("grok"),
+      displayName: "Grok",
+      accountUsage: {
+        config: {
+          creditUsagePercent: 6,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-15T00:00:00+00:00",
+            end: "2026-08-22T00:00:00+00:00",
+          },
+          prepaidBalance: { val: 12 },
+          onDemandCap: { val: 25 },
+          onDemandUsed: { val: 5 },
+        },
+        subscription_tier: "SuperGrok Plus",
+      },
+      accountUsageReportedAt: "2026-08-18T15:00:00.000Z",
+    } satisfies ServerProvider;
+
+    const summaries = deriveProviderUsageSummaries(
+      [grok],
+      [],
+      {},
+      Date.parse("2026-08-18T15:03:00.000Z"),
+    );
+
+    expect(summaries[0]?.state).toBe("available");
+    expect(summaries[0]?.windows).toEqual([
+      expect.objectContaining({
+        key: "weekly",
+        label: "Weekly",
+        usedPercent: 6,
+        resetAt: Date.parse("2026-08-22T00:00:00+00:00"),
+      }),
+      expect.objectContaining({ key: "credits", label: "Credits", detail: "$12" }),
+      expect.objectContaining({
+        key: "on-demand",
+        label: "Pay as you go",
+        usedPercent: 20,
+        detail: "$5 of $25",
+      }),
+    ]);
+    expect(compactProviderUsageMetric(summaries[0]!)?.label).toBe("Pay as you go");
+  });
+
+  it("marks Grok usage stale after the freshness window and fresh after a new snapshot", () => {
+    const grok = {
+      ...makeProvider("grok"),
+      displayName: "Grok",
+      accountUsage: {
+        config: {
+          creditUsagePercent: 41,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-18T17:24:28.593003+00:00",
+            end: "2026-08-25T17:24:28.593003+00:00",
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-08-19T12:17:00.000Z",
+    } satisfies ServerProvider;
+
+    const stale = deriveProviderUsageSummaries(
+      [grok],
+      [],
+      {},
+      Date.parse("2026-08-19T13:58:00.000Z"),
+    )[0]!;
+    expect(stale.state).toBe("stale");
+    expect(stale.windows[0]).toMatchObject({ label: "Weekly", usedPercent: 41 });
+
+    const fresh = deriveProviderUsageSummaries(
+      [{ ...grok, accountUsageReportedAt: "2026-08-19T13:58:00.000Z" }],
+      [],
+      {},
+      Date.parse("2026-08-19T13:58:30.000Z"),
+    )[0]!;
+    expect(fresh.state).toBe("available");
+  });
+
   it("normalizes Claude current, weekly, and Fable quota fields into used percentages", () => {
     const claude = {
       ...makeProvider("claudeAgent"),
@@ -580,6 +662,50 @@ describe("provider usage summaries", () => {
     ]);
   });
 
+  it("accepts an out-of-band Codex reset that starts a new weekly window immediately", () => {
+    const provider = makeProvider("codex", "codex-work", "work@example.com");
+    const accountKey = providerUsageAccountKey(provider)!;
+    const previous = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: provider.driver,
+        reportedAt: "2026-08-11T18:30:29.273Z",
+        windows: [
+          {
+            key: "weekly",
+            label: "Weekly",
+            usedPercent: 100,
+            resetAt: Date.parse("2026-08-17T20:00:19.000-04:00"),
+            windowDurationMs: 7 * 24 * 60 * 60_000,
+          },
+        ],
+      },
+    );
+    const reset = mergeProviderUsageEntry(previous, {
+      accountKey,
+      driver: provider.driver,
+      reportedAt: "2026-08-13T14:48:36.619Z",
+      windows: [
+        {
+          key: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          resetAt: Date.parse("2026-08-20T10:31:33.000-04:00"),
+          windowDurationMs: 7 * 24 * 60 * 60_000,
+        },
+      ],
+    });
+
+    expect(reset[accountKey]?.windows).toEqual([
+      expect.objectContaining({
+        key: "weekly",
+        usedPercent: 0,
+        resetAt: Date.parse("2026-08-20T10:31:33.000-04:00"),
+      }),
+    ]);
+  });
+
   it("ignores a Codex zero with a changed reset timestamp before the current cycle ends", () => {
     const provider = makeProvider("codex", "codex-work", "work@example.com");
     const accountKey = providerUsageAccountKey(provider)!;
@@ -610,6 +736,7 @@ describe("provider usage summaries", () => {
           label: "Weekly",
           usedPercent: 0,
           resetAt: Date.parse("2026-08-12T15:00:00.000Z"),
+          windowDurationMs: 7 * 24 * 60 * 60_000,
         },
       ],
     });
@@ -972,6 +1099,20 @@ describe("provider usage summaries", () => {
     expect(markup).not.toContain('role="progressbar"');
   });
 
+  it("offers the existing account switch flow from the usage popup", () => {
+    const summary = {
+      provider: makeProvider("codex"),
+      state: "available" as const,
+      windows: [],
+      reportedAt: null,
+    };
+    const markup = renderToStaticMarkup(
+      <ProviderUsageBadgeDetails summary={summary} onSwitchUser={() => undefined} />,
+    );
+
+    expect(markup).toContain(">Switch user<");
+  });
+
   it("renders only icon, percent used, and matching bars while keeping metric names accessible", () => {
     const providers = [makeProvider("claudeAgent"), makeProvider("codex")];
     const activities = [
@@ -1053,7 +1194,7 @@ describe("provider usage summaries", () => {
     });
   });
 
-  it("uses max(Fable, Current session) only while Fable is selected", () => {
+  it("adds Fable to the current-session and weekly limits only while Fable is selected", () => {
     const provider = makeProvider("claudeAgent");
     const summary = {
       provider,
@@ -1122,8 +1263,8 @@ describe("provider usage summaries", () => {
         },
       ),
     ).toEqual({
-      label: "Fable",
-      window: expect.objectContaining({ key: "fable", usedPercent: 86 }),
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 95 }),
     });
     expect(
       compactProviderUsageMetric(summary, {
@@ -1133,6 +1274,31 @@ describe("provider usage summaries", () => {
     ).toEqual({
       label: "Weekly",
       window: expect.objectContaining({ key: "seven_day", usedPercent: 81 }),
+    });
+  });
+
+  it("shows weekly when it exceeds Fable for a Fable-selected Claude session", () => {
+    const provider = makeProvider("claudeAgent");
+    const metric = compactProviderUsageMetric(
+      {
+        provider,
+        state: "available",
+        reportedAt: null,
+        windows: [
+          { key: "current_session", label: "Current session", usedPercent: 0, resetAt: null },
+          { key: "seven_day", label: "Weekly", usedPercent: 98, resetAt: null },
+          { key: "fable", label: "Fable", usedPercent: 61, resetAt: null },
+        ],
+      },
+      {
+        instanceId: provider.instanceId,
+        model: "claude-fable-5",
+      },
+    );
+
+    expect(metric).toEqual({
+      label: "Weekly",
+      window: expect.objectContaining({ key: "seven_day", usedPercent: 98 }),
     });
   });
 });

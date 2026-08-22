@@ -59,6 +59,10 @@
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
     },
+    "./state/thread-artifacts": {
+      "types": "./src/state/threadArtifacts.ts",
+      "default": "./src/state/threadArtifacts.ts"
+    },
     "./state/connections": {
       "types": "./src/state/connections.ts",
       "default": "./src/state/connections.ts"
@@ -86,6 +90,10 @@
     "./state/presentation": {
       "types": "./src/state/presentation.ts",
       "default": "./src/state/presentation.ts"
+    },
+    "./state/vmAgents": {
+      "types": "./src/state/vmAgents.ts",
+      "default": "./src/state/vmAgents.ts"
     },
     "./state/preview": {
       "types": "./src/state/preview.ts",

@@ -154,6 +154,7 @@ describe("ProviderSessionReaper", () => {
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
+    readonly reaperOptions?: Parameters<typeof makeProviderSessionReaperLive>[0];
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
     const dispatchedCommands: OrchestrationCommand[] = [];
@@ -202,6 +203,11 @@ describe("ProviderSessionReaper", () => {
     const layer = makeProviderSessionReaperLive({
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
+      // Keep the periodic reconcile dormant unless a test opts into a fast
+      // interval; otherwise its first pass never fires within a test's lifetime.
+      reconcileIntervalMs: 60_000,
+      reconcileGraceMs: 0,
+      ...input.reaperOptions,
     }).pipe(
       Layer.provideMerge(RuntimeLeaseRegistryLive),
       Layer.provideMerge(providerSessionDirectoryLayer),
@@ -599,6 +605,129 @@ describe("ProviderSessionReaper", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
     await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toHaveLength(0);
+  });
+
+  it("clears a working session stranded after startup once its adapter is gone", async () => {
+    const threadId = ThreadId.make("thread-reaper-periodic-strand");
+    const turnId = TurnId.make("turn-reaper-periodic-strand");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+      // No live adapter session backs the thread; grace 0 keeps the assertion
+      // free of any wall-clock timing dependence.
+      reaperOptions: {
+        inactivityThresholdMs: 1_000,
+        sweepIntervalMs: 60_000,
+        reconcileIntervalMs: 20,
+        reconcileGraceMs: 0,
+      },
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    // Bind the session only AFTER startup: the one-shot startup reconcile cannot
+    // see it, so clearing it here can only come from the periodic pass.
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-periodic-strand" },
+        runtimePayload: null,
+      }),
+    );
+
+    await waitFor(() => harness.dispatchedCommands.length >= 1);
+
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    expect(harness.dispatchedCommands[0]).toMatchObject({
+      type: "thread.session.set",
+      threadId,
+      session: {
+        status: "stopped",
+        activeTurnId: null,
+      },
+    });
+  });
+
+  it("does not strand a freshly-updated working session within its grace window", async () => {
+    const threadId = ThreadId.make("thread-reaper-periodic-grace");
+    const turnId = TurnId.make("turn-reaper-periodic-grace");
+    // A turn that only just started: its adapter may still be registering, so
+    // the periodic pass must leave it alone until it ages past the grace.
+    const freshUpdatedAt = await Effect.runPromise(Effect.map(DateTime.now, DateTime.formatIso));
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: freshUpdatedAt,
+          },
+        },
+      ]),
+      reaperOptions: {
+        inactivityThresholdMs: 1_000,
+        sweepIntervalMs: 60_000,
+        reconcileIntervalMs: 20,
+        reconcileGraceMs: 10_000,
+      },
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-periodic-grace" },
+        runtimePayload: null,
+      }),
+    );
+
+    // Give the periodic pass real time to tick several times; every tick must
+    // skip the still-fresh session.
+    await waitFor(() => harness.stopSession.mock.calls.length > 0, 250).catch(() => {});
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     expect(harness.dispatchedCommands).toHaveLength(0);

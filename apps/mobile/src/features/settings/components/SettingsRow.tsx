@@ -6,7 +6,7 @@ import { SymbolView } from "../../../components/AppSymbol";
 
 import { AppText as Text } from "../../../components/AppText";
 import { useThemeColor } from "../../../lib/useThemeColor";
-import type { SettingsLegalDocumentTarget, SettingsSheetTarget } from "./settings-sheet-targets";
+import type { SettingsFullScreenTarget, SettingsSheetTarget } from "./settings-sheet-targets";
 
 type SymbolName = ComponentProps<typeof SymbolView>["name"];
 
@@ -16,7 +16,7 @@ export function SettingsRow(props: {
   readonly label: string;
   readonly value?: string;
   readonly target?: SettingsSheetTarget;
-  readonly fullScreenTarget?: SettingsLegalDocumentTarget;
+  readonly fullScreenTarget?: SettingsFullScreenTarget;
   readonly onPress?: () => void;
 }) {
   const navigation = useNavigation();

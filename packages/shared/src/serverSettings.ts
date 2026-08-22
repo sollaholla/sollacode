@@ -131,8 +131,23 @@ export function applyServerSettingsPatch(
     providerHealthRefreshInterval,
     backgroundActivityProfile,
     backgroundActivity,
+    orchestrator,
     ...patchForMerge
   } = patch;
+  // Orchestrator API keys are write-only: they are carried by the patch so the
+  // server can move them into provider-specific secret-store slots, but they
+  // must never survive into `ServerSettings` (which is serialized and
+  // broadcast to clients). Strip every legacy/current key field here.
+  const orchestratorPatch = (() => {
+    if (orchestrator === undefined) return undefined;
+    const {
+      apiKey: _legacyWriteOnly,
+      openAiApiKey: _openAiWriteOnly,
+      xaiApiKey: _xaiWriteOnly,
+      ...rest
+    } = orchestrator;
+    return rest;
+  })();
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
   const backgroundActivityPatch =
     backgroundActivityProfile !== undefined
@@ -186,6 +201,9 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
+      : {}),
+    ...(orchestratorPatch !== undefined
+      ? { orchestrator: deepMerge(current.orchestrator, orchestratorPatch) }
       : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }

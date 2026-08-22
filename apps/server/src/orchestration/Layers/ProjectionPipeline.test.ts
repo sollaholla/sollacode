@@ -8,6 +8,7 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
+  VmAgentDelegationId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -51,6 +52,64 @@ const exists = (filePath: string) =>
   });
 
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
+
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-bootstrap-noop-test-"))(
+  "OrchestrationProjectionPipeline caught-up bootstrap",
+  (it) => {
+    it.effect("does not rewrite every thread shell when no events need replay", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-01-01T00:00:00.000Z";
+        const threadId = ThreadId.make("thread-caught-up-bootstrap");
+
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-caught-up-bootstrap"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-caught-up-bootstrap"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-caught-up-bootstrap"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-caught-up-bootstrap"),
+            title: "Caught-up bootstrap",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+
+        yield* sql`CREATE TEMP TABLE bootstrap_thread_updates (thread_id TEXT NOT NULL)`;
+        yield* sql`
+          CREATE TEMP TRIGGER capture_bootstrap_thread_update
+          AFTER UPDATE ON projection_threads
+          BEGIN
+            INSERT INTO bootstrap_thread_updates (thread_id) VALUES (NEW.thread_id);
+          END
+        `;
+
+        yield* projectionPipeline.bootstrap;
+
+        const updateRows = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count FROM bootstrap_thread_updates
+        `;
+        assert.deepStrictEqual(updateRows, [{ count: 0 }]);
+      }),
+    );
+  },
+);
 
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-backlog-test-"))(
   "OrchestrationProjectionPipeline backlog",
@@ -1033,6 +1092,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
             messageId: MessageId.make("message-attachments"),
             role: "user",
             text: "Inspect this",
+            delegationId: VmAgentDelegationId.make("delegation-projection-pipeline"),
             attachments: [
               {
                 type: "image",
@@ -1053,13 +1113,16 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
 
         const rows = yield* sql<{
           readonly attachmentsJson: string | null;
+          readonly delegationId: string | null;
         }>`
             SELECT
-              attachments_json AS "attachmentsJson"
+              attachments_json AS "attachmentsJson",
+              delegation_id AS "delegationId"
             FROM projection_thread_messages
             WHERE message_id = 'message-attachments'
           `;
         assert.equal(rows.length, 1);
+        assert.equal(rows[0]?.delegationId, "delegation-projection-pipeline");
         // @effect-diagnostics-next-line preferSchemaOverJson:off
         assert.deepEqual(JSON.parse(rows[0]?.attachmentsJson ?? "null"), [
           {
@@ -3604,6 +3667,160 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
   ),
 );
 
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-actionable-proposed-plan-summary-test-"))(
+  "OrchestrationProjectionPipeline actionable proposed plan summary",
+  (it) => {
+    it.effect("marks only the latest turn's unimplemented plan as actionable", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        const projectId = ProjectId.make("project-actionable-plan");
+        const threadId = ThreadId.make("thread-actionable-plan");
+        const firstTurnId = TurnId.make("turn-actionable-plan-1");
+        const secondTurnId = TurnId.make("turn-actionable-plan-2");
+        const planId = "plan-actionable-1";
+
+        const readFlag = () =>
+          sql<{ readonly hasActionableProposedPlan: number }>`
+            SELECT has_actionable_proposed_plan AS "hasActionableProposedPlan"
+            FROM projection_threads
+            WHERE thread_id = ${threadId}
+          `;
+
+        yield* appendAndProject({
+          type: "project.created",
+          eventId: EventId.make("evt-actionable-plan-1"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: "2026-03-01T12:00:00.000Z",
+          commandId: CommandId.make("cmd-actionable-plan-1"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-actionable-plan-1"),
+          metadata: {},
+          payload: {
+            projectId,
+            title: "Actionable Plan Project",
+            workspaceRoot: "/tmp/project-actionable-plan",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-03-01T12:00:00.000Z",
+            updatedAt: "2026-03-01T12:00:00.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-actionable-plan-2"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-03-01T12:00:01.000Z",
+          commandId: CommandId.make("cmd-actionable-plan-2"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-actionable-plan-2"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId,
+            title: "Actionable Plan Thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-03-01T12:00:01.000Z",
+            updatedAt: "2026-03-01T12:00:01.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-actionable-plan-3"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-03-01T12:00:02.000Z",
+          commandId: CommandId.make("cmd-actionable-plan-3"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-actionable-plan-3"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: firstTurnId,
+              lastError: null,
+              updatedAt: "2026-03-01T12:00:02.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.proposed-plan-upserted",
+          eventId: EventId.make("evt-actionable-plan-4"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-03-01T12:00:03.000Z",
+          commandId: CommandId.make("cmd-actionable-plan-4"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-actionable-plan-4"),
+          metadata: {},
+          payload: {
+            threadId,
+            proposedPlan: {
+              id: planId,
+              turnId: firstTurnId,
+              planMarkdown: "# Ship the leftover plan",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: "2026-03-01T12:00:03.000Z",
+              updatedAt: "2026-03-01T12:00:03.000Z",
+            },
+          },
+        });
+
+        assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 1 }]);
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-actionable-plan-5"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-03-01T12:00:04.000Z",
+          commandId: CommandId.make("cmd-actionable-plan-5"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-actionable-plan-5"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: secondTurnId,
+              lastError: null,
+              updatedAt: "2026-03-01T12:00:04.000Z",
+            },
+          },
+        });
+
+        assert.deepEqual(yield* readFlag(), [{ hasActionableProposedPlan: 0 }]);
+      }),
+    );
+  },
+);
+
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -4452,6 +4669,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         { key: "settled", deliverySurvives: false },
         { key: "stopped", deliverySurvives: true },
         { key: "interrupted", deliverySurvives: true },
+        { key: "pending-interrupted", deliverySurvives: false },
       ] as const;
 
       yield* engine.dispatch({
@@ -4519,6 +4737,13 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         type: "thread.turn.interrupt",
         commandId: CommandId.make("cmd-work-cancel-interrupt"),
         threadId: ThreadId.make("thread-work-cancel-interrupted"),
+        turnId: TurnId.make("turn-work-cancel-interrupted"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-work-cancel-pending-interrupt"),
+        threadId: ThreadId.make("thread-work-cancel-pending-interrupted"),
         createdAt: "2026-01-01T00:00:01.000Z",
       });
 
@@ -4558,6 +4783,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       readonly activeTurnId: string | null;
       readonly completedAt: string | null;
       readonly assistantText: string;
+      readonly interactionMode?: string;
     }) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -4570,7 +4796,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           ) VALUES (
             ${input.threadId}, 'project-recovery', 'Recovery Thread', NULL, NULL, ${input.turnId},
             '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:05.000Z', NULL,
-            'full-access', 'agent',
+            'full-access', ${input.interactionMode ?? "agent"},
             '{"instanceId":"codex","model":"gpt-5.6-sol"}', '2026-03-02T10:00:01.000Z',
             0, 0
           )
@@ -4702,6 +4928,396 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         assert.deepEqual(obligations, [
           { sourceTurnId: turnId, kind: "startup-resume", state: "pending" },
         ]);
+      }),
+    );
+
+    it.effect("enqueues a startup resume for an incomplete default-mode turn", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-incomplete-default-resume";
+        const turnId = "turn-incomplete-default-resume";
+
+        yield* seedThread({
+          threadId,
+          turnId,
+          assistantMessageId: "assistant-incomplete-default-resume",
+          turnState: "incomplete",
+          isStreaming: 0,
+          sessionStatus: "stopped",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "Still working through the install.",
+          interactionMode: "default",
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const obligations = yield* sql<{
+          readonly sourceTurnId: string;
+          readonly kind: string;
+          readonly state: string;
+        }>`
+          SELECT source_turn_id AS "sourceTurnId", kind, state
+          FROM thread_work_obligations WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(obligations, [
+          { sourceTurnId: turnId, kind: "startup-resume", state: "pending" },
+        ]);
+      }),
+    );
+
+    // Reported 2026-08-15 (thread ed9e1e19): an in-place app update killed the
+    // CLI 68s into a turn, before it emitted a single assistant token. The
+    // shutdown settled the turn as "completed" — not "incomplete"/"error" —
+    // and recorded the failure alongside it as a `runtime.error`. The
+    // continuation branch needs assistant text to continue from and the resume
+    // branch only took incomplete/error, so the thread was skipped entirely and
+    // sat on an unanswered user message with no obligation of any kind.
+    it.effect("enqueues a resume for a turn killed before it produced any output", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-killed-before-output";
+        const turnId = "turn-killed-before-output";
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+            created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+            model_selection_json, latest_user_message_at,
+            pending_approval_count, pending_user_input_count
+          ) VALUES (
+            ${threadId}, 'project-recovery', 'Recovery Thread', NULL, NULL, ${turnId},
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:05.000Z', NULL,
+            'full-access', 'agent',
+            '{"instanceId":"codex","model":"gpt-5.6-sol"}', '2026-03-02T10:00:01.000Z',
+            0, 0
+          )
+        `;
+        // No assistant row at all: the stream died before the first token.
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, ${turnId}, NULL, NULL, 'completed',
+            '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:02.000Z',
+            '2026-03-02T10:00:04.000Z', '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+          ) VALUES (
+            'activity-runtime-error', ${threadId}, ${turnId}, 'error', 'runtime.error',
+            'Runtime error', '{"message":"Claude runtime stream failed."}',
+            '2026-03-02T10:00:04.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_session_id, provider_thread_id,
+            active_turn_id, last_error, updated_at, runtime_mode, provider_instance_id
+          ) VALUES (
+            ${threadId}, 'stopped', 'codex', NULL, NULL,
+            NULL, 'Claude runtime stream failed.', '2026-03-02T10:00:04.000Z',
+            'full-access', 'codex'
+          )
+        `;
+
+        yield* projectionPipeline.bootstrap;
+
+        const obligations = yield* sql<{
+          readonly sourceTurnId: string;
+          readonly kind: string;
+          readonly state: string;
+        }>`
+          SELECT source_turn_id AS "sourceTurnId", kind, state
+          FROM thread_work_obligations WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(obligations, [
+          { sourceTurnId: turnId, kind: "startup-resume", state: "pending" },
+        ]);
+      }),
+    );
+
+    // Reported 2026-08-15: an in-place update kills the CLI mid-turn, the
+    // stream failure marks the session `error`, and the continuation the turn
+    // settle had already enqueued was cancelled ~1s after boot with "source
+    // turn is no longer continuable" — because the continuation gate treats
+    // `error` as terminal. The process that owned that session is gone, so the
+    // error cannot still be current.
+    it.effect("clears a stale error session left by the dead process", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-stale-error-session";
+        const turnId = "turn-stale-error-session";
+
+        yield* seedThread({
+          threadId,
+          turnId,
+          assistantMessageId: "assistant-stale-error-session",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "error",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "Installing the new build now.",
+        });
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET last_error = 'Claude runtime stream failed.'
+          WHERE thread_id = ${threadId}
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const sessions = yield* sql<{
+          readonly status: string;
+          readonly lastError: string | null;
+        }>`
+          SELECT status, last_error AS "lastError"
+          FROM projection_thread_sessions WHERE thread_id = ${threadId}
+        `;
+        assert.equal(sessions[0]?.status, "stopped");
+        // Preserved: the recovery scan reads it to classify the thread.
+        assert.equal(sessions[0]?.lastError, "Claude runtime stream failed.");
+      }),
+    );
+
+    // An authentication failure is not stale — it needs the user to log in, and
+    // the scan routes it to a blocked-authentication obligation.
+    it.effect("leaves an authentication failure in error", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-auth-error-session";
+        const turnId = "turn-auth-error-session";
+
+        yield* seedThread({
+          threadId,
+          turnId,
+          assistantMessageId: "assistant-auth-error-session",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "error",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "Working on it.",
+        });
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET last_error = 'Failed to authenticate: OAuth session expired and could not be refreshed'
+          WHERE thread_id = ${threadId}
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const sessions = yield* sql<{ readonly status: string }>`
+          SELECT status FROM projection_thread_sessions WHERE thread_id = ${threadId}
+        `;
+        assert.equal(sessions[0]?.status, "error");
+      }),
+    );
+
+    // The same shape without a recorded failure is an ordinary empty turn, not
+    // a casualty, and must stay untouched — otherwise every quiet turn in the
+    // database would resume itself on the next boot.
+    it.effect("leaves an output-free turn alone when nothing recorded a failure", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-quiet-completed";
+        const turnId = "turn-quiet-completed";
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+            created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+            model_selection_json, latest_user_message_at,
+            pending_approval_count, pending_user_input_count
+          ) VALUES (
+            ${threadId}, 'project-recovery', 'Recovery Thread', NULL, NULL, ${turnId},
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:05.000Z', NULL,
+            'full-access', 'agent',
+            '{"instanceId":"codex","model":"gpt-5.6-sol"}', '2026-03-02T10:00:01.000Z',
+            0, 0
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, ${turnId}, NULL, NULL, 'completed',
+            '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:02.000Z',
+            '2026-03-02T10:00:04.000Z', '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_session_id, provider_thread_id,
+            active_turn_id, last_error, updated_at, runtime_mode, provider_instance_id
+          ) VALUES (
+            ${threadId}, 'ready', 'codex', NULL, NULL,
+            NULL, NULL, '2026-03-02T10:00:04.000Z', 'full-access', 'codex'
+          )
+        `;
+
+        yield* projectionPipeline.bootstrap;
+
+        const obligations = yield* sql<{ readonly kind: string }>`
+          SELECT kind FROM thread_work_obligations WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(obligations, []);
+      }),
+    );
+
+    // A turn that backgrounds work and signs off to wait ends perfectly
+    // normally, in any mode. Its wake comes from the provider harness
+    // re-invoking the agent when the task exits — an owner that dies with the
+    // process, leaving the thread parked on "I'll report back" forever
+    // (reported 2026-08-12, a default-mode thread waiting on Unity test runs).
+    const seedTaskWaitThread = (input: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly assistantText: string;
+      readonly taskActivities: ReadonlyArray<{
+        readonly kind: string;
+        readonly createdAt: string;
+        readonly status?: string;
+      }>;
+    }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const assistantMessageId = `assistant-${input.threadId}`;
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+            created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+            model_selection_json, latest_user_message_at,
+            pending_approval_count, pending_user_input_count
+          ) VALUES (
+            ${input.threadId}, 'project-task-wait', 'Task Wait Thread', NULL, NULL, ${input.turnId},
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:05.000Z', NULL,
+            'full-access', 'default',
+            '{"instanceId":"codex","model":"gpt-5.6-sol"}', '2026-03-02T10:00:01.000Z',
+            0, 0
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          ) VALUES (
+            ${assistantMessageId}, ${input.threadId}, ${input.turnId}, 'assistant',
+            ${input.assistantText}, 0, '2026-03-02T10:00:03.000Z', '2026-03-02T10:00:03.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${input.threadId}, ${input.turnId}, NULL, ${assistantMessageId}, 'completed',
+            '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:02.000Z',
+            '2026-03-02T10:00:10.000Z', '[]'
+          )
+        `;
+        let index = 0;
+        for (const activity of input.taskActivities) {
+          index += 1;
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          const payload = JSON.stringify({
+            taskId: "bash-1",
+            taskType: "local_bash",
+            ...(activity.status === undefined ? {} : { status: activity.status }),
+          });
+          yield* sql`
+            INSERT INTO projection_thread_activities (
+              activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+              created_at, sequence
+            ) VALUES (
+              ${`${input.threadId}-activity-${index}`}, ${input.threadId}, NULL, 'info',
+              ${activity.kind}, 'task', ${payload}, ${activity.createdAt}, ${index}
+            )
+          `;
+        }
+      });
+
+    const obligationsFor = (threadId: string) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql<{ readonly kind: string; readonly state: string }>`
+          SELECT kind, state FROM thread_work_obligations WHERE thread_id = ${threadId}
+        `;
+      });
+
+    it.effect("enqueues a resume when a background task died with the process", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const threadId = "thread-task-killed";
+
+        yield* seedTaskWaitThread({
+          threadId,
+          turnId: "turn-task-killed",
+          assistantText: "I'll report both results as soon as they land.",
+          taskActivities: [
+            { kind: "task.started", createdAt: "2026-03-02T10:00:05.000Z" },
+            // The provider reports its tasks stopped on the way out, after the
+            // turn had already settled.
+            { kind: "task.completed", createdAt: "2026-03-02T10:00:20.000Z", status: "stopped" },
+          ],
+        });
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        assert.deepEqual(yield* obligationsFor(threadId), [
+          { kind: "startup-resume", state: "pending" },
+        ]);
+      }),
+    );
+
+    it.effect("leaves a completed turn alone when its background task finished", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const threadId = "thread-task-finished";
+
+        yield* seedTaskWaitThread({
+          threadId,
+          turnId: "turn-task-finished",
+          assistantText: "Both runs came back clean.",
+          taskActivities: [
+            { kind: "task.started", createdAt: "2026-03-02T10:00:05.000Z" },
+            { kind: "task.completed", createdAt: "2026-03-02T10:00:08.000Z", status: "completed" },
+          ],
+        });
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        assert.deepEqual(yield* obligationsFor(threadId), []);
+      }),
+    );
+
+    it.effect("honors AGENT_STOP over a killed background task", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const threadId = "thread-task-signed-off";
+
+        yield* seedTaskWaitThread({
+          threadId,
+          turnId: "turn-task-signed-off",
+          assistantText: "Done, and I am not waiting on the run.\n\nAGENT_STOP",
+          taskActivities: [
+            { kind: "task.started", createdAt: "2026-03-02T10:00:05.000Z" },
+            { kind: "task.completed", createdAt: "2026-03-02T10:00:20.000Z", status: "stopped" },
+          ],
+        });
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        assert.deepEqual(yield* obligationsFor(threadId), []);
       }),
     );
   },

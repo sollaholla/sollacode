@@ -168,6 +168,11 @@ const config: ExpoConfig = {
       },
       NSLocalNetworkUsageDescription:
         "Allow Solla Code to connect to Solla Code servers on your local network or tailnet.",
+      // The orchestrator holds the microphone open for the whole of a voice
+      // conversation, so the description has to describe that rather than
+      // implying a brief recording.
+      NSMicrophoneUsageDescription:
+        "Solla Code uses the microphone for the duration of a voice orchestrator conversation that you start.",
       ITSAppUsesNonExemptEncryption: false,
     },
   },
@@ -183,6 +188,10 @@ const config: ExpoConfig = {
     // JS back handling survives it via react-native's Android 16 shim plus
     // withAndroidPredictiveBackCompat on Android 13-15.
     predictiveBackGestureEnabled: true,
+    // The orchestrator's voice session captures audio inside the WebView, which
+    // needs the OS permission declared even though the capture is initiated by
+    // web code rather than native.
+    permissions: ["android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS"],
   },
   web: {
     favicon: variant.assets.appIcon,

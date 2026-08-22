@@ -21,6 +21,15 @@ import {
 } from "./filesystem.ts";
 import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
+  ThreadArtifactDetail,
+  ThreadArtifactError,
+  ThreadArtifactGetInput,
+  ThreadArtifactArchiveInput,
+  ThreadArtifactListInput,
+  ThreadArtifactListResult,
+  ThreadArtifactStreamItem,
+} from "./artifacts.ts";
+import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
   VcsSwitchRefResult,
@@ -41,6 +50,7 @@ import {
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
+  TextGenerationError,
   VcsStatusInput,
   VcsStatusResult,
   VcsStatusStreamEvent,
@@ -89,13 +99,49 @@ import {
   TerminalCloseInput,
   TerminalError,
   TerminalEventStreamItem,
+  TerminalGetLayoutInput,
+  TerminalGetLayoutResult,
+  TerminalLayoutStreamItem,
+  TerminalListInput,
+  TerminalListResult,
   TerminalMetadataStreamItem,
   TerminalOpenInput,
+  TerminalReadInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
+  TerminalSetLayoutInput,
+  TerminalThreadLayout,
   TerminalWriteInput,
 } from "./terminal.ts";
+import {
+  VmAgent,
+  VmAgentNotificationPreferences,
+  VmAgentNotificationPreferencesInput,
+  VmAgentNotificationRef,
+  VmAgentCreateInput,
+  VmAgentCollaborationError,
+  VmAgentCollaborationReceipt,
+  VmAgentCollaborationStreamItem,
+  VmAgentDelegationDetail,
+  VmAgentDelegationRef,
+  VmAgentDelegationSendMessageInput,
+  VmAgentError,
+  VmAgentRef,
+  VmAgentSendInputInput,
+  VmAgentSetControlModeInput,
+  VmAgentStreamItem,
+  VmAgentTask,
+  VmAgentTaskCreateInput,
+  VmAgentTaskPromptGenerationInput,
+  VmAgentTaskPromptGenerationResult,
+  VmAgentTaskRef,
+  VmAgentTaskUpdateInput,
+  VmAgentWorkspaceError,
+  VmAgentWorkspaceStreamItem,
+  VmScreenStreamItem,
+  VmScreenSubscribeInput,
+} from "./vm.ts";
 import {
   DiscoveredLocalServerList,
   PreviewCloseInput,
@@ -192,6 +238,11 @@ export const WS_METHODS = {
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
   assetsCreateUrl: "assets.createUrl",
+  threadArtifactsList: "threadArtifacts.list",
+  threadArtifactsGet: "threadArtifacts.get",
+  threadArtifactsArchive: "threadArtifacts.archive",
+  threadArtifactsRestore: "threadArtifacts.restore",
+  threadArtifactsSubscribe: "threadArtifacts.subscribe",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -214,11 +265,15 @@ export const WS_METHODS = {
   // Terminal methods
   terminalOpen: "terminal.open",
   terminalAttach: "terminal.attach",
+  terminalList: "terminal.list",
+  terminalRead: "terminal.read",
   terminalWrite: "terminal.write",
   terminalResize: "terminal.resize",
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+  terminalGetLayout: "terminal.getLayout",
+  terminalSetLayout: "terminal.setLayout",
 
   // Preview methods
   previewOpen: "preview.open",
@@ -241,6 +296,28 @@ export const WS_METHODS = {
   remoteControlWatch: "remoteControl.watch",
   remoteControlSendInput: "remoteControl.sendInput",
   remoteControlCancel: "remoteControl.cancel",
+
+  // Agent Stack (named VM agents)
+  vmAgentCreate: "vmAgent.create",
+  vmAgentDelete: "vmAgent.delete",
+  vmAgentStart: "vmAgent.start",
+  vmAgentStop: "vmAgent.stop",
+  vmAgentSetControlMode: "vmAgent.setControlMode",
+  vmAgentSendInput: "vmAgent.sendInput",
+  vmAgentSubscribe: "vmAgent.subscribe",
+  vmAgentSubscribeScreen: "vmAgent.subscribeScreen",
+  vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
+  vmAgentTaskCreate: "vmAgent.task.create",
+  vmAgentTaskUpdate: "vmAgent.task.update",
+  vmAgentTaskDelete: "vmAgent.task.delete",
+  vmAgentTaskRunNow: "vmAgent.task.runNow",
+  vmAgentTaskGeneratePrompt: "vmAgent.task.generatePrompt",
+  vmAgentNotificationMarkRead: "vmAgent.notification.markRead",
+  vmAgentNotificationPreferencesUpdate: "vmAgent.notification.preferences.update",
+  vmAgentCollaborationSubscribe: "vmAgent.collaboration.subscribe",
+  vmAgentCollaborationGet: "vmAgent.collaboration.get",
+  vmAgentCollaborationSendMessage: "vmAgent.collaboration.sendMessage",
+  vmAgentCollaborationCancel: "vmAgent.collaboration.cancel",
 
   // Server meta
   serverProbe: "server.probe",
@@ -277,6 +354,7 @@ export const WS_METHODS = {
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
+  subscribeTerminalLayouts: "subscribeTerminalLayouts",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
   subscribeServerConfig: "subscribeServerConfig",
@@ -541,6 +619,37 @@ export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
 });
 
+export const WsThreadArtifactsListRpc = Rpc.make(WS_METHODS.threadArtifactsList, {
+  payload: ThreadArtifactListInput,
+  success: ThreadArtifactListResult,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+});
+
+export const WsThreadArtifactsGetRpc = Rpc.make(WS_METHODS.threadArtifactsGet, {
+  payload: ThreadArtifactGetInput,
+  success: ThreadArtifactDetail,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+});
+
+export const WsThreadArtifactsArchiveRpc = Rpc.make(WS_METHODS.threadArtifactsArchive, {
+  payload: ThreadArtifactArchiveInput,
+  success: ThreadArtifactDetail,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+});
+
+export const WsThreadArtifactsRestoreRpc = Rpc.make(WS_METHODS.threadArtifactsRestore, {
+  payload: ThreadArtifactArchiveInput,
+  success: ThreadArtifactDetail,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+});
+
+export const WsThreadArtifactsSubscribeRpc = Rpc.make(WS_METHODS.threadArtifactsSubscribe, {
+  payload: ThreadArtifactListInput,
+  success: ThreadArtifactStreamItem,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -637,6 +746,18 @@ export const WsTerminalAttachRpc = Rpc.make(WS_METHODS.terminalAttach, {
   stream: true,
 });
 
+export const WsTerminalListRpc = Rpc.make(WS_METHODS.terminalList, {
+  payload: TerminalListInput,
+  success: TerminalListResult,
+  error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
+});
+
+export const WsTerminalReadRpc = Rpc.make(WS_METHODS.terminalRead, {
+  payload: TerminalReadInput,
+  success: TerminalSessionSnapshot,
+  error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
+});
+
 export const WsTerminalWriteRpc = Rpc.make(WS_METHODS.terminalWrite, {
   payload: TerminalWriteInput,
   error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
@@ -730,6 +851,135 @@ export const WsRemoteControlHostRespondRpc = Rpc.make(WS_METHODS.remoteControlHo
   payload: RemoteControlHostRespondInput,
   success: RemoteControlSession,
   error: Schema.Union([RemoteControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentCreateRpc = Rpc.make(WS_METHODS.vmAgentCreate, {
+  payload: VmAgentCreateInput,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentDeleteRpc = Rpc.make(WS_METHODS.vmAgentDelete, {
+  payload: VmAgentRef,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentStartRpc = Rpc.make(WS_METHODS.vmAgentStart, {
+  payload: VmAgentRef,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentStopRpc = Rpc.make(WS_METHODS.vmAgentStop, {
+  payload: VmAgentRef,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentSetControlModeRpc = Rpc.make(WS_METHODS.vmAgentSetControlMode, {
+  payload: VmAgentSetControlModeInput,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentSendInputRpc = Rpc.make(WS_METHODS.vmAgentSendInput, {
+  payload: VmAgentSendInputInput,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentSubscribeRpc = Rpc.make(WS_METHODS.vmAgentSubscribe, {
+  payload: Schema.Struct({}),
+  success: VmAgentStreamItem,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsVmAgentSubscribeScreenRpc = Rpc.make(WS_METHODS.vmAgentSubscribeScreen, {
+  payload: VmScreenSubscribeInput,
+  success: VmScreenStreamItem,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsVmAgentWorkspaceSubscribeRpc = Rpc.make(WS_METHODS.vmAgentWorkspaceSubscribe, {
+  payload: VmAgentRef,
+  success: VmAgentWorkspaceStreamItem,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsVmAgentTaskCreateRpc = Rpc.make(WS_METHODS.vmAgentTaskCreate, {
+  payload: VmAgentTaskCreateInput,
+  success: VmAgentTask,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentTaskUpdateRpc = Rpc.make(WS_METHODS.vmAgentTaskUpdate, {
+  payload: VmAgentTaskUpdateInput,
+  success: VmAgentTask,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentTaskDeleteRpc = Rpc.make(WS_METHODS.vmAgentTaskDelete, {
+  payload: VmAgentTaskRef,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentTaskRunNowRpc = Rpc.make(WS_METHODS.vmAgentTaskRunNow, {
+  payload: VmAgentTaskRef,
+  success: VmAgentTask,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentTaskGeneratePromptRpc = Rpc.make(WS_METHODS.vmAgentTaskGeneratePrompt, {
+  payload: VmAgentTaskPromptGenerationInput,
+  success: VmAgentTaskPromptGenerationResult,
+  error: Schema.Union([TextGenerationError, VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentNotificationMarkReadRpc = Rpc.make(WS_METHODS.vmAgentNotificationMarkRead, {
+  payload: VmAgentNotificationRef,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentNotificationPreferencesUpdateRpc = Rpc.make(
+  WS_METHODS.vmAgentNotificationPreferencesUpdate,
+  {
+    payload: VmAgentNotificationPreferencesInput,
+    success: VmAgentNotificationPreferences,
+    error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsVmAgentCollaborationSubscribeRpc = Rpc.make(
+  WS_METHODS.vmAgentCollaborationSubscribe,
+  {
+    payload: Schema.Struct({}),
+    success: VmAgentCollaborationStreamItem,
+    error: Schema.Union([VmAgentCollaborationError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
+export const WsVmAgentCollaborationGetRpc = Rpc.make(WS_METHODS.vmAgentCollaborationGet, {
+  payload: VmAgentDelegationRef,
+  success: VmAgentDelegationDetail,
+  error: Schema.Union([VmAgentCollaborationError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentCollaborationSendMessageRpc = Rpc.make(
+  WS_METHODS.vmAgentCollaborationSendMessage,
+  {
+    payload: VmAgentDelegationSendMessageInput,
+    success: VmAgentCollaborationReceipt,
+    error: Schema.Union([VmAgentCollaborationError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsVmAgentCollaborationCancelRpc = Rpc.make(WS_METHODS.vmAgentCollaborationCancel, {
+  payload: VmAgentDelegationRef,
+  success: VmAgentCollaborationReceipt,
+  error: Schema.Union([VmAgentCollaborationError, EnvironmentAuthorizationError]),
 });
 
 export const WsRemoteControlHostPublishFrameRpc = Rpc.make(
@@ -873,6 +1123,25 @@ export const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTermi
   stream: true,
 });
 
+export const WsSubscribeTerminalLayoutsRpc = Rpc.make(WS_METHODS.subscribeTerminalLayouts, {
+  payload: Schema.Struct({}),
+  success: TerminalLayoutStreamItem,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsTerminalGetLayoutRpc = Rpc.make(WS_METHODS.terminalGetLayout, {
+  payload: TerminalGetLayoutInput,
+  success: TerminalGetLayoutResult,
+  error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
+});
+
+export const WsTerminalSetLayoutRpc = Rpc.make(WS_METHODS.terminalSetLayout, {
+  payload: TerminalSetLayoutInput,
+  success: TerminalThreadLayout,
+  error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
+});
+
 export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerConfig, {
   payload: Schema.Struct({}),
   success: ServerConfigStreamEvent,
@@ -944,6 +1213,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,
+  WsThreadArtifactsListRpc,
+  WsThreadArtifactsGetRpc,
+  WsThreadArtifactsArchiveRpc,
+  WsThreadArtifactsRestoreRpc,
+  WsThreadArtifactsSubscribeRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
@@ -959,13 +1233,18 @@ export const WsRpcGroup = RpcGroup.make(
   WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
+  WsTerminalListRpc,
+  WsTerminalReadRpc,
   WsTerminalWriteRpc,
   WsTerminalResizeRpc,
   WsTerminalClearRpc,
   WsTerminalRestartRpc,
   WsTerminalCloseRpc,
+  WsTerminalGetLayoutRpc,
+  WsTerminalSetLayoutRpc,
   WsSubscribeTerminalEventsRpc,
   WsSubscribeTerminalMetadataRpc,
+  WsSubscribeTerminalLayoutsRpc,
   WsPreviewOpenRpc,
   WsPreviewNavigateRpc,
   WsPreviewResizeRpc,
@@ -986,6 +1265,26 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlWatchRpc,
   WsRemoteControlSendInputRpc,
   WsRemoteControlCancelRpc,
+  WsVmAgentCreateRpc,
+  WsVmAgentDeleteRpc,
+  WsVmAgentStartRpc,
+  WsVmAgentStopRpc,
+  WsVmAgentSetControlModeRpc,
+  WsVmAgentSendInputRpc,
+  WsVmAgentSubscribeRpc,
+  WsVmAgentSubscribeScreenRpc,
+  WsVmAgentWorkspaceSubscribeRpc,
+  WsVmAgentTaskCreateRpc,
+  WsVmAgentTaskUpdateRpc,
+  WsVmAgentTaskDeleteRpc,
+  WsVmAgentTaskRunNowRpc,
+  WsVmAgentTaskGeneratePromptRpc,
+  WsVmAgentNotificationMarkReadRpc,
+  WsVmAgentNotificationPreferencesUpdateRpc,
+  WsVmAgentCollaborationSubscribeRpc,
+  WsVmAgentCollaborationGetRpc,
+  WsVmAgentCollaborationSendMessageRpc,
+  WsVmAgentCollaborationCancelRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeServerConfigRpc,

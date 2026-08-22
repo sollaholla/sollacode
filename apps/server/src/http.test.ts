@@ -4,6 +4,7 @@ import { describe } from "vite-plus/test";
 import {
   assetCacheControlForUrl,
   assetResponseHeaders,
+  artifactResponseHeaders,
   isLoopbackHostname,
   MUTABLE_ASSET_CACHE_CONTROL,
   REVISIONED_ASSET_CACHE_CONTROL,
@@ -95,5 +96,29 @@ describe("assetResponseHeaders", () => {
         path: "/attachments/p.png",
       })["Cache-Control"],
     ).toBe(REVISIONED_ASSET_CACHE_CONTROL);
+  });
+});
+
+describe("artifactResponseHeaders", () => {
+  it("sandboxes executable bundles and disables ambient browser capabilities", () => {
+    const headers = artifactResponseHeaders(
+      new URL("https://remote.test/api/assets/payload.signature/site/index.html"),
+    );
+    expect(headers).toMatchObject({
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "private, max-age=3600, immutable",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    });
+    expect(headers["Content-Security-Policy"]).toContain("sandbox allow-scripts");
+    expect(headers["Content-Security-Policy"]).toContain("connect-src 'none'");
+    expect(headers["Content-Security-Policy"]).toContain(
+      "script-src https://remote.test/api/assets/payload.signature/",
+    );
+    expect(headers["Content-Security-Policy"]).not.toContain("allow-same-origin");
+    expect(headers["Content-Security-Policy"]).not.toContain("'self'");
+    expect(headers["Permissions-Policy"]).toContain("camera=()");
+    expect(headers["Permissions-Policy"]).toContain("microphone=()");
+    expect(headers["Permissions-Policy"]).toContain("display-capture=()");
   });
 });

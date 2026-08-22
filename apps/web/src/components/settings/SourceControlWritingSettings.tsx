@@ -44,28 +44,37 @@ export function SourceControlWritingSettingsSection() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const textGenerationCapableProviders = serverProviders.filter(
+    (provider) => provider.runtimeCapabilities?.textGeneration !== false,
+  );
   const customInstructionsRef = useRef<HTMLTextAreaElement>(null);
   const style = settings.sourceControlWritingStyle;
   const defaults = DEFAULT_UNIFIED_SETTINGS.sourceControlWritingStyle;
   const isSourceControlWritingStyleDirty =
     style.mode !== defaults.mode || style.customInstructions !== defaults.customInstructions;
 
-  const defaultModelSelection = resolveAppModelSelectionState(settings, serverProviders);
+  const defaultModelSelection = resolveAppModelSelectionState(
+    settings,
+    textGenerationCapableProviders,
+  );
   const usesDedicatedModel = settings.sourceControlWriterModelSelection !== null;
   const resolvedSourceControlWriterSelection = resolveSourceControlWriterModelSelection(
     settings,
-    serverProviders,
+    textGenerationCapableProviders,
   );
   const activeSelection =
     resolvedSourceControlWriterSelection === settings.textGenerationModelSelection
       ? defaultModelSelection
       : resolvedSourceControlWriterSelection;
   const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(textGenerationCapableProviders),
+      settings,
+    ),
   );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
-    serverProviders,
+    textGenerationCapableProviders,
     activeSelection.instanceId,
     activeSelection.model,
   );

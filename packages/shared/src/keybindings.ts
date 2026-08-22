@@ -43,6 +43,9 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },
   { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
   { key: "mod+o", command: "editor.openFavorite" },
+  // Start/stop talking to the orchestrator. Deliberately not a hold-to-talk
+  // binding: the session is a conversation, not a single utterance.
+  { key: "mod+shift+v", command: "orchestrator.voice.toggle", when: "!terminalFocus" },
   { key: "mod+shift+[", command: "thread.previous" },
   { key: "mod+shift+]", command: "thread.next" },
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({

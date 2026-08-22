@@ -34,7 +34,9 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   type EnvironmentIdentificationMode,
   MAX_GLASS_OPACITY,
+  MAX_SOUND_CUE_VOLUME,
   MIN_GLASS_OPACITY,
+  MIN_SOUND_CUE_VOLUME,
 } from "@t3tools/contracts/settings";
 import {
   getBackgroundActivityBaseProfile,
@@ -113,10 +115,12 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import {
   IDLE_PROVIDER_USAGE_REFRESH_STATE,
   ProviderSettingsUsage,
+  shouldShowProviderSettingsUsage,
   type ProviderUsageRefreshState,
 } from "./ProviderSettingsUsage";
 import {
   createProviderUsageRefreshCoordinator,
+  isProviderUsageRefreshEligible,
   ProviderUsageRefreshBackoffError,
 } from "./providerUsageRefresh";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
@@ -130,6 +134,7 @@ import {
   readLastEnabledProjectGroupingMode,
   rememberEnabledProjectGroupingMode,
   resolveBackgroundActivityProfileOption,
+  resolveDefaultProviderInstance,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -797,6 +802,13 @@ export function AppearanceSettingsPanel() {
     "--glass-slider-progress": `${glassOpacityRatio * 100}%`,
     "--glass-slider-fill-offset": `${0.5 - glassOpacityRatio}rem`,
   } as CSSProperties;
+  const soundCueVolumeRatio =
+    (settings.soundCueVolume - MIN_SOUND_CUE_VOLUME) /
+    (MAX_SOUND_CUE_VOLUME - MIN_SOUND_CUE_VOLUME);
+  const soundCueVolumeSliderStyle = {
+    "--glass-slider-progress": `${soundCueVolumeRatio * 100}%`,
+    "--glass-slider-fill-offset": `${0.5 - soundCueVolumeRatio}rem`,
+  } as CSSProperties;
 
   return (
     <SettingsPageContainer>
@@ -946,6 +958,84 @@ export function AppearanceSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <SettingsSection title="Sound">
+        <SettingsRow
+          title="Sound cues"
+          description="Short tones marking what voice features are doing: the microphone opening, your turn being accepted, waiting on an answer, and the session losing its hearing. One switch covers the voice orchestrator and push-to-talk dictation — they speak the same vocabulary."
+          control={
+            <Switch
+              checked={settings.soundCues}
+              onCheckedChange={(checked) => updateSettings({ soundCues: Boolean(checked) })}
+              aria-label="Sound cues"
+            />
+          }
+        />
+
+        {settings.soundCues ? (
+          <SettingsRow
+            title="Cue volume"
+            description="How loud the cues play, relative to their designed level. They are deliberately quiet — audible under speech, never over it."
+            resetAction={
+              settings.soundCueVolume !== DEFAULT_UNIFIED_SETTINGS.soundCueVolume ? (
+                <SettingResetButton
+                  label="cue volume"
+                  onClick={() =>
+                    updateSettings({ soundCueVolume: DEFAULT_UNIFIED_SETTINGS.soundCueVolume })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex w-full items-center gap-3 sm:w-52">
+                <output
+                  className="min-w-12 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
+                  htmlFor="sound-cue-volume"
+                >
+                  {settings.soundCueVolume}%
+                </output>
+                <input
+                  aria-label="Cue volume"
+                  className="glass-opacity-slider min-w-0 flex-1"
+                  id="sound-cue-volume"
+                  max={MAX_SOUND_CUE_VOLUME}
+                  min={MIN_SOUND_CUE_VOLUME}
+                  onChange={(event) => {
+                    const soundCueVolume = Number(event.currentTarget.value);
+                    if (
+                      Number.isInteger(soundCueVolume) &&
+                      soundCueVolume >= MIN_SOUND_CUE_VOLUME &&
+                      soundCueVolume <= MAX_SOUND_CUE_VOLUME
+                    ) {
+                      updateSettings({ soundCueVolume });
+                    }
+                  }}
+                  step={5}
+                  style={soundCueVolumeSliderStyle}
+                  type="range"
+                  value={settings.soundCueVolume}
+                />
+              </div>
+            }
+          />
+        ) : null}
+
+        {isElectron ? (
+          <SettingsRow
+            title="Mute system audio while dictating"
+            description="Silence the machine's output while push-to-talk records, so music does not bleed into the transcription. macOS only; this is the one place the app touches system volume."
+            control={
+              <Switch
+                checked={settings.pushToTalkMutesSystemAudio}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushToTalkMutesSystemAudio: Boolean(checked) })
+                }
+                aria-label="Mute system audio while dictating"
+              />
+            }
+          />
+        ) : null}
+      </SettingsSection>
       <ThreadListSettingsSection />
     </SettingsPageContainer>
   );
@@ -962,6 +1052,9 @@ export function GeneralSettingsPanel() {
   );
   const observability = useAtomValue(primaryServerObservabilityAtom);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const textGenerationCapableProviders = serverProviders.filter(
+    (provider) => provider.runtimeCapabilities?.textGeneration !== false,
+  );
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -970,12 +1063,18 @@ export function GeneralSettingsPanel() {
     otlpMetricsUrl: observability?.otlpMetricsUrl,
   });
 
-  const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
+  const textGenerationModelSelection = resolveAppModelSelectionState(
+    settings,
+    textGenerationCapableProviders,
+  );
   const textGenInstanceId = textGenerationModelSelection.instanceId;
   const textGenModel = textGenerationModelSelection.model;
   const textGenModelOptions = textGenerationModelSelection.options;
   const textGenerationModelInstanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(textGenerationCapableProviders),
+      settings,
+    ),
   );
   const textGenInstanceEntry = textGenerationModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
@@ -984,7 +1083,7 @@ export function GeneralSettingsPanel() {
     textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
   const textGenerationModelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
-    serverProviders,
+    textGenerationCapableProviders,
     textGenInstanceId,
     textGenModel,
   );
@@ -1329,7 +1428,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Resume unfinished threads on startup"
-          description="Ask which incomplete threads should continue when Solla Code starts."
+          description="Automatically send a Resume message to threads that were still working when Solla Code last shut down."
           resetAction={
             settings.showResumeThreadsOnStartup !==
             DEFAULT_UNIFIED_SETTINGS.showResumeThreadsOnStartup ? (
@@ -1349,7 +1448,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ showResumeThreadsOnStartup: Boolean(checked) })
               }
-              aria-label="Show resume prompt on startup"
+              aria-label="Resume unfinished threads on startup"
             />
           }
         />
@@ -1543,7 +1642,7 @@ export function GeneralSettingsPanel() {
                         ...settings,
                         textGenerationModelSelection: createModelSelection(instanceId, model),
                       },
-                      serverProviders,
+                      textGenerationCapableProviders,
                     ),
                   });
                 }}
@@ -1722,13 +1821,8 @@ export function ProviderSettingsPanel() {
   );
 
   useEffect(() => {
-    const refreshableProviders = serverProviders.filter(
-      (provider) =>
-        provider.enabled &&
-        provider.status !== "disabled" &&
-        provider.availability !== "unavailable" &&
-        provider.auth.status !== "unauthenticated" &&
-        (provider.driver === "codex" || provider.driver === "claudeAgent"),
+    const refreshableProviders = serverProviders.filter((provider) =>
+      isProviderUsageRefreshEligible(provider),
     );
     const nextIds = new Set(refreshableProviders.map((provider) => provider.instanceId));
     const previousIds = previouslyRefreshableProviderIdsRef.current;
@@ -1886,25 +1980,23 @@ export function ProviderSettingsPanel() {
 
   for (const providerSettings of visibleProviderSettings) {
     type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-    const legacyProviders = settings.providers as Record<string, LegacyProviderSettings>;
+    const legacyProviders = settings.providers as Record<
+      string,
+      LegacyProviderSettings | undefined
+    >;
     const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
       string,
-      LegacyProviderSettings
+      LegacyProviderSettings | undefined
     >;
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    const legacyConfig = legacyProviders[providerSettings.provider]!;
-    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
-    const effectiveInstance: ProviderInstanceConfig =
-      explicitInstance ??
-      ({
-        driver,
-        enabled: legacyConfig.enabled,
-        config: legacyConfig,
-      } satisfies ProviderInstanceConfig);
-    const isDirty =
-      explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
+    const { instance: effectiveInstance, isDirty } = resolveDefaultProviderInstance({
+      driver,
+      explicitInstance,
+      legacyConfig: legacyProviders[providerSettings.provider],
+      defaultLegacyConfig: defaultLegacyProviders[providerSettings.provider],
+    });
     rows.push({
       instanceId: defaultInstanceId,
       instance: effectiveInstance,
@@ -2239,9 +2331,11 @@ export function ProviderSettingsPanel() {
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
               usage={
-                row.instance.enabled !== false ? (
+                row.instance.enabled !== false &&
+                shouldShowProviderSettingsUsage(row.driver, providerUsageSummary) ? (
                   <ProviderSettingsUsage
                     displayName={providerDisplayName}
+                    driverKind={row.driver}
                     provider={liveProvider}
                     summary={providerUsageSummary}
                     refreshState={providerUsageRefreshState}
@@ -2482,6 +2576,41 @@ export function ArchivedThreadsPanel() {
           </SettingsSection>
         ))
       )}
+    </SettingsPageContainer>
+  );
+}
+
+export function AgentsSettingsPanel() {
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsPageContainer>
+      <SettingsSection title="Agent Stack">
+        <SettingsRow
+          title="Enable Agent Stack"
+          description="Named autonomous agents, each with its own persistent local VM you can watch and take control of. Shown as an Agents section in the sidebar. Turning this off hides the feature without deleting any agents."
+          resetAction={
+            settings.agentStackEnabled !== DEFAULT_UNIFIED_SETTINGS.agentStackEnabled ? (
+              <SettingResetButton
+                label="Agent Stack"
+                onClick={() =>
+                  updateSettings({
+                    agentStackEnabled: DEFAULT_UNIFIED_SETTINGS.agentStackEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.agentStackEnabled}
+              onCheckedChange={(checked) => updateSettings({ agentStackEnabled: Boolean(checked) })}
+              aria-label="Enable the Agent Stack"
+            />
+          }
+        />
+      </SettingsSection>
     </SettingsPageContainer>
   );
 }

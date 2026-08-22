@@ -11,9 +11,24 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
+/**
+ * Capabilities every thread gets by default. `"vm"` is deliberately NOT here —
+ * a desktop/browser-driving capability must be granted per-thread, only to
+ * bound VM agents (see ProviderService.prepareMcpSession).
+ */
+export const DEFAULT_MCP_CAPABILITIES: ReadonlyArray<McpInvocationContext.McpCapability> = [
+  "app-update",
+  "artifacts",
+  "collaboration",
+  "history",
+  "preview",
+  "terminals",
+];
+
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
 export interface McpIssuedCredential {
@@ -31,6 +46,7 @@ export interface McpSessionRegistryShape {
    * credential even when it goes a long time without touching an MCP tool.
    */
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
+  readonly touchProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
@@ -128,7 +144,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["collaboration", "history", "preview"]),
+        capabilities: new Set(request.capabilities ?? DEFAULT_MCP_CAPABILITIES),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
@@ -190,6 +206,21 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     issue,
     resolve,
     touch,
+    touchProviderSession: Effect.fn("McpSessionRegistry.touchProviderSession")(
+      function* (providerSessionId) {
+        const timestamp = yield* currentTimeMillis;
+        yield* SynchronizedRef.update(state, ({ records }) => {
+          const current = pruneDead(records, timestamp);
+          const next = new Map(current);
+          for (const [tokenHash, record] of current) {
+            if (record.scope.providerSessionId === providerSessionId) {
+              next.set(tokenHash, { ...record, lastAliveAt: timestamp });
+            }
+          }
+          return { records: next };
+        });
+      },
+    ),
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
@@ -222,14 +253,23 @@ const make = Effect.acquireRelease(
 
 export const layer = Layer.effect(McpSessionRegistry, make);
 
+/** Issues an additional credential; callers rotate only the session they own. */
 export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    ? activeMcpSessionRegistry.issue(request)
     : Effect.sync((): McpIssuedCredential | undefined => undefined);
+
+export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
+    : Effect.void;
+
+export const touchActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.touchProviderSession(providerSessionId)
+    : Effect.void;
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider

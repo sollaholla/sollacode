@@ -338,6 +338,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
               },
             });
             if (outcome._tag === "Failure") throw commandError(outcome);
+            await bridge.activateRemoteControlHost().catch(() => undefined);
             setCaptureError(null);
             setActive({
               connectionId: event.connectionId,
@@ -783,6 +784,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       });
       if (outcome._tag === "Failure") throw commandError(outcome);
       if (decision === "approve") {
+        await bridge.activateRemoteControlHost().catch(() => undefined);
         setCaptureError(null);
         if (rememberDevice) {
           rememberRemoteControlDevice(

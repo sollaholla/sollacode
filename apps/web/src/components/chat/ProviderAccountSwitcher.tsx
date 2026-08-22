@@ -10,6 +10,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 
 export interface ProviderAccountSwitcherProps {
   readonly providers: ReadonlyArray<ServerProvider>;
@@ -18,13 +19,16 @@ export interface ProviderAccountSwitcherProps {
   readonly onSwitchUser: (instanceId: ProviderInstanceId) => void;
 }
 
-function providerAccountLabel(provider: ServerProvider): string {
-  return (
-    provider.auth.email?.trim() ||
-    provider.auth.label?.trim() ||
-    provider.auth.type?.trim() ||
-    (provider.auth.status === "unauthenticated" ? "Not signed in" : "Account unavailable")
-  );
+function providerAccountIdentity(provider: ServerProvider): {
+  readonly sensitive: string | null;
+  readonly fallback: string;
+} {
+  return {
+    sensitive: provider.auth.email?.trim() || provider.auth.label?.trim() || null,
+    fallback:
+      provider.auth.type?.trim() ||
+      (provider.auth.status === "unauthenticated" ? "Not signed in" : "Account unavailable"),
+  };
 }
 
 const activeSwitchStatuses = new Set<ProviderAccountSwitchState["status"]>([
@@ -44,8 +48,8 @@ export const ProviderAccountSwitcher = memo(function ProviderAccountSwitcher(
   );
   if (!activeProvider) return null;
 
-  const accountLabel = providerAccountLabel(activeProvider);
-  const triggerLabel = `Provider account: ${accountLabel}`;
+  const accountIdentity = providerAccountIdentity(activeProvider);
+  const triggerLabel = "Provider account and switch-user controls";
   const isSwitching =
     props.activeSwitch?.instanceId === props.activeInstanceId &&
     activeSwitchStatuses.has(props.activeSwitch.status);
@@ -94,7 +98,17 @@ export const ProviderAccountSwitcher = memo(function ProviderAccountSwitcher(
               iconClassName="size-7"
             />
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium">{accountLabel}</p>
+              {accountIdentity.sensitive ? (
+                <RedactedSensitiveText
+                  value={accountIdentity.sensitive}
+                  ariaLabel="Toggle provider account visibility"
+                  revealTooltip="Click to reveal account"
+                  hideTooltip="Click to hide account"
+                  className="max-w-full truncate font-sans text-sm font-medium leading-normal text-foreground"
+                />
+              ) : (
+                <p className="truncate text-sm font-medium">{accountIdentity.fallback}</p>
+              )}
               <p className="truncate text-xs text-muted-foreground">
                 {activeProvider.displayName ?? String(activeProvider.driver)}
               </p>

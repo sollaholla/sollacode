@@ -7,7 +7,14 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "collaboration" | "history" | "preview";
+export type McpCapability =
+  | "app-update"
+  | "artifacts"
+  | "collaboration"
+  | "history"
+  | "preview"
+  | "terminals"
+  | "vm";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;

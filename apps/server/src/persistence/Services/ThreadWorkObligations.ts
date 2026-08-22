@@ -163,6 +163,8 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
    *   spare pending `active-turn-recovery` rows — queued deliveries of real
    *   user messages the UI has marked "Sent"; they dispatch once the thread is
    *   idle.
+   * - `pending-start-interrupt` (stop before a provider turn exists): cancel
+   *   everything, including the pending delivery the user explicitly stopped.
    * - `user-supersede` (a newer user send): additionally spare `claimed` and
    *   `executing` rows of every kind. Those are live supervisors whose
    *   scheduler fiber holds the thread's runtime lease; cancelling the row
@@ -171,7 +173,12 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
    *   retries are still superseded: their failure was already surfaced, and
    *   the newer message replaces them.
    */
-  mode: Schema.Literals(["thread-terminal", "turn-interrupt", "user-supersede"]),
+  mode: Schema.Literals([
+    "thread-terminal",
+    "turn-interrupt",
+    "pending-start-interrupt",
+    "user-supersede",
+  ]),
 });
 export type CancelThreadWorkByThreadInput = typeof CancelThreadWorkByThreadInput.Type;
 

@@ -46,7 +46,9 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
-    expect(resolved?.capabilities).toEqual(new Set(["collaboration", "history", "preview"]));
+    expect(resolved?.capabilities).toEqual(
+      new Set(["app-update", "artifacts", "collaboration", "history", "preview", "terminals"]),
+    );
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
@@ -126,5 +128,57 @@ it.effect("does not keep credentials of other threads alive", () =>
     timestamp += 2;
 
     expect(yield* registry.resolve(token)).toBeUndefined();
+  }),
+);
+
+it.effect("keeps concurrent credentials for one thread isolated by provider session", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-concurrent");
+    const chat = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const terminal = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("solla-terminal-agent"),
+      capabilities: new Set(["collaboration", "history", "preview", "terminals"]),
+    });
+    const chatToken = chat.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const terminalToken = terminal.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect((yield* registry.resolve(terminalToken))?.capabilities).toEqual(
+      new Set(["collaboration", "history", "preview", "terminals"]),
+    );
+    yield* registry.revokeProviderSession(chat.config.providerSessionId);
+    expect(yield* registry.resolve(chatToken)).toBeUndefined();
+    expect((yield* registry.resolve(terminalToken))?.threadId).toBe(threadId);
+  }),
+);
+
+it.effect("refreshes one provider session without extending its sibling", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const threadId = ThreadId.make("thread-provider-touch");
+    const first = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("solla-terminal-agent"),
+    });
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const secondToken = second.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    timestamp += 99;
+    yield* registry.touchProviderSession(second.config.providerSessionId);
+    timestamp += 2;
+
+    expect(yield* registry.resolve(firstToken)).toBeUndefined();
+    expect((yield* registry.resolve(secondToken))?.providerSessionId).toBe(
+      second.config.providerSessionId,
+    );
   }),
 );

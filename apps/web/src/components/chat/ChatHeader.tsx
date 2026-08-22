@@ -6,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { MessageSquareIcon } from "lucide-react";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
@@ -20,6 +21,7 @@ import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { cn } from "~/lib/utils";
 import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
+import { TERMINAL_WORKING_DOT_CLASS, TerminalSessionIcon } from "./TerminalSessionIcon";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -35,6 +37,11 @@ interface ChatHeaderProps {
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
   gitCwd: string | null;
+  /** Which surface fills the thread's main column; drives the header switch. */
+  mainSurface?: "chat" | "terminal";
+  onMainSurfaceChange?: (surface: "chat" | "terminal") => void;
+  /** A subprocess is actively working in one of this thread's terminals. */
+  terminalsWorking?: boolean;
   onNewThreadInProject: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -71,6 +78,9 @@ export const ChatHeader = memo(function ChatHeader({
   availableEditors,
   rightPanelOpen,
   gitCwd,
+  mainSurface,
+  onMainSurfaceChange,
+  terminalsWorking = false,
   onNewThreadInProject,
   onRunProjectScript,
   onAddProjectScript,
@@ -78,7 +88,7 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const fileScripts = useT3ProjectFileScripts(
+  const fileScriptsQuery = useT3ProjectFileScripts(
     activeThreadEnvironmentId,
     activeProjectScripts ? activeProjectCwd : null,
   );
@@ -141,12 +151,58 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
+        {mainSurface !== undefined && onMainSurfaceChange ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={
+                    mainSurface === "terminal" ? "Switch to chat mode" : "Switch to terminal mode"
+                  }
+                  onClick={() =>
+                    onMainSurfaceChange(mainSurface === "terminal" ? "chat" : "terminal")
+                  }
+                  className={cn(
+                    "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+                    mainSurface === "terminal"
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                />
+              }
+            >
+              {mainSurface === "terminal" ? (
+                <span className="relative inline-flex size-4 items-center justify-center">
+                  <MessageSquareIcon className="size-4" aria-hidden />
+                  {terminalsWorking ? (
+                    <span
+                      aria-label="Terminals working"
+                      className={TERMINAL_WORKING_DOT_CLASS}
+                      role="status"
+                    />
+                  ) : null}
+                </span>
+              ) : (
+                <TerminalSessionIcon
+                  className="size-4"
+                  working={terminalsWorking}
+                  workingLabel="Terminals working"
+                />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              {mainSurface === "terminal" ? "Switch to chat mode" : "Switch to terminal mode"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
-            fileScripts={fileScripts}
+            fileScripts={fileScriptsQuery.scripts}
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
+            onRefreshFileScripts={fileScriptsQuery.refresh}
             onRunScript={onRunProjectScript}
             onAddScript={onAddProjectScript}
             onUpdateScript={onUpdateProjectScript}

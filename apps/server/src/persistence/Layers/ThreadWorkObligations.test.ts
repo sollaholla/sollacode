@@ -2,13 +2,16 @@ import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ThreadWorkObligationRepositoryLive } from "./ThreadWorkObligations.ts";
+import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
 import { ThreadWorkObligationRepository } from "../Services/ThreadWorkObligations.ts";
 
 const repositoryLayer = it.layer(
@@ -315,6 +318,22 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       );
       assert.strictEqual(yield* stateOf(`${interruptThread}:user-delivery`), "pending");
       assert.strictEqual(yield* stateOf(`${interruptThread}:supervisor`), "cancelled");
+
+      // Stop during provider startup targets the delivery itself. It must not
+      // survive and immediately requeue after the user has stopped it.
+      const pendingStartThread = ThreadId.make("thread-work-mode-pending-start-interrupt");
+      yield* insertThread(pendingStartThread);
+      yield* pendingDelivery(pendingStartThread);
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: pendingStartThread,
+          updatedAt: later,
+          blockedReason: "thread.turn-interrupt-requested",
+          mode: "pending-start-interrupt",
+        }),
+        1,
+      );
+      assert.strictEqual(yield* stateOf(`${pendingStartThread}:user-delivery`), "cancelled");
 
       // Deleting/settling the thread drops everything, deliveries included.
       const terminalThread = ThreadId.make("thread-work-mode-terminal");
@@ -919,6 +938,56 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         mode: "thread-terminal",
       });
       assert.deepStrictEqual(yield* readPendingWork, { kind: null, state: null, since: null });
+    }),
+  );
+
+  // Nothing else reports this transition. A resume that resolves after its
+  // thread's last event appends no orchestration event, so shell subscribers
+  // never refetch — which is how cancelled work left rows reading
+  // "Auto-resuming" for hours (2026-08-11). The signal is that report.
+  it.effect("announces the thread when a resolved obligation clears its pending work", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const signal = yield* ThreadPendingWorkSignal;
+      const threadId = ThreadId.make("thread-work-pending-signal");
+      yield* insertThread(threadId);
+
+      yield* repository.insert({
+        obligationId: "signal-resume",
+        threadId,
+        sourceTurnId: TurnId.make("turn-signal"),
+        kind: "startup-resume",
+        state: "pending",
+        providerInstanceId,
+        attempt: 0,
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const announced = yield* Stream.runHead(
+        signal.changes.pipe(Stream.filter((announced) => announced === threadId)),
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "signal-resume",
+          expectedState: "pending",
+          expectedAttempt: 0,
+          state: "cancelled",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: "agent signed off with AGENT_STOP",
+          updatedAt: later,
+        }),
+      );
+
+      assert.strictEqual(Option.getOrThrow(yield* Fiber.join(announced)), threadId);
     }),
   );
 });

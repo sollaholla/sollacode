@@ -10,6 +10,8 @@ import * as ServerConfig from "./config.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import {
   otlpTracesProxyRouteLayer,
+  orchestratorRealtimeTokenRouteLayer,
+  orchestratorRunCommandRouteLayer,
   assetRouteLayer,
   serverEnvironmentHttpApiLayer,
   staticAndDevRouteLayer,
@@ -40,10 +42,20 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as ActionApprovalBroker from "./mcp/toolkits/actionApproval/ActionApprovalBroker.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as DesktopAppUpdater from "./mcp/toolkits/appUpdate/DesktopAppUpdater.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import * as VmManager from "./vm/VmManager.ts";
+import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import { VmAgentTaskSchedulerLive } from "./vm/VmAgentTaskScheduler.ts";
+import { VmProviderBrowserLive } from "./vm/BrowserVmProvider.ts";
+import { VmAgentStoreLive } from "./persistence/Layers/VmAgents.ts";
+import { VmAgentWorkspaceStoreLive } from "./persistence/Layers/VmAgentWorkspaces.ts";
+import { VmAgentCollaborationStoreLive } from "./persistence/Layers/VmAgentCollaborations.ts";
+import { VmAgentCollaborationLive } from "./vm/VmAgentCollaboration.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
@@ -100,6 +112,7 @@ import {
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+import * as ThreadArtifactService from "./artifacts/ThreadArtifactService.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
 // T3's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
@@ -193,12 +206,23 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+const ProviderCommandReactorWithActionApprovalLive = Layer.mergeAll(
+  ActionApprovalBroker.layer,
+  ProviderCommandReactorLive.pipe(Layer.provide(ActionApprovalBroker.layer)),
+);
+
+const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+
+const ThreadArtifactLayerLive = ThreadArtifactService.layer.pipe(
+  Layer.provideMerge(PersistenceLayerLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
+  Layer.provideMerge(ProviderCommandReactorWithActionApprovalLive),
   Layer.provideMerge(CheckpointReactorLive),
-  Layer.provideMerge(ThreadDeletionReactorLive),
+  Layer.provideMerge(ThreadDeletionReactorLive.pipe(Layer.provide(ThreadArtifactLayerLive))),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
 
@@ -217,10 +241,9 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
-
 const ThreadWorkPersistenceLayerLive = ThreadWorkObligationRepositoryLive.pipe(
   Layer.provideMerge(PersistenceLayerLive),
+  Layer.provideMerge(ThreadArtifactLayerLive),
 );
 
 const BackgroundThreadWorkLayerLive = ThreadWorkSchedulerLive.pipe(
@@ -295,6 +318,43 @@ const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PortScannerLayerLive),
 );
 
+// Agent Stack: the manager needs a VM backend and the agent registry store.
+// The browser provider gives each agent a real, persistent Chromium to operate
+// in; the mock backend is kept for tests. Store depends on the shared SQLite
+// persistence layer.
+const VmAgentPersistenceLayerLive = Layer.mergeAll(
+  VmAgentStoreLive,
+  VmAgentWorkspaceStoreLive,
+  VmAgentCollaborationStoreLive,
+).pipe(Layer.provideMerge(PersistenceLayerLive));
+
+const VmManagerLayerLive = VmManager.VmManagerLive.pipe(Layer.provide(VmProviderBrowserLive));
+
+const VmAgentWorkspaceLayerLive = VmAgentWorkspace.VmAgentWorkspaceLive;
+
+const VmAgentCollaborationLayerLive = VmAgentCollaborationLive.pipe(
+  Layer.provide(OrchestrationLayerLive),
+);
+
+const VmLayerLive = Layer.mergeAll(
+  VmManagerLayerLive,
+  VmAgentWorkspaceLayerLive,
+  VmAgentCollaborationLayerLive,
+).pipe(
+  // provideMerge keeps the agent stores in the runtime context for provider
+  // identity injection and VM MCP toolkits while satisfying all VM services
+  // through one sequential persistence boundary.
+  Layer.provideMerge(VmAgentPersistenceLayerLive),
+);
+
+const VmAgentTaskSchedulerDependenciesLive = OrchestrationLayerLive.pipe(
+  Layer.provideMerge(VmLayerLive),
+);
+
+const VmAgentTaskSchedulerLayerLive = VmAgentTaskSchedulerLive.pipe(
+  Layer.provide(VmAgentTaskSchedulerDependenciesLive),
+);
+
 const WorkspaceEntriesLayerLive = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const WorkspaceFileSystemLayerLive = WorkspaceFileSystem.layer.pipe(
@@ -332,7 +392,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
-  Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
+  Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, VmLayerLive)),
+  Layer.provideMerge(VmAgentTaskSchedulerLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),
   Layer.provideMerge(ProviderRegistryLive),
@@ -386,6 +447,8 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
     otlpTracesProxyRouteLayer,
+    orchestratorRealtimeTokenRouteLayer,
+    orchestratorRunCommandRouteLayer,
     assetRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
@@ -395,7 +458,10 @@ export const makeRoutesLayer = Layer.mergeAll(
     Layer.provide(PersistenceLayerLive),
   ),
 ).pipe(
+  HttpRouter.provideRequest(ThreadArtifactLayerLive),
+  Layer.provide(ActionApprovalBroker.layer),
   Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(DesktopAppUpdater.layer),
   Layer.provide(RemoteControlBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(browserApiCorsLayer),

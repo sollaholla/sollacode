@@ -21,6 +21,15 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+// How often to re-check that every session the UI shows as "working" is still
+// backed by a live adapter. Deliberately faster than the idle sweep: this is
+// the path that clears a stuck spinner, so it should feel prompt.
+const DEFAULT_RECONCILE_INTERVAL_MS = 60 * 1000;
+// A session projected "running" must be at least this stale before the periodic
+// reconcile is allowed to strand it. This grace protects a turn that has only
+// just started: its adapter session can take a moment to register, and without
+// the grace a freshly-dispatched turn could be reaped in the gap.
+const DEFAULT_RECONCILE_GRACE_MS = 60 * 1000;
 
 function orchestrationStatusFromProviderSession(
   session: ProviderSession,
@@ -42,6 +51,10 @@ function orchestrationStatusFromProviderSession(
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+  /** How often the periodic "still backed by a live adapter?" reconcile runs. */
+  readonly reconcileIntervalMs?: number;
+  /** Minimum age of a `running` projection before the periodic reconcile acts. */
+  readonly reconcileGraceMs?: number;
 }
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
@@ -58,152 +71,175 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const reconcileIntervalMs = Math.max(
+      1,
+      options?.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS,
+    );
+    const reconcileGraceMs = Math.max(0, options?.reconcileGraceMs ?? DEFAULT_RECONCILE_GRACE_MS);
 
-    const reconcilePersistedActiveTurns = Effect.fn("reconcilePersistedActiveTurns")(function* () {
-      const liveSessions = yield* providerService.listSessions();
-      const liveSessionByThreadId = new Map(
-        liveSessions.map((session) => [session.threadId, session] as const),
-      );
-      const bindings = yield* directory.listBindings();
+    const reconcilePersistedActiveTurns = Effect.fn("reconcilePersistedActiveTurns")(
+      function* (reconcileOptions?: { readonly graceMs?: number }) {
+        const graceMs = Math.max(0, reconcileOptions?.graceMs ?? 0);
+        const nowMs = graceMs > 0 ? yield* Clock.currentTimeMillis : 0;
+        const liveSessions = yield* providerService.listSessions();
+        const liveSessionByThreadId = new Map(
+          liveSessions.map((session) => [session.threadId, session] as const),
+        );
+        const bindings = yield* directory.listBindings();
 
-      yield* Effect.forEach(
-        bindings,
-        (binding) =>
-          Effect.gen(function* () {
-            const thread = yield* projectionSnapshotQuery
-              .getThreadShellById(binding.threadId)
-              .pipe(Effect.map(Option.getOrUndefined));
-            const projectedSession = thread?.session;
-            if (
-              projectedSession === null ||
-              projectedSession === undefined ||
-              (projectedSession.status !== "starting" && projectedSession.status !== "running")
-            ) {
-              return;
-            }
+        yield* Effect.forEach(
+          bindings,
+          (binding) =>
+            Effect.gen(function* () {
+              const thread = yield* projectionSnapshotQuery
+                .getThreadShellById(binding.threadId)
+                .pipe(Effect.map(Option.getOrUndefined));
+              const projectedSession = thread?.session;
+              if (
+                projectedSession === null ||
+                projectedSession === undefined ||
+                (projectedSession.status !== "starting" && projectedSession.status !== "running")
+              ) {
+                return;
+              }
 
-            const reapReservation = yield* runtimeLeases.tryReserveReap(binding.threadId);
-            if (Option.isNone(reapReservation)) {
-              yield* increment(providerSessionReaperSkippedTotal, {
-                reason: "runtime-lease",
-                phase: "restart-reconcile",
-              });
-              yield* Effect.logDebug("provider.session.restart-reconcile.skipped-runtime-lease", {
-                threadId: binding.threadId,
-                provider: binding.provider,
-              });
-              return;
-            }
+              if (graceMs > 0) {
+                // On the periodic pass, only touch sessions old enough that a
+                // still-registering adapter can be ruled out. A turn that just
+                // started keeps a fresh `updatedAt`; a genuinely stranded one does
+                // not (nothing is advancing it), so it ages past the grace and
+                // gets cleared on a later tick.
+                const updatedMs = Date.parse(projectedSession.updatedAt);
+                if (!Number.isNaN(updatedMs) && nowMs - updatedMs < graceMs) {
+                  return;
+                }
+              }
 
-            yield* Effect.gen(function* () {
-              const liveSession = liveSessionByThreadId.get(binding.threadId);
-              const updatedAt = DateTime.formatIso(yield* DateTime.now);
-              const commandUuid = yield* crypto.randomUUIDv4;
-              const commandId = CommandId.make(
-                `server:provider-session-restart-reconcile:${commandUuid}`,
-              );
+              const reapReservation = yield* runtimeLeases.tryReserveReap(binding.threadId);
+              if (Option.isNone(reapReservation)) {
+                yield* increment(providerSessionReaperSkippedTotal, {
+                  reason: "runtime-lease",
+                  phase: "restart-reconcile",
+                });
+                yield* Effect.logDebug("provider.session.restart-reconcile.skipped-runtime-lease", {
+                  threadId: binding.threadId,
+                  provider: binding.provider,
+                });
+                return;
+              }
 
-              if (liveSession === undefined) {
-                // Provider adapter process/session registries are in-memory. If
-                // none of them can prove this persisted turn is still live after
-                // startup, keep its resume cursor but stop advertising a turn
-                // that cannot be interrupted.
-                yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("provider.session.restart-reconcile.stop-failed", {
-                      threadId: binding.threadId,
-                      provider: binding.provider,
-                      cause,
-                    }),
-                  ),
+              yield* Effect.gen(function* () {
+                const liveSession = liveSessionByThreadId.get(binding.threadId);
+                const updatedAt = DateTime.formatIso(yield* DateTime.now);
+                const commandUuid = yield* crypto.randomUUIDv4;
+                const commandId = CommandId.make(
+                  `server:provider-session-restart-reconcile:${commandUuid}`,
                 );
+
+                if (liveSession === undefined) {
+                  // Provider adapter process/session registries are in-memory. If
+                  // none of them can prove this persisted turn is still live after
+                  // startup, keep its resume cursor but stop advertising a turn
+                  // that cannot be interrupted.
+                  yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("provider.session.restart-reconcile.stop-failed", {
+                        threadId: binding.threadId,
+                        provider: binding.provider,
+                        cause,
+                      }),
+                    ),
+                  );
+                  yield* orchestrationEngine.dispatch({
+                    type: "thread.session.set",
+                    commandId,
+                    threadId: binding.threadId,
+                    session: {
+                      ...projectedSession,
+                      status: "stopped",
+                      activeTurnId: null,
+                      updatedAt,
+                    },
+                    createdAt: updatedAt,
+                  });
+                  yield* Effect.logInfo("provider.session.restart-reconciled", {
+                    threadId: binding.threadId,
+                    provider: binding.provider,
+                    previousStatus: projectedSession.status,
+                    previousActiveTurnId: projectedSession.activeTurnId,
+                    status: "stopped",
+                  });
+                  return;
+                }
+
+                const liveStatus = orchestrationStatusFromProviderSession(liveSession);
+                const liveActiveTurnId =
+                  liveStatus === "running" ? (liveSession.activeTurnId ?? null) : null;
+                if (
+                  projectedSession.status === liveStatus &&
+                  projectedSession.activeTurnId === liveActiveTurnId
+                ) {
+                  return;
+                }
+
+                if (projectedSession.status === "running" && liveStatus !== "running") {
+                  // A surviving adapter can be ready after restart without still
+                  // executing the persisted turn. Project "stopped" first so the
+                  // turn is durably classified as incomplete; the following live
+                  // status sync must not rewrite that turn as normally completed.
+                  yield* orchestrationEngine.dispatch({
+                    type: "thread.session.set",
+                    commandId: CommandId.make(
+                      `server:provider-session-restart-settle:${commandUuid}`,
+                    ),
+                    threadId: binding.threadId,
+                    session: {
+                      ...projectedSession,
+                      status: "stopped",
+                      activeTurnId: null,
+                      updatedAt,
+                    },
+                    createdAt: updatedAt,
+                  });
+                }
+
                 yield* orchestrationEngine.dispatch({
                   type: "thread.session.set",
                   commandId,
                   threadId: binding.threadId,
                   session: {
                     ...projectedSession,
-                    status: "stopped",
-                    activeTurnId: null,
+                    status: liveStatus,
+                    activeTurnId: liveActiveTurnId,
+                    lastError: liveSession.lastError ?? projectedSession.lastError,
                     updatedAt,
                   },
                   createdAt: updatedAt,
                 });
-                yield* Effect.logInfo("provider.session.restart-reconciled", {
+                yield* Effect.logInfo("provider.session.restart-reattached", {
                   threadId: binding.threadId,
                   provider: binding.provider,
-                  previousStatus: projectedSession.status,
-                  previousActiveTurnId: projectedSession.activeTurnId,
-                  status: "stopped",
-                });
-                return;
-              }
-
-              const liveStatus = orchestrationStatusFromProviderSession(liveSession);
-              const liveActiveTurnId =
-                liveStatus === "running" ? (liveSession.activeTurnId ?? null) : null;
-              if (
-                projectedSession.status === liveStatus &&
-                projectedSession.activeTurnId === liveActiveTurnId
-              ) {
-                return;
-              }
-
-              if (projectedSession.status === "running" && liveStatus !== "running") {
-                // A surviving adapter can be ready after restart without still
-                // executing the persisted turn. Project "stopped" first so the
-                // turn is durably classified as incomplete; the following live
-                // status sync must not rewrite that turn as normally completed.
-                yield* orchestrationEngine.dispatch({
-                  type: "thread.session.set",
-                  commandId: CommandId.make(
-                    `server:provider-session-restart-settle:${commandUuid}`,
-                  ),
-                  threadId: binding.threadId,
-                  session: {
-                    ...projectedSession,
-                    status: "stopped",
-                    activeTurnId: null,
-                    updatedAt,
-                  },
-                  createdAt: updatedAt,
-                });
-              }
-
-              yield* orchestrationEngine.dispatch({
-                type: "thread.session.set",
-                commandId,
-                threadId: binding.threadId,
-                session: {
-                  ...projectedSession,
                   status: liveStatus,
                   activeTurnId: liveActiveTurnId,
-                  lastError: liveSession.lastError ?? projectedSession.lastError,
-                  updatedAt,
-                },
-                createdAt: updatedAt,
-              });
-              yield* Effect.logInfo("provider.session.restart-reattached", {
-                threadId: binding.threadId,
-                provider: binding.provider,
-                status: liveStatus,
-                activeTurnId: liveActiveTurnId,
-              });
+                });
+              }).pipe(
+                Effect.ensuring(
+                  runtimeLeases.releaseReap(reapReservation.value).pipe(Effect.asVoid),
+                ),
+              );
             }).pipe(
-              Effect.ensuring(runtimeLeases.releaseReap(reapReservation.value).pipe(Effect.asVoid)),
-            );
-          }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("provider.session.restart-reconcile.failed", {
-                threadId: binding.threadId,
-                provider: binding.provider,
-                cause,
-              }),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.session.restart-reconcile.failed", {
+                  threadId: binding.threadId,
+                  provider: binding.provider,
+                  cause,
+                }),
+              ),
             ),
-          ),
-        { concurrency: 1, discard: true },
-      );
-    });
+          { concurrency: 1, discard: true },
+        );
+      },
+    );
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
@@ -317,6 +353,28 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           ),
         );
 
+        // Keep clearing sessions that lose their live adapter mid-life (e.g.
+        // after a provider failover or an adapter crash): the projection can be
+        // left at "running" with an active turn, which the UI renders as a
+        // "working" spinner that never resolves. The startup reconcile above
+        // only catches sessions already stranded when the server booted; this
+        // periodic pass catches the ones stranded while it is running.
+        yield* Effect.forkScoped(
+          reconcilePersistedActiveTurns({ graceMs: reconcileGraceMs })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.session.reconcile.sweep-failed", {
+                  cause,
+                }),
+              ),
+              Effect.repeat(Schedule.spaced(Duration.millis(reconcileIntervalMs))),
+            )
+            // Delay the first periodic pass by one interval: the startup
+            // reconcile above already covered t=0, and this keeps the periodic
+            // pass from double-acting on the same boot.
+            .pipe(Effect.delay(Duration.millis(reconcileIntervalMs))),
+        );
+
         yield* Effect.forkScoped(
           sweep.pipe(
             Effect.catch((error: unknown) =>
@@ -336,6 +394,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         yield* Effect.logInfo("provider.session.reaper.started", {
           inactivityThresholdMs,
           sweepIntervalMs,
+          reconcileIntervalMs,
+          reconcileGraceMs,
         });
       });
 

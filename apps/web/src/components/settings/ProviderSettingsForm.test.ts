@@ -37,6 +37,16 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("renders generic MCP bridge command, literal arguments, and cwd fields", () => {
+    const bridge = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("mcpBridge")];
+    expect(bridge?.label).toBe("MCP Provider Bridge");
+    expect(deriveProviderSettingsFields(bridge!)).toMatchObject([
+      { key: "command", label: "Command", control: "text" },
+      { key: "arguments", label: "Arguments", control: "textarea" },
+      { key: "workingDirectory", label: "Working directory", control: "text" },
+    ]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

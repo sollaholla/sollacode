@@ -288,6 +288,31 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       });
       const skewedEvents = Array.isArray(skewed) ? skewed : [skewed];
       expect(skewedEvents[0]?.type).toBe("thread.settled");
+
+      // A voice-transcript row inside the grace window is history, not a
+      // pending turn: no provider work follows it, so it must not block
+      // settling the way a genuinely queued typed message does.
+      const voiceRow: OrchestrationThread["messages"][number] = {
+        id: MessageId.make("message-voice"),
+        role: "user",
+        text: "spoken aside",
+        inputOrigin: "transcription",
+        voiceTranscript: true,
+        turnId: null,
+        streaming: false,
+        createdAt: "1969-12-31T23:59:30.000Z",
+        updatedAt: "1969-12-31T23:59:30.000Z",
+      };
+      const spoken = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-settle-after-voice"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        readModel: makeReadModel(null, null, null, [], [voiceRow]),
+      });
+      const spokenEvents = Array.isArray(spoken) ? spoken : [spoken];
+      expect(spokenEvents[0]?.type).toBe("thread.settled");
     }),
   );
 

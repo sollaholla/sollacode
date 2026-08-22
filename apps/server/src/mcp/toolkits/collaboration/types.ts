@@ -45,6 +45,13 @@ const SetModelInput = Schema.Struct({
     description:
       "Model and configured provider instance to use for this chat's next turn or Agent continuation.",
   }),
+  runtimeMode: Schema.optional(RuntimeMode).annotate({
+    description: "Optional access mode to apply to the calling chat.",
+  }),
+  interactionMode: Schema.optional(ProviderInteractionMode).annotate({
+    description:
+      "Optional interaction mode to apply to the calling chat. Switching away from agent also suppresses pending Agent continuations.",
+  }),
 });
 
 const CreateSideChatInput = Schema.Struct({
@@ -155,6 +162,10 @@ const SetModelResult = Schema.Struct({
   threadId: ThreadId,
   previousModelSelection: ModelSelection,
   modelSelection: ModelSelection,
+  previousRuntimeMode: RuntimeMode,
+  runtimeMode: RuntimeMode,
+  previousInteractionMode: ProviderInteractionMode,
+  interactionMode: ProviderInteractionMode,
   effectiveOn: Schema.Literal("next_turn"),
 });
 

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
@@ -90,6 +90,24 @@ export function useSelectedThreadRequests() {
     ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingUserInputDrafts)
     : null;
 
+  useEffect(() => {
+    if (
+      respondingApprovalId !== null &&
+      !activePendingApprovals.some((request) => request.requestId === respondingApprovalId)
+    ) {
+      setRespondingApprovalId(null);
+    }
+  }, [activePendingApprovals, respondingApprovalId]);
+
+  useEffect(() => {
+    if (
+      respondingUserInputId !== null &&
+      !activePendingUserInputs.some((request) => request.requestId === respondingUserInputId)
+    ) {
+      setRespondingUserInputId(null);
+    }
+  }, [activePendingUserInputs, respondingUserInputId]);
+
   const onSelectUserInputOption = useCallback(
     (requestId: ApprovalRequestId, questionId: string, label: string) => {
       if (!selectedThreadShell) {
@@ -129,36 +147,44 @@ export function useSelectedThreadRequests() {
           decision,
         },
       });
-      setRespondingApprovalId((current) => (current === requestId ? null : current));
+      if (result._tag === "Failure") {
+        setRespondingApprovalId((current) => (current === requestId ? null : current));
+      }
       return result;
     },
     [respondToApproval, selectedThreadShell],
   );
 
-  const onSubmitUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput || !activePendingUserInputAnswers) {
-      return;
-    }
+  const onSubmitUserInput = useCallback(
+    async (answersOverride?: Record<string, string>) => {
+      const answers = answersOverride ?? activePendingUserInputAnswers;
+      if (!selectedThreadShell || !activePendingUserInput || !answers) {
+        return;
+      }
 
-    setRespondingUserInputId(activePendingUserInput.requestId);
-    const result = await respondToUserInput({
-      environmentId: selectedThreadShell.environmentId,
-      input: {
-        threadId: selectedThreadShell.id,
-        requestId: activePendingUserInput.requestId,
-        answers: activePendingUserInputAnswers,
-      },
-    });
-    setRespondingUserInputId((current) =>
-      current === activePendingUserInput.requestId ? null : current,
-    );
-    return result;
-  }, [
-    activePendingUserInput,
-    activePendingUserInputAnswers,
-    respondToUserInput,
-    selectedThreadShell,
-  ]);
+      setRespondingUserInputId(activePendingUserInput.requestId);
+      const result = await respondToUserInput({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: selectedThreadShell.id,
+          requestId: activePendingUserInput.requestId,
+          answers,
+        },
+      });
+      if (result._tag === "Failure") {
+        setRespondingUserInputId((current) =>
+          current === activePendingUserInput.requestId ? null : current,
+        );
+      }
+      return result;
+    },
+    [
+      activePendingUserInput,
+      activePendingUserInputAnswers,
+      respondToUserInput,
+      selectedThreadShell,
+    ],
+  );
 
   return {
     activePendingApproval,

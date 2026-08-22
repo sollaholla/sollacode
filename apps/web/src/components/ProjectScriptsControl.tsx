@@ -20,6 +20,7 @@ import {
   PlusIcon,
   SettingsIcon,
   WrenchIcon,
+  ZapIcon,
 } from "lucide-react";
 import React, { type FormEvent, type KeyboardEvent, useCallback, useMemo, useState } from "react";
 
@@ -111,10 +112,16 @@ export type ProjectScriptActionResult = AtomCommandResult<void, unknown>;
 
 const NO_FILE_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
 
+export function refreshFileScriptsForMenu(open: boolean, refresh?: () => void): void {
+  if (open) refresh?.();
+}
+
 interface ProjectScriptsControlProps {
   scripts: ReadonlyArray<ProjectScript>;
   /** Scripts declared in the project's checked-in t3.json, offered for import. */
   fileScripts?: ReadonlyArray<T3ProjectFileScript>;
+  /** Re-read t3.json before showing imports that may have changed outside the client. */
+  onRefreshFileScripts?: () => void;
   keybindings: ResolvedKeybindingsConfig;
   preferredScriptId?: string | null;
   onRunScript: (script: ProjectScript) => void;
@@ -129,6 +136,7 @@ interface ProjectScriptsControlProps {
 export default function ProjectScriptsControl({
   scripts,
   fileScripts = NO_FILE_SCRIPTS,
+  onRefreshFileScripts,
   keybindings,
   preferredScriptId = null,
   onRunScript,
@@ -176,6 +184,13 @@ export default function ProjectScriptsControl({
   const isEditing = editingScriptId !== null;
   const dropdownItemClassName =
     "data-highlighted:bg-transparent data-highlighted:text-foreground hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-highlighted:hover:bg-accent data-highlighted:hover:text-accent-foreground data-highlighted:focus-visible:bg-accent data-highlighted:focus-visible:text-accent-foreground";
+
+  const setScriptMenuOpen = (kind: "scripts" | "imports", open: boolean) => {
+    refreshFileScriptsForMenu(open, onRefreshFileScripts);
+    setActionsMenuOpen(
+      kind === "scripts" ? { scripts: open, imports: false } : { scripts: false, imports: open },
+    );
+  };
 
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Tab") return;
@@ -357,7 +372,7 @@ export default function ProjectScriptsControl({
           <Menu
             highlightItemOnHover={false}
             open={actionsMenuOpen.scripts}
-            onOpenChange={(open) => setActionsMenuOpen({ scripts: open, imports: false })}
+            onOpenChange={(open) => setScriptMenuOpen("scripts", open)}
           >
             <MenuTrigger
               render={<Button size="icon-xs" variant="outline" aria-label="Script actions" />}
@@ -416,16 +431,16 @@ export default function ProjectScriptsControl({
             </MenuPopup>
           </Menu>
         </Group>
-      ) : importableScripts.length > 0 ? (
+      ) : (
         <Menu
           highlightItemOnHover={false}
           open={actionsMenuOpen.imports}
-          onOpenChange={(open) => setActionsMenuOpen({ scripts: false, imports: open })}
+          onOpenChange={(open) => setScriptMenuOpen("imports", open)}
         >
-          <MenuTrigger render={<Button size="xs" variant="outline" aria-label="Project actions" />}>
-            <PlusIcon className="size-3.5" />
+          <MenuTrigger render={<Button size="xs" variant="outline" aria-label="Actions" />}>
+            <ZapIcon className="size-3.5" />
             <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-              Add action
+              Actions
             </span>
             <ChevronDownIcon className="size-3.5" />
           </MenuTrigger>
@@ -437,20 +452,6 @@ export default function ProjectScriptsControl({
             </MenuItem>
           </MenuPopup>
         </Menu>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button size="xs" variant="outline" aria-label="Add action" onClick={openAddDialog} />
-            }
-          >
-            <PlusIcon className="size-3.5" />
-            <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-              Add action
-            </span>
-          </TooltipTrigger>
-          <TooltipPopup side="top">Add action</TooltipPopup>
-        </Tooltip>
       )}
 
       <Dialog

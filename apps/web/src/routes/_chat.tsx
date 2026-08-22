@@ -22,6 +22,7 @@ import { useThreadSelectionStore } from "../threadSelectionStore";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { isPushToTalkShortcut } from "../pushToTalk";
+import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
 
 function ChatRouteGlobalShortcuts() {
   const clearSelection = useThreadSelectionStore((state) => state.clearSelection);
@@ -29,6 +30,7 @@ function ChatRouteGlobalShortcuts() {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const orchestratorVoice = useOrchestratorSessionContext();
   const sidebarV2Enabled = useSidebarV2Enabled();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const projects = useProjects();
@@ -112,6 +114,24 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "orchestrator.voice.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (orchestratorVoice === null || !orchestratorVoice.canStart) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "The orchestrator is not set up yet",
+              description:
+                "Add the selected voice provider's API key and enable the orchestrator in Settings \u2192 Orchestrator.",
+            }),
+          );
+          return;
+        }
+        orchestratorVoice.toggle();
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -167,6 +187,7 @@ function ChatRouteGlobalShortcuts() {
     handleNewThread,
     keybindings,
     defaultProjectRef,
+    orchestratorVoice,
     previewOpen,
     projectGroupCount,
     routeThreadRef,

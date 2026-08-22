@@ -391,7 +391,9 @@ describe("remote environment authorization", () => {
 
       expect(error).toBeInstanceOf(RemoteEnvironmentAuthTimeoutError);
       expect(error.message).toBe(
-        "Remote environment endpoint http://remote.example.com/.well-known/t3/environment timed out after 25ms.",
+        // The host is redacted: this message reaches banners and screenshots,
+        // and it named a machine on the user's private network.
+        "Remote environment endpoint http://•••••/.well-known/t3/environment timed out after 25ms.",
       );
     }).pipe(Effect.provide(TestClock.layer())),
   );
@@ -446,7 +448,7 @@ describe("remote environment authorization", () => {
 
       expect(error).toBeInstanceOf(RemoteEnvironmentAuthInvalidJsonError);
       expect(error.message).toBe(
-        "Remote environment endpoint returned an invalid response from https://remote.example.com/oauth/token.",
+        "Remote environment endpoint returned an invalid response from https://•••••/oauth/token.",
       );
     }),
   );

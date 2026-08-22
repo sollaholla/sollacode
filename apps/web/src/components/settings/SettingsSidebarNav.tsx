@@ -2,11 +2,14 @@ import { useCallback, type ComponentType } from "react";
 import {
   ArchiveIcon,
   ArrowLeftIcon,
+  AudioLinesIcon,
   BotIcon,
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
+  MonitorSmartphoneIcon,
   PaletteIcon,
+  ShieldCheckIcon,
   Settings2Icon,
 } from "lucide-react";
 import { useCanGoBack, useNavigate } from "@tanstack/react-router";
@@ -23,9 +26,12 @@ import {
 
 export type SettingsSectionPath =
   | "/settings/general"
+  | "/settings/permissions"
   | "/settings/appearance"
   | "/settings/keybindings"
   | "/settings/providers"
+  | "/settings/orchestrator"
+  | "/settings/agents"
   | "/settings/source-control"
   | "/settings/connections"
   | "/settings/beta"
@@ -40,10 +46,21 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "Appearance", to: "/settings/appearance", icon: PaletteIcon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
+  { label: "Orchestrator", to: "/settings/orchestrator", icon: AudioLinesIcon },
+  { label: "Agents", to: "/settings/agents", icon: MonitorSmartphoneIcon },
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
   { label: "Archive", to: "/settings/archived", icon: ArchiveIcon },
 ];
+
+function visibleSettingsNavItems(): ReadonlyArray<(typeof SETTINGS_NAV_ITEMS)[number]> {
+  if (window.desktopBridge?.permissions === undefined) return SETTINGS_NAV_ITEMS;
+  return [
+    SETTINGS_NAV_ITEMS[0]!,
+    { label: "Permissions", to: "/settings/permissions", icon: ShieldCheckIcon },
+    ...SETTINGS_NAV_ITEMS.slice(1),
+  ];
+}
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
@@ -74,7 +91,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarContent className="overflow-x-hidden">
         <SidebarGroup className="p-2">
           <SidebarMenu>
-            {SETTINGS_NAV_ITEMS.map((item) => {
+            {visibleSettingsNavItems().map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.to;
               return (

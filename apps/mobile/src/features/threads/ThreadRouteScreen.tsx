@@ -613,6 +613,11 @@ function ThreadRouteContent(
     showDirectFileControl: layout.usesSplitView,
     onOpenTerminal: handleOpenTerminal,
     onOpenNewTerminal: handleOpenNewTerminal,
+    onOpenArtifacts: () =>
+      navigation.navigate("ThreadArtifacts", {
+        environmentId: environmentIdRaw ?? "",
+        threadId: threadId ?? "",
+      }),
     onRunProjectScript: handleRunProjectScript,
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
@@ -678,6 +683,15 @@ function ThreadRouteContent(
         onPress: handleOpenFilesInspector,
       });
     }
+    actions.push({
+      accessibilityLabel: "Open artifacts",
+      icon: "shippingbox",
+      onPress: () =>
+        navigation.navigate("ThreadArtifacts", {
+          environmentId: environmentIdRaw ?? "",
+          threadId: threadId ?? "",
+        }),
+    });
     if (selectedThreadProject?.workspaceRoot) {
       actions.push({
         accessibilityLabel: "Open terminal",
@@ -704,9 +718,12 @@ function ThreadRouteContent(
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,
+    environmentIdRaw,
+    navigation,
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
+    threadId,
   ]);
 
   // Deep links / cold starts land with Thread as the ONLY route, where the

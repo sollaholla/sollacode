@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { shouldInterceptWindowCloseForQuit } from "./DesktopLifecycle.logic.ts";
+import {
+  shouldInterceptWindowCloseForQuit,
+  withDesktopRelaunchArguments,
+} from "./DesktopLifecycle.logic.ts";
 
 describe("shouldInterceptWindowCloseForQuit", () => {
   it("keeps a non-macOS main window alive long enough to show intentional shutdown", () => {
@@ -28,5 +31,10 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         quitAlreadyRequested: true,
       }),
     ).toBe(false);
+  });
+
+  it("preserves exactly one auto-resume signal across a desktop relaunch", () => {
+    expect(withDesktopRelaunchArguments(["--inspect=0"])).toEqual(["--inspect=0", "--auto-resume"]);
+    expect(withDesktopRelaunchArguments(["--auto-resume"])).toEqual(["--auto-resume"]);
   });
 });

@@ -227,4 +227,32 @@ describe("DesktopAppIdentity", () => {
       },
     );
   });
+
+  it.effect("defers the macOS dock icon until Electron is ready", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configureBeforeReady;
+
+        assert.deepEqual(calls.setName, ["Solla Code"]);
+        assert.lengthOf(calls.setAboutPanelOptions, 1);
+        assert.deepEqual(calls.setDockIcon, []);
+
+        yield* identity.configureAfterReady;
+        assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
+        assert.deepEqual(calls.setName, ["Solla Code"]);
+        assert.lengthOf(calls.setAboutPanelOptions, 1);
+      }),
+      {
+        calls,
+        pngIconPath: Option.some("/icon.png"),
+      },
+    );
+  });
 });

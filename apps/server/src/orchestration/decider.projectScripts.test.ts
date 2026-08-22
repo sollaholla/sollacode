@@ -6,6 +6,7 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
+  VmAgentDelegationId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { expect, it } from "@effect/vitest";
@@ -268,6 +269,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
             role: "user",
             text: "hello",
             inputOrigin: "transcription",
+            delegationId: VmAgentDelegationId.make("delegation-turn-start"),
             attachments: [],
           },
           modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
@@ -287,6 +289,9 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       expect(events[0]?.type).toBe("thread.message-sent");
       if (events[0]?.type === "thread.message-sent") {
         expect(events[0].payload.inputOrigin).toBe("transcription");
+        expect(events[0].payload.delegationId).toBe(
+          VmAgentDelegationId.make("delegation-turn-start"),
+        );
       }
       const turnStartEvent = events[1];
       expect(turnStartEvent?.type).toBe("thread.turn-start-requested");

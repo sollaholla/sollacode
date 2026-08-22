@@ -69,6 +69,7 @@ type HeaderItems = HeaderItem[];
 type ThreadGitHeaderActionItems = {
   readonly terminal: HeaderItem;
   readonly files: HeaderItem;
+  readonly artifacts: HeaderItem;
   readonly git: HeaderItem;
 };
 type QuickActionIcon =
@@ -103,6 +104,7 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
   readonly showDirectFileControl?: boolean;
   readonly onOpenTerminal: (terminalId?: string | null) => void;
   readonly onOpenNewTerminal: () => void;
+  readonly onOpenArtifacts: () => void;
   readonly onRunProjectScript: (script: ProjectScript) => Promise<void>;
 };
 
@@ -283,6 +285,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
                 getTerminalStatusLabel({
                   status: session.status,
                   hasRunningSubprocess: session.hasRunningSubprocess,
+                  working: session.working,
                 }),
                 basename(session.cwd),
               ]
@@ -314,6 +317,16 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
         identifier: "thread-right-files",
         label: "Files",
         onPress: model.openFiles,
+        sharesBackground: true,
+        type: "button",
+        variant: "plain",
+      },
+      artifacts: {
+        accessibilityLabel: "Open artifacts",
+        icon: { name: "shippingbox", type: "sfSymbol" },
+        identifier: "thread-right-artifacts",
+        label: "Artifacts",
+        onPress: props.onOpenArtifacts,
         sharesBackground: true,
         type: "button",
         variant: "plain",
@@ -382,6 +395,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.canOpenTerminal,
       props.gitStatus,
       props.onOpenNewTerminal,
+      props.onOpenArtifacts,
       props.onOpenTerminal,
       props.onRunProjectScript,
       props.projectScripts,
@@ -393,7 +407,13 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems,
+    () =>
+      [
+        actionItems.git,
+        actionItems.artifacts,
+        actionItems.files,
+        actionItems.terminal,
+      ] as HeaderItems,
     [actionItems],
   );
 }
@@ -401,7 +421,13 @@ export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): Hea
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems,
+    () =>
+      [
+        actionItems.artifacts,
+        actionItems.files,
+        actionItems.git,
+        actionItems.terminal,
+      ] as HeaderItems,
     [actionItems],
   );
 }
@@ -462,6 +488,7 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
                 getTerminalStatusLabel({
                   status: session.status,
                   hasRunningSubprocess: session.hasRunningSubprocess,
+                  working: session.working,
                 }),
                 basename(session.cwd),
               ]
@@ -486,6 +513,14 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           disabled={!props.canOpenFiles}
           icon="folder"
           onPress={model.openFiles}
+          separateBackground
+        />
+      ) : null}
+      {showActionControls ? (
+        <NativeHeaderToolbar.Button
+          accessibilityLabel="Open artifacts"
+          icon="shippingbox"
+          onPress={props.onOpenArtifacts}
           separateBackground
         />
       ) : null}

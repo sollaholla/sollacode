@@ -362,6 +362,16 @@ const buildObservabilityFragment = (observabilitySettings: BackendObservabilityS
   }),
 });
 
+export function resolveDesktopApplicationPath(
+  platform: NodeJS.Platform,
+  executablePath: string,
+): string {
+  if (platform !== "darwin") return executablePath;
+  const appMarker = ".app/Contents/MacOS/";
+  const markerIndex = executablePath.indexOf(appMarker);
+  return markerIndex === -1 ? executablePath : executablePath.slice(0, markerIndex + ".app".length);
+}
+
 const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolvePrimary")(
   function* (
     input: SharedBootstrapInput & {
@@ -375,6 +385,9 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
+    const updaterDir = environment.isPackaged
+      ? environment.path.join(environment.resourcesPath, "app-update")
+      : environment.path.join(environment.rootDir, "apps/desktop/resources/app-update");
 
     const bootstrap = {
       mode: "desktop" as const,
@@ -402,6 +415,13 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       env: {
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
+        T3CODE_DESKTOP_UPDATER_DIR: updaterDir,
+        T3CODE_DESKTOP_APP_PATH: resolveDesktopApplicationPath(
+          environment.platform,
+          process.execPath,
+        ),
+        T3CODE_DESKTOP_ROOT_PID: String(process.pid),
+        T3CODE_DESKTOP_UPDATE_HEALTH_URL: backendExposure.httpBaseUrl.toString(),
       },
       // Primary wants process.env (PATH, dev-runner's T3CODE_HOME, etc.).
       extendEnv: true,

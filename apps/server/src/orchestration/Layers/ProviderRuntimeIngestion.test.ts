@@ -186,6 +186,51 @@ describe("provider usage activity projection", () => {
   });
 });
 
+describe("delivery receipt projection", () => {
+  it("unwraps synthetic recovery delivery ids so the origin message reads delivered", () => {
+    const activities = runtimeEventToActivities({
+      type: "message.delivered",
+      eventId: asEventId("delivery-receipt"),
+      provider: ProviderDriverKind.make("mcpBridge"),
+      createdAt: "2026-08-14T03:20:45.000Z",
+      threadId: asThreadId("thread-delivery"),
+      turnId: asTurnId("turn-delivery"),
+      payload: {
+        messageId: MessageId.make(
+          "active-turn-recovery-delivery:f85f56d3-44b7-4710-aa8e-6e2f8f0f65a1:979966b2-c7dd-42f6-8560-98f4613ff8bc",
+        ),
+      },
+    });
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "message.delivered",
+        payload: {
+          messageId:
+            "active-turn-recovery-delivery:f85f56d3-44b7-4710-aa8e-6e2f8f0f65a1:979966b2-c7dd-42f6-8560-98f4613ff8bc",
+        },
+      }),
+      expect.objectContaining({
+        id: "delivery-receipt:origin",
+        kind: "message.delivered",
+        payload: { messageId: "979966b2-c7dd-42f6-8560-98f4613ff8bc" },
+      }),
+    ]);
+  });
+
+  it("keeps ordinary delivery receipts single", () => {
+    const activities = runtimeEventToActivities({
+      type: "message.delivered",
+      eventId: asEventId("plain-receipt"),
+      provider: ProviderDriverKind.make("mcpBridge"),
+      createdAt: "2026-08-14T03:20:45.000Z",
+      threadId: asThreadId("thread-delivery"),
+      payload: { messageId: MessageId.make("message-plain") },
+    });
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.payload).toEqual({ messageId: "message-plain" });
+  });
+});
+
 describe("Token Optimizer activity projection", () => {
   it("projects optimizer telemetry as a first-class informational activity", () => {
     const [activity] = runtimeEventToActivities({
@@ -266,6 +311,46 @@ describe("provider overload retry activity projection", () => {
         payload: { state: "running", reason: "working" },
       }),
     ).toEqual([]);
+  });
+
+  it("collapses ACP thought-chunk reasoning items onto one thinking activity", () => {
+    const first = runtimeEventToActivities({
+      eventId: asEventId("thought-1"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: "2026-08-19T17:00:00.000Z",
+      threadId: asThreadId("thread-grok"),
+      turnId: asTurnId("turn-grok"),
+      type: "item.updated",
+      itemId: "thread-grok:reasoning" as never,
+      payload: {
+        itemType: "reasoning",
+        status: "inProgress",
+        title: "Thinking",
+      },
+    });
+    const second = runtimeEventToActivities({
+      eventId: asEventId("thought-2"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: "2026-08-19T17:00:01.000Z",
+      threadId: asThreadId("thread-grok"),
+      turnId: asTurnId("turn-grok"),
+      type: "item.updated",
+      itemId: "thread-grok:reasoning" as never,
+      payload: {
+        itemType: "reasoning",
+        status: "inProgress",
+        title: "Thinking",
+      },
+    });
+    expect(first).toEqual([
+      expect.objectContaining({
+        id: "reasoning:thread-grok:turn-grok",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        turnId: "turn-grok",
+      }),
+    ]);
+    expect(second[0]?.id).toBe(first[0]?.id);
   });
 
   it("does not append a visible error row for a durable upstream retry", () => {

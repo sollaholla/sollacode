@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  cueThenMuteSystemAudio,
   downmixAudioChannels,
   isPushToTalkReleaseEvent,
   isPushToTalkShortcut,
   raceWithTranscriptionCancellation,
   resolveVisiblePushToTalkStatus,
   shouldHandlePushToTalkForSurface,
+  shouldRouteTranscriptToTerminal,
+  shouldStopPushToTalkAfterFocusOut,
   startRecorderWithCue,
   withTranscriptionDeadline,
 } from "./pushToTalk";
@@ -81,6 +84,71 @@ describe("shouldHandlePushToTalkForSurface", () => {
   });
 });
 
+describe("shouldStopPushToTalkAfterFocusOut", () => {
+  it("keeps recording through focus changes inside a still-focused document", () => {
+    expect(
+      shouldStopPushToTalkAfterFocusOut({
+        relatedTarget: null,
+        documentHasFocus: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStopPushToTalkAfterFocusOut({
+        relatedTarget: {} as EventTarget,
+        documentHasFocus: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("stops when focus really left the document", () => {
+    expect(
+      shouldStopPushToTalkAfterFocusOut({
+        relatedTarget: null,
+        documentHasFocus: false,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("shouldRouteTranscriptToTerminal", () => {
+  it("routes to the terminal when the chord target sits inside a terminal surface", () => {
+    expect(
+      shouldRouteTranscriptToTerminal({
+        targetWithinTerminalSurface: true,
+        terminalMainSurfaceActive: false,
+        activeTerminalId: "terminal-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("routes to the terminal while the terminal workspace is the main surface", () => {
+    expect(
+      shouldRouteTranscriptToTerminal({
+        targetWithinTerminalSurface: false,
+        terminalMainSurfaceActive: true,
+        activeTerminalId: "terminal-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the composer when no terminal is selected or focused", () => {
+    expect(
+      shouldRouteTranscriptToTerminal({
+        targetWithinTerminalSurface: false,
+        terminalMainSurfaceActive: false,
+        activeTerminalId: "terminal-1",
+      }),
+    ).toBe(false);
+    expect(
+      shouldRouteTranscriptToTerminal({
+        targetWithinTerminalSurface: true,
+        terminalMainSurfaceActive: true,
+        activeTerminalId: "",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("downmixAudioChannels", () => {
   it("averages channels into mono without mutating the source", () => {
     const left = new Float32Array([1, -1]);
@@ -149,6 +217,68 @@ describe("startRecorderWithCue", () => {
       }),
     ).toThrow("permission or recorder startup failed");
     expect(cueCount).toBe(0);
+  });
+});
+
+describe("cueThenMuteSystemAudio", () => {
+  const harness = (overrides: { recordingStates?: boolean[]; cueFails?: boolean } = {}) => {
+    const order: string[] = [];
+    const recordingStates = [...(overrides.recordingStates ?? [true, true])];
+    return {
+      order,
+      input: {
+        playCue: () => {
+          order.push("cue");
+          return overrides.cueFails === true
+            ? Promise.reject(new Error("no audio output"))
+            : Promise.resolve();
+        },
+        muteSystemAudio: () => {
+          order.push("mute");
+          return Promise.resolve();
+        },
+        recordingActive: () => recordingStates.shift() ?? false,
+        noteMuteRequested: () => order.push("note"),
+        restoreSystemAudio: () => order.push("restore"),
+      },
+    };
+  };
+
+  it("finishes the cue before requesting the mute", async () => {
+    // The whole point: the system-wide mute used to land before the cue, so on
+    // macOS the "recording started" sound played into a silenced output.
+    const { order, input } = harness();
+    await cueThenMuteSystemAudio(input);
+    expect(order).toEqual(["cue", "note", "mute"]);
+  });
+
+  it("skips the mute entirely when it is turned off or unavailable", async () => {
+    const { order, input } = harness();
+    await cueThenMuteSystemAudio({ ...input, muteSystemAudio: null });
+    expect(order).toEqual(["cue"]);
+  });
+
+  it("does not mute a recording that already ended during the cue", async () => {
+    const { order, input } = harness({ recordingStates: [false] });
+    await cueThenMuteSystemAudio(input);
+    expect(order).toEqual(["cue"]);
+  });
+
+  it("restores a mute that landed after the recording ended", async () => {
+    // A tap-and-release can stop the recorder while the mute IPC is in
+    // flight; the stop handler has already run and found nothing to restore,
+    // so without this the machine stays muted until the safety timer.
+    const { order, input } = harness({ recordingStates: [true, false] });
+    await cueThenMuteSystemAudio(input);
+    expect(order).toEqual(["cue", "note", "mute", "restore"]);
+  });
+
+  it("still mutes when the cue itself fails", async () => {
+    // The cue is a courtesy; the mute protects the transcription. System
+    // sound policy breaking the tone must not let music bleed into dictation.
+    const { order, input } = harness({ cueFails: true });
+    await cueThenMuteSystemAudio(input);
+    expect(order).toEqual(["cue", "note", "mute"]);
   });
 });
 

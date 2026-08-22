@@ -8,17 +8,15 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
-import { CommandPalette } from "../components/CommandPalette";
-import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
+import { CommandPaletteLoader } from "../components/CommandPaletteLoader";
+import { DesktopPermissionsGate } from "../components/desktop/DesktopPermissions";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { StartupResumeCoordinator } from "../components/StartupResumeCoordinator";
-import { RemoteControlCoordinator } from "../components/remoteControl/RemoteControlCoordinator";
-import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
 import { LanPairingCoordinator } from "../components/LanPairingCoordinator";
 import { Button } from "../components/ui/button";
 import {
@@ -42,6 +40,8 @@ import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
+import { OrchestratorListeningOverlay } from "../components/orchestrator/OrchestratorListeningOverlay";
+import { OrchestratorSessionProvider } from "../orchestrator/OrchestratorSessionProvider";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
   primaryServerConfigAtom,
@@ -53,6 +53,17 @@ import {
   createKeybindingsUpdateToastController,
   type KeybindingsUpdateToastController,
 } from "../components/KeybindingsUpdateToast.logic";
+
+const SshPasswordPromptDialog = lazy(() =>
+  import("../components/desktop/SshPasswordPromptDialog").then((module) => ({
+    default: module.SshPasswordPromptDialog,
+  })),
+);
+const RemoteControlCoordinator = lazy(() =>
+  import("../components/remoteControl/RemoteControlCoordinator").then((module) => ({
+    default: module.RemoteControlCoordinator,
+  })),
+);
 
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
@@ -88,6 +99,7 @@ function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
+  const desktopBridgeAvailable = window.desktopBridge !== undefined;
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -117,11 +129,16 @@ function RootRouteView() {
   }
 
   const appShell = (
-    <CommandPalette>
-      <AppSidebarLayout>
-        <Outlet />
-      </AppSidebarLayout>
-    </CommandPalette>
+    <OrchestratorSessionProvider>
+      <CommandPaletteLoader>
+        <AppSidebarLayout>
+          <Outlet />
+        </AppSidebarLayout>
+      </CommandPaletteLoader>
+      {/* Inside the provider so it can read the live session, and after the
+          shell so it layers over it. */}
+      <OrchestratorListeningOverlay />
+    </OrchestratorSessionProvider>
   );
 
   return (
@@ -129,16 +146,25 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <DocumentTitleSync />
         <GlassAppearanceSync />
-        {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-        <SshPasswordPromptDialog />
-        {primaryEnvironmentAuthenticated ? <LanPairingCoordinator /> : null}
-        {primaryEnvironmentAuthenticated ? <RemoteControlCoordinator /> : null}
-        <SlowRpcRequestToastCoordinator />
-        <HostedStaticEnvironmentBootstrap />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
-        {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        {primaryEnvironmentAuthenticated ? <StartupResumeCoordinator /> : null}
-        {appShell}
+        <DesktopPermissionsGate>
+          {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
+          {desktopBridgeAvailable ? (
+            <Suspense fallback={null}>
+              <SshPasswordPromptDialog />
+            </Suspense>
+          ) : null}
+          {primaryEnvironmentAuthenticated ? <LanPairingCoordinator /> : null}
+          {primaryEnvironmentAuthenticated && desktopBridgeAvailable ? (
+            <Suspense fallback={null}>
+              <RemoteControlCoordinator />
+            </Suspense>
+          ) : null}
+          <HostedStaticEnvironmentBootstrap />
+          {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+          {primaryEnvironmentAuthenticated ? <StartupResumeCoordinator /> : null}
+          {appShell}
+        </DesktopPermissionsGate>
       </AnchoredToastProvider>
     </ToastProvider>
   );

@@ -300,8 +300,19 @@ describe("EventNdjsonLogger", () => {
         circularDelta["self"] = circularDelta;
 
         yield* canonical.write(circularDelta, threadId);
+        yield* canonical.write({ type: "turn.diff.updated", diff: "large" }, threadId);
         yield* canonical.write({ type: "item.completed", id: "final" }, threadId);
-        yield* native.write({ type: "content.delta", id: "native-delta" }, threadId);
+        yield* native.write({ method: "item/agentMessage/delta", text: "partial" }, threadId);
+        yield* native.write(
+          {
+            event: {
+              method: "session/update",
+              payload: { update: { sessionUpdate: "tool_call_update" } },
+            },
+          },
+          threadId,
+        );
+        yield* native.write({ method: "item/completed", id: "native-final" }, threadId);
         yield* store.close();
 
         const lines = NodeFS.readFileSync(ownedLogPath(basePath, "thread-filtered"), "utf8")
@@ -313,9 +324,39 @@ describe("EventNdjsonLogger", () => {
           lines.map(({ stream, payload }) => ({ stream, payload })),
           [
             { stream: "CANON", payload: '{"type":"item.completed","id":"final"}' },
-            { stream: "NTIVE", payload: '{"type":"content.delta","id":"native-delta"}' },
+            { stream: "NTIVE", payload: '{"method":"item/completed","id":"native-final"}' },
           ],
         );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("caps oversized raw provider output while preserving diagnostic identity", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        yield* store.logger("native").write(
+          {
+            type: "tool.completed",
+            id: "oversized-provider-event",
+            rawOutput: { bytes: Array.from({ length: 100_000 }, (_, index) => index % 256) },
+          },
+          ThreadId.make("thread-oversized"),
+        );
+        yield* store.close();
+
+        const line = NodeFS.readFileSync(ownedLogPath(basePath, "thread-oversized"), "utf8");
+        assert.isBelow(Buffer.byteLength(line), 64 * 1024);
+        const payload = parseLogLine(line.trim()).payload;
+        assert.include(payload, '"type":"tool.completed"');
+        assert.include(payload, '"id":"oversized-provider-event"');
+        assert.include(payload, '"rawOutput":{"truncated":true');
+        assert.notInclude(payload, '"bytes":[');
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }

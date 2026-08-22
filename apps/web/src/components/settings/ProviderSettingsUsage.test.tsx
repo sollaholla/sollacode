@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveProviderUsageSummaries, type ProviderUsageSummary } from "../chat/ProviderUsageBar";
-import { IDLE_PROVIDER_USAGE_REFRESH_STATE, ProviderSettingsUsage } from "./ProviderSettingsUsage";
+import {
+  IDLE_PROVIDER_USAGE_REFRESH_STATE,
+  ProviderSettingsUsage,
+  shouldShowProviderSettingsUsage,
+} from "./ProviderSettingsUsage";
 import { createProviderUsageRefreshCoordinator } from "./providerUsageRefresh";
 
 const claudeProvider = (usage?: unknown): ServerProvider => ({
@@ -51,10 +55,32 @@ function summary(overrides: Partial<ProviderUsageSummary> = {}): ProviderUsageSu
 }
 
 describe("ProviderSettingsUsage", () => {
+  it("omits usage for unsupported drivers and unsupported summaries", () => {
+    const unsupported = summary({ state: "unsupported", windows: [], reportedAt: null });
+    const markup = renderToStaticMarkup(
+      <ProviderSettingsUsage
+        displayName="External Bridge"
+        driverKind={ProviderDriverKind.make("mcpBridge")}
+        provider={undefined}
+        summary={undefined}
+        refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}
+        onRefresh={undefined}
+      />,
+    );
+
+    expect(shouldShowProviderSettingsUsage(ProviderDriverKind.make("mcpBridge"), undefined)).toBe(
+      false,
+    );
+    expect(shouldShowProviderSettingsUsage(ProviderDriverKind.make("grok"), undefined)).toBe(true);
+    expect(shouldShowProviderSettingsUsage(claudeProvider().driver, unsupported)).toBe(false);
+    expect(markup).toBe("");
+  });
+
   it("shows account windows, stale state, and an accessible refresh action", () => {
     const markup = renderToStaticMarkup(
       <ProviderSettingsUsage
         displayName="Claude Personal"
+        driverKind={claudeProvider().driver}
         provider={claudeProvider()}
         summary={summary()}
         refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}
@@ -73,6 +99,7 @@ describe("ProviderSettingsUsage", () => {
     const loading = renderToStaticMarkup(
       <ProviderSettingsUsage
         displayName="Claude Personal"
+        driverKind={claudeProvider().driver}
         provider={claudeProvider()}
         summary={summary()}
         refreshState={{ status: "loading", error: null }}
@@ -86,6 +113,7 @@ describe("ProviderSettingsUsage", () => {
     const failed = renderToStaticMarkup(
       <ProviderSettingsUsage
         displayName="Claude Personal"
+        driverKind={claudeProvider().driver}
         provider={claudeProvider()}
         summary={summary()}
         refreshState={{ status: "error", error: "Claude usage request failed." }}
@@ -129,6 +157,7 @@ describe("ProviderSettingsUsage", () => {
     const markup = renderToStaticMarkup(
       <ProviderSettingsUsage
         displayName="Claude Personal"
+        driverKind={currentProvider.driver}
         provider={currentProvider}
         summary={refreshedSummary}
         refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}

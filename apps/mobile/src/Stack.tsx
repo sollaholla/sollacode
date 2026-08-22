@@ -10,43 +10,14 @@ import {
   createNativeStackScreen,
   type NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
-import { useEffect, useRef } from "react";
+import { type ComponentType, useEffect, useRef } from "react";
 import { DynamicColorIOS, Platform, Pressable, ScrollView, StyleSheet } from "react-native";
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
-import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
-import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
-import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
-import { ReviewSheet } from "./features/review/ReviewSheet";
-import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
-import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
-import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
-import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
-import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
-import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
-import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
-import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
-import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
-import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
-import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
-import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
-import { NewTaskDraftRouteScreen } from "./features/threads/NewTaskDraftRouteScreen";
-import { NewTaskFlowProvider } from "./features/threads/new-task-flow-provider";
-import { NewTaskRouteScreen } from "./features/threads/NewTaskRouteScreen";
-import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
-import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
-import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
-import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
-import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
-import { ShowcaseCaptureCoordinator } from "./features/showcase/ShowcaseCaptureCoordinator";
-import {
-  SettingsLegalDocumentCloseHeaderButton,
-  SettingsLegalDocumentExternalHeaderButton,
-} from "./features/settings/components/SettingsLegalDocumentRouteScreen";
 import { useAppShortcuts } from "./features/shortcuts/useAppShortcuts";
 import { useIncomingShare } from "./features/sharing/IncomingShareProvider";
 import {
@@ -56,6 +27,224 @@ import {
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "./native/native-glass";
 import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
+
+const SHOWCASE_ENABLED = process.env.EXPO_PUBLIC_SHOWCASE === "1";
+
+function deferredScreen<TProps extends object>(
+  load: () => ComponentType<TProps>,
+): ComponentType<TProps> {
+  let LoadedScreen: ComponentType<TProps> | undefined;
+
+  return function DeferredScreen(props: TProps) {
+    LoadedScreen ??= load();
+    return <LoadedScreen {...props} />;
+  };
+}
+
+function ShowcaseCaptureCoordinator(props: { readonly pathname: string }) {
+  if (!SHOWCASE_ENABLED) {
+    return null;
+  }
+  const Coordinator = (
+    require("./features/showcase/ShowcaseCaptureCoordinator") as typeof import("./features/showcase/ShowcaseCaptureCoordinator")
+  ).ShowcaseCaptureCoordinator;
+  return <Coordinator {...props} />;
+}
+
+const ArchivedThreadsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/archive/ArchivedThreadsRouteScreen") as typeof import("./features/archive/ArchivedThreadsRouteScreen")
+    ).ArchivedThreadsRouteScreen,
+);
+const ThreadFilesTreeScreen = deferredScreen(
+  () =>
+    (
+      require("./features/files/ThreadFilesRouteScreen") as typeof import("./features/files/ThreadFilesRouteScreen")
+    ).ThreadFilesTreeScreen,
+);
+const ThreadFileScreen = deferredScreen(
+  () =>
+    (
+      require("./features/files/ThreadFilesRouteScreen") as typeof import("./features/files/ThreadFilesRouteScreen")
+    ).ThreadFileScreen,
+);
+const ReviewCommentComposerSheet = deferredScreen(
+  () =>
+    (
+      require("./features/review/ReviewCommentComposerSheet") as typeof import("./features/review/ReviewCommentComposerSheet")
+    ).ReviewCommentComposerSheet,
+);
+const ReviewSheet = deferredScreen(
+  () =>
+    (require("./features/review/ReviewSheet") as typeof import("./features/review/ReviewSheet"))
+      .ReviewSheet,
+);
+const ThreadTerminalRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/terminal/ThreadTerminalRouteScreen") as typeof import("./features/terminal/ThreadTerminalRouteScreen")
+    ).ThreadTerminalRouteScreen,
+);
+const GitBranchesSheet = deferredScreen(
+  () =>
+    (
+      require("./features/threads/git/GitBranchesSheet") as typeof import("./features/threads/git/GitBranchesSheet")
+    ).GitBranchesSheet,
+);
+const GitCommitSheet = deferredScreen(
+  () =>
+    (
+      require("./features/threads/git/GitCommitSheet") as typeof import("./features/threads/git/GitCommitSheet")
+    ).GitCommitSheet,
+);
+const GitConfirmSheet = deferredScreen(
+  () =>
+    (
+      require("./features/threads/git/GitConfirmSheet") as typeof import("./features/threads/git/GitConfirmSheet")
+    ).GitConfirmSheet,
+);
+const GitOverviewSheet = deferredScreen(
+  () =>
+    (
+      require("./features/threads/git/GitOverviewSheet") as typeof import("./features/threads/git/GitOverviewSheet")
+    ).GitOverviewSheet,
+);
+const ThreadRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/threads/ThreadRouteScreen") as typeof import("./features/threads/ThreadRouteScreen")
+    ).ThreadRouteScreen,
+);
+const ConnectionsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/connection/ConnectionsRouteScreen") as typeof import("./features/connection/ConnectionsRouteScreen")
+    ).ConnectionsRouteScreen,
+);
+const ConnectionsNewRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/connection/ConnectionsNewRouteScreen") as typeof import("./features/connection/ConnectionsNewRouteScreen")
+    ).ConnectionsNewRouteScreen,
+);
+const OrchestratorRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/orchestrator/OrchestratorRouteScreen") as typeof import("./features/orchestrator/OrchestratorRouteScreen")
+    ).OrchestratorRouteScreen,
+);
+const AgentsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/agents/AgentRouteScreens") as typeof import("./features/agents/AgentRouteScreens")
+    ).AgentsRouteScreen,
+);
+const AgentRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/agents/AgentRouteScreens") as typeof import("./features/agents/AgentRouteScreens")
+    ).AgentRouteScreen,
+);
+const ThreadArtifactsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/artifacts/ThreadArtifactRouteScreens") as typeof import("./features/artifacts/ThreadArtifactRouteScreens")
+    ).ThreadArtifactsRouteScreen,
+);
+const ThreadArtifactRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/artifacts/ThreadArtifactRouteScreens") as typeof import("./features/artifacts/ThreadArtifactRouteScreens")
+    ).ThreadArtifactRouteScreen,
+);
+const AddProjectDestinationRoute = deferredScreen(
+  () =>
+    (
+      require("./features/projects/AddProjectDestinationRoute") as typeof import("./features/projects/AddProjectDestinationRoute")
+    ).AddProjectDestinationRoute,
+);
+const AddProjectLocalRoute = deferredScreen(
+  () =>
+    (
+      require("./features/projects/AddProjectLocalRoute") as typeof import("./features/projects/AddProjectLocalRoute")
+    ).AddProjectLocalRoute,
+);
+const AddProjectRepositoryRoute = deferredScreen(
+  () =>
+    (
+      require("./features/projects/AddProjectRepositoryRoute") as typeof import("./features/projects/AddProjectRepositoryRoute")
+    ).AddProjectRepositoryRoute,
+);
+const AddProjectSourceRoute = deferredScreen(
+  () =>
+    (
+      require("./features/projects/AddProjectSourceRoute") as typeof import("./features/projects/AddProjectSourceRoute")
+    ).AddProjectSourceRoute,
+);
+const NewTaskDraftRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/threads/NewTaskDraftRouteScreen") as typeof import("./features/threads/NewTaskDraftRouteScreen")
+    ).NewTaskDraftRouteScreen,
+);
+const NewTaskRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/threads/NewTaskRouteScreen") as typeof import("./features/threads/NewTaskRouteScreen")
+    ).NewTaskRouteScreen,
+);
+const SettingsAppearanceRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsAppearanceRouteScreen") as typeof import("./features/settings/SettingsAppearanceRouteScreen")
+    ).SettingsAppearanceRouteScreen,
+);
+const SettingsClientStorageRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsClientStorageRouteScreen") as typeof import("./features/settings/SettingsClientStorageRouteScreen")
+    ).SettingsClientStorageRouteScreen,
+);
+const SettingsEnvironmentsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsEnvironmentsRouteScreen") as typeof import("./features/settings/SettingsEnvironmentsRouteScreen")
+    ).SettingsEnvironmentsRouteScreen,
+);
+const SettingsLegalRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsLegalRouteScreen") as typeof import("./features/settings/SettingsLegalRouteScreen")
+    ).SettingsLegalRouteScreen,
+);
+const SettingsRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/settings/SettingsRouteScreen") as typeof import("./features/settings/SettingsRouteScreen")
+    ).SettingsRouteScreen,
+);
+
+function NewTaskFlowProvider(props: { readonly children: React.ReactNode }) {
+  const Provider = (
+    require("./features/threads/new-task-flow-provider") as typeof import("./features/threads/new-task-flow-provider")
+  ).NewTaskFlowProvider;
+  return <Provider>{props.children}</Provider>;
+}
+
+function SettingsLegalDocumentCloseHeaderButton() {
+  const HeaderButton = (
+    require("./features/settings/components/SettingsLegalDocumentRouteScreen") as typeof import("./features/settings/components/SettingsLegalDocumentRouteScreen")
+  ).SettingsLegalDocumentCloseHeaderButton;
+  return <HeaderButton />;
+}
+
+function SettingsLegalDocumentExternalHeaderButton() {
+  const HeaderButton = (
+    require("./features/settings/components/SettingsLegalDocumentRouteScreen") as typeof import("./features/settings/components/SettingsLegalDocumentRouteScreen")
+  ).SettingsLegalDocumentExternalHeaderButton;
+  return <HeaderButton />;
+}
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -244,6 +433,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitConfirm",
   "GitOverview",
   "NewTaskSheet",
+  "Orchestrator",
   "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
@@ -403,6 +593,22 @@ export const RootStack = createNativeStackNavigator({
       linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
       options: SOLID_HEADER_OPTIONS,
     }),
+    ThreadArtifacts: createNativeStackScreen({
+      screen: ThreadArtifactsRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/artifacts`,
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Artifacts",
+      },
+    }),
+    ThreadArtifact: createNativeStackScreen({
+      screen: ThreadArtifactRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/artifacts/:artifactId`,
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        title: "Artifact",
+      },
+    }),
     GitOverview: createNativeStackScreen({
       screen: GitOverviewSheet,
       linking: `${THREAD_LINKING_PREFIX}/git`,
@@ -437,6 +643,35 @@ export const RootStack = createNativeStackNavigator({
         presentation: "formSheet",
         sheetAllowedDetents: [0.45, 0.7],
         sheetGrabberVisible: true,
+      },
+    }),
+    // Full screen, and at the root rather than inside the Settings sheet: this
+    // is summoned by a double press of volume up with the phone in a pocket, and
+    // a detented sheet over the thread list is not what someone wearing
+    // headphones needs to land in.
+    Orchestrator: createNativeStackScreen({
+      screen: OrchestratorRouteScreen,
+      linking: "orchestrator",
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        presentation: "fullScreenModal",
+        title: "Orchestrator",
+      },
+    }),
+    Agents: createNativeStackScreen({
+      screen: AgentsRouteScreen,
+      linking: "agents",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Agents",
+      },
+    }),
+    Agent: createNativeStackScreen({
+      screen: AgentRouteScreen,
+      linking: "agents/:environmentId/:agentId",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Agent",
       },
     }),
     SettingsSheet: createNativeStackScreen({

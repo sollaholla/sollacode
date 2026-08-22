@@ -10,7 +10,9 @@ import {
   type IsoDateTime,
   type OrchestrationCommand,
   type OrchestrationThreadShell,
+  type RuntimeMode,
   type ServerProvider,
+  VmAgentId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,6 +25,8 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
+import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import * as ThreadHistoryQuery from "../history/ThreadHistoryQuery.ts";
 
 const createdAt = "2026-08-03T12:00:00.000Z" as IsoDateTime;
@@ -40,6 +44,7 @@ const makeThread = (
   options: {
     readonly isSideChat?: boolean;
     readonly parentThreadId?: ThreadId | null;
+    readonly runtimeMode?: RuntimeMode;
     readonly interactionMode?: "default" | "plan" | "agent";
   } = {},
 ): OrchestrationThreadShell => ({
@@ -49,7 +54,7 @@ const makeThread = (
   isSideChat: options.isSideChat ?? false,
   sideChatParentThreadId: options.parentThreadId ?? null,
   modelSelection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
-  runtimeMode: "full-access",
+  runtimeMode: options.runtimeMode ?? "full-access",
   interactionMode: options.interactionMode ?? "default",
   branch: "main",
   worktreePath: null,
@@ -137,7 +142,11 @@ const makeHarness = (
     }),
     makeThread(unrelatedThreadId, "Unrelated"),
   ],
-  options: { readonly lagCreatedSideChatProjection?: boolean } = {},
+  options: {
+    readonly lagCreatedSideChatProjection?: boolean;
+    readonly delegatedThreadIds?: ReadonlySet<ThreadId>;
+    readonly vmAgentThreadIds?: ReadonlySet<ThreadId>;
+  } = {},
 ) => {
   let threads = [...initialThreads];
   let laggingCreatedSideChat: OrchestrationThreadShell | undefined;
@@ -291,6 +300,18 @@ const makeHarness = (
         };
       }),
   });
+  const agentCollaborationLayer = Layer.mock(VmAgentCollaborationStore)({
+    hasActiveTargetThread: (threadId) =>
+      Effect.succeed(options.delegatedThreadIds?.has(ThreadId.make(threadId)) === true),
+  });
+  const vmAgentLayer = Layer.mock(VmAgentStore)({
+    getByThreadId: (threadId) =>
+      Effect.succeed(
+        options.vmAgentThreadIds?.has(ThreadId.make(threadId)) === true
+          ? Option.some({ vmAgentId: VmAgentId.make(`agent:${threadId}`) } as never)
+          : Option.none(),
+      ),
+  });
 
   const layer = McpHttpServer.ThreadCollaborationToolkitRegistration.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
@@ -298,6 +319,8 @@ const makeHarness = (
     Layer.provide(engineLayer),
     Layer.provide(providerLayer),
     Layer.provide(historyLayer),
+    Layer.provide(agentCollaborationLayer),
+    Layer.provide(vmAgentLayer),
     Layer.provide(NodeServices.layer),
   );
   return { layer, commands, queriedThreadIds, readThreads: () => threads };
@@ -358,6 +381,55 @@ it.effect("changes only the credential-bound chat model without sending a messag
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect(
+  "applies access and interaction modes instead of discarding set_model wire fields",
+  () => {
+    const harness = makeHarness([
+      makeThread(sideThreadId, "Side", {
+        isSideChat: true,
+        parentThreadId: mainThreadId,
+        runtimeMode: "full-access",
+        interactionMode: "agent",
+      }),
+    ]);
+    return Effect.gen(function* () {
+      const result = yield* callTool(
+        {
+          action: "set_model",
+          modelSelection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+        },
+        invocationFor(sideThreadId),
+      );
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toMatchObject({
+        action: "set_model",
+        threadId: sideThreadId,
+        previousRuntimeMode: "full-access",
+        runtimeMode: "approval-required",
+        previousInteractionMode: "agent",
+        interactionMode: "default",
+      });
+      expect(harness.commands).toHaveLength(2);
+      expect(harness.commands[0]).toMatchObject({
+        type: "thread.runtime-mode.set",
+        threadId: sideThreadId,
+        runtimeMode: "approval-required",
+      });
+      expect(harness.commands[1]).toMatchObject({
+        type: "thread.interaction-mode.set",
+        threadId: sideThreadId,
+        interactionMode: "default",
+      });
+      expect(harness.readThreads()[0]).toMatchObject({
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+      });
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("creates and starts an Agent side task while leaving the source active", () => {
   const source = {
     ...makeThread(mainThreadId, "Main"),
@@ -412,6 +484,38 @@ it.effect("creates and starts an Agent side task while leaving the source active
     expect(
       harness.readThreads().find((thread) => thread.id === mainThreadId)?.latestTurn?.state,
     ).toBe("running");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("blocks the legacy side-chat bypass for a delegated worker", () => {
+  const harness = makeHarness(undefined, {
+    delegatedThreadIds: new Set([sideThreadId]),
+  });
+  return Effect.gen(function* () {
+    const result = yield* callTool(
+      { action: "create_side_chat", title: "Nested", task: "Create a grandchild." },
+      invocationFor(sideThreadId),
+    );
+    expect(result.isError).toBe(true);
+    expect(harness.commands).toEqual([]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("routes VM-root worker creation away from the legacy side-chat path", () => {
+  const harness = makeHarness(undefined, {
+    vmAgentThreadIds: new Set([mainThreadId]),
+  });
+  return Effect.gen(function* () {
+    const result = yield* callTool(
+      { action: "create_side_chat", title: "Worker", task: "Do bounded work." },
+      invocationFor(mainThreadId),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("agent_collaboration.delegate"),
+    });
+    expect(harness.commands).toEqual([]);
   }).pipe(Effect.provide(harness.layer));
 });
 

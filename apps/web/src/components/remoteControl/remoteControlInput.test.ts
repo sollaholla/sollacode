@@ -5,6 +5,7 @@ import {
   normalizeRemoteControlKeyCode,
   normalizedRemotePoint,
   remotePointerButton,
+  shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
 
@@ -84,5 +85,30 @@ describe("remote-control input mapping", () => {
         kind: "pointer-down",
       }),
     ).toBe(false);
+  });
+
+  it("forwards Escape only for a focused native pointer-lock release", () => {
+    const nativeEscape = {
+      wasLocked: true,
+      isLocked: false,
+      programmatic: false,
+      inputCaptured: true,
+      keyboardGranted: true,
+      documentVisible: true,
+      documentFocused: true,
+    };
+    expect(shouldForwardEscapeOnPointerUnlock(nativeEscape)).toBe(true);
+
+    for (const override of [
+      { wasLocked: false },
+      { isLocked: true },
+      { programmatic: true },
+      { inputCaptured: false },
+      { keyboardGranted: false },
+      { documentVisible: false },
+      { documentFocused: false },
+    ]) {
+      expect(shouldForwardEscapeOnPointerUnlock({ ...nativeEscape, ...override })).toBe(false);
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { IsoDateTime, ProviderInstanceId } from "@t3tools/contracts";
+import { IsoDateTime, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -9,6 +9,8 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { increment, threadWorkDuplicateConflictsTotal } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../Errors.ts";
 import { refreshProjectionThreadPendingWork } from "../PendingWorkProjection.ts";
+import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
+import { ThreadPendingWorkSignalLive } from "./ThreadPendingWorkSignal.ts";
 import {
   CancelThreadWorkByThreadInput,
   ClaimThreadWorkInput,
@@ -41,6 +43,7 @@ const SummarizeSchedulableInput = Schema.Struct({ now: IsoDateTime });
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const pendingWorkSignal = yield* ThreadPendingWorkSignal;
 
   const insertRow = SqlSchema.findOneOption({
     Request: ThreadWorkObligation,
@@ -439,6 +442,7 @@ const make = Effect.gen(function* () {
         AND state NOT IN ('completed', 'cancelled')
         AND (
           ${input.mode} = 'thread-terminal'
+          OR ${input.mode} = 'pending-start-interrupt'
           OR NOT (state = 'pending' AND kind = 'active-turn-recovery')
         )
         AND (
@@ -506,12 +510,21 @@ const make = Effect.gen(function* () {
   // shell snapshots and event-driven shell refetches always read current
   // scheduler state. Lease heartbeats and terminal-row pruning are exempt:
   // neither changes the surfaced obligation.
+  //
+  // The refresh is then announced, because these transitions are the only shell
+  // changes with no domain event behind them — see ThreadPendingWorkSignal. The
+  // signal is best-effort by design: it carries no data, so a lost one costs a
+  // refetch, never correctness, and it must not fail a scheduler mutation.
   const refreshPendingWork = (threadId: string) =>
     refreshProjectionThreadPendingWork(sql, threadId).pipe(
       Effect.mapError(
         toPersistenceSqlError("ThreadWorkObligationRepository.refreshPendingWork:query"),
       ),
+      Effect.tap(() => announcePendingWork(threadId)),
     );
+
+  const announcePendingWork = (threadId: string) =>
+    pendingWorkSignal.publish(ThreadId.make(threadId));
 
   return {
     insert: (obligation) =>
@@ -646,6 +659,12 @@ const make = Effect.gen(function* () {
             Effect.succeed(Option.none<ThreadWorkObligation>()),
           ),
           mapError("replaceActive"),
+          // The handoff refreshes inside its transaction (see above), so the
+          // announcement belongs out here, after it commits — and only when it
+          // committed: a conflict rolled everything back and changed nothing.
+          Effect.tap((replaced) =>
+            Option.isSome(replaced) ? announcePendingWork(input.replacement.threadId) : Effect.void,
+          ),
         ),
     heartbeatClaim: (input) =>
       heartbeatClaimRow(input).pipe(mapError("heartbeatClaim"), Effect.map(Option.isSome)),
@@ -673,7 +692,11 @@ const make = Effect.gen(function* () {
   } satisfies ThreadWorkObligationRepositoryShape;
 });
 
+// The signal is merged in rather than required: every consumer of this
+// repository is, by definition, a producer of the transitions nothing else
+// reports, so the two belong together and `subscribeShell` reads the same
+// instance from the merged output.
 export const ThreadWorkObligationRepositoryLive = Layer.effect(
   ThreadWorkObligationRepository,
   make,
-);
+).pipe(Layer.provideMerge(ThreadPendingWorkSignalLive));

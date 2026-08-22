@@ -54,6 +54,12 @@ export const PROVIDER_OPTIONS: Array<{
     available: true,
     pickerSidebarBadge: "new",
   },
+  {
+    value: ProviderDriverKind.make("mcpBridge"),
+    label: "MCP Bridge",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
 ];
 
 export type WorkLogToolLifecycleStatus =
@@ -120,6 +126,8 @@ export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  /** The turn that raised it; null when the activity carried none. */
+  turnId: TurnId | null;
 }
 
 export interface ActivePlanState {
@@ -486,6 +494,17 @@ function parseUserInputQuestions(
 
 export function derivePendingUserInputs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  /**
+   * The turn currently in play. A request raised by an *earlier* turn cannot
+   * be answered any more — sending a follow-up instead of filling the form
+   * ends the turn that was waiting, and the provider callback goes with it —
+   * but nothing emitted `user-input.resolved` for it, so the form stayed on
+   * screen looking live and swallowed answers that could never be delivered.
+   *
+   * Optional: callers without a turn to compare against keep the old
+   * behaviour rather than silently dropping every open request.
+   */
+  latestTurnId?: TurnId,
 ): PendingUserInput[] {
   const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
@@ -510,6 +529,7 @@ export function derivePendingUserInputs(
         requestId,
         createdAt: activity.createdAt,
         questions,
+        turnId: activity.turnId ?? null,
       });
       continue;
     }
@@ -528,9 +548,15 @@ export function derivePendingUserInputs(
     }
   }
 
-  return [...openByRequestId.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
+  return [...openByRequestId.values()]
+    .filter(
+      (pending) =>
+        // No turn to compare against, or the request carried none of its own:
+        // keep it. Only a request demonstrably belonging to a finished turn is
+        // dropped.
+        latestTurnId === undefined || pending.turnId === null || pending.turnId === latestTurnId,
+    )
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 export function deriveActivePlanState(
@@ -743,7 +769,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning.updated"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"

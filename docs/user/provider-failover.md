@@ -10,7 +10,8 @@ Failover is deliberately based on typed provider events rather than matching err
 - Codex: `account/rateLimits/updated` reports an explicit reached type, reached spend control, or a
   primary/secondary window at 100% usage.
 - Claude Code: the SDK `rate_limit_event` reports `rate_limit_info.status: "rejected"`.
-- Cursor, Grok, and OpenCode: no automatic usage-limit failover until their adapters expose a typed
+- Grok: `_x.ai/billing` reports `creditUsagePercent` at 100% for the current SuperGrok weekly pool.
+- Cursor and OpenCode: no automatic usage-limit failover until their adapters expose a typed
   canonical account-limit event. Their ordinary provider errors do not trigger a switch.
 
 Warnings and near-limit notifications do not trigger failover. The event must also belong to the

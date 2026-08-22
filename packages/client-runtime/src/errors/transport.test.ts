@@ -69,4 +69,16 @@ describe("sanitizeThreadErrorMessage", () => {
     expect(sanitizeThreadErrorMessage(null)).toBeNull();
     expect(sanitizeThreadErrorMessage(undefined)).toBeNull();
   });
+
+  it("drops stack frames from a pretty-printed provider error", () => {
+    expect(
+      sanitizeThreadErrorMessage(
+        [
+          "ProviderAdapterProcessError: Failed to start Claude runtime session.",
+          "    at catch (file:///C:/Users/Developer/AppData/Local/Programs/solla-code/resources/app.asar/apps/server/dist/bin.mjs:58420:22)",
+          "    at failWithCatch (file:///C:/Users/Developer/AppData/Local/Programs/solla-code/resources/app.asar/node_modules/effect/dist/internal/effect.js:745:21)",
+        ].join("\n"),
+      ),
+    ).toBe("ProviderAdapterProcessError: Failed to start Claude runtime session.");
+  });
 });

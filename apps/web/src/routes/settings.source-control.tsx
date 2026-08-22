@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { SourceControlSettingsPanel } from "../components/settings/SourceControlSettings";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/settings/source-control")({
-  component: SourceControlSettingsPanel,
+  component: lazyRouteComponent(
+    () => import("../components/settings/SourceControlSettings"),
+    "SourceControlSettingsPanel",
+  ),
 });

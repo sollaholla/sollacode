@@ -1,7 +1,11 @@
 import {
+  type ClientOrchestrationCommand,
+  CommandId,
   type DesktopSshEnvironmentTarget,
   EnvironmentId,
+  ORCHESTRATION_WS_METHODS,
   type OrchestrationShellSnapshot,
+  ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -123,6 +127,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     readonly beforeRegistrationRemove?: (
       target: ConnectionTarget,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    readonly deferredThreadCommands?: ReadonlyArray<Persistence.DeferredThreadCommandEntry>;
   },
 ) {
   const storedTargets = yield* Ref.make(
@@ -142,6 +147,13 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     new Map<EnvironmentId, string>([[SSH_CONNECTION.environmentId, "remote-access-token"]]),
   );
   const disconnectedSshTargets = yield* Ref.make<ReadonlyArray<DesktopSshEnvironmentTarget>>([]);
+  const deferredThreadCommands = yield* Ref.make(
+    new Map<EnvironmentId, ReadonlyArray<Persistence.DeferredThreadCommandEntry>>(
+      initialTargets.map((target) => [target.environmentId, options?.deferredThreadCommands ?? []]),
+    ),
+  );
+  const dispatchedThreadCommand = yield* Deferred.make<ClientOrchestrationCommand>();
+  const deferredThreadCommandRemoved = yield* Deferred.make<void>();
 
   const targetStore = Persistence.ConnectionTargetStore.of({
     list: Ref.get(storedTargets).pipe(Effect.map((targets) => [...targets.values()])),
@@ -238,6 +250,36 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     clear: (environmentId) =>
       Ref.update(ownedDataClears, (environmentIds) => [...environmentIds, environmentId]),
   });
+  const deferredThreadCommandStore = Persistence.DeferredThreadCommandStore.of({
+    list: (environmentId) =>
+      Ref.get(deferredThreadCommands).pipe(
+        Effect.map((current) => current.get(environmentId) ?? []),
+      ),
+    enqueue: (environmentId, entry) =>
+      Ref.update(deferredThreadCommands, (current) => {
+        const next = new Map(current);
+        next.set(environmentId, [...(next.get(environmentId) ?? []), entry]);
+        return next;
+      }),
+    remove: (environmentId, commandId) =>
+      Ref.update(deferredThreadCommands, (current) => {
+        const next = new Map(current);
+        next.set(
+          environmentId,
+          (next.get(environmentId) ?? []).filter((entry) => entry.command.commandId !== commandId),
+        );
+        return next;
+      }).pipe(
+        Effect.andThen(Deferred.succeed(deferredThreadCommandRemoved, undefined)),
+        Effect.asVoid,
+      ),
+    clear: (environmentId) =>
+      Ref.update(deferredThreadCommands, (current) => {
+        const next = new Map(current);
+        next.delete(environmentId);
+        return next;
+      }),
+  });
   const networkStatus = yield* SubscriptionRef.make<"unknown" | "offline" | "online">("online");
   const connectivity = Connectivity.Connectivity.of({
     status: SubscriptionRef.get(networkStatus),
@@ -302,7 +344,10 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
         yield* Ref.update(sessions, (current) => [...current, { closed }]);
         const session = yield* Effect.acquireRelease(
           Effect.succeed({
-            client: {} as RpcSession.RpcSession["client"],
+            client: {
+              [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command: ClientOrchestrationCommand) =>
+                Deferred.succeed(dispatchedThreadCommand, command).pipe(Effect.as({ sequence: 1 })),
+            } as unknown as RpcSession.RpcSession["client"],
             initialConfig: Effect.die(new Error("Config is not used by registry tests.")),
             ready: Effect.void,
             probe: Effect.void,
@@ -332,6 +377,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
         ),
         Layer.succeed(ConnectionDriver.ConnectionDriver, driver),
         cacheLayer,
+        Layer.succeed(Persistence.DeferredThreadCommandStore, deferredThreadCommandStore),
         Layer.succeed(Persistence.EnvironmentOwnedDataCleanup, ownedDataCleanup),
       ),
     ),
@@ -350,6 +396,9 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     storedCredentials,
     storedRemoteTokens,
     disconnectedSshTargets,
+    deferredThreadCommands,
+    dispatchedThreadCommand,
+    deferredThreadCommandRemoved,
     networkStatus,
   };
 });
@@ -433,6 +482,33 @@ describe("EnvironmentRegistry", () => {
         yield* Fiber.join(start);
 
         expect(yield* Ref.get(loadCount)).toBe(2);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("drains deferred thread commands when a remote environment connects", () =>
+    Effect.gen(function* () {
+      const queued: Persistence.DeferredThreadCommandEntry = {
+        command: {
+          type: "thread.archive",
+          commandId: CommandId.make("queued-archive"),
+          threadId: ThreadId.make("thread-1"),
+        },
+        enqueuedAt: "2026-06-06T00:00:00.000Z",
+      };
+      const harness = yield* makeHarness([BEARER_TARGET], [], [], {
+        deferredThreadCommands: [queued],
+      });
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.start;
+
+        expect(yield* Deferred.await(harness.dispatchedThreadCommand)).toEqual(queued.command);
+        yield* Deferred.await(harness.deferredThreadCommandRemoved);
+        expect(
+          (yield* Ref.get(harness.deferredThreadCommands)).get(BEARER_TARGET.environmentId),
+        ).toEqual([]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );

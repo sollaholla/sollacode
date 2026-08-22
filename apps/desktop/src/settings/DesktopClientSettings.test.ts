@@ -13,6 +13,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  agentStackEnabled: true,
   autoOpenPlanSidebar: false,
   autoSendVoiceTranscription: false,
   confirmThreadArchive: true,
@@ -23,6 +24,7 @@ const clientSettings: ClientSettings = {
   favorites: [],
   glassOpacity: 80,
   providerModelPreferences: {},
+  pushToTalkMutesSystemAudio: true,
   showResumeThreadsOnStartup: true,
   sidebarAutoSettleAfterDays: 3,
   sidebarProjectGroupingMode: "repository_path",
@@ -34,6 +36,8 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   sidebarV2Enabled: false,
   sidebarV2ConfiguredByUser: false,
+  soundCues: true,
+  soundCueVolume: 100,
   timestampFormat: "24-hour",
   wordWrap: true,
 };
