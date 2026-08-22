@@ -49,6 +49,9 @@ const decodeExtResponse = Schema.decodeEffect(Schema.fromJsonString(ExtResponse)
 const decodeRequestPermissionResponse = Schema.decodeEffect(
   Schema.fromJsonString(RequestPermissionResponse),
 );
+const decodeUnknownJsonRecord = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 const encoder = new TextEncoder();
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
@@ -215,7 +218,7 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       ]);
       const raw = events[1]?.payload;
       assert.isString(raw);
-      const wire = JSON.parse((raw as string).trim()) as Record<string, unknown>;
+      const wire = yield* decodeUnknownJsonRecord(raw);
       assert.isUndefined(wire.id);
       assert.isUndefined(wire.headers);
     }),
@@ -265,7 +268,7 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       assert.instanceOf(bigintError, AcpError.AcpProtocolParseError);
       assert.equal(bigintError.operation, "encode-message");
       assert.equal(bigintError.method, "x/test");
-      assert.instanceOf(bigintError.cause, TypeError);
+      assert.isTrue(Schema.isSchemaError(bigintError.cause));
       assert.equal(
         bigintError.message,
         "ACP protocol operation 'encode-message' failed for method 'x/test'.",
@@ -277,7 +280,7 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       assert.instanceOf(circularError, AcpError.AcpProtocolParseError);
       assert.equal(circularError.operation, "encode-message");
       assert.equal(circularError.method, "x/test");
-      assert.instanceOf(circularError.cause, TypeError);
+      assert.isTrue(Schema.isSchemaError(circularError.cause));
 
       const requestError = yield* transport.request("x/request", 1n).pipe(
         Effect.match({
