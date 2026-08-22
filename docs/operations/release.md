@@ -28,26 +28,47 @@ This document covers the unified release workflow for stable and nightly desktop
   - nightly releases are aliased to the `nightly` hosted app channel
 - Signing is optional and auto-detected per platform from secrets.
 
-## Optional hosted services (forks)
+## T3 Connect is not part of this fork
 
-Everything the release needs from T3's own infrastructure is optional and
-auto-detected. A fork with no secrets configured still runs the full quality
-gates, builds all four desktop artifacts, and publishes a GitHub Release.
+Upstream resolves Clerk sign-in and relay endpoints from a Cloudflare-deployed
+relay worker (`infra/relay`, workspace package `t3code-relay`) in a
+`Resolve T3 Connect public config` job. That subtree was removed from this fork
+in `565e7c13e`, so the job had nothing to filter on and failed on every run.
+Because it declared `environment: production`, its failure is what marked the
+repository's production deployments red — and because every later job gated on
+it, no release was ever packaged.
 
-| Stage                                    | Enabled by                                                                                                                                      | When unconfigured                                                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| T3 Connect / relay tracing config        | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` secrets **and** an `infra/relay` (`t3code-relay`) workspace package                            | Relay state read is skipped; an empty tracing config is published so downstream jobs still resolve |
-| Clerk sign-in baked into the build       | `CLERK_PUBLISHABLE_KEY`, `CLERK_JWT_TEMPLATE`, `CLERK_CLI_OAUTH_CLIENT_ID` variables + a relay domain (`RELAY_DOMAIN` or `RELAY_API_ZONE_NAME`) | Artifacts build without hosted sign-in and relay endpoints                                         |
-| npm CLI publish                          | `RELEASE_PUBLISH_CLI` repository variable set to `true`                                                                                         | `publish_cli` is skipped; `release` proceeds anyway                                                |
-| Hosted web app deploy                    | `VERCEL_TOKEN` + `VERCEL_ORG_ID` + `VERCEL_PROJECT_ID` secrets                                                                                  | `deploy_web` no-ops and reports success                                                            |
-| Release commits authored by a GitHub App | `RELEASE_APP_ID` + `RELEASE_APP_PRIVATE_KEY` secrets                                                                                            | Falls back to the built-in `GITHUB_TOKEN`, committing as `github-actions[bot]`                     |
-| Discord announcement                     | `DISCORD_RELEASE_WEBHOOK_URL` secret                                                                                                            | Announcement steps are skipped                                                                     |
-| macOS / Windows code signing             | Apple and Azure secrets (see below)                                                                                                             | Unsigned artifacts                                                                                 |
+The job and all of its plumbing are gone. Nothing in the release declares a
+GitHub environment now, so the workflow no longer opens deployment records for
+a deployment that does not exist. The build-time defines it used to populate
+(`__T3CODE_BUILD_RELAY_URL__`, `__T3CODE_BUILD_CLERK_*__`, the OTLP tracing
+values) already default to `""` in `apps/server/vite.config.ts`, so artifacts
+build unchanged — they simply ship without hosted sign-in and relay endpoints
+baked in.
 
-Forks that skip the npm publish give up the server self-update invariant
-described below: a client can only update a connected server to its exact
-version if a matching package exists on npm. To restore it, publish the CLI
-under a package name the fork owns and set `RELEASE_PUBLISH_CLI=true`.
+Restoring T3 Connect means restoring the `infra/relay` package, a Cloudflare
+account, and a Clerk tenant — not just setting a secret. Re-add the job from
+upstream if that ever happens.
+
+## Optional services
+
+The remaining hosted integrations are optional and auto-detected. With no
+secrets configured, the workflow still runs the full quality gates, builds all
+four desktop artifacts, and publishes a GitHub Release.
+
+| Stage                                    | Enabled by                                                     | When unconfigured                                                              |
+| ---------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| npm CLI publish                          | `RELEASE_PUBLISH_CLI` repository variable set to `true`        | `publish_cli` is skipped; `release` proceeds anyway                            |
+| Hosted web app deploy                    | `VERCEL_TOKEN` + `VERCEL_ORG_ID` + `VERCEL_PROJECT_ID` secrets | `deploy_web` no-ops and reports success                                        |
+| Release commits authored by a GitHub App | `RELEASE_APP_ID` + `RELEASE_APP_PRIVATE_KEY` secrets           | Falls back to the built-in `GITHUB_TOKEN`, committing as `github-actions[bot]` |
+| Discord announcement                     | `DISCORD_RELEASE_WEBHOOK_URL` secret                           | Announcement steps are skipped                                                 |
+| macOS / Windows code signing             | Apple and Azure secrets (see below)                            | Unsigned artifacts                                                             |
+
+Skipping the npm publish gives up the server self-update invariant described
+below: a client can only update a connected server to its exact version if a
+matching package exists on npm. To restore it, publish the CLI under a package
+name this fork owns — `apps/server/package.json` is still named `t3`, which only
+upstream can publish — and set `RELEASE_PUBLISH_CLI=true`.
 
 ## Hosted web app release deployment
 
