@@ -19,6 +19,7 @@ import {
   type StopThreadSessionInput,
   type StopThreadTaskInput,
   type RefreshThreadPlanInput,
+  type RecordThreadVoiceTranscriptInput,
   type UnarchiveThreadInput,
   type UnsettleThreadInput,
   type UnsnoozeThreadInput,
@@ -39,12 +40,14 @@ import {
   stopThreadSession,
   stopThreadTask,
   refreshThreadPlan,
+  recordThreadVoiceTranscript,
   unarchiveThread,
   unsettleThread,
   unsnoozeThread,
   updateThreadMetadata,
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import type { DeferredThreadCommandStore } from "../platform/persistence.ts";
 
 export type {
   ArchiveThreadInput,
@@ -52,6 +55,7 @@ export type {
   ForkThreadInput,
   DeleteThreadInput,
   InterruptThreadTurnInput,
+  RecordThreadVoiceTranscriptInput,
   RefreshThreadPlanInput,
   RespondToThreadApprovalInput,
   RespondToThreadUserInputInput,
@@ -70,7 +74,10 @@ export type {
 } from "../operations/commands.ts";
 
 export function createThreadEnvironmentAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
+  runtime: Atom.AtomRuntime<
+    EnvironmentRegistry | Crypto.Crypto | DeferredThreadCommandStore | R,
+    E
+  >,
 ) {
   const scheduler = createAtomCommandScheduler();
   const concurrency = {
@@ -154,6 +161,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",
       execute: (input: StartThreadTurnInput) => startThreadTurn(input),
+      scheduler,
+      concurrency,
+    }),
+    recordVoiceTranscript: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:record-voice-transcript",
+      execute: (input: RecordThreadVoiceTranscriptInput) => recordThreadVoiceTranscript(input),
       scheduler,
       concurrency,
     }),

@@ -43,7 +43,7 @@ export const make = Effect.fn("ByteBoundedResyncBuffer.make")(function* <A>(inpu
   });
   const resyncBytes = Math.max(1, Math.floor(input.sizeOf(input.resyncItem)));
 
-  const overflow = Effect.fn("ByteBoundedResyncBuffer.overflow")(function* () {
+  const overflow = Effect.fnUntraced(function* () {
     yield* Queue.takeAll(queue);
     yield* Queue.offer(queue, { item: input.resyncItem, bytes: resyncBytes });
     return {
@@ -53,7 +53,7 @@ export const make = Effect.fn("ByteBoundedResyncBuffer.make")(function* <A>(inpu
     } satisfies BufferState;
   });
 
-  const offer = Effect.fn("ByteBoundedResyncBuffer.offer")(function* (item: A) {
+  const offer = Effect.fnUntraced(function* (item: A) {
     const bytes = Math.max(1, Math.floor(input.sizeOf(item)));
     return yield* SynchronizedRef.modifyEffect(
       state,

@@ -388,8 +388,10 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
  * Build the traits trigger's text label plus whether the fast-mode bolt should
  * render. Fast mode is a lightning bolt when on and nothing at all when off —
  * "Normal" is the near-universal case and isn't worth the horizontal space. The
- * one exception is when fast mode is the only trait, where a bare bolt (or bare
- * chevron) would leave the trigger unreadable.
+ * one exception is when fast mode is the only trait, where the text label stays
+ * alongside the bolt so the non-compact trigger remains readable. Codex exposes
+ * the same behavior as a select-valued Fast service tier instead of a boolean,
+ * so both provider shapes share the indicator.
  */
 export function buildTraitsTriggerDisplay(input: {
   descriptors: ReadonlyArray<ProviderOptionDescriptor>;
@@ -398,10 +400,20 @@ export function buildTraitsTriggerDisplay(input: {
   fastModeEnabled: boolean;
 }): { label: string; showFastModeIcon: boolean } {
   let hasFastMode = false;
+  let fastModeEnabled = input.fastModeEnabled;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       hasFastMode = true;
+      continue;
+    }
+    if (
+      descriptor.id === "serviceTier" &&
+      descriptor.type === "select" &&
+      getProviderOptionCurrentLabel(descriptor)?.toLocaleLowerCase() === "fast"
+    ) {
+      hasFastMode = true;
+      fastModeEnabled = true;
       continue;
     }
     const label =
@@ -419,9 +431,12 @@ export function buildTraitsTriggerDisplay(input: {
   // off an empty label list alone would also catch descriptors that resolved to
   // no label at all, printing a bogus "Normal" for a model without fast mode.
   if (labels.length === 0 && hasFastMode) {
-    return { label: input.fastModeEnabled ? "Fast" : "Normal", showFastModeIcon: false };
+    return {
+      label: fastModeEnabled ? "Fast" : "Normal",
+      showFastModeIcon: fastModeEnabled,
+    };
   }
-  return { label: labels.join(" · "), showFastModeIcon: input.fastModeEnabled };
+  return { label: labels.join(" · "), showFastModeIcon: fastModeEnabled };
 }
 
 export const TraitsPicker = memo(function TraitsPicker({

@@ -131,6 +131,71 @@ describe("ElectronWindow", () => {
     }).pipe(Effect.provide(TestLayer)),
   );
 
+  it.effect("never falls back to an auxiliary window when no main window exists", () =>
+    Effect.gen(function* () {
+      // The floating voice orb outlives the main window. Without this
+      // exclusion it would be the only entry in getAllWindows() once the main
+      // window closes, and every "main or first" consumer — dock activation,
+      // menu actions, the bubble's own open request — would target a window
+      // that cannot host the app, leaving no way to reopen it.
+      const bubble = makeBrowserWindow({ id: 7, destroyed: false });
+      getAllWindowsMock.mockReturnValue([bubble]);
+
+      const electronWindow = yield* ElectronWindow.ElectronWindow;
+      yield* electronWindow.markAuxiliary(bubble);
+
+      const current = yield* electronWindow.currentMainOrFirst;
+      assert.equal(current._tag, "None");
+
+      // Even while focused: a click on the orb must not make it stand in for
+      // the main window.
+      getFocusedWindowMock.mockReturnValue(bubble);
+      const focused = yield* electronWindow.focusedMainOrFirst;
+      assert.equal(focused._tag, "None");
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect("falls back past an auxiliary window to a real one", () =>
+    Effect.gen(function* () {
+      const bubble = makeBrowserWindow({ id: 7, destroyed: false });
+      const appWindow = makeBrowserWindow({ id: 8, destroyed: false });
+      // Auxiliary first in enumeration order — the old `[0]` fallback would
+      // have picked it.
+      getAllWindowsMock.mockReturnValue([bubble, appWindow]);
+
+      const electronWindow = yield* ElectronWindow.ElectronWindow;
+      yield* electronWindow.markAuxiliary(bubble);
+
+      const current = yield* electronWindow.currentMainOrFirst;
+      assert.equal(current._tag, "Some");
+      if (current._tag === "Some") {
+        assert.strictEqual(current.value, appWindow);
+      }
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect("skips auxiliary windows during appearance sync", () =>
+    Effect.gen(function* () {
+      // Appearance sync paints a background colour; on a transparent orb that
+      // would turn it into an opaque square.
+      const bubble = makeBrowserWindow({ id: 7, destroyed: false });
+      const appWindow = makeBrowserWindow({ id: 8, destroyed: false });
+      getAllWindowsMock.mockReturnValue([bubble, appWindow]);
+
+      const electronWindow = yield* ElectronWindow.ElectronWindow;
+      yield* electronWindow.markAuxiliary(bubble);
+
+      const syncedWindows: Electron.BrowserWindow[] = [];
+      yield* electronWindow.syncAllAppearance((window) =>
+        Effect.sync(() => {
+          syncedWindows.push(window);
+        }),
+      );
+
+      assert.deepEqual(syncedWindows, [appWindow]);
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
   it.effect("preserves window enumeration failures as structured defects", () =>
     Effect.gen(function* () {
       const cause = new Error("window enumeration failed");

@@ -255,6 +255,31 @@ describe("AcpRuntimeModel", () => {
     }
   });
 
+  it("replaces a generic Grok Tool title with a read-file label", () => {
+    const created = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-grok-1",
+        title: "Tool",
+        kind: "other",
+        status: "pending",
+        rawInput: {
+          path: "/tmp/app.ts",
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(created.events[0]).toMatchObject({
+      _tag: "ToolCallUpdated",
+      toolCall: {
+        toolCallId: "tool-grok-1",
+        title: "Read file",
+        detail: "/tmp/app.ts",
+      },
+    });
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",
@@ -322,6 +347,7 @@ describe("AcpRuntimeModel", () => {
       {
         _tag: "ContentDelta",
         text: "hello from acp",
+        streamKind: "assistant_text",
         rawPayload: {
           sessionId: "session-1",
           update: {
@@ -329,6 +355,35 @@ describe("AcpRuntimeModel", () => {
             content: {
               type: "text",
               text: "hello from acp",
+            },
+          },
+        },
+      },
+    ]);
+
+    const thoughtResult = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
+        content: {
+          type: "text",
+          text: "considering the stall",
+        },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+
+    expect(thoughtResult.events).toEqual([
+      {
+        _tag: "ContentDelta",
+        text: "considering the stall",
+        streamKind: "reasoning_text",
+        rawPayload: {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: {
+              type: "text",
+              text: "considering the stall",
             },
           },
         },

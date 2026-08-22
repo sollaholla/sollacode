@@ -87,9 +87,12 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="person.2" label="Agents" fullScreenTarget="Agents" />
         </SettingsSection>
 
         <GeneralSettingsSection />
+
+        <OrchestratorSettingsSection />
 
         <SettingsSection title="Appearance">
           <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
@@ -120,6 +123,14 @@ function GeneralSettingsSection() {
         value={projectGroupingEnabled}
         onValueChange={(value) => savePreferences({ projectGroupingEnabled: value })}
       />
+    </SettingsSection>
+  );
+}
+
+function OrchestratorSettingsSection() {
+  return (
+    <SettingsSection title="Orchestrator">
+      <SettingsRow icon="waveform" label="Open Orchestrator" fullScreenTarget="Orchestrator" />
     </SettingsSection>
   );
 }

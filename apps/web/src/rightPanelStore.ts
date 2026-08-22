@@ -22,10 +22,11 @@ export const RIGHT_PANEL_KINDS = [
   "preview",
   "terminal",
   "side-chat",
+  "artifact",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
-export type RightPanelSurface =
+type RightPanelSurfaceDescriptor =
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | {
@@ -40,6 +41,13 @@ export type RightPanelSurface =
   | { id: "files"; kind: "files" }
   | { id: `side-chat:${string}`; kind: "side-chat"; resourceId: string; title: string }
   | {
+      id: `artifact:${string}`;
+      kind: "artifact";
+      resourceId: string;
+      revision: number;
+      title: string;
+    }
+  | {
       id: `file:${string}`;
       kind: "file";
       relativePath: string;
@@ -48,8 +56,13 @@ export type RightPanelSurface =
     }
   | { id: "plan"; kind: "plan" };
 
+export type RightPanelSurface = RightPanelSurfaceDescriptor & {
+  /** User-owned tab title. Missing means the live resource-derived title wins. */
+  customTitle?: string;
+};
+
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 8;
+const RIGHT_PANEL_STORAGE_VERSION = 10;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -69,7 +82,7 @@ interface RightPanelStoreState {
   pendingSideChatSpawnsByThreadKey: Record<string, Record<string, number>>;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat" | "artifact">,
   ) => void;
   /**
    * Opens the panel without adding a surface. The agents & tasks section lives
@@ -81,6 +94,13 @@ interface RightPanelStoreState {
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   openSideChat: (ref: ScopedThreadRef, sideChatThreadId: string, title: string) => void;
+  openArtifact: (ref: ScopedThreadRef, artifactId: string, revision: number, title: string) => void;
+  updateArtifactRevision: (
+    ref: ScopedThreadRef,
+    artifactId: string,
+    revision: number,
+    title: string,
+  ) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -94,6 +114,7 @@ interface RightPanelStoreState {
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurfacesToRight: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeAllSurfaces: (ref: ScopedThreadRef) => void;
+  renameSurface: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   /**
    * Moves a tab so it lands where `overSurfaceId` currently sits. Tab order is
    * the `surfaces` array order, which already persists, so dragging needs no
@@ -112,7 +133,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "side-chat" | "artifact">,
   ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -124,7 +145,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "side-chat">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "side-chat" | "artifact">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -177,6 +198,18 @@ const sideChatSurface = (threadId: string, title: string): SideChatSurface => ({
   id: `side-chat:${threadId}`,
   kind: "side-chat",
   resourceId: threadId,
+  title,
+});
+
+const artifactSurface = (
+  artifactId: string,
+  revision: number,
+  title: string,
+): Extract<RightPanelSurface, { kind: "artifact" }> => ({
+  id: `artifact:${artifactId}`,
+  kind: "artifact",
+  resourceId: artifactId,
+  revision,
   title,
 });
 
@@ -233,6 +266,23 @@ function normalizeRevealLine(line: number | undefined): number | null {
   return Math.max(1, Math.trunc(line));
 }
 
+function withCustomSurfaceTitle(surface: RightPanelSurface, title: string): RightPanelSurface {
+  const customTitle = title.trim();
+  if (customTitle.length > 0) {
+    return surface.customTitle === customTitle ? surface : { ...surface, customTitle };
+  }
+  if (surface.customTitle === undefined) return surface;
+  const { customTitle: _customTitle, ...defaultTitledSurface } = surface;
+  return defaultTitledSurface as RightPanelSurface;
+}
+
+function normalizePersistedSurfaceCustomTitle(surface: RightPanelSurface): RightPanelSurface {
+  return withCustomSurfaceTitle(
+    surface,
+    typeof surface.customTitle === "string" ? surface.customTitle : "",
+  );
+}
+
 export function migratePersistedRightPanelState(persistedState: unknown): {
   byThreadKey: Record<string, ThreadRightPanelState>;
 } {
@@ -249,66 +299,86 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
               const validThreadState =
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
-                ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    if (surface.kind === "file") {
-                      const revealLine =
-                        typeof surface.revealLine === "number" &&
-                        Number.isFinite(surface.revealLine)
-                          ? Math.max(1, Math.trunc(surface.revealLine))
-                          : null;
-                      const revealRequestId =
-                        typeof surface.revealRequestId === "number" &&
-                        Number.isSafeInteger(surface.revealRequestId) &&
-                        surface.revealRequestId >= 0
-                          ? surface.revealRequestId
-                          : 0;
-                      return [{ ...surface, revealLine, revealRequestId }];
-                    }
-                    if (surface.kind === "side-chat") {
+                ? validThreadState.surfaces
+                    .flatMap<RightPanelSurface>((surface) => {
+                      if (surface.kind === "file") {
+                        const revealLine =
+                          typeof surface.revealLine === "number" &&
+                          Number.isFinite(surface.revealLine)
+                            ? Math.max(1, Math.trunc(surface.revealLine))
+                            : null;
+                        const revealRequestId =
+                          typeof surface.revealRequestId === "number" &&
+                          Number.isSafeInteger(surface.revealRequestId) &&
+                          surface.revealRequestId >= 0
+                            ? surface.revealRequestId
+                            : 0;
+                        return [{ ...surface, revealLine, revealRequestId }];
+                      }
+                      if (surface.kind === "side-chat") {
+                        if (
+                          !("resourceId" in surface) ||
+                          typeof surface.resourceId !== "string" ||
+                          surface.id !== `side-chat:${surface.resourceId}` ||
+                          !("title" in surface) ||
+                          typeof surface.title !== "string"
+                        ) {
+                          return [];
+                        }
+                        return [surface];
+                      }
+                      if (surface.kind === "artifact") {
+                        if (
+                          !("resourceId" in surface) ||
+                          typeof surface.resourceId !== "string" ||
+                          surface.resourceId.length === 0 ||
+                          surface.id !== `artifact:${surface.resourceId}` ||
+                          !("revision" in surface) ||
+                          typeof surface.revision !== "number" ||
+                          !Number.isSafeInteger(surface.revision) ||
+                          surface.revision < 1 ||
+                          !("title" in surface) ||
+                          typeof surface.title !== "string" ||
+                          surface.title.trim().length === 0
+                        ) {
+                          return [];
+                        }
+                        return [{ ...surface, title: surface.title.trim() }];
+                      }
+                      if (surface.kind !== "terminal") return [surface];
                       if (
                         !("resourceId" in surface) ||
                         typeof surface.resourceId !== "string" ||
-                        surface.id !== `side-chat:${surface.resourceId}` ||
-                        !("title" in surface) ||
-                        typeof surface.title !== "string"
+                        surface.id !== `terminal:${surface.resourceId}`
                       ) {
                         return [];
                       }
-                      return [surface];
-                    }
-                    if (surface.kind !== "terminal") return [surface];
-                    if (
-                      !("resourceId" in surface) ||
-                      typeof surface.resourceId !== "string" ||
-                      surface.id !== `terminal:${surface.resourceId}`
-                    ) {
-                      return [];
-                    }
-                    const terminalIds =
-                      "terminalIds" in surface && Array.isArray(surface.terminalIds)
-                        ? [
-                            ...new Set(
-                              surface.terminalIds.filter(
-                                (terminalId): terminalId is string =>
-                                  typeof terminalId === "string",
+                      const terminalIds =
+                        "terminalIds" in surface && Array.isArray(surface.terminalIds)
+                          ? [
+                              ...new Set(
+                                surface.terminalIds.filter(
+                                  (terminalId): terminalId is string =>
+                                    typeof terminalId === "string",
+                                ),
                               ),
-                            ),
-                          ]
-                        : [surface.resourceId];
-                    const activeTerminalId =
-                      "activeTerminalId" in surface &&
-                      typeof surface.activeTerminalId === "string" &&
-                      terminalIds.includes(surface.activeTerminalId)
-                        ? surface.activeTerminalId
-                        : (terminalIds[0] ?? surface.resourceId);
-                    return [
-                      {
-                        ...surface,
-                        terminalIds: terminalIds.length > 0 ? terminalIds : [surface.resourceId],
-                        activeTerminalId,
-                      },
-                    ];
-                  })
+                            ]
+                          : [surface.resourceId];
+                      const activeTerminalId =
+                        "activeTerminalId" in surface &&
+                        typeof surface.activeTerminalId === "string" &&
+                        terminalIds.includes(surface.activeTerminalId)
+                          ? surface.activeTerminalId
+                          : (terminalIds[0] ?? surface.resourceId);
+                      return [
+                        {
+                          ...surface,
+                          terminalIds: terminalIds.length > 0 ? terminalIds : [surface.resourceId],
+                          activeTerminalId,
+                        },
+                      ];
+                    })
+                    .map(normalizePersistedSurfaceCustomTitle)
                 : [];
               const activeSurfaceId = surfaces.some(
                 (surface) => surface.id === validThreadState?.activeSurfaceId,
@@ -369,11 +439,14 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               (surface): surface is Extract<RightPanelSurface, { kind: "file" }> =>
                 surface.id === surfaceId && surface.kind === "file",
             );
-            const surface = fileSurface(
+            const nextSurface = fileSurface(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
             );
+            const surface = existing?.customTitle
+              ? { ...nextSurface, customTitle: existing.customTitle }
+              : nextSurface;
             return {
               isOpen: true,
               activeSurfaceId: surface.id,
@@ -406,6 +479,45 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           },
         }));
       },
+      openArtifact: (ref, artifactId, revision, title) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surface = artifactSurface(artifactId, revision, title);
+            const existing = current.surfaces.find((entry) => entry.id === surface.id);
+            if (!existing || existing.kind !== "artifact") return upsertSurface(current, surface);
+            return {
+              ...current,
+              isOpen: true,
+              activeSurfaceId: existing.id,
+              surfaces: current.surfaces.map((entry) =>
+                entry.id === existing.id
+                  ? {
+                      ...existing,
+                      title,
+                      revision: Math.max(existing.revision, revision),
+                    }
+                  : entry,
+              ),
+            };
+          }),
+        })),
+      updateArtifactRevision: (ref, artifactId, revision, title) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => ({
+            ...current,
+            isOpen: true,
+            activeSurfaceId: `artifact:${artifactId}`,
+            surfaces: current.surfaces.some(
+              (entry) => entry.kind === "artifact" && entry.resourceId === artifactId,
+            )
+              ? current.surfaces.map((entry) =>
+                  entry.kind === "artifact" && entry.resourceId === artifactId
+                    ? { ...entry, revision, title }
+                    : entry,
+                )
+              : [...current.surfaces, artifactSurface(artifactId, revision, title)],
+          })),
+        })),
       splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => ({
@@ -545,6 +657,20 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : { ...current, surfaces: [], activeSurfaceId: null },
           ),
         })),
+      renameSurface: (ref, surfaceId, title) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surfaceIndex = current.surfaces.findIndex((surface) => surface.id === surfaceId);
+            if (surfaceIndex < 0) return current;
+            const surface = current.surfaces[surfaceIndex];
+            if (!surface) return current;
+            const renamedSurface = withCustomSurfaceTitle(surface, title);
+            if (renamedSurface === surface) return current;
+            const surfaces = [...current.surfaces];
+            surfaces[surfaceIndex] = renamedSurface;
+            return { ...current, surfaces };
+          }),
+        })),
       reorderSurface: (ref, surfaceId, overSurfaceId) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
@@ -651,7 +777,13 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                 if (nextPending[surface.resourceId] !== undefined) surfaces.push(surface);
                 continue;
               }
-              surfaces.push(expected.title === surface.title ? surface : expected);
+              surfaces.push(
+                expected.title === surface.title
+                  ? surface
+                  : surface.customTitle
+                    ? { ...expected, customTitle: surface.customTitle }
+                    : expected,
+              );
             }
             const knownIds = new Set(surfaces.map((surface) => surface.id));
             for (const [surfaceId, surface] of expectedById) {

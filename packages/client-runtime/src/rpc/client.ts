@@ -47,6 +47,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeServerLifecycle
   | typeof WS_METHODS.subscribeTerminalEvents
   | typeof WS_METHODS.subscribeTerminalMetadata
+  | typeof WS_METHODS.subscribeTerminalLayouts
   | typeof WS_METHODS.subscribePreviewEvents
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeResourceTelemetry
@@ -54,7 +55,12 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.remoteControlHostConnect
   | typeof WS_METHODS.remoteControlWatch
   | typeof WS_METHODS.subscribeVcsStatus
-  | typeof WS_METHODS.terminalAttach;
+  | typeof WS_METHODS.terminalAttach
+  | typeof WS_METHODS.vmAgentSubscribe
+  | typeof WS_METHODS.vmAgentSubscribeScreen
+  | typeof WS_METHODS.vmAgentWorkspaceSubscribe
+  | typeof WS_METHODS.vmAgentCollaborationSubscribe
+  | typeof WS_METHODS.threadArtifactsSubscribe;
 
 export type EnvironmentStreamCommandRpcTag = typeof WS_METHODS.gitRunStackedAction;
 

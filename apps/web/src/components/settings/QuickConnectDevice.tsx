@@ -25,6 +25,7 @@ import { QRCodeSvg } from "../ui/qr-code";
 import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { confirmSensitiveReveal } from "./RedactedSensitiveText";
 
 interface QuickPairingLink {
   readonly id: string;
@@ -141,6 +142,14 @@ export function QuickConnectDevice({
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      if (
+        nextOpen &&
+        !confirmSensitiveReveal(
+          "Reveal a one-time device connection link and QR code? Anyone who scans it may be able to connect to Solla Code.",
+        )
+      ) {
+        return;
+      }
       setOpen(nextOpen);
       if (nextOpen) {
         initialSessionIdsRef.current = new Set(

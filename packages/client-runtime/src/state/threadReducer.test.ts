@@ -512,7 +512,8 @@ describe("applyThreadDetailEvent", () => {
           providerName: "codex",
           runtimeMode: "full-access",
           activeTurnId: TurnId.make("turn-1"),
-          lastError: null,
+          lastError:
+            "this session has failed 5 turns in a row; refusing to start another until the cause is fixed.",
           updatedAt: "2026-04-01T08:00:00.000Z",
         },
       };
@@ -534,6 +535,7 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.session?.status).toBe("stopped");
         expect(result.thread.session?.activeTurnId).toBeNull();
+        expect(result.thread.session?.lastError).toBeNull();
       }
     });
 

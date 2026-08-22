@@ -14,6 +14,8 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
+import { VmAgentCollaborationStore } from "../../../persistence/Services/VmAgentCollaborations.ts";
+import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import * as ThreadHistoryQuery from "../history/ThreadHistoryQuery.ts";
 import { relatedChatSummary, resolveRelatedChats } from "./relationships.ts";
 import { ThreadCollaborationToolkit } from "./tools.ts";
@@ -49,6 +51,8 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
   const providerRegistry = yield* ProviderRegistry;
   const history = yield* ThreadHistoryQuery.ThreadHistoryQuery;
   const crypto = yield* Crypto.Crypto;
+  const agentCollaboration = yield* VmAgentCollaborationStore;
+  const vmAgents = yield* VmAgentStore;
 
   const readFamily = Effect.fn("ThreadCollaboration.readFamily")(function* () {
     const snapshot = yield* projection
@@ -118,16 +122,75 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
           invocation.threadId,
         );
       }
+      if (input.runtimeMode !== undefined && input.runtimeMode !== family.caller.runtimeMode) {
+        yield* dispatch(
+          {
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make(yield* randomId),
+            threadId: invocation.threadId,
+            runtimeMode: input.runtimeMode,
+            createdAt: now,
+          },
+          "updating the calling chat access mode",
+          invocation.threadId,
+        );
+      }
+      if (
+        input.interactionMode !== undefined &&
+        input.interactionMode !== family.caller.interactionMode
+      ) {
+        yield* dispatch(
+          {
+            type: "thread.interaction-mode.set",
+            commandId: CommandId.make(yield* randomId),
+            threadId: invocation.threadId,
+            interactionMode: input.interactionMode,
+            createdAt: now,
+          },
+          "updating the calling chat interaction mode",
+          invocation.threadId,
+        );
+      }
       return {
         action: "set_model" as const,
         threadId: invocation.threadId,
         previousModelSelection: family.caller.modelSelection,
         modelSelection: input.modelSelection,
+        previousRuntimeMode: family.caller.runtimeMode,
+        runtimeMode: input.runtimeMode ?? family.caller.runtimeMode,
+        previousInteractionMode: family.caller.interactionMode,
+        interactionMode: input.interactionMode ?? family.caller.interactionMode,
         effectiveOn: "next_turn" as const,
       };
     }
 
     case "create_side_chat": {
+      const callingVmAgent = yield* vmAgents
+        .getByThreadId(invocation.threadId)
+        .pipe(
+          Effect.mapError(() =>
+            toOperationError("checking VM-agent delegation routing", invocation.threadId),
+          ),
+        );
+      if (Option.isSome(callingVmAgent)) {
+        return yield* toOperationError(
+          "VM agents must use agent_collaboration.delegate instead of create_side_chat",
+          invocation.threadId,
+        );
+      }
+      const delegated = yield* agentCollaboration
+        .hasActiveTargetThread(invocation.threadId)
+        .pipe(
+          Effect.mapError(() =>
+            toOperationError("checking delegated-worker depth", invocation.threadId),
+          ),
+        );
+      if (delegated) {
+        return yield* toOperationError(
+          "delegated workers cannot create side chats",
+          invocation.threadId,
+        );
+      }
       const family = yield* readFamily();
       const source = family.caller;
       const owningParentThreadId =

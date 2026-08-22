@@ -55,6 +55,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/L
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
+import * as ActionApprovalBroker from "../src/mcp/toolkits/actionApproval/ActionApprovalBroker.ts";
 import { makeThreadWorkSchedulerLive } from "../src/orchestration/Layers/ThreadWorkScheduler.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { RuntimeLeaseRegistryLive } from "../src/provider/Layers/RuntimeLeaseRegistry.ts";
@@ -339,6 +340,7 @@ export const makeOrchestrationIntegrationHarness = (
       generatePlanRefresh: () => Effect.succeed({ steps: [] }),
     } as unknown as TextGenerationShape);
     const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(ActionApprovalBroker.layer),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),

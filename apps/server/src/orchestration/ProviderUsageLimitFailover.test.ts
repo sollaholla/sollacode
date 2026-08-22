@@ -14,6 +14,7 @@ import {
   detectProviderUsageLimitExhaustion,
   deriveProviderHandoffContinuity,
   PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,
+  PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS,
   selectProviderFailoverTarget,
 } from "./ProviderUsageLimitFailover.ts";
 
@@ -124,6 +125,25 @@ describe("detectProviderUsageLimitExhaustion", () => {
         rate_limit_info: { status: "rejected" },
       }),
     ).toBeNull();
+    expect(
+      detectProviderUsageLimitExhaustion(ProviderDriverKind.make("grok"), {
+        config: {
+          creditUsagePercent: 6,
+          currentPeriod: { end: "2026-08-22T00:00:00+00:00" },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      detectProviderUsageLimitExhaustion(ProviderDriverKind.make("grok"), {
+        config: {
+          creditUsagePercent: 100,
+          currentPeriod: { end: "2026-08-22T00:00:00+00:00" },
+        },
+      }),
+    ).toEqual({
+      reason: "weekly_usage_pool_exhausted",
+      resetsAt: Date.parse("2026-08-22T00:00:00+00:00"),
+    });
   });
 });
 
@@ -419,6 +439,70 @@ describe("buildProviderHandoffSummary", () => {
     expect(decoded.context.kind).toBe("t3.provider-handoff");
     expect(decoded.context.handoff.reason).toBe("manual_provider_switch");
     expect(decoded.currentRequest).toBe("Continue with Codex.");
+  });
+
+  it("keeps the complete handoff turn inside the provider input limit", () => {
+    const summary = buildProviderHandoffSummary({
+      threadId: ThreadId.make("thread-large-request"),
+      threadTitle: "Large request",
+      messages: [message(1, "Earlier context")],
+      from: {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+      },
+      to: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus",
+        },
+      },
+      exhaustion: { reason: "manual_provider_switch", resetsAt: null },
+      generatedAt: "2026-01-01T00:01:00.000Z",
+    });
+
+    const serialized = buildProviderHandoffTurnInput({
+      summary,
+      // Control characters expand sixfold when JSON encoded, so a source-text
+      // slice alone cannot prove the serialized contract is respected.
+      currentRequest: "\u0000".repeat(PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS),
+    });
+    const decoded = JSON.parse(serialized) as { currentRequest: string };
+
+    expect(serialized.length).toBeLessThanOrEqual(PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS);
+    expect(decoded.currentRequest).toContain("Request truncated for provider transport");
+  });
+
+  it("unwraps a persisted handoff turn instead of nesting it again", () => {
+    const summary = buildProviderHandoffSummary({
+      threadId: ThreadId.make("thread-retried-switch"),
+      threadTitle: "Retried switch",
+      messages: [],
+      from: {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+      },
+      to: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus",
+        },
+      },
+      exhaustion: { reason: "manual_provider_switch", resetsAt: null },
+      generatedAt: "2026-01-01T00:01:00.000Z",
+    });
+    const previousEnvelope = buildProviderHandoffTurnInput({
+      summary,
+      currentRequest: "Please proceed with Claude.",
+    });
+    const retried = JSON.parse(
+      buildProviderHandoffTurnInput({ summary, currentRequest: previousEnvelope }),
+    ) as { currentRequest: string };
+
+    expect(retried.currentRequest).toBe("Please proceed with Claude.");
   });
 });
 

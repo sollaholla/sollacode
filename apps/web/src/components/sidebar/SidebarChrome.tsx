@@ -55,7 +55,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
             "[:hover,[data-pressed]]:bg-white/15 focus-visible:ring-white/90 focus-visible:ring-offset-blue-700 [&_svg]:stroke-white/90! [&_svg]:opacity-100! [&_svg]:hover:stroke-white!",
         )}
       />
-      <SidebarBrand onBackdrop={backdropVariant !== null} />
+      <SidebarBrand />
       {pillLabel ? (
         <Badge
           className="relative z-10 ml-1 rounded-full px-1.5 text-muted-foreground"
@@ -70,18 +70,19 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 });
 
-function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
+function SidebarBrand() {
   return (
     <Link
       aria-label="Solla Code home"
-      className={cn(
-        "sidebar-brand relative z-10 ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center gap-1 overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2",
-        onBackdrop ? "text-white" : "text-foreground",
-      )}
+      className="sidebar-brand relative z-10 ml-[var(--workspace-titlebar-content-left)] size-8 shrink-0 items-center justify-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2"
       to="/"
     >
-      <img alt="" aria-hidden className="size-4 shrink-0 rounded-[5px]" src="/favicon-32x32.png" />
-      <span className="truncate text-sm font-semibold tracking-tight">Solla Code</span>
+      <img
+        alt=""
+        aria-hidden
+        className="size-7 shrink-0 object-contain"
+        src="/solla-code-mark.png"
+      />
     </Link>
   );
 }

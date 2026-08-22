@@ -32,6 +32,8 @@ const DEFAULT_MAX_AGE_MS = 14 * DAY_MS;
 const DEFAULT_RETENTION_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_BUFFERED_BYTES = MEBIBYTE;
 const DEFAULT_MAX_BUFFERED_RECORDS = 512;
+const MAX_SERIALIZED_EVENT_BYTES = 64 * 1024;
+const RAW_OUTPUT_PREVIEW_CHARACTERS = 2_048;
 const GLOBAL_THREAD_SEGMENT = "_global";
 const LOG_SCOPE = "provider-observability";
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
@@ -43,7 +45,14 @@ const transientCanonicalEventTypes = new Set([
   "task.progress",
   "thread.realtime.audio.delta",
   "tool.progress",
+  "turn.diff.updated",
   "turn.proposed.delta",
+]);
+
+const transientNativeSessionUpdateTypes = new Set([
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call_update",
 ]);
 
 export type EventNdjsonStream = "native" | "canonical" | "orchestration";
@@ -178,12 +187,35 @@ function providerLogPath(directory: string, prefix: string, threadSegment: strin
 }
 
 function shouldPersist(stream: EventNdjsonStream, event: unknown): boolean {
-  if (stream !== "canonical" || typeof event !== "object" || event === null) {
+  if (typeof event !== "object" || event === null) {
     return true;
   }
   try {
     const type = Reflect.get(event, "type");
-    return typeof type !== "string" || !transientCanonicalEventTypes.has(type);
+    if (typeof type === "string" && transientCanonicalEventTypes.has(type)) {
+      return false;
+    }
+    if (stream !== "native") return true;
+
+    const nestedEvent = Reflect.get(event, "event");
+    const nativeEvent =
+      typeof nestedEvent === "object" && nestedEvent !== null ? nestedEvent : event;
+    const method = Reflect.get(nativeEvent, "method");
+    if (typeof method !== "string") return true;
+    const normalizedMethod = method.toLowerCase();
+    if (normalizedMethod.includes("delta") || normalizedMethod === "turn/diff/updated") {
+      return false;
+    }
+    if (normalizedMethod !== "session/update") return true;
+
+    const payload = Reflect.get(nativeEvent, "payload");
+    if (typeof payload !== "object" || payload === null) return true;
+    const update = Reflect.get(payload, "update");
+    if (typeof update !== "object" || update === null) return true;
+    const sessionUpdate = Reflect.get(update, "sessionUpdate");
+    return (
+      typeof sessionUpdate !== "string" || !transientNativeSessionUpdateTypes.has(sessionUpdate)
+    );
   } catch {
     return true;
   }
@@ -437,14 +469,44 @@ function drainPending(input: {
   ];
 }
 
+function compactOversizedEvent(payload: string): string {
+  if (Buffer.byteLength(payload) <= MAX_SERIALIZED_EVENT_BYTES) return payload;
+
+  const parsed = JSON.parse(payload) as unknown;
+  const compacted = JSON.stringify(parsed, (key, value: unknown) => {
+    if (key !== "rawOutput") return value;
+    const encoded = JSON.stringify(value);
+    return {
+      truncated: true,
+      originalBytes: Buffer.byteLength(encoded),
+      preview: encoded.slice(0, RAW_OUTPUT_PREVIEW_CHARACTERS),
+    };
+  });
+  if (Buffer.byteLength(compacted) <= MAX_SERIALIZED_EVENT_BYTES) return compacted;
+
+  const record =
+    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  return JSON.stringify({
+    truncated: true,
+    originalBytes: Buffer.byteLength(payload),
+    ...(typeof record?.type === "string" ? { type: record.type } : {}),
+    ...(typeof record?.id === "string" ? { id: record.id } : {}),
+    ...(typeof record?.threadId === "string" ? { threadId: record.threadId } : {}),
+  });
+}
+
 const serializeEvent = Effect.fnUntraced(function* (event: unknown) {
-  return yield* encodeUnknownJsonString(event).pipe(
+  const payload = yield* encodeUnknownJsonString(event).pipe(
     Effect.catch((error) =>
       logWarning("failed to serialize provider event log record", {
         errorTag: errorTag(error),
       }).pipe(Effect.as(undefined)),
     ),
   );
+  if (payload === undefined) return undefined;
+  return compactOversizedEvent(payload);
 });
 
 export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (

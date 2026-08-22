@@ -1,11 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { GeneralSettingsPanel } from "../components/settings/SettingsPanels";
-
-function SettingsGeneralRoute() {
-  return <GeneralSettingsPanel />;
-}
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/settings/general")({
-  component: SettingsGeneralRoute,
+  component: lazyRouteComponent(
+    () => import("../components/settings/SettingsPanels"),
+    "GeneralSettingsPanel",
+  ),
 });

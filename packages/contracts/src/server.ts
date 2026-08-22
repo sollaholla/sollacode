@@ -157,6 +157,16 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/** Runtime features negotiated from an external provider bridge descriptor. */
+export const ServerProviderRuntimeCapabilities = Schema.Struct({
+  taskStop: Schema.Boolean,
+  textGeneration: Schema.Boolean,
+  threadRollback: Schema.Boolean,
+  threadFork: Schema.Boolean,
+  modelSwitchRequiresNewThread: Schema.Boolean,
+});
+export type ServerProviderRuntimeCapabilities = typeof ServerProviderRuntimeCapabilities.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -197,6 +207,8 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  /** Present when a provider exposes an explicit runtime capability contract. */
+  runtimeCapabilities: Schema.optionalKey(ServerProviderRuntimeCapabilities),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 
@@ -431,6 +443,8 @@ export const ServerConfig = Schema.Struct({
   settings: ServerSettings,
   /** Whether shell subscriptions can emit an opt-in catch-up completion marker. */
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /** Whether shell subscriptions can emit opt-in `thread-pending-work` items. */
+  shellPendingWorkUpdates: Schema.optionalKey(Schema.Boolean),
   /** Whether thread subscriptions can emit an opt-in catch-up completion marker. */
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
 });

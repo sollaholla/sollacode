@@ -115,12 +115,19 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
             terminal: false,
           });
           expect(
+            requests.find((request) => request.method === "authenticate")?.params,
+          ).toMatchObject({
+            _meta: { headless: true },
+          });
+          expect(
             requests.some(
               (request) =>
-                request.method === "session/set_model" &&
-                request.params?.modelId === "grok-mock-alt",
+                request.method === "session/set_config_option" &&
+                request.params?.configId === "model" &&
+                request.params?.value === "grok-mock-alt",
             ),
           ).toBe(true);
+          expect(requests.some((request) => request.method === "session/set_model")).toBe(false);
         }),
     );
   });

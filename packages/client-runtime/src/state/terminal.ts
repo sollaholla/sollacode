@@ -1,4 +1,4 @@
-import { type TerminalSummary, WS_METHODS } from "@t3tools/contracts";
+import { type TerminalSummary, type TerminalThreadLayout, WS_METHODS } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -12,6 +12,7 @@ import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
 import {
   applyTerminalAttachStreamEvent,
+  applyTerminalLayoutStreamEvent,
   applyTerminalMetadataStreamEvent,
   EMPTY_TERMINAL_BUFFER_STATE,
 } from "./terminalSession.ts";
@@ -57,11 +58,26 @@ export function createTerminalEnvironmentAtoms<R, E>(
           Stream.scan([] as ReadonlyArray<TerminalSummary>, applyTerminalMetadataStreamEvent),
         ),
     }),
+    layouts: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:terminal:layouts",
+      subscribe: (_input: null) =>
+        resubscribeOnTerminalResync(subscribe(WS_METHODS.subscribeTerminalLayouts, {})).pipe(
+          Stream.scan([] as ReadonlyArray<TerminalThreadLayout>, applyTerminalLayoutStreamEvent),
+        ),
+    }),
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:terminal:open",
       tag: WS_METHODS.terminalOpen,
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
+    }),
+    list: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:terminal:list",
+      tag: WS_METHODS.terminalList,
+    }),
+    read: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:terminal:read",
+      tag: WS_METHODS.terminalRead,
     }),
     write: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:terminal:write",
@@ -90,6 +106,15 @@ export function createTerminalEnvironmentAtoms<R, E>(
       tag: WS_METHODS.terminalClose,
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
+    }),
+    getLayout: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:terminal:getLayout",
+      tag: WS_METHODS.terminalGetLayout,
+    }),
+    setLayout: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:terminal:setLayout",
+      tag: WS_METHODS.terminalSetLayout,
+      concurrency: { mode: "latest", key: terminalThreadKey },
     }),
   };
 }

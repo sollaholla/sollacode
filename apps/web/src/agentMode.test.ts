@@ -10,6 +10,7 @@ import {
   isAgentContinuePrompt,
   isAgentMode,
   isAutoResumePendingWork,
+  shouldAnnounceAgentAutoResume,
   selectRecommendedOption,
 } from "./agentMode";
 
@@ -149,5 +150,28 @@ describe("AGENT_CONTINUE_PROMPT", () => {
     expect(AGENT_CONTINUE_PROMPT).toContain("exhausted safe alternatives");
     expect(AGENT_CONTINUE_PROMPT).toContain("honors that stop signal immediately");
     expect(AGENT_CONTINUE_PROMPT).not.toContain("final completion audit");
+  });
+});
+
+describe("shouldAnnounceAgentAutoResume", () => {
+  const base = { pending: true, isWorking: false, hasRunningBackgroundTask: false };
+
+  it("announces a genuinely queued resume", () => {
+    expect(shouldAnnounceAgentAutoResume(base)).toBe(true);
+  });
+
+  // Reported 2026-08-15: a thread sat on "Agent auto-resuming…" for the whole
+  // life of a background command. The server had parked the continuation on
+  // that very task, but the client could not tell parked from imminent.
+  it("stays quiet while a background task is still running", () => {
+    expect(shouldAnnounceAgentAutoResume({ ...base, hasRunningBackgroundTask: true })).toBe(false);
+  });
+
+  it("stays quiet while a turn is already on screen", () => {
+    expect(shouldAnnounceAgentAutoResume({ ...base, isWorking: true })).toBe(false);
+  });
+
+  it("stays quiet when nothing is queued", () => {
+    expect(shouldAnnounceAgentAutoResume({ ...base, pending: false })).toBe(false);
   });
 });

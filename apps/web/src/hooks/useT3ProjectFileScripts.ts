@@ -14,6 +14,11 @@ const decodeT3ProjectFile = Schema.decodeExit(T3ProjectFileFromJson);
 
 const NO_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
 
+interface T3ProjectFileScriptsQueryState {
+  readonly scripts: ReadonlyArray<T3ProjectFileScript>;
+  readonly refresh: () => void;
+}
+
 /**
  * Scripts declared in the project's checked-in `t3.json`, offered in the
  * scripts menu for import. Missing, truncated, or invalid files resolve to
@@ -22,13 +27,14 @@ const NO_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
 export function useT3ProjectFileScripts(
   environmentId: EnvironmentId,
   cwd: string | null,
-): ReadonlyArray<T3ProjectFileScript> {
+): T3ProjectFileScriptsQueryState {
   const query = useProjectFileQuery(environmentId, cwd ?? "", T3_PROJECT_FILE_NAME, cwd !== null);
   const contents = query.data && !query.data.truncated ? query.data.contents : null;
-  return useMemo(() => {
+  const scripts = useMemo(() => {
     if (contents === null) return NO_SCRIPTS;
     const decoded = decodeT3ProjectFile(contents);
     if (Exit.isFailure(decoded)) return NO_SCRIPTS;
     return decoded.value.scripts ?? NO_SCRIPTS;
   }, [contents]);
+  return { scripts, refresh: query.refresh };
 }

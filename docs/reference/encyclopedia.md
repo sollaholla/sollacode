@@ -8,7 +8,9 @@ This is a living glossary for Solla Code. It explains what common terms mean in 
 - [Thread timeline](#thread-timeline)
 - [Orchestration](#orchestration)
 - [Provider runtime](#provider-runtime)
+- [Custom agents](#custom-agents)
 - [Checkpointing](#checkpointing)
+- [Orchestrator voice](#orchestrator-voice)
 
 ## Concepts
 
@@ -111,9 +113,74 @@ The agent interaction style for a thread. In [the contracts][1], the main values
 
 Controls how assistant text reaches the thread timeline. In [the contracts][1], `streaming` updates incrementally and `buffered` delivers a completed result. See [ProviderService.ts][14].
 
+#### Thought chunk
+
+An ACP `agent_thought_chunk` - the model's private reasoning before it writes assistant text. Grok 4.6 and Grok Build emit these for a long stretch at high effort. The adapter keeps them out of the assistant message and surfaces one collapsed "Thinking" activity so the chat is visibly proceeding. See [GrokAdapter.ts][29] and [AcpRuntimeModel.ts][30].
+
 #### Snapshot
 
 A point-in-time view of state. The word is used in multiple layers, including orchestration, provider, and checkpointing. See [ProjectionSnapshotQuery.ts][10], [ProviderAdapter.ts][15], and [CheckpointStore.ts][19].
+
+### Custom agents
+
+#### Custom agent
+
+A named Agent Stack identity with one persistent computer and one dedicated chat thread. It is not a generic provider agent or an ordinary project thread. See [the user guide](../user/custom-agents.md).
+
+#### Agent task
+
+A durable prompt owned by one custom agent. Tasks may be manual, one-time, or recurring. The server scheduler waits for that agent's dedicated conversation and VM rather than creating a parallel session.
+
+#### Agent artifact
+
+The custom agent's single declarative output surface. It is limited to schedule, metrics, checklist,
+table, timeline, or cards data and cannot execute arbitrary UI code. It is not a thread artifact.
+
+#### Agent delegation
+
+A bounded collaboration work item whose persistent root asks a named same-environment agent or an
+ephemeral worker for help. It records source, target, limits, messages, human-approval state, and a
+completed result without turning the worker into another persistent root.
+
+#### Ephemeral sub-agent
+
+A short-lived delegation target created for one bounded task. It is distinct from a named custom
+agent, which retains a dedicated VM and chat after the delegation ends.
+
+### Thread artifacts
+
+#### Thread artifact
+
+A named, environment-local file bundle owned by an ordinary thread. It has a stable lowercase key,
+a current revision, archive state, and an isolated preview. See [the user guide](../user/thread-artifacts.md).
+
+#### Artifact revision
+
+An immutable version of a thread artifact with an entry path, content type, byte and file counts,
+and icon provenance. An open surface remains pinned to its selected revision until the user accepts
+a newer one.
+
+#### Artifact resource
+
+The exact thread, artifact, revision, and path descriptor exchanged for a short-lived signed URL by
+the connected environment. Clients persist the identity, never the signed URL.
+
+### Orchestrator voice
+
+The orchestrator can speak through more than one realtime backend. These are **voice providers**, not coding-agent providers.
+
+The same orchestrator - voice tools on the client, and the reserved orchestrator thread via the
+`workspace_orchestration` MCP toolkit - can list, read, and type into thread terminals that are
+already open. It does not spawn a pane. See [orchestrator.md](../user/orchestrator.md#terminals)
+and [terminal-mode.md](../user/terminal-mode.md).
+
+#### OpenAI Realtime
+
+The original voice backend. The server mints an ephemeral client secret; the browser opens a WebRTC session to `api.openai.com`. See [OrchestratorCredentials.ts][25] and [realtimeSession.ts][26].
+
+#### Grok Voice (xAI)
+
+xAI's Speech-to-Speech API. The server mints an ephemeral client secret at `POST /v1/realtime/client_secrets`; the browser opens `wss://api.x.ai/v1/realtime` with the `xai-client-secret.` subprotocol and streams PCM16. Catalog and capability flags live in [orchestratorVoice.ts][27]. Setup: [orchestrator-grok-voice.md][28].
 
 ### Checkpointing
 
@@ -178,3 +245,9 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../apps/server/src/checkpointing/Utils.ts
 [23]: ../apps/server/src/checkpointing/Diffs.ts
 [24]: ./architecture.md
+[25]: ../apps/server/src/orchestrator/OrchestratorCredentials.ts
+[26]: ../apps/web/src/orchestrator/realtimeSession.ts
+[27]: ../packages/contracts/src/orchestratorVoice.ts
+[28]: ../integrations/orchestrator-grok-voice.md
+[29]: ../apps/server/src/provider/Layers/GrokAdapter.ts
+[30]: ../apps/server/src/provider/acp/AcpRuntimeModel.ts

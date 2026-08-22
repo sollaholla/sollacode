@@ -59,9 +59,21 @@ function mergeUsageWindow(
     Number.isFinite(reportedAtMs) &&
     reportedAtMs >= previous.resetAt - CODEX_RESET_TIME_JITTER_MS;
 
-  // Ignore a transient zero unless the old window has elapsed and the provider
-  // also advances the reset timestamp to a later cycle.
-  return nextCycleIsLater && previousCycleElapsed ? next : previous;
+  const windowDurationMs = next.windowDurationMs ?? previous.windowDurationMs;
+  const nextCycleHasStarted =
+    next.resetAt !== null &&
+    windowDurationMs !== null &&
+    windowDurationMs !== undefined &&
+    Number.isFinite(windowDurationMs) &&
+    Number.isFinite(reportedAtMs) &&
+    reportedAtMs >= next.resetAt - windowDurationMs - CODEX_RESET_TIME_JITTER_MS;
+
+  // Ignore a transient zero unless the provider advances the reset timestamp
+  // to a cycle that has really begun. Ordinarily that means the old cycle
+  // elapsed. OpenAI can also grant an out-of-band reset, which starts a new
+  // full-duration window immediately while the old reset was still in the
+  // future; its reported reset minus duration proves that new cycle has begun.
+  return nextCycleIsLater && (previousCycleElapsed || nextCycleHasStarted) ? next : previous;
 }
 
 interface ProviderUsageState {

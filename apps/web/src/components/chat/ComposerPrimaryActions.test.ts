@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import {
+  formatPendingPrimaryActionLabel,
+  showSettingsUpdateContextMenu,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -69,6 +72,18 @@ describe("formatPendingPrimaryActionLabel", () => {
     ).toBe("Submit answer");
   });
 
+  it("uses a purpose-specific approval response label", () => {
+    expect(
+      formatPendingPrimaryActionLabel({
+        compact: false,
+        isLastQuestion: true,
+        isResponding: false,
+        questionIndex: 0,
+        submitLabel: "Request changes",
+      }),
+    ).toBe("Request changes");
+  });
+
   it("returns plural 'Submit answers' on the last question when there are multiple questions", () => {
     expect(
       formatPendingPrimaryActionLabel({
@@ -89,5 +104,36 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
+  });
+});
+
+describe("showSettingsUpdateContextMenu", () => {
+  it("offers Revert and invokes it when selected", async () => {
+    const showContextMenu = vi.fn().mockResolvedValue("revert");
+    const onRevert = vi.fn();
+
+    await showSettingsUpdateContextMenu({
+      position: { x: 12, y: 34 },
+      showContextMenu,
+      onRevert,
+    });
+
+    expect(showContextMenu).toHaveBeenCalledWith([{ id: "revert", label: "Revert" }], {
+      x: 12,
+      y: 34,
+    });
+    expect(onRevert).toHaveBeenCalledOnce();
+  });
+
+  it("leaves staged settings alone when the menu is dismissed", async () => {
+    const onRevert = vi.fn();
+
+    await showSettingsUpdateContextMenu({
+      position: { x: 0, y: 0 },
+      showContextMenu: vi.fn().mockResolvedValue(null),
+      onRevert,
+    });
+
+    expect(onRevert).not.toHaveBeenCalled();
   });
 });

@@ -46,6 +46,7 @@ import * as ServerConfig from "../config.ts";
 import { prepareModelCompatibleImage } from "../modelImageCompatibility.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { decodeArtifactManifest } from "../artifacts/ArtifactManifest.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
@@ -63,6 +64,23 @@ const PREVIEW_ASSET_EXTENSIONS = new Set([
   ".ttf",
   ".woff",
   ".woff2",
+]);
+const ARTIFACT_ASSET_EXTENSIONS = new Set([
+  ...PREVIEW_ASSET_EXTENSIONS,
+  ".avif",
+  ".gif",
+  ".htm",
+  ".html",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".md",
+  ".pdf",
+  ".png",
+  ".svg",
+  ".txt",
+  ".webp",
 ]);
 export const WORKSPACE_RASTER_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const WORKSPACE_RASTER_IMAGE_EXTENSIONS = new Set([
@@ -173,15 +191,39 @@ const AssetClaimsSchema = Schema.Union([
     relativePath: Schema.NullOr(Schema.String),
     expiresAt: Schema.Number,
   }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("artifact-revision"),
+    artifactId: Schema.String,
+    revision: Schema.Int,
+    baseRelativePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("artifact-icon"),
+    artifactId: Schema.String,
+    revision: Schema.Int,
+    expiresAt: Schema.Number,
+  }),
 ]);
 type AssetClaims = typeof AssetClaimsSchema.Type;
+type ArtifactAssetResource = Extract<
+  AssetResource,
+  { readonly _tag: "artifact-revision" | "artifact-icon" }
+>;
 
 const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset =
-  | { readonly kind: "file"; readonly path: string }
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      readonly artifact?: boolean;
+      readonly contentType?: string;
+    }
   | { readonly kind: "bytes"; readonly bytes: Uint8Array; readonly contentType: string };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
@@ -307,11 +349,116 @@ const workspaceRasterImageIsStillValid = Effect.fn("AssetAccess.workspaceRasterI
   },
 );
 
+const signAssetClaims = Effect.fn("AssetAccess.signAssetClaims")(function* (input: {
+  readonly resource: AssetResource;
+  readonly claims: AssetClaims;
+  readonly fileName: string;
+  readonly expiresAt: number;
+}) {
+  const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AssetSigningKeyLoadError({
+          resource: input.resource,
+          cause,
+        }),
+    ),
+  );
+  const encodedPayload = base64UrlEncode(encodeAssetClaims(input.claims));
+  const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
+  const encodedFilePath = input.fileName
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return {
+    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodedFilePath}`,
+    expiresAt: input.expiresAt,
+  };
+});
+
+/** Issue one host-relative capability for a published artifact revision or icon. */
+export const issueArtifactAssetUrl = Effect.fn("AssetAccess.issueArtifactAssetUrl")(function* (
+  resource: ArtifactAssetResource,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  const revisionRoot = path.join(
+    config.artifactsDir,
+    resource.artifactId,
+    "revisions",
+    String(resource.revision),
+  );
+  let claims: AssetClaims;
+  let fileName: string;
+
+  if (resource._tag === "artifact-revision") {
+    const normalizedPath = resource.path.trim().replaceAll("\\", "/");
+    const segments = normalizedPath.split("/");
+    if (
+      normalizedPath.startsWith("/") ||
+      normalizedPath.includes("\0") ||
+      segments.some(
+        (segment) =>
+          segment === "" || segment === "." || segment === ".." || segment.startsWith("."),
+      ) ||
+      !ARTIFACT_ASSET_EXTENSIONS.has(path.extname(normalizedPath).toLowerCase())
+    ) {
+      return yield* new AssetPreviewTypeValidationError({ resource });
+    }
+    const canonicalFile = yield* resolveCanonicalWorkspaceFile({
+      workspaceRoot: revisionRoot,
+      relativePath: normalizedPath,
+    }).pipe(
+      Effect.mapError((cause) => new AssetWorkspaceAssetInspectionError({ resource, cause })),
+    );
+    if (!canonicalFile) {
+      return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+    }
+    claims = {
+      version: 1,
+      kind: "artifact-revision",
+      artifactId: resource.artifactId,
+      revision: resource.revision,
+      baseRelativePath: ".",
+      expiresAt,
+    };
+    fileName = normalizedPath;
+  } else {
+    const canonicalIcon = yield* resolveCanonicalWorkspaceFile({
+      workspaceRoot: revisionRoot,
+      relativePath: "icon.svg",
+    }).pipe(
+      Effect.mapError((cause) => new AssetWorkspaceAssetInspectionError({ resource, cause })),
+    );
+    if (!canonicalIcon) {
+      return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+    }
+    claims = {
+      version: 1,
+      kind: "artifact-icon",
+      artifactId: resource.artifactId,
+      revision: resource.revision,
+      expiresAt,
+    };
+    fileName = "icon.svg";
+  }
+
+  // The canonical address stays host-relative; callers select the owning
+  // environment and prepend its current origin rather than baking localhost.
+  return yield* signAssetClaims({ resource, claims, fileName, expiresAt });
+});
+
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
   readonly allowExternalExactImage?: boolean;
 }) {
+  if (input.resource._tag === "artifact-revision" || input.resource._tag === "artifact-icon") {
+    return yield* issueArtifactAssetUrl(input.resource);
+  }
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
@@ -566,16 +713,6 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
     }
   }
 
-  const secretStore = yield* ServerSecretStore.ServerSecretStore;
-  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(
-    Effect.mapError(
-      (cause) =>
-        new AssetSigningKeyLoadError({
-          resource: input.resource,
-          cause,
-        }),
-    ),
-  );
   if (claims.kind === "project-favicon") {
     const issuedAt = yield* Clock.currentTimeMillis;
     expiresAt =
@@ -583,12 +720,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       PROJECT_FAVICON_TOKEN_BUCKET_MS;
     claims = { ...claims, expiresAt };
   }
-  const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
-  const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
-  return {
-    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
+  return yield* signAssetClaims({
+    resource: input.resource,
+    claims,
+    fileName,
     expiresAt,
-  };
+  });
 });
 
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
@@ -608,6 +745,61 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   const claims = decodeClaims(encodedPayload);
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
+
+  if (claims.kind === "artifact-revision" || claims.kind === "artifact-icon") {
+    const decodedPath = decodeRelativePath(relativePath);
+    if (decodedPath === null) return null;
+    const path = yield* Path.Path;
+    const segments = decodedPath.split(/[\\/]/u);
+    if (
+      decodedPath.length === 0 ||
+      decodedPath.includes("\0") ||
+      segments.some((segment) => segment === "." || segment === ".." || segment.startsWith(".")) ||
+      !ARTIFACT_ASSET_EXTENSIONS.has(path.extname(decodedPath).toLowerCase())
+    ) {
+      return null;
+    }
+    if (claims.kind === "artifact-icon" && decodedPath !== "icon.svg") return null;
+    const config = yield* ServerConfig.ServerConfig;
+    const revisionRoot = path.join(
+      config.artifactsDir,
+      claims.artifactId,
+      "revisions",
+      String(claims.revision),
+    );
+    const requestedPath =
+      claims.kind === "artifact-icon"
+        ? "icon.svg"
+        : claims.baseRelativePath === "."
+          ? decodedPath
+          : path.join(claims.baseRelativePath, decodedPath);
+    let artifactContentType = "image/svg+xml";
+    if (claims.kind === "artifact-revision") {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const manifestJson = yield* fileSystem
+        .readFileString(path.join(revisionRoot, ".manifest.json"))
+        .pipe(Effect.orElseSucceed(() => null));
+      if (!manifestJson) return null;
+      const manifest = Option.getOrNull(decodeArtifactManifest(manifestJson));
+      if (!manifest) return null;
+      const normalizedRequestedPath = requestedPath.replaceAll("\\", "/");
+      const manifestFile = manifest.files.find((file) => file.path === normalizedRequestedPath);
+      if (!manifestFile) return null;
+      artifactContentType = manifestFile.contentType;
+    }
+    const artifactFile = yield* resolveCanonicalWorkspaceFileForRequest({
+      workspaceRoot: revisionRoot,
+      relativePath: requestedPath,
+    });
+    return artifactFile
+      ? ({
+          kind: "file",
+          path: artifactFile,
+          artifact: true,
+          contentType: artifactContentType,
+        } satisfies ResolvedAsset)
+      : null;
+  }
 
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig.ServerConfig;

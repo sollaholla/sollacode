@@ -245,6 +245,7 @@ describe("derivePendingUserInputs", () => {
 
     expect(derivePendingUserInputs(activities)).toEqual([
       {
+        turnId: null,
         requestId: "req-user-input-1",
         createdAt: "2026-02-23T00:00:01.000Z",
         questions: [
@@ -307,8 +308,60 @@ describe("derivePendingUserInputs", () => {
 
     expect(derivePendingUserInputs(activities)).toEqual([]);
   });
-});
 
+  it("drops a request left behind by a follow-up message", () => {
+    // Answering by sending a message instead of filling the form ends the turn
+    // that was waiting. Nothing emits `user-input.resolved` for it, so the form
+    // stayed on screen looking live and took answers that could never land.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open",
+        kind: "user-input.requested",
+        turnId: "turn-1",
+        payload: {
+          requestId: "req-user-input-1",
+          questions: [
+            {
+              id: "mode",
+              header: "Mode",
+              question: "Which mode should be used?",
+              options: [
+                { label: "Fast", description: "Skim it" },
+                { label: "Thorough", description: "Read everything" },
+              ],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities, TurnId.make("turn-1"))).toHaveLength(1);
+    // The follow-up opened turn-2; the request belongs to a turn that is over.
+    expect(derivePendingUserInputs(activities, TurnId.make("turn-2"))).toEqual([]);
+  });
+
+  it("keeps a request that carries no turn of its own", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-open",
+        kind: "user-input.requested",
+        payload: {
+          requestId: "req-user-input-1",
+          questions: [
+            {
+              id: "mode",
+              header: "Mode",
+              question: "Which mode?",
+              options: [{ label: "Fast", description: "Skim it" }],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities, TurnId.make("turn-9"))).toHaveLength(1);
+  });
+});
 describe("deriveActivePlanState", () => {
   it("returns the latest plan update for the active turn", () => {
     const activities: OrchestrationThreadActivity[] = [
@@ -691,6 +744,21 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("renders Grok thought-chunk activities as thinking, not as a finished tool", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "reasoning:thread-1:turn-1",
+        kind: "reasoning.updated",
+        summary: "Thinking",
+        tone: "info",
+        payload: { itemType: "reasoning", title: "Thinking" },
+      }),
+    ]);
+    expect(entry?.tone).toBe("thinking");
+    expect(entry?.label).toBe("Thinking");
+    expect(workEntryIndicatesToolSuccess(entry!)).toBe(false);
+  });
+
   it("keeps Token Optimizer summaries out of the visible work log", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({

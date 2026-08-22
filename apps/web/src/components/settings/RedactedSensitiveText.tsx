@@ -4,6 +4,12 @@ import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 const REDACTED_TEXT_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+const DEFAULT_REVEAL_CONFIRMATION =
+  "Reveal this sensitive information? Make sure nobody else can see your screen.";
+
+export function confirmSensitiveReveal(message = DEFAULT_REVEAL_CONFIRMATION): boolean {
+  return window.confirm(message);
+}
 
 function redactedPlaceholder(value: string): string {
   let state = 0x811c9dc5;
@@ -29,6 +35,7 @@ export function RedactedSensitiveText(props: {
   readonly ariaLabel: string;
   readonly revealTooltip: string;
   readonly hideTooltip: string;
+  readonly confirmationMessage?: string;
   readonly className?: string;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -48,8 +55,17 @@ export function RedactedSensitiveText(props: {
               revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-[2px]",
               props.className,
             )}
-            onClick={() => setRevealed((current) => !current)}
+            onClick={() => {
+              if (revealed) {
+                setRevealed(false);
+                return;
+              }
+              if (confirmSensitiveReveal(props.confirmationMessage)) {
+                setRevealed(true);
+              }
+            }}
             aria-label={props.ariaLabel}
+            aria-pressed={revealed}
           >
             {revealed ? value : redacted}
           </button>

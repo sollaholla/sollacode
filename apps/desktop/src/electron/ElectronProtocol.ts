@@ -12,6 +12,7 @@ export const DESKTOP_HOST = "app";
 export const DESKTOP_PRODUCTION_SCHEME = "sollacode";
 export const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
 export const DESKTOP_REMOTE_ASSET_PROXY_PATH = "/__solla/remote-asset";
+export const DESKTOP_REMOTE_ARTIFACT_PROXY_PATH = "/__solla/remote-artifact";
 export const DESKTOP_REMOTE_ASSET_CACHE_CONTROL = "private, max-age=300, immutable";
 
 export function getDesktopScheme(isDevelopment: boolean): string {
@@ -147,6 +148,83 @@ export function resolveRemoteAssetProxyTarget(requestUrl: URL): URL | null {
   }
 }
 
+function decodeBase64Url(value: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) return null;
+  try {
+    const bytes = Buffer.from(value, "base64url");
+    return bytes.toString("base64url") === value ? bytes.toString("utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+function artifactProxyParts(
+  requestUrl: URL,
+): { readonly encodedRoot: string; readonly relativePath: string } | null {
+  const prefix = `${DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/`;
+  if (!requestUrl.pathname.startsWith(prefix)) return null;
+  const suffix = requestUrl.pathname.slice(prefix.length);
+  const separatorIndex = suffix.indexOf("/");
+  if (separatorIndex <= 0 || separatorIndex === suffix.length - 1) return null;
+  return {
+    encodedRoot: suffix.slice(0, separatorIndex),
+    relativePath: suffix.slice(separatorIndex + 1),
+  };
+}
+
+/** Resolve one relative artifact bundle request without granting general proxy access. */
+export function resolveRemoteArtifactProxyTarget(requestUrl: URL): URL | null {
+  const parts = artifactProxyParts(requestUrl);
+  if (parts === null) return null;
+  const rootValue = decodeBase64Url(parts.encodedRoot);
+  if (rootValue === null) return null;
+
+  try {
+    const root = new URL(rootValue);
+    if (
+      (root.protocol !== "http:" && root.protocol !== "https:") ||
+      root.username.length > 0 ||
+      root.password.length > 0 ||
+      !/^\/api\/assets\/[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+\/$/u.test(root.pathname) ||
+      root.search.length > 0 ||
+      root.hash.length > 0
+    ) {
+      return null;
+    }
+
+    const target = new URL(parts.relativePath, root);
+    target.search = requestUrl.search;
+    if (target.origin !== root.origin || !target.pathname.startsWith(root.pathname)) return null;
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function makeDesktopArtifactContentSecurityPolicy(requestUrl: URL): string {
+  const parts = artifactProxyParts(requestUrl);
+  const revisionSource =
+    parts === null
+      ? "'none'"
+      : `${requestUrl.protocol}//${requestUrl.host}${DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/${parts.encodedRoot}/`;
+  return [
+    "default-src 'none'",
+    "base-uri 'none'",
+    "connect-src 'none'",
+    `font-src ${revisionSource} data:`,
+    "form-action 'none'",
+    "frame-src 'none'",
+    `img-src ${revisionSource} data: blob:`,
+    "manifest-src 'none'",
+    "media-src 'none'",
+    "object-src 'none'",
+    `script-src ${revisionSource} 'unsafe-inline'`,
+    `style-src ${revisionSource} 'unsafe-inline'`,
+    "worker-src 'none'",
+    "sandbox allow-scripts",
+  ].join("; ");
+}
+
 function remoteAssetRequestHeaders(request: Request): Headers {
   const headers = new Headers();
   for (const name of ["accept", "accept-language", "if-modified-since", "if-none-match", "range"]) {
@@ -182,6 +260,25 @@ async function proxyRequest(
     return withContentSecurityPolicy(
       withRemoteAssetCachePolicy(response, requestUrl),
       contentSecurityPolicy,
+    );
+  }
+
+  if (requestUrl.pathname.startsWith(`${DESKTOP_REMOTE_ARTIFACT_PROXY_PATH}/`)) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response(null, { status: 405 });
+    }
+    const remoteArtifactUrl = resolveRemoteArtifactProxyTarget(requestUrl);
+    if (remoteArtifactUrl === null) {
+      return new Response(null, { status: 400 });
+    }
+    const response = await fetchWithTransientRetry(remoteArtifactUrl.toString(), {
+      method: request.method,
+      headers: remoteAssetRequestHeaders(request),
+      redirect: "error",
+    });
+    return withContentSecurityPolicy(
+      response,
+      makeDesktopArtifactContentSecurityPolicy(requestUrl),
     );
   }
 

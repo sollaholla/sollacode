@@ -32,12 +32,15 @@ export function resolveProviderUsagePlacement(isDraftHeroState: boolean): Provid
 export function ProviderUsagePlacementRow(props: {
   readonly placement: ProviderUsagePlacement;
   readonly children: ReactNode;
+  readonly className?: string;
 }) {
   if (props.placement === "draft-pane-top") {
     return (
       <div
         data-chat-draft-provider-usage="true"
-        className="pointer-events-none relative z-10 flex shrink-0 justify-center px-2 pt-3 sm:pt-4"
+        className={`pointer-events-none relative z-10 flex shrink-0 justify-center px-2 pt-3 sm:pt-4${
+          props.className ? ` ${props.className}` : ""
+        }`}
       >
         {props.children}
       </div>
@@ -67,7 +70,7 @@ export interface ProviderUsageSummary {
   reportedAt: string | null;
 }
 
-const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent"]);
+const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -486,9 +489,82 @@ function claudeWindows(raw: unknown): ProviderUsageWindow[] {
   ];
 }
 
+function grokMoneyValue(value: unknown): number | null {
+  const record = asRecord(value);
+  return finiteNumber(record?.val) ?? finiteNumber(value);
+}
+
+function grokBillingConfig(raw: unknown): Record<string, unknown> | null {
+  const envelope = asRecord(raw);
+  if (!envelope) return null;
+  return asRecord(envelope.config) ?? envelope;
+}
+
+function grokPeriodDurationMs(period: Record<string, unknown> | null): number | null {
+  if (!period) return null;
+  const start = epochMilliseconds(period.start);
+  const end = epochMilliseconds(period.end);
+  if (start === null || end === null || end <= start) return null;
+  return end - start;
+}
+
+function grokPeriodLabel(period: Record<string, unknown> | null): string {
+  const type = typeof period?.type === "string" ? period.type.toLowerCase() : "";
+  if (type.includes("month")) return "Monthly";
+  return "Weekly";
+}
+
+function grokWindows(raw: unknown): ProviderUsageWindow[] {
+  const config = grokBillingConfig(raw);
+  if (!config) return [];
+
+  const windows: ProviderUsageWindow[] = [];
+  const usedPercent = finiteNumber(config.creditUsagePercent);
+  const period = asRecord(config.currentPeriod);
+  const resetAt =
+    epochMilliseconds(period?.end) ??
+    epochMilliseconds(config.billingPeriodEnd) ??
+    epochMilliseconds(config.billingPeriodStart);
+  if (usedPercent !== null) {
+    windows.push({
+      key: "weekly",
+      label: grokPeriodLabel(period),
+      usedPercent: clampPercentage(usedPercent),
+      resetAt,
+      windowDurationMs: grokPeriodDurationMs(period) ?? 7 * DAY_MS,
+    });
+  }
+
+  const prepaid = grokMoneyValue(config.prepaidBalance);
+  if (prepaid !== null && prepaid > 0) {
+    windows.push({
+      key: "credits",
+      label: "Credits",
+      usedPercent: null,
+      resetAt: null,
+      detail: `$${prepaid}`,
+    });
+  }
+
+  const onDemandUsed = grokMoneyValue(config.onDemandUsed);
+  const onDemandCap = grokMoneyValue(config.onDemandCap);
+  if (onDemandUsed !== null && onDemandCap !== null && onDemandCap > 0) {
+    windows.push({
+      key: "on-demand",
+      label: "Pay as you go",
+      usedPercent: clampPercentage((onDemandUsed / onDemandCap) * 100),
+      resetAt: null,
+      detail: `$${onDemandUsed} of $${onDemandCap}`,
+    });
+  }
+
+  return windows;
+}
+
 function usageWindowsForDriver(driver: ProviderDriverKind, raw: unknown): ProviderUsageWindow[] {
   if (driver === "codex") return codexWindows(raw);
   if (driver === "claudeAgent") return claudeWindows(raw);
+  if (driver === "grok") return grokWindows(raw);
   return [];
 }
 
@@ -665,7 +741,11 @@ export function compactProviderUsageMetric(
   summary: ProviderUsageSummary,
   selectedModelSelection: ModelSelection | null = null,
 ): CompactProviderUsageMetric | null {
-  if (summary.provider.driver !== "claudeAgent" && summary.provider.driver !== "codex") {
+  if (
+    summary.provider.driver !== "claudeAgent" &&
+    summary.provider.driver !== "codex" &&
+    summary.provider.driver !== "grok"
+  ) {
     return null;
   }
 
@@ -674,9 +754,13 @@ export function compactProviderUsageMetric(
     const fableSelected =
       selectedModelSelection?.instanceId === summary.provider.instanceId &&
       selectedModelSelection.model.trim().toLowerCase() === "claude-fable-5";
+    // Current-session and weekly limits apply to every Claude model. Fable
+    // adds a model-scoped limit; it never replaces the account-wide weekly
+    // limit. Show whichever applicable quota is closest to exhaustion.
+    const highestAccountWindow = maxReportedUsageWindow(currentSession ?? null, weekly ?? null);
     const highestClaudeWindow = fableSelected
-      ? maxReportedUsageWindow(fable ?? null, currentSession ?? null)
-      : maxReportedUsageWindow(currentSession ?? null, weekly ?? null);
+      ? maxReportedUsageWindow(highestAccountWindow, fable ?? null)
+      : highestAccountWindow;
     return {
       label: highestClaudeWindow?.label ?? "Current session",
       window: highestClaudeWindow,
@@ -702,7 +786,8 @@ export function compactProviderUsageMetric(
   };
 }
 
-function providerUsageName(provider: ServerProvider): string {
+/** Exported so the voice orchestrator names a provider the same way this does. */
+export function providerUsageName(provider: ServerProvider): string {
   if (provider.driver === "claudeAgent") return "Claude";
   return provider.displayName?.trim() || String(provider.driver);
 }
@@ -750,11 +835,13 @@ export function ProviderUsageDetails({
   onRefresh,
   isRefreshing = false,
   refreshError = null,
+  onSwitchUser,
 }: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
   name: string;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   refreshError?: string | null;
+  onSwitchUser?: () => void;
 }) {
   const nowMs = useMinuteTick();
   const hasUsage = windows.length > 0;
@@ -804,6 +891,15 @@ export function ProviderUsageDetails({
               className="rounded-md border border-border/70 px-2 py-0.5 font-medium text-foreground/80 text-xs hover:bg-muted disabled:cursor-wait disabled:opacity-60"
             >
               {isRefreshing ? "Refreshing…" : "Refresh"}
+            </button>
+          ) : null}
+          {onSwitchUser ? (
+            <button
+              type="button"
+              onClick={onSwitchUser}
+              className="rounded-md border border-border/70 px-2 py-0.5 font-medium text-foreground/80 text-xs hover:bg-muted"
+            >
+              Switch user
             </button>
           ) : null}
         </div>
@@ -888,8 +984,9 @@ export function ProviderUsageDetails({
 export function ProviderUsageBadgeDetails(props: {
   readonly summary: ProviderUsageSummary;
   readonly onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+  readonly onSwitchUser?: (instanceId: ProviderInstanceId) => void;
 }) {
-  const { summary, onRefreshProvider } = props;
+  const { summary, onRefreshProvider, onSwitchUser } = props;
   const { provider } = summary;
   const name = providerUsageName(provider);
   const windows =
@@ -930,6 +1027,7 @@ export function ProviderUsageBadgeDetails(props: {
           isRefreshing={isRefreshing}
           refreshError={refreshError}
           {...(canRefresh ? { onRefresh: () => void refreshUsage() } : {})}
+          {...(onSwitchUser ? { onSwitchUser: () => onSwitchUser(provider.instanceId) } : {})}
         />
       </section>
     </div>
@@ -941,11 +1039,13 @@ function ProviderUsageBadge({
   compactMetric,
   detailsSide,
   onRefreshProvider,
+  onSwitchUser,
 }: {
   summary: ProviderUsageSummary;
   compactMetric: CompactProviderUsageMetric;
   detailsSide: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+  onSwitchUser?: (instanceId: ProviderInstanceId) => void;
 }) {
   const nowMs = useMinuteTick();
   const [open, setOpen] = useState(false);
@@ -1043,6 +1143,7 @@ function ProviderUsageBadge({
         <ProviderUsageBadgeDetails
           summary={summary}
           {...(onRefreshProvider ? { onRefreshProvider } : {})}
+          {...(onSwitchUser ? { onSwitchUser } : {})}
         />
       </PopoverPopup>
     </Popover>
@@ -1056,6 +1157,7 @@ export function ProviderUsageBar(props: {
   selectedModelSelection?: ModelSelection | null;
   detailsSide?: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
+  onSwitchUser?: (instanceId: ProviderInstanceId) => void;
 }) {
   const persistedByAccountKey = useProviderUsageStore((state) => state.byAccountKey);
   const recordUsage = useProviderUsageStore((state) => state.record);
@@ -1092,6 +1194,7 @@ export function ProviderUsageBar(props: {
           compactMetric={compactMetric}
           detailsSide={props.detailsSide ?? "top"}
           {...(props.onRefreshProvider ? { onRefreshProvider: props.onRefreshProvider } : {})}
+          {...(props.onSwitchUser ? { onSwitchUser: props.onSwitchUser } : {})}
         />
       ))}
     </section>

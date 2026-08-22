@@ -22,14 +22,32 @@ The update does not remove saved threads, settings, or project files.
 
 ## Choose the Action You See
 
-| Action                     | What to do                                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Update server**          | Select the button and leave Solla Code open. It prepares the matching version, restarts the server, and reconnects automatically. This can take several minutes.               |
-| **Update the desktop app** | Open the Solla Code desktop app on the machine that runs the server and install the app update there. Reopen it if needed.                                                     |
-| **Copy update command**    | Copy the command, open a terminal on the server machine, stop the current Solla Code server, and relaunch it with the copied command and any startup options you normally use. |
+| Action                     | What to do                                                                                                                                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Update server**          | Select the button and leave Solla Code open. It prepares the matching version, restarts the server, and reconnects automatically. This can take several minutes.                             |
+| **Update the desktop app** | Open the Solla Code desktop app on the machine that runs the server and install the app update there. The installer relaunches that same app bundle; you should not have to open it by hand. |
+| **Copy update command**    | Copy the command, open a terminal on the server machine, stop the current Solla Code server, and relaunch it with the copied command and any startup options you normally use.               |
 
 The available action depends on how that server was started. Solla Code does not update connected
 servers silently in the background.
+
+## Updating the Desktop App Through an Agent
+
+Agents running inside Solla Code Desktop can use the built-in `app_update` MCP tool with an
+absolute installer path on the same machine. Solla Code verifies the artifact before presenting a
+Yes/No confirmation. Choosing Yes schedules a guarded installer that closes the app, installs the
+verified artifact, and relaunches **that installed app path** with `--auto-resume` so interrupted
+agent work can continue. It does not look the app up by bundle id or by a PID from before the
+swap - those change across the install and would restart the wrong process.
+
+- macOS accepts a Solla Code `.app`, `.dmg`, or `.zip` containing the app.
+- Windows accepts a Solla Code NSIS `.exe` installer.
+- `force: true` skips the confirmation. It is intended only when the user has already explicitly
+  authorized that exact artifact and restart.
+
+The tool is available only from a desktop-managed server on macOS or Windows. Verification or
+installer-launch failures leave the running installation unchanged. Installation diagnostics are
+written to `desktop-app-update.log` in the server logs directory.
 
 If the server uses the Solla Code background service, you can also update it directly on the host:
 

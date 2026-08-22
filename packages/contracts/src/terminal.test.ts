@@ -7,7 +7,9 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
+  TerminalListInput,
   TerminalOpenInput,
+  TerminalReadInput,
   TerminalResizeInput,
   TerminalSessionSnapshot,
   TerminalThreadInput,
@@ -120,6 +122,28 @@ describe("TerminalAttachInput", () => {
     });
 
     expect(parsed.restartIfNotRunning).toBe(true);
+  });
+});
+
+describe("TerminalListInput", () => {
+  it("accepts an empty filter", () => {
+    expect(decodes(TerminalListInput, {})).toBe(true);
+  });
+
+  it("accepts a thread filter", () => {
+    expect(decodes(TerminalListInput, { threadId: "thread-1" })).toBe(true);
+  });
+});
+
+describe("TerminalReadInput", () => {
+  it("requires threadId and terminalId", () => {
+    expect(
+      decodes(TerminalReadInput, {
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+      }),
+    ).toBe(true);
+    expect(decodes(TerminalReadInput, { threadId: "thread-1" })).toBe(false);
   });
 });
 

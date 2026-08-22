@@ -1,11 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { AppearanceSettingsPanel } from "../components/settings/SettingsPanels";
-
-function SettingsAppearanceRoute() {
-  return <AppearanceSettingsPanel />;
-}
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/settings/appearance")({
-  component: SettingsAppearanceRoute,
+  component: lazyRouteComponent(
+    () => import("../components/settings/SettingsPanels"),
+    "AppearanceSettingsPanel",
+  ),
 });

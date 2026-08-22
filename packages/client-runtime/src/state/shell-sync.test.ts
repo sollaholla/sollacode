@@ -108,7 +108,7 @@ describe("environment shell synchronization", () => {
         phase: "connecting",
         stage: "synchronizing",
         attempt: 1,
-        generation: 0,
+        generation: 1,
         lastFailure: null,
         retryAt: null,
       });
@@ -129,6 +129,24 @@ describe("environment shell synchronization", () => {
         Stream.filter((state) => state.status === "live"),
         Stream.runHead,
       );
+
+      // A queued progress state from the generation whose completion marker
+      // just arrived is stale; replaying it after mobile browser suspension
+      // must not regress the shell to synchronizing.
+      yield* SubscriptionRef.set(supervisorState, {
+        desired: true,
+        network: "online",
+        phase: "connecting",
+        stage: "opening",
+        attempt: 1,
+        generation: 1,
+        lastFailure: null,
+        retryAt: null,
+      });
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect((yield* SubscriptionRef.get(shellState)).status).toBe("live");
 
       yield* SubscriptionRef.set(supervisorState, {
         desired: true,

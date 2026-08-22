@@ -17,6 +17,7 @@ import {
   type OrchestrationThreadPendingWork,
   ProjectScript,
   TurnId,
+  VmAgentDelegationId,
   type OrchestrationCheckpointSummary,
   type OrchestrationLatestTurn,
   type OrchestrationMessage,
@@ -89,6 +90,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     inputOrigin: Schema.NullOr(OrchestrationMessageInputOrigin),
+    delegationId: Schema.NullOr(VmAgentDelegationId),
+    voiceTranscript: Schema.Number,
   }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
@@ -178,6 +181,9 @@ const ProjectionThreadTurnStartContextRowSchema = Schema.Struct({
 const ProjectionProviderTurnForMessageRowSchema = Schema.Struct({
   turnId: TurnId,
   state: Schema.Literals(["running", "interrupted", "incomplete", "completed", "error"]),
+});
+const ProjectionActiveTurnDelegationRowSchema = Schema.Struct({
+  delegationId: VmAgentDelegationId,
 });
 const ProjectionTaskTitleRowSchema = Schema.Struct({
   kind: Schema.String,
@@ -373,6 +379,8 @@ function mapMessageRow(
     role: row.role,
     text: row.text,
     ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+    ...(row.delegationId !== null ? { delegationId: row.delegationId } : {}),
+    ...(row.voiceTranscript === 1 ? { voiceTranscript: true } : {}),
     turnId: row.turnId,
     streaming: row.isStreaming === 1,
     createdAt: row.createdAt,
@@ -604,6 +612,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -766,7 +776,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           turns.source_proposed_plan_id AS "sourceProposedPlanId"
         FROM projection_threads threads
-        JOIN projection_turns turns
+        CROSS JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
           AND turns.turn_id = COALESCE(
             threads.latest_turn_id,
@@ -799,7 +809,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           turns.source_proposed_plan_id AS "sourceProposedPlanId"
         FROM projection_threads threads
-        JOIN projection_turns turns
+        CROSS JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
           AND turns.turn_id = COALESCE(
             threads.latest_turn_id,
@@ -834,7 +844,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           turns.source_proposed_plan_id AS "sourceProposedPlanId"
         FROM projection_threads threads
-        JOIN projection_turns turns
+        CROSS JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
           AND turns.turn_id = COALESCE(
             threads.latest_turn_id,
@@ -1165,6 +1175,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getActiveTurnDelegationRow = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionActiveTurnDelegationRowSchema,
+    execute: ({ threadId }) => sql`
+      SELECT messages.delegation_id AS "delegationId"
+      FROM projection_threads AS threads
+      LEFT JOIN projection_thread_sessions AS sessions
+        ON sessions.thread_id = threads.thread_id
+      JOIN projection_turns AS turns
+        ON turns.thread_id = threads.thread_id
+        AND turns.turn_id = COALESCE(sessions.active_turn_id, threads.latest_turn_id)
+      JOIN projection_thread_messages AS messages
+        ON messages.thread_id = turns.thread_id
+        AND messages.message_id = turns.pending_message_id
+      WHERE threads.thread_id = ${threadId}
+        AND threads.deleted_at IS NULL
+        AND turns.state = 'running'
+        AND messages.delegation_id IS NOT NULL
+      LIMIT 1
+    `,
+  });
+
   const listThreadMessageRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
@@ -1177,6 +1209,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1306,6 +1340,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -1564,6 +1600,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   role: row.role,
                   text: row.text,
                   ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+                  ...(row.voiceTranscript === 1 ? { voiceTranscript: true } : {}),
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
                   streaming: row.isStreaming === 1,
@@ -2532,6 +2569,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const getActiveTurnDelegation: NonNullable<
+    ProjectionSnapshotQueryShape["getActiveTurnDelegation"]
+  > = (threadId) =>
+    getActiveTurnDelegationRow({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getActiveTurnDelegation:query",
+          "ProjectionSnapshotQuery.getActiveTurnDelegation:decodeRow",
+        ),
+      ),
+    );
+
   const getThreadIngestionContext: ProjectionSnapshotQueryShape["getThreadIngestionContext"] = (
     threadId,
     taskId,
@@ -2809,6 +2858,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadTurnStartContext,
     getThreadProviderTurnForMessage,
     getThreadProviderTurnById,
+    getActiveTurnDelegation,
     getThreadIngestionContext,
     getThreadAssetSource,
     getThreadDetailById,

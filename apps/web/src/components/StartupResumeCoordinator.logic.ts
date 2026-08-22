@@ -30,6 +30,18 @@ export function isStartupAutoResumeRequested(urlValue: string): boolean {
 }
 
 /**
+ * Desktop `--auto-resume` always dispatches. The settings toggle used to only
+ * open a picker; threads that were mid-turn at last shutdown now resume
+ * automatically when that toggle is on.
+ */
+export function shouldAutomaticallyResumeOnStartup(input: {
+  readonly showOnStartup: boolean;
+  readonly autoResumeRequested: boolean;
+}): boolean {
+  return input.showOnStartup || input.autoResumeRequested;
+}
+
+/**
  * Startup resume is intentionally conservative. Only turns explicitly
  * persisted as incomplete are offered; interrupted, errored, or still-running
  * work must not be restarted behind the user's back.

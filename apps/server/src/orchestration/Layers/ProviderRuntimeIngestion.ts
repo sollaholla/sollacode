@@ -687,18 +687,33 @@ export function runtimeEventToActivities(
       // Recorded as an activity purely so the client can mark the message read.
       // Clients skip this kind when rendering the work log — it is a delivery
       // receipt, not something the user asked to watch happen.
+      const receipt = {
+        id: event.eventId,
+        createdAt: event.createdAt,
+        tone: "info" as const,
+        kind: "message.delivered" as const,
+        summary: "Message delivered to the provider",
+        payload: {
+          messageId: event.payload.messageId,
+        },
+        turnId: toTurnId(event.turnId) ?? null,
+        ...maybeSequence,
+      };
+      // Active-turn recovery delivers the user's turn under a synthetic
+      // messageId that embeds the origin message. Clients key the delivery
+      // indicator on the origin id, so without unwrapping it here the user's
+      // message reads "Queued" forever after any recovered turn.
+      const originMessageId =
+        typeof event.payload.messageId === "string"
+          ? /^active-turn-recovery-delivery:[^:]+:(.+)$/.exec(event.payload.messageId)?.[1]
+          : undefined;
+      if (originMessageId === undefined) return [receipt];
       return [
+        receipt,
         {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "info",
-          kind: "message.delivered",
-          summary: "Message delivered to the provider",
-          payload: {
-            messageId: event.payload.messageId,
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
+          ...receipt,
+          id: EventId.make(`${event.eventId}:origin`),
+          payload: { messageId: originMessageId },
         },
       ];
     }
@@ -765,6 +780,27 @@ export function runtimeEventToActivities(
     }
 
     case "item.updated": {
+      if (event.payload.itemType === "reasoning") {
+        return [
+          {
+            // Thought chunks arrive many times a second. One durable row per
+            // turn is what the timeline should show — "Grok is thinking" —
+            // not a flood of identical updates.
+            id: EventId.make(`reasoning:${event.threadId}:${event.turnId ?? "session"}`),
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "reasoning.updated",
+            summary: event.payload.title ?? "Thinking",
+            payload: {
+              itemType: "reasoning",
+              ...(event.payload.title ? { title: event.payload.title } : {}),
+              ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
@@ -777,6 +813,7 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -800,6 +837,7 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
@@ -822,6 +860,7 @@ export function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...(event.payload.title ? { title: event.payload.title } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,

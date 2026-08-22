@@ -34,6 +34,8 @@ export class DesktopAppIdentity extends Context.Service<
   DesktopAppIdentity,
   {
     readonly resolveUserDataPath: Effect.Effect<string, DesktopUserDataPathResolutionError>;
+    readonly configureBeforeReady: Effect.Effect<void>;
+    readonly configureAfterReady: Effect.Effect<void>;
     readonly configure: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/app/DesktopAppIdentity") {}
@@ -109,7 +111,7 @@ export const make = Effect.gen(function* () {
       : environment.path.join(environment.appDataDirectory, environment.userDataDirName);
   }).pipe(Effect.withSpan("desktop.appIdentity.resolveUserDataPath"));
 
-  const configure = Effect.gen(function* () {
+  const configureBeforeReady = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
     yield* electronApp.setName(environment.displayName);
     yield* electronApp.setAboutPanelOptions({
@@ -125,7 +127,9 @@ export const make = Effect.gen(function* () {
     if (environment.platform === "linux") {
       yield* electronApp.setDesktopName(environment.linuxDesktopEntryName);
     }
+  }).pipe(Effect.withSpan("desktop.appIdentity.configureBeforeReady"));
 
+  const configureAfterReady = Effect.gen(function* () {
     if (environment.platform === "darwin") {
       const iconPaths = yield* assets.iconPaths;
       yield* Option.match(iconPaths.png, {
@@ -133,10 +137,17 @@ export const make = Effect.gen(function* () {
         onSome: electronApp.setDockIcon,
       });
     }
-  }).pipe(Effect.withSpan("desktop.appIdentity.configure"));
+  }).pipe(Effect.withSpan("desktop.appIdentity.configureAfterReady"));
+
+  const configure = configureBeforeReady.pipe(
+    Effect.andThen(configureAfterReady),
+    Effect.withSpan("desktop.appIdentity.configure"),
+  );
 
   return DesktopAppIdentity.of({
     resolveUserDataPath,
+    configureBeforeReady,
+    configureAfterReady,
     configure,
   });
 });

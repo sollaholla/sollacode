@@ -15,14 +15,14 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import { EnvironmentRegistry } from "../connection/registry.ts";
-import { connectionProjectionPhase } from "../connection/model.ts";
+import { connectionProjectionPhase, type SupervisorConnectionState } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
 import { ShellSnapshotLoader } from "./shellSnapshotHttp.ts";
-import { applyShellStreamEvent } from "./shellReducer.ts";
+import { applyShellPendingWorkItem, applyShellStreamEvent } from "./shellReducer.ts";
 import type { EnvironmentCatalogState } from "./connections.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
 
@@ -70,6 +70,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     error: Option.none(),
   });
   const awaitingCompletion = yield* Ref.make(false);
+  // The shell stream and supervisor state are consumed concurrently. Track the
+  // generation that actually reached its completion marker so a delayed state
+  // notification from the same connection cannot put the shell back into a
+  // permanent synchronizing state.
+  const synchronizedGeneration = yield* Ref.make(Option.none<number>());
   const forceSnapshot = yield* Ref.make(false);
   const resubscribeRequests = yield* Queue.sliding<void>(1);
   const persistence = yield* Queue.sliding<OrchestrationShellSnapshot>(1);
@@ -108,15 +113,34 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     status: "synchronizing" as const,
     error: Option.none(),
   }));
-  const setReady = SubscriptionRef.update(state, (current) =>
-    current.status === "live"
-      ? current
-      : {
-          ...current,
-          status: "synchronizing" as const,
-          error: Option.none(),
-        },
+  const markCurrentGenerationSynchronized = SubscriptionRef.get(supervisor.state).pipe(
+    Effect.flatMap((connectionState) =>
+      Ref.set(synchronizedGeneration, Option.some(connectionState.generation)),
+    ),
   );
+  const setConnectionSynchronizing = (connectionState: SupervisorConnectionState) =>
+    Ref.get(synchronizedGeneration).pipe(
+      Effect.flatMap((completed) =>
+        Option.isSome(completed) && completed.value === connectionState.generation
+          ? Effect.void
+          : setSynchronizing,
+      ),
+    );
+  const setReady = (connectionState: SupervisorConnectionState) =>
+    Ref.get(synchronizedGeneration).pipe(
+      Effect.flatMap((completed) =>
+        SubscriptionRef.update(state, (current) => ({
+          ...current,
+          status:
+            Option.isSome(completed) &&
+            completed.value === connectionState.generation &&
+            Option.isSome(current.snapshot)
+              ? ("live" as const)
+              : ("synchronizing" as const),
+          error: Option.none(),
+        })),
+      ),
+    );
   const setStreamError = (error: unknown) =>
     Ref.set(awaitingCompletion, false).pipe(
       Effect.andThen(Effect.logWarning("Could not synchronize the environment shell.")),
@@ -138,6 +162,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   ) {
     if (item.kind === "resync-required") {
       yield* Ref.set(forceSnapshot, true);
+      yield* Ref.set(synchronizedGeneration, Option.none());
       yield* setSynchronizing;
       yield* Queue.offer(resubscribeRequests, undefined);
       return;
@@ -145,6 +170,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
+      yield* markCurrentGenerationSynchronized;
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.snapshot)
           ? { ...current, status: "live" as const, error: Option.none() }
@@ -163,15 +189,23 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         : Option.match(current.snapshot, {
             onNone: () => null,
             onSome: (snapshot) =>
-              item.sequence > snapshot.snapshotSequence
-                ? applyShellStreamEvent(snapshot, item)
-                : snapshot,
+              // Pending-work items carry no sequence and must not be gated on
+              // one: they report scheduler transitions the event log never
+              // recorded, so there is no position for them to be "behind".
+              item.kind === "thread-pending-work"
+                ? applyShellPendingWorkItem(snapshot, item)
+                : item.sequence > snapshot.snapshotSequence
+                  ? applyShellStreamEvent(snapshot, item)
+                  : snapshot,
           });
     if (nextSnapshot === null) {
       return;
     }
 
     const waiting = yield* Ref.get(awaitingCompletion);
+    if (!waiting) {
+      yield* markCurrentGenerationSynchronized;
+    }
     yield* SubscriptionRef.set(state, {
       snapshot: Option.some(nextSnapshot),
       status: waiting ? "synchronizing" : "live",
@@ -200,10 +234,25 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     subscribeDynamic(
       ORCHESTRATION_WS_METHODS.subscribeShell,
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (session) {
-        const supportsCompletionMarker = yield* session.initialConfig.pipe(
-          Effect.map((config) => config.shellResumeCompletionMarker === true),
-          Effect.orElseSucceed(() => false),
+        const config = yield* session.initialConfig.pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none()),
         );
+        const supportsCompletionMarker = Option.match(config, {
+          onNone: () => false,
+          onSome: (value) => value.shellResumeCompletionMarker === true,
+        });
+        // Opt into pending-work corrections only where the server can send
+        // them; asking an older one would just be ignored, and its stream never
+        // carries an item this build could not decode either way.
+        const supportsPendingWorkUpdates = Option.match(config, {
+          onNone: () => false,
+          onSome: (value) => value.shellPendingWorkUpdates === true,
+        });
+        const pendingWorkInput = supportsPendingWorkUpdates
+          ? { requestPendingWorkUpdates: true as const }
+          : {};
+        yield* Ref.set(synchronizedGeneration, Option.none());
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
@@ -227,10 +276,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           return {
             afterSequence: httpSnapshot.value.snapshotSequence,
             ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+            ...pendingWorkInput,
           };
         }
 
-        return supportsCompletionMarker ? { requestCompletionMarker: true as const } : {};
+        return {
+          ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+          ...pendingWorkInput,
+        };
       }),
       {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),
@@ -243,16 +296,20 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     ).pipe(Stream.runForEach(applyItem)),
   );
   yield* SubscriptionRef.changes(supervisor.state).pipe(
-    Stream.runForEach((connectionState) => {
-      switch (connectionProjectionPhase(connectionState)) {
-        case "synchronizing":
-          return setSynchronizing;
-        case "disconnected":
-          return setDisconnected;
-        case "ready":
-          return setReady;
-      }
-    }),
+    Stream.runForEach(() =>
+      SubscriptionRef.get(supervisor.state).pipe(
+        Effect.flatMap((connectionState) => {
+          switch (connectionProjectionPhase(connectionState)) {
+            case "synchronizing":
+              return setConnectionSynchronizing(connectionState);
+            case "disconnected":
+              return setDisconnected;
+            case "ready":
+              return setReady(connectionState);
+          }
+        }),
+      ),
+    ),
     Effect.forkScoped,
   );
 

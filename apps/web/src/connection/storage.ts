@@ -4,6 +4,8 @@ import {
   ConnectionPersistenceError,
   ConnectionRegistrationStore,
   ConnectionTargetStore,
+  DeferredThreadCommandStore,
+  type DeferredThreadCommandEntry,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
   EnvironmentCacheStore,
   registerConnectionInCatalog,
@@ -11,6 +13,11 @@ import {
   removeConnectionFromCatalog,
   replaceCatalogValue,
 } from "@t3tools/client-runtime/platform";
+import {
+  DeferredThreadCommandEntriesDocument,
+  compactDeferredThreadCommands,
+  isDeferredThreadCommand,
+} from "@t3tools/client-runtime/operations";
 import {
   ConnectionTransientError,
   CredentialStore,
@@ -33,12 +40,13 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 const DATABASE_NAME = "t3code:connection-runtime";
-const DATABASE_VERSION = 4;
+const DATABASE_VERSION = 5;
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
 const THREAD_STORE_NAME = "thread";
 const SERVER_CONFIG_STORE_NAME = "server-config";
 const VCS_REFS_STORE_NAME = "vcs-refs";
+const DEFERRED_THREAD_COMMAND_STORE_NAME = "deferred-thread-command";
 const CATALOG_KEY = "document";
 const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
 
@@ -71,6 +79,12 @@ const StoredVcsRefs = Schema.Struct({
   refs: VcsListRefsResult,
 });
 const StoredVcsRefsJson = Schema.fromJsonString(StoredVcsRefs);
+const StoredDeferredThreadCommands = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  environmentId: EnvironmentId,
+  entries: DeferredThreadCommandEntriesDocument,
+});
+const StoredDeferredThreadCommandsJson = Schema.fromJsonString(StoredDeferredThreadCommands);
 const ConnectionCatalogDocumentJson = Schema.fromJsonString(ConnectionCatalogDocument);
 const decodeConnectionCatalogDocument = Schema.decodeUnknownEffect(ConnectionCatalogDocumentJson);
 const encodeConnectionCatalogDocument = Schema.encodeEffect(ConnectionCatalogDocumentJson);
@@ -82,6 +96,10 @@ const decodeStoredServerConfig = Schema.decodeUnknownEffect(StoredServerConfigJs
 const encodeStoredServerConfig = Schema.encodeEffect(StoredServerConfigJson);
 const decodeStoredVcsRefs = Schema.decodeUnknownEffect(StoredVcsRefsJson);
 const encodeStoredVcsRefs = Schema.encodeEffect(StoredVcsRefsJson);
+const decodeStoredDeferredThreadCommands = Schema.decodeUnknownEffect(
+  StoredDeferredThreadCommandsJson,
+);
+const encodeStoredDeferredThreadCommands = Schema.encodeEffect(StoredDeferredThreadCommandsJson);
 
 function catalogError(operation: string, cause: unknown) {
   return new ConnectionTransientError({
@@ -106,6 +124,10 @@ function persistenceError(
     | "save-vcs-refs"
     | "remove-vcs-refs"
     | "clear-vcs-refs"
+    | "load-deferred-thread-commands"
+    | "save-deferred-thread-command"
+    | "remove-deferred-thread-command"
+    | "clear-deferred-thread-commands"
     | "clear-environment",
   cause: unknown,
 ) {
@@ -139,6 +161,9 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
       }
       if (!request.result.objectStoreNames.contains(VCS_REFS_STORE_NAME)) {
         request.result.createObjectStore(VCS_REFS_STORE_NAME);
+      }
+      if (!request.result.objectStoreNames.contains(DEFERRED_THREAD_COMMAND_STORE_NAME)) {
+        request.result.createObjectStore(DEFERRED_THREAD_COMMAND_STORE_NAME);
       }
     });
     request.addEventListener("error", () => {
@@ -365,6 +390,7 @@ export const connectionStorageLayer = Layer.effectContext(
       Effect.sync(() => database.close()),
     );
     const catalog = yield* makeCatalogStore(makeCatalogBackend(database));
+    const deferredThreadCommandLock = yield* Semaphore.make(1);
 
     const targetStore = ConnectionTargetStore.of({
       list: catalog.read.pipe(
@@ -630,11 +656,85 @@ export const connectionStorageLayer = Layer.effectContext(
         ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
     });
 
+    const loadDeferredThreadCommands = Effect.fn(
+      "web.connectionStorage.loadDeferredThreadCommands",
+    )(function* (environmentId: EnvironmentId) {
+      const raw = yield* readDatabaseValue(
+        database,
+        DEFERRED_THREAD_COMMAND_STORE_NAME,
+        environmentId,
+      ).pipe(Effect.mapError((cause) => persistenceError("load-deferred-thread-commands", cause)));
+      if (typeof raw !== "string") {
+        return [] as ReadonlyArray<DeferredThreadCommandEntry>;
+      }
+      const stored = yield* decodeStoredDeferredThreadCommands(raw).pipe(
+        Effect.mapError((cause) => persistenceError("load-deferred-thread-commands", cause)),
+      );
+      if (stored.environmentId !== environmentId) {
+        return [];
+      }
+      return stored.entries.flatMap((entry) =>
+        isDeferredThreadCommand(entry.command)
+          ? [{ command: entry.command, enqueuedAt: entry.enqueuedAt }]
+          : [],
+      );
+    });
+    const saveDeferredThreadCommands = Effect.fn(
+      "web.connectionStorage.saveDeferredThreadCommands",
+    )(function* (
+      environmentId: EnvironmentId,
+      entries: ReadonlyArray<DeferredThreadCommandEntry>,
+      operation: "save-deferred-thread-command" | "remove-deferred-thread-command",
+    ) {
+      const encoded = yield* encodeStoredDeferredThreadCommands({
+        schemaVersion: 1,
+        environmentId,
+        entries,
+      }).pipe(Effect.mapError((cause) => persistenceError(operation, cause)));
+      yield* writeDatabaseValue(
+        database,
+        DEFERRED_THREAD_COMMAND_STORE_NAME,
+        environmentId,
+        encoded,
+      ).pipe(Effect.mapError((cause) => persistenceError(operation, cause)));
+    });
+    const deferredThreadCommandStore = DeferredThreadCommandStore.of({
+      list: (environmentId) =>
+        deferredThreadCommandLock.withPermits(1)(loadDeferredThreadCommands(environmentId)),
+      enqueue: (environmentId, entry) =>
+        deferredThreadCommandLock.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* loadDeferredThreadCommands(environmentId);
+            yield* saveDeferredThreadCommands(
+              environmentId,
+              compactDeferredThreadCommands(current, entry),
+              "save-deferred-thread-command",
+            );
+          }),
+        ),
+      remove: (environmentId, commandId) =>
+        deferredThreadCommandLock.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* loadDeferredThreadCommands(environmentId);
+            yield* saveDeferredThreadCommands(
+              environmentId,
+              current.filter((entry) => entry.command.commandId !== commandId),
+              "remove-deferred-thread-command",
+            );
+          }),
+        ),
+      clear: (environmentId) =>
+        removeDatabaseValue(database, DEFERRED_THREAD_COMMAND_STORE_NAME, environmentId).pipe(
+          Effect.mapError((cause) => persistenceError("clear-deferred-thread-commands", cause)),
+        ),
+    });
+
     return Context.make(ConnectionTargetStore, targetStore).pipe(
       Context.add(ConnectionRegistrationStore, registrationStore),
       Context.add(ProfileStore.ConnectionProfileStore, profileStore),
       Context.add(CredentialStore.ConnectionCredentialStore, credentialStore),
       Context.add(EnvironmentCacheStore, cacheStore),
+      Context.add(DeferredThreadCommandStore, deferredThreadCommandStore),
     );
   }),
 );

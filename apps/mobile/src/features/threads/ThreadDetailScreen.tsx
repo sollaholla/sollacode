@@ -95,7 +95,7 @@ export interface ThreadDetailScreenProps {
     questionId: string,
     customAnswer: string,
   ) => void;
-  readonly onSubmitUserInput: () => Promise<unknown>;
+  readonly onSubmitUserInput: (answersOverride?: Record<string, string>) => Promise<unknown>;
   readonly showContent?: boolean;
 }
 

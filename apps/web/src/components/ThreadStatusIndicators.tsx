@@ -4,12 +4,14 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import type { VcsStatusResult } from "@t3tools/contracts";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import { CloudIcon, FolderGit2Icon, GitPullRequestIcon } from "lucide-react";
+import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
 import { useProject } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
-import { useThreadRunningTerminalIds } from "../state/terminalSessions";
+import { useKnownTerminalSessions } from "../state/terminalSessions";
+import { deriveWorkingTerminalActivity } from "../terminalActivity";
 import { vcsEnvironment } from "../state/vcs";
 import { useUiStateStore } from "../uiStateStore";
 import { resolveChangeRequestPresentation } from "../sourceControlPresentation";
@@ -296,40 +298,46 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
  * environment indicator, matching the sidebar's trailing indicators.
  */
 export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSummary }) {
-  const runningTerminalIds = useThreadRunningTerminalIds({
+  const knownTerminals = useKnownTerminalSessions({
     environmentId: thread.environmentId,
     threadId: thread.id,
   });
+  const terminalActivity = deriveWorkingTerminalActivity(knownTerminals);
   const environment = useEnvironment(thread.environmentId);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemoteThread =
     primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
   const remoteEnvLabel = environment?.label ?? null;
   const threadEnvironmentLabel = isRemoteThread ? (remoteEnvLabel ?? "Remote") : null;
-  const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
-  if (!terminalStatus && !isRemoteThread) {
+  if (!terminalActivity && !isRemoteThread) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
-      {terminalStatus ? (
+      {terminalActivity ? (
         <Tooltip>
           <TooltipTrigger
             render={
               <span
                 role="img"
-                aria-label={terminalStatus.label}
-                className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
+                aria-label={
+                  terminalActivity.count === 1
+                    ? "Terminal process running"
+                    : `${terminalActivity.count} terminal processes running`
+                }
+                className="inline-flex items-center justify-center text-sky-600 dark:text-sky-400"
               />
             }
           >
-            <TerminalIcon
-              className={`size-3 ${terminalStatus.pulse ? "animate-status-pulse" : ""}`}
-            />
+            <TerminalSessionIcon className="size-3" working={false} />
           </TooltipTrigger>
-          <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
+          <TooltipPopup side="top">
+            {terminalActivity.count === 1
+              ? "Terminal process running"
+              : `${terminalActivity.count} terminal processes running`}
+          </TooltipPopup>
         </Tooltip>
       ) : null}
       {isRemoteThread ? (

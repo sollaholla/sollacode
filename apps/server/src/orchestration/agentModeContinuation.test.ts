@@ -22,7 +22,10 @@ import {
   agentAutoResumeIds,
   agentContinuationShouldAwaitBackgroundTask,
   BACKGROUND_TASK_CONTINUATION_GRACE_MS,
+  isControlOnlyAgentTurn,
+  KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   outstandingBackgroundTasks,
+  threadLostBackgroundTaskAtRestart,
   providerAuthenticationResumeIds,
   shouldAutoContinueAgentThread,
   shouldResumeProviderAuthenticationPausedThread,
@@ -259,6 +262,7 @@ function taskActivity(input: {
   readonly taskId: string;
   readonly offsetMs: number;
   readonly taskType?: string;
+  readonly status?: string;
 }): OrchestrationThreadActivity {
   return {
     id: EventId.make(`${input.kind}:${input.taskId}:${input.offsetMs}`),
@@ -268,6 +272,7 @@ function taskActivity(input: {
     payload: {
       taskId: input.taskId,
       ...(input.taskType === undefined ? {} : { taskType: input.taskType }),
+      ...(input.status === undefined ? {} : { status: input.status }),
     },
     turnId: null,
     createdAt: isoAt(T0 + input.offsetMs),
@@ -433,5 +438,232 @@ describe("agentContinuationShouldAwaitBackgroundTask", () => {
     expect(
       agentContinuationShouldAwaitBackgroundTask({ activities: [], nowEpochMs: T0 }),
     ).toBeNull();
+  });
+});
+
+describe("isControlOnlyAgentTurn", () => {
+  const sourceTurnId = "turn-source";
+  const SETTINGS_MESSAGE =
+    "Settings updated: claude-opus-5 with high effort. Apply these settings.";
+
+  function activity(kind: string, turn: string | null = sourceTurnId): OrchestrationThreadActivity {
+    return {
+      id: EventId.make(`${kind}:${turn}`),
+      tone: "info",
+      kind,
+      summary: kind,
+      payload: {},
+      turnId: turn === null ? null : TurnId.make(turn),
+      createdAt: isoAt(T0),
+    };
+  }
+
+  it("skips a provider handoff that was the entire turn", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [activity("provider.handoff.completed"), activity("provider.usage.updated")],
+        sourceTurnId,
+      }),
+    ).toBe(true);
+  });
+
+  it("skips a settings acknowledgement that ran no work", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [activity("thread.settings.applied"), activity("checkpoint.captured")],
+        sourceTurnId,
+        sourceUserMessageText: SETTINGS_MESSAGE,
+      }),
+    ).toBe(true);
+  });
+
+  // The reported shape: a handoff is stamped with the id of the turn it starts,
+  // so the turn carrying the user's own prompt looked like pure bookkeeping and
+  // its continuation was cancelled the instant it settled.
+  it("continues a handoff-initiated turn that actually did work", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [
+          activity("provider.handoff.completed"),
+          activity("tool.started"),
+          activity("tool.completed"),
+          activity("checkpoint.captured"),
+        ],
+        sourceTurnId,
+      }),
+    ).toBe(false);
+  });
+
+  it("continues a settings-update turn that actually did work", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [activity("thread.settings.applied"), activity("tool.started")],
+        sourceTurnId,
+        sourceUserMessageText: SETTINGS_MESSAGE,
+      }),
+    ).toBe(false);
+  });
+
+  it("counts a backgrounded task as work", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [activity("provider.handoff.completed"), activity("task.started")],
+        sourceTurnId,
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores control activities that belong to another turn", () => {
+    expect(
+      isControlOnlyAgentTurn({
+        activities: [
+          activity("provider.handoff.completed", "turn-earlier"),
+          activity("thread.settings.applied", null),
+        ],
+        sourceTurnId,
+      }),
+    ).toBe(false);
+  });
+
+  it("leaves an ordinary turn alone", () => {
+    expect(isControlOnlyAgentTurn({ activities: [], sourceTurnId })).toBe(false);
+    expect(isControlOnlyAgentTurn({ activities: [activity("tool.started")], sourceTurnId })).toBe(
+      false,
+    );
+  });
+});
+
+describe("threadLostBackgroundTaskAtRestart", () => {
+  // The reported shape: the agent backgrounds a test run, signs off to wait,
+  // and the provider reports the task stopped as the app shuts down. Nothing is
+  // left alive to re-invoke it.
+  it("recovers a turn whose task was stopped by the shutdown", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+          taskActivity({
+            kind: "task.completed",
+            taskId: "bash-1",
+            offsetMs: 120_000,
+            status: "stopped",
+          }),
+        ],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(true);
+  });
+
+  // The process was killed outright, so no terminal record was ever written.
+  it("recovers a turn whose task never reported terminal", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a turn alone when its task actually finished", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+          taskActivity({
+            kind: "task.completed",
+            taskId: "bash-1",
+            offsetMs: 10_000,
+            status: "completed",
+          }),
+        ],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(false);
+  });
+
+  // A task announced after the reply belongs to whatever ran next.
+  it("ignores a task that started after the turn settled", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 60_000 })],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(false);
+  });
+
+  // A restart should recover the session in progress, not resurrect old threads.
+  it("leaves work older than the recovery window alone", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS + 60_000,
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores plan tasks, which nothing waits on", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "plan-1", offsetMs: 0, taskType: "plan" }),
+        ],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(false);
+  });
+
+  // A task stopped before the reply is history the agent already saw and
+  // reported on; only a stop that outlives the turn stranded it.
+  it("ignores a task that was already terminal before the turn ended", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+          taskActivity({
+            kind: "task.completed",
+            taskId: "bash-1",
+            offsetMs: 10_000,
+            status: "stopped",
+          }),
+        ],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(false);
+  });
+
+  it("tracks each task separately", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [
+          taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 }),
+          taskActivity({
+            kind: "task.completed",
+            taskId: "bash-1",
+            offsetMs: 10_000,
+            status: "completed",
+          }),
+          taskActivity({ kind: "task.started", taskId: "bash-2", offsetMs: 12_000 }),
+        ],
+        turnCompletedAt: isoAt(T0 + 30_000),
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("does nothing without a parseable completion time", () => {
+    expect(
+      threadLostBackgroundTaskAtRestart({
+        activities: [taskActivity({ kind: "task.started", taskId: "bash-1", offsetMs: 0 })],
+        turnCompletedAt: "not-a-timestamp",
+        bootedAtEpochMs: T0 + 130_000,
+      }),
+    ).toBe(false);
   });
 });

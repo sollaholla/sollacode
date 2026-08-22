@@ -23,6 +23,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   normalizeCliError,
@@ -101,7 +102,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh",
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -121,7 +123,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh",
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt",
     attachments: TextGeneration.BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -164,7 +167,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh";
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -426,11 +430,24 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       };
     });
 
+  const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
+    Effect.fn("CodexTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
+      const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
+      return yield* runCodexJson({
+        operation: "generateVmAgentTaskPrompt",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generatePlanRefresh,
+    generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

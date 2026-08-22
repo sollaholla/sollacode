@@ -24,6 +24,15 @@ const resolveShikiDependencyRoot = (packageName) => {
 };
 
 config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot])];
+config.transformer = {
+  ...config.transformer,
+  getTransformOptions: async () => ({
+    transform: {
+      experimentalImportSupport: false,
+      inlineRequires: true,
+    },
+  }),
+};
 config.resolver = {
   ...config.resolver,
   blockList: [

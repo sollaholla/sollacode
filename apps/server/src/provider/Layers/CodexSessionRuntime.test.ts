@@ -7,6 +7,7 @@ import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
+import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import {
   buildCodexDeveloperInstructions,
@@ -19,6 +20,8 @@ import {
   CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  mcpFormElicitationContent,
+  mcpFormElicitationQuestions,
   openCodexThread,
   resolveCodexAutoCompactionTokenLimit,
 } from "./CodexSessionRuntime.ts";
@@ -317,6 +320,116 @@ describe("hasConfiguredMcpServer", () => {
       hasConfiguredMcpServer(["-c", 'mcp_servers.t3-code.url="http://127.0.0.1/mcp"']),
       true,
     );
+  });
+});
+
+describe("MCP form elicitation", () => {
+  const payload: EffectCodexSchema.McpServerElicitationRequestParams = {
+    mode: "form",
+    message:
+      "Install Solla Code 0.1.96? The app will close, install, and restart with auto-resume.",
+    serverName: "Solla Code",
+    threadId: "provider-thread-1",
+    turnId: "provider-turn-1",
+    requestedSchema: {
+      type: "object",
+      properties: {
+        confirmation: {
+          type: "string",
+          title: "Update app",
+          description: "Choose Yes to install the update.",
+          enum: ["yes", "no"],
+        },
+      },
+      required: ["confirmation"],
+    },
+  };
+
+  it("converts a standard MCP enum form into the native in-chat question UI", () => {
+    NodeAssert.deepStrictEqual(mcpFormElicitationQuestions(payload), [
+      {
+        id: "confirmation",
+        header: "Update app",
+        question: payload.message,
+        isOther: false,
+        isSecret: false,
+        options: [
+          { label: "Yes", description: "Select Yes." },
+          { label: "No", description: "Select No." },
+        ],
+      },
+    ]);
+  });
+
+  it("maps the displayed option label back to the MCP enum value", () => {
+    NodeAssert.deepStrictEqual(mcpFormElicitationContent(payload, { confirmation: "Yes" }), {
+      confirmation: "yes",
+    });
+    NodeAssert.deepStrictEqual(
+      mcpFormElicitationContent(payload, { confirmation: { answers: ["No"] } }),
+      { confirmation: "no" },
+    );
+  });
+
+  it("offers a default action while preserving typed correction feedback", () => {
+    const actionApprovalPayload: EffectCodexSchema.McpServerElicitationRequestParams = {
+      mode: "form",
+      message:
+        "Review this email:\n\nTo: pat@example.com\nSubject: Status\n\nThe work is complete.",
+      serverName: "Solla Code",
+      threadId: "provider-thread-1",
+      turnId: "provider-turn-1",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          t3_action_approval: {
+            type: "string",
+            title: "Approval",
+            description: "Choose Approve or type corrections.",
+            default: "Approve",
+            minLength: 1,
+            maxLength: 20_000,
+          },
+        },
+        required: ["t3_action_approval"],
+      },
+    };
+
+    NodeAssert.deepStrictEqual(mcpFormElicitationQuestions(actionApprovalPayload), [
+      {
+        id: "t3_action_approval",
+        header: "Approval",
+        question: actionApprovalPayload.message,
+        isOther: false,
+        isSecret: false,
+        options: [{ label: "Approve", description: "Select Approve." }],
+      },
+    ]);
+    NodeAssert.deepStrictEqual(
+      mcpFormElicitationContent(actionApprovalPayload, {
+        t3_action_approval: "Use a more specific subject line.",
+      }),
+      { t3_action_approval: "Use a more specific subject line." },
+    );
+    NodeAssert.deepStrictEqual(
+      mcpFormElicitationContent(actionApprovalPayload, { t3_action_approval: "Approve" }),
+      { t3_action_approval: "Approve" },
+    );
+  });
+
+  it("declines unsupported elicitation modes and malformed answers", () => {
+    NodeAssert.equal(
+      mcpFormElicitationQuestions({
+        mode: "url",
+        elicitationId: "external-update",
+        message: "Open an external form",
+        url: "https://example.invalid/form",
+        serverName: "Solla Code",
+        threadId: "provider-thread-1",
+      }),
+      null,
+    );
+    NodeAssert.equal(mcpFormElicitationContent(payload, { confirmation: "Maybe" }), null);
   });
 });
 

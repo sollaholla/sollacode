@@ -33,7 +33,7 @@ const FABLE_MODEL_ID = "claude-fable-5";
  * pricing (`denseGateGeometry` → `renderCellWidth`/`renderCellHeight`), so
  * every token estimate tracks the new cell geometry automatically.
  */
-export const FABLE_RENDER_FONT = "jetbrains-mono-10";
+export const FABLE_RENDER_FONT = "jetbrains-mono-12";
 /**
  * Rendered-page wrap width in monospace cells, overriding pxpipe's Claude
  * profile default (312 cols ≈ 28,080 chars/page). With the 6 px-wide
@@ -58,7 +58,29 @@ export const FABLE_RENDER_FONT = "jetbrains-mono-10";
  * `maxCharsPerImage`), so paging and break-even economics follow this single
  * knob automatically.
  */
-export const FABLE_RENDER_COLS = 240;
+/**
+ * Raised again 2026-08-15: production Fable was still refusing these pages
+ * ("the image render is too compressed", then re-reading in small chunks — a
+ * net loss, since the render is paid for and then worked around). The 6×11
+ * `jetbrains-mono-10` cell was the third density tried and the second to fail,
+ * so this moves the lever the comment above already identifies as the right
+ * one — glyph DPI, not column count. `jetbrains-mono-12` is an 8×13 cell:
+ * 104 px² against 66 px², +58% glyph area.
+ *
+ * 160 cols, not 192, because the page-height derivation lives inside pxpipe
+ * and is not visible from here. At 192 cols the page is safe only if pxpipe
+ * re-derives rows from a pixel budget (1544×723 = 1.116 MP) and busts the
+ * envelope if it keeps ~65 rows (1544×853 = 1.317 MP > ~1.15 MP) — which would
+ * resample and blur every glyph, the precise failure this code exists to
+ * prevent. 160 cols holds under both readings (1.099 MP worst case, long edge
+ * 1288 px), so the change cannot regress into resampling on an assumption I
+ * could not verify.
+ *
+ * Economics: ~10,400 chars/page for ~1426 patch tokens ≈ 7.3 chars/token, down
+ * from ~11.5 but still ~1.8× plain text, and the profitability gate re-prices
+ * against the real geometry so blocks that stop paying simply stay text.
+ */
+export const FABLE_RENDER_COLS = 160;
 const MAX_RENDERED_PAGE_BYTES = 10 * 1024 * 1024;
 // Keep ordinary Claude responses replayable until the upstream stream closes.
 // This prevents a mid-response ECONNRESET from committing a truncated response

@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-
-import { DiagnosticsSettingsPanel } from "../components/settings/DiagnosticsSettings";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/settings/diagnostics")({
-  component: DiagnosticsSettingsPanel,
+  component: lazyRouteComponent(
+    () => import("../components/settings/DiagnosticsSettings"),
+    "DiagnosticsSettingsPanel",
+  ),
 });

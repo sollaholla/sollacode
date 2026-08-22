@@ -11,7 +11,6 @@ import { describe, expect, it } from "vite-plus/test";
 import type { Thread, ThreadShell } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
-  MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   authoritativeThreadSettingsFingerprint,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
@@ -22,17 +21,21 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
-  getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
   isProviderOverloadRetrying,
-  reconcileMountedTerminalThreadIds,
+  isThreadAlreadyExistsError,
+  isThreadWorkInterruptible,
   reconcileRetainedMountedThreadIds,
   retainClosingSideChatThreadIds,
+  describeThreadErrorAge,
+  resolveDraftThreadCreateModelSelection,
   resolveVisibleServerThreadError,
+  shouldMountActiveTerminalDrawer,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
+  shouldCreateServerThreadForTerminalStart,
   shouldShowBranchMismatchBanner,
   shouldConfirmRemoteProviderAccountSwitch,
   shouldPersistComposerModelDefaults,
@@ -366,6 +369,45 @@ describe("buildThreadTurnInterruptInput", () => {
   });
 });
 
+describe("isThreadWorkInterruptible", () => {
+  it("keeps Stop available while a provider starts or retries a user turn", () => {
+    expect(isThreadWorkInterruptible({ phase: "connecting", pendingWork: null })).toBe(true);
+    expect(
+      isThreadWorkInterruptible({
+        phase: "disconnected",
+        pendingWork: {
+          kind: "active-turn-recovery",
+          state: "sleeping",
+          since: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not turn unrelated background or authentication waits into Stop", () => {
+    expect(
+      isThreadWorkInterruptible({
+        phase: "ready",
+        pendingWork: {
+          kind: "agent-continuation",
+          state: "pending",
+          since: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isThreadWorkInterruptible({
+        phase: "disconnected",
+        pendingWork: {
+          kind: "active-turn-recovery",
+          state: "blocked-authentication",
+          since: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("deriveLockedProvider", () => {
   it("keeps provider selection unlocked while another provider turn is active", () => {
     expect(
@@ -470,90 +512,6 @@ describe("buildExpiredTerminalContextToastCopy", () => {
   });
 });
 
-describe("getStartedThreadModelChangeBlockReason", () => {
-  const providers = [
-    {
-      instanceId: ProviderInstanceId.make("codex"),
-    },
-    {
-      instanceId: ProviderInstanceId.make("grok"),
-      requiresNewThreadForModelChange: true,
-    },
-  ];
-
-  it("allows model changes before a provider session has started", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: false,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-other",
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("allows unchanged model selections for restricted providers", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("allows cross-provider continuation even when one provider restricts in-session model changes", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5.4",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("blocks same-provider model changes when that provider requires a new thread", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-other",
-        },
-      }),
-    ).toEqual({
-      title: "Start a new chat to change models",
-      description:
-        "This provider does not allow switching models after a conversation has started.",
-    });
-  });
-});
-
 describe("resolveSendEnvMode", () => {
   it("keeps worktree mode only for git repositories", () => {
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true })).toBe("worktree");
@@ -616,32 +574,25 @@ describe("session branch mismatch dismissal", () => {
   });
 });
 
-describe("reconcileMountedTerminalThreadIds", () => {
-  it("keeps open threads and makes the active thread most recent", () => {
-    expect(
-      reconcileMountedTerminalThreadIds({
-        currentThreadIds: ["thread-a", "thread-b", "thread-c"],
-        openThreadIds: ["thread-a", "thread-b", "thread-c"],
-        activeThreadId: "thread-a",
-        activeThreadTerminalOpen: true,
-        maxHiddenThreadCount: 2,
-      }),
-    ).toEqual(["thread-b", "thread-c", "thread-a"]);
+describe("shouldMountActiveTerminalDrawer", () => {
+  const base = {
+    hasActiveThread: true,
+    embeddedSideChat: false,
+    terminalOpen: true,
+    terminalMainSurfaceActive: false,
+  };
+
+  it("mounts only the active thread's visible drawer", () => {
+    expect(shouldMountActiveTerminalDrawer(base)).toBe(true);
+    expect(shouldMountActiveTerminalDrawer({ ...base, terminalOpen: false })).toBe(false);
+    expect(shouldMountActiveTerminalDrawer({ ...base, hasActiveThread: false })).toBe(false);
   });
 
-  it("drops closed threads and enforces the hidden mounted cap", () => {
-    const ids = Array.from(
-      { length: MAX_HIDDEN_MOUNTED_TERMINAL_THREADS + 2 },
-      (_, index) => `thread-${index}`,
+  it("does not double-mount terminal surfaces", () => {
+    expect(shouldMountActiveTerminalDrawer({ ...base, terminalMainSurfaceActive: true })).toBe(
+      false,
     );
-    expect(
-      reconcileMountedTerminalThreadIds({
-        currentThreadIds: ids,
-        openThreadIds: ids.slice(1),
-        activeThreadId: null,
-        activeThreadTerminalOpen: false,
-      }),
-    ).toEqual(ids.slice(-MAX_HIDDEN_MOUNTED_TERMINAL_THREADS));
+    expect(shouldMountActiveTerminalDrawer({ ...base, embeddedSideChat: true })).toBe(false);
   });
 });
 
@@ -748,6 +699,73 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
         targetThreadId: threadId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldCreateServerThreadForTerminalStart", () => {
+  it("persists only local drafts that are not already server threads", () => {
+    expect(
+      shouldCreateServerThreadForTerminalStart({
+        isLocalDraftThread: true,
+        isServerThread: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldCreateServerThreadForTerminalStart({
+        isLocalDraftThread: false,
+        isServerThread: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldCreateServerThreadForTerminalStart({
+        isLocalDraftThread: true,
+        isServerThread: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isThreadAlreadyExistsError", () => {
+  it("recognizes a duplicate thread.create invariant", () => {
+    expect(
+      isThreadAlreadyExistsError(
+        new Error("Thread 'thread-1' already exists and cannot be created twice."),
+      ),
+    ).toBe(true);
+    expect(isThreadAlreadyExistsError("project already exists")).toBe(false);
+    expect(isThreadAlreadyExistsError(new Error("network failed"))).toBe(false);
+  });
+});
+
+describe("resolveDraftThreadCreateModelSelection", () => {
+  const composerSelection = {
+    instanceId: ProviderInstanceId.make("grok"),
+    model: "grok-4",
+  };
+  const projectSelection = {
+    instanceId: ProviderInstanceId.make("claude"),
+    model: "opus",
+  };
+
+  it("prefers the composer selection, then the project default", () => {
+    expect(
+      resolveDraftThreadCreateModelSelection({
+        composerModelSelection: composerSelection,
+        projectDefaultModelSelection: projectSelection,
+      }),
+    ).toEqual(composerSelection);
+    expect(
+      resolveDraftThreadCreateModelSelection({
+        composerModelSelection: { ...composerSelection, model: "" },
+        projectDefaultModelSelection: projectSelection,
+      }),
+    ).toEqual(projectSelection);
+    expect(
+      resolveDraftThreadCreateModelSelection({
+        composerModelSelection: null,
+        projectDefaultModelSelection: { ...projectSelection, model: "" },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -930,5 +948,38 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+});
+
+describe("describeThreadErrorAge", () => {
+  const now = Date.parse("2026-08-17T20:41:00Z");
+
+  it("says how old a stale error is", () => {
+    // The reported case: a spawn failure recorded at 18:48 was still shown at
+    // 20:41 as though it were happening, so the user debugged a working CLI.
+    expect(describeThreadErrorAge("2026-08-17T18:48:16Z", now)).toBe("1 hour ago");
+  });
+
+  it("scales through minutes, hours and days", () => {
+    expect(describeThreadErrorAge("2026-08-17T20:36:00Z", now)).toBe("5 minutes ago");
+    expect(describeThreadErrorAge("2026-08-17T15:41:00Z", now)).toBe("5 hours ago");
+    expect(describeThreadErrorAge("2026-08-15T20:41:00Z", now)).toBe("2 days ago");
+  });
+
+  it("gets the singular right", () => {
+    expect(describeThreadErrorAge("2026-08-17T20:40:00Z", now)).toBe("1 minute ago");
+    expect(describeThreadErrorAge("2026-08-16T20:41:00Z", now)).toBe("1 day ago");
+  });
+
+  it("stays quiet for an error that just happened", () => {
+    // "Just now" adds nothing to a banner that already appeared this second.
+    expect(describeThreadErrorAge("2026-08-17T20:40:30Z", now)).toBeNull();
+  });
+
+  it("says nothing rather than claiming an error from the future", () => {
+    expect(describeThreadErrorAge("2026-08-17T21:00:00Z", now)).toBeNull();
+    expect(describeThreadErrorAge("not a date", now)).toBeNull();
+    expect(describeThreadErrorAge(null, now)).toBeNull();
+    expect(describeThreadErrorAge(undefined, now)).toBeNull();
   });
 });

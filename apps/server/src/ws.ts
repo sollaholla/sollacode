@@ -50,9 +50,15 @@ import {
   EnvironmentAuthorizationError,
   ThreadId,
   type TerminalAttachStreamItem,
-  type TerminalError,
   type TerminalEventStreamItem,
+  type TerminalLayoutStreamItem,
   type TerminalMetadataStreamItem,
+  type VmAgentStreamItem,
+  VmAgentNotFoundError,
+  VmAgentWorkspaceOperationError,
+  type VmAgentWorkspaceStreamItem,
+  type VmAgentCollaborationStreamItem,
+  type VmScreenStreamItem,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -76,6 +82,7 @@ import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ThreadSubscriptionRegistry from "./orchestration/Services/ThreadSubscriptionRegistry.ts";
+import * as ThreadPendingWorkSignal from "./persistence/Services/ThreadPendingWorkSignal.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -91,6 +98,13 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
+import * as VmManager from "./vm/VmManager.ts";
+import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
+import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
+import { createAgentThread, deleteAgentThread } from "./vm/agentThread.ts";
+import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -112,6 +126,7 @@ import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import { ThreadArtifactService } from "./artifacts/ThreadArtifactService.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -187,6 +202,17 @@ function terminalMetadataEventByteSize(event: TerminalMetadataStreamItem): numbe
         terminalStreamTextEncoder.encode(`${event.threadId}\u0000${event.terminalId}`).byteLength +
         256
       );
+    case "resync-required":
+      return 256;
+  }
+}
+
+function terminalLayoutEventByteSize(event: TerminalLayoutStreamItem): number {
+  switch (event.type) {
+    case "snapshot":
+      return terminalStreamTextEncoder.encode(JSON.stringify(event.layouts)).byteLength + 512;
+    case "layout":
+      return terminalStreamTextEncoder.encode(JSON.stringify(event.layout)).byteLength + 256;
     case "resync-required":
       return 256;
   }
@@ -372,6 +398,64 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // databases. Past this gap the client is reset with a fresh thread snapshot.
 const THREAD_RESUME_MAX_GAP = 1_000;
 
+const THREAD_DETAIL_COALESCE_WINDOW = Duration.millis(50);
+const THREAD_DETAIL_COALESCE_MAX_CHUNK = 512;
+
+/**
+ * Combine only adjacent chunks for the same streaming assistant message.
+ * Keeping the last event's sequence preserves the stream cursor while the
+ * first chunk's creation time preserves the message identity clients render.
+ * Any lifecycle/activity/marker item is an ordering barrier.
+ */
+export function coalesceThreadStreamItems(
+  items: ReadonlyArray<OrchestrationThreadStreamItem>,
+): ReadonlyArray<OrchestrationThreadStreamItem> {
+  const output: Array<OrchestrationThreadStreamItem> = [];
+
+  for (const item of items) {
+    const previous = output.at(-1);
+    if (
+      previous?.kind === "event" &&
+      item.kind === "event" &&
+      previous.event.type === "thread.message-sent" &&
+      item.event.type === "thread.message-sent" &&
+      previous.event.payload.role === "assistant" &&
+      item.event.payload.role === "assistant" &&
+      previous.event.payload.streaming &&
+      item.event.payload.streaming &&
+      previous.event.payload.threadId === item.event.payload.threadId &&
+      previous.event.payload.messageId === item.event.payload.messageId
+    ) {
+      output[output.length - 1] = {
+        kind: "event",
+        event: {
+          ...item.event,
+          payload: {
+            ...previous.event.payload,
+            ...item.event.payload,
+            text: previous.event.payload.text + item.event.payload.text,
+            createdAt: previous.event.payload.createdAt,
+          },
+        },
+      };
+      continue;
+    }
+
+    output.push(item);
+  }
+
+  return output;
+}
+
+const coalesceThreadStream = <E, R>(
+  stream: Stream.Stream<OrchestrationThreadStreamItem, E, R>,
+): Stream.Stream<OrchestrationThreadStreamItem, E, R> =>
+  stream.pipe(
+    Stream.groupedWithin(THREAD_DETAIL_COALESCE_MAX_CHUNK, THREAD_DETAIL_COALESCE_WINDOW),
+    Stream.map(coalesceThreadStreamItems),
+    Stream.flatMap((items) => Stream.fromIterable(items)),
+  );
+
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
   revision: number,
@@ -412,6 +496,45 @@ function toAuthAccessStreamEvent(
   }
 }
 
+const VM_AGENT_STREAM_MAX_BYTES = 512 * 1024;
+const VM_WORKSPACE_STREAM_MAX_BYTES = 2 * 1024 * 1024;
+const VM_SCREEN_STREAM_MAX_BYTES = 16 * 1024 * 1024;
+const VM_STREAM_MAX_ITEMS = 64;
+
+const vmResyncRequired = {
+  type: "resync-required" as const,
+  reason: "slow-consumer" as const,
+};
+
+function vmAgentStreamItemByteSize(item: VmAgentStreamItem): number {
+  if (item.type === "snapshot") {
+    return item.agents.reduce(
+      (sum, agent) => sum + agent.name.length + agent.purpose.length + 256,
+      512,
+    );
+  }
+  if (item.type === "upsert") {
+    return item.agent.name.length + item.agent.purpose.length + 512;
+  }
+  return 256;
+}
+
+function vmScreenStreamItemByteSize(item: VmScreenStreamItem): number {
+  return item.type === "frame" ? item.data.length + 256 : 256;
+}
+
+function vmWorkspaceStreamItemByteSize(item: VmAgentWorkspaceStreamItem): number {
+  return item.type === "resync-required"
+    ? 256
+    : terminalStreamTextEncoder.encode(JSON.stringify(item)).byteLength + 512;
+}
+
+function vmCollaborationStreamItemByteSize(item: VmAgentCollaborationStreamItem): number {
+  return item.type === "resync-required"
+    ? 256
+    : terminalStreamTextEncoder.encode(JSON.stringify(item)).byteLength + 512;
+}
+
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
@@ -425,6 +548,7 @@ const makeWsRpcLayer = (
       const threadSubscriptionRegistry =
         yield* ThreadSubscriptionRegistry.ThreadSubscriptionRegistry;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const threadPendingWorkSignal = yield* ThreadPendingWorkSignal.ThreadPendingWorkSignal;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
@@ -433,6 +557,12 @@ const makeWsRpcLayer = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
+      const vmManager = yield* VmManager.VmManager;
+      const vmAgentWorkspace = yield* VmAgentWorkspace.VmAgentWorkspace;
+      const vmAgentTaskScheduler = yield* VmAgentTaskScheduler.VmAgentTaskScheduler;
+      const vmAgentCollaboration = yield* VmAgentCollaboration.VmAgentCollaboration;
+      const vmAgentStore = yield* VmAgentStore;
+      const textGeneration = yield* TextGeneration.TextGeneration;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -486,6 +616,7 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
+      const threadArtifacts = yield* ThreadArtifactService;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -805,31 +936,95 @@ const makeWsRpcLayer = (
 
       type ShellLiveInput =
         | { readonly kind: "event"; readonly event: OrchestrationEvent }
+        | { readonly kind: "pending-work"; readonly threadId: ThreadId }
         | { readonly kind: "synchronized" }
         | { readonly kind: "resync-required" };
 
+      // Read a thread's current pending work for a scheduler transition that
+      // produced no event. Reuses the shell read so the value can never
+      // disagree with the one a `thread-upserted` would have carried; a thread
+      // the projection no longer holds is simply dropped, since `thread-removed`
+      // is the event path's job.
+      const threadPendingWorkItem = (
+        threadId: ThreadId,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamItem>, never, never> =>
+        retryShellProjectionRead(
+          "thread",
+          threadId,
+          projectionSnapshotQuery.getThreadShellById(threadId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap(
+              Option.map((thread) => ({
+                kind: "thread-pending-work" as const,
+                threadId,
+                pendingWork: thread.pendingWork ?? null,
+              })),
+            ),
+          ),
+        );
+
+      // One marker-free stretch of the live stream: the events coalesce as
+      // usual, then any pending-work signal the events did not already cover.
+      const coalesceShellSegment = (
+        events: ReadonlyArray<OrchestrationEvent>,
+        pendingWorkThreadIds: ReadonlySet<ThreadId>,
+      ): Effect.Effect<ReadonlyArray<OrchestrationShellStreamItem>, never, never> =>
+        Effect.gen(function* () {
+          const items: Array<OrchestrationShellStreamItem> = [
+            ...(yield* coalesceShellEvents(events)),
+          ];
+          // A thread with an event in this window just refetched its entire
+          // shell, pendingWork included, so its signal would only repeat that
+          // read — and a scheduler transition is usually *caused* by the event
+          // next to it, which is where most signals land.
+          const refetched = new Set(
+            events
+              .filter((event) => event.aggregateKind === "thread")
+              .map((event) => event.aggregateId),
+          );
+          const uncovered = Array.from(pendingWorkThreadIds).filter(
+            (threadId) => !refetched.has(threadId),
+          );
+          const pendingWorkItems = yield* Effect.forEach(uncovered, threadPendingWorkItem, {
+            concurrency: SHELL_REFETCH_CONCURRENCY,
+          });
+          for (const item of pendingWorkItems) {
+            if (Option.isSome(item)) {
+              items.push(item.value);
+            }
+          }
+          return items;
+        });
+
       // A completion marker is queued alongside raw live events so it cannot
       // overtake an event still waiting in the coalescing window. Split each
-      // batch at markers and coalesce only the event segments on either side.
+      // batch at markers and coalesce only the segments on either side.
       const coalesceShellLiveInputs = (
         inputs: ReadonlyArray<ShellLiveInput>,
       ): Effect.Effect<ReadonlyArray<OrchestrationShellStreamItem>, never, never> =>
         Effect.gen(function* () {
           const output: Array<OrchestrationShellStreamItem> = [];
           let pendingEvents: Array<OrchestrationEvent> = [];
+          let pendingWorkThreadIds = new Set<ThreadId>();
 
           for (const input of inputs) {
             if (input.kind === "event") {
               pendingEvents.push(input.event);
               continue;
             }
+            if (input.kind === "pending-work") {
+              pendingWorkThreadIds.add(input.threadId);
+              continue;
+            }
 
-            output.push(...(yield* coalesceShellEvents(pendingEvents)));
+            output.push(...(yield* coalesceShellSegment(pendingEvents, pendingWorkThreadIds)));
             pendingEvents = [];
+            pendingWorkThreadIds = new Set();
             output.push({ kind: input.kind });
           }
 
-          output.push(...(yield* coalesceShellEvents(pendingEvents)));
+          output.push(...(yield* coalesceShellSegment(pendingEvents, pendingWorkThreadIds)));
           return output;
         });
 
@@ -1103,6 +1298,7 @@ const makeWsRpcLayer = (
           },
           settings,
           shellResumeCompletionMarker: true,
+          shellPendingWorkUpdates: true,
           threadResumeCompletionMarker: true,
         };
       });
@@ -1250,6 +1446,22 @@ const makeWsRpcLayer = (
                 ),
                 { startImmediately: true },
               );
+              // Scheduler transitions append nothing to the event log, so a
+              // thread whose queued work resolves after its last event would
+              // otherwise keep whatever this client read last — the "Auto-
+              // resuming" row that never stops counting. Attached to the same
+              // buffer, before any snapshot, for the same reason events are.
+              // Only for clients that asked: older ones cannot decode the item.
+              if (input.requestPendingWorkUpdates === true) {
+                yield* Effect.forkScoped(
+                  threadPendingWorkSignal.changes.pipe(
+                    Stream.runForEach((threadId) =>
+                      liveBuffer.offer({ kind: "pending-work", threadId }),
+                    ),
+                  ),
+                  { startImmediately: true },
+                );
+              }
               const bufferedLiveStream = coalesceShellLiveStream(liveBuffer.stream);
 
               const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
@@ -1380,7 +1592,21 @@ const makeWsRpcLayer = (
                 resyncItem: { kind: "resync-required" },
               });
               yield* Effect.forkScoped(liveStream.pipe(Stream.runForEach(liveBuffer.offer)));
-              const bufferedLiveStream = liveBuffer.stream;
+              const bufferedLiveStream = coalesceThreadStream(liveBuffer.stream);
+              const synchronizedThenLive =
+                input.requestCompletionMarker === true
+                  ? Stream.concat(
+                      Stream.fromEffect(
+                        liveBuffer
+                          .offer({ kind: "synchronized" })
+                          .pipe(
+                            Effect.andThen(liveBuffer.takeAll),
+                            Effect.map(coalesceThreadStreamItems),
+                          ),
+                      ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
+                      bufferedLiveStream,
+                    )
+                  : bufferedLiveStream;
 
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
@@ -1425,16 +1651,7 @@ const makeWsRpcLayer = (
                           }),
                       ),
                     );
-                  const afterCatchUp =
-                    input.requestCompletionMarker === true
-                      ? Stream.concat(
-                          Stream.fromEffect(liveBuffer.offer({ kind: "synchronized" })).pipe(
-                            Stream.drain,
-                          ),
-                          bufferedLiveStream,
-                        )
-                      : bufferedLiveStream;
-                  return Stream.concat(catchUpStream, afterCatchUp);
+                  return Stream.concat(catchUpStream, synchronizedThenLive);
                 }
                 // Gap too large (or cursor ahead of authoritative state): fall
                 // through to the snapshot path so the client converges from a
@@ -1460,21 +1677,12 @@ const makeWsRpcLayer = (
                 });
               }
 
-              const afterSnapshot =
-                input.requestCompletionMarker === true
-                  ? Stream.concat(
-                      Stream.fromEffect(liveBuffer.offer({ kind: "synchronized" })).pipe(
-                        Stream.drain,
-                      ),
-                      bufferedLiveStream,
-                    )
-                  : bufferedLiveStream;
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot: projectThreadDetailSnapshot(snapshot.value),
                 }),
-                afterSnapshot,
+                synchronizedThenLive,
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1799,6 +2007,35 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
+              if (
+                input.resource._tag === "artifact-revision" ||
+                input.resource._tag === "artifact-icon"
+              ) {
+                const artifactResource = input.resource;
+                const detail = yield* threadArtifacts
+                  .get({
+                    threadId: artifactResource.threadId,
+                    artifactId: artifactResource.artifactId,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      () =>
+                        new AssetWorkspaceContextNotFoundError({
+                          resource: artifactResource,
+                        }),
+                    ),
+                  );
+                if (
+                  !detail.revisions.some(
+                    (revision) => revision.revision === artifactResource.revision,
+                  )
+                ) {
+                  return yield* new AssetWorkspaceContextNotFoundError({
+                    resource: artifactResource,
+                  });
+                }
+                return yield* issueAssetUrl({ resource: artifactResource });
+              }
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
@@ -1901,6 +2138,30 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.threadArtifactsList]: (input) =>
+          observeRpcEffect(WS_METHODS.threadArtifactsList, threadArtifacts.list(input), {
+            "rpc.aggregate": "artifacts",
+          }),
+        [WS_METHODS.threadArtifactsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.threadArtifactsGet, threadArtifacts.get(input), {
+            "rpc.aggregate": "artifacts",
+          }),
+        [WS_METHODS.threadArtifactsArchive]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadArtifactsArchive,
+            threadArtifacts.setArchived({ ...input, archived: true }),
+            { "rpc.aggregate": "artifacts" },
+          ),
+        [WS_METHODS.threadArtifactsRestore]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadArtifactsRestore,
+            threadArtifacts.setArchived({ ...input, archived: false }),
+            { "rpc.aggregate": "artifacts" },
+          ),
+        [WS_METHODS.threadArtifactsSubscribe]: (input) =>
+          observeRpcStream(WS_METHODS.threadArtifactsSubscribe, threadArtifacts.subscribe(input), {
+            "rpc.aggregate": "artifacts",
+          }),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,
@@ -2036,6 +2297,16 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.terminalList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.terminalList,
+            terminalManager.list(input).pipe(Effect.map((terminals) => ({ terminals }))),
+            { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.terminalRead]: (input) =>
+          observeRpcEffect(WS_METHODS.terminalRead, terminalManager.read(input), {
+            "rpc.aggregate": "terminal",
+          }),
         [WS_METHODS.terminalWrite]: (input) =>
           observeRpcEffect(WS_METHODS.terminalWrite, terminalManager.write(input), {
             "rpc.aggregate": "terminal",
@@ -2056,6 +2327,29 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
             "rpc.aggregate": "terminal",
           }),
+        [WS_METHODS.terminalGetLayout]: (input) =>
+          observeRpcEffect(WS_METHODS.terminalGetLayout, terminalManager.getLayout(input), {
+            "rpc.aggregate": "terminal",
+          }),
+        [WS_METHODS.terminalSetLayout]: (input, metadata) =>
+          observeRpcEffect(
+            WS_METHODS.terminalSetLayout,
+            Effect.gen(function* () {
+              const mayPublish = yield* BackgroundPolicy.mayPublishTerminalLayout(
+                backgroundPolicy,
+                currentSessionId,
+                RpcClientId.make(metadata.client.id),
+              );
+              if (mayPublish) {
+                return yield* terminalManager.setLayout(input);
+              }
+              const current = yield* terminalManager.getLayout({ threadId: input.threadId });
+              // With no existing document there is nothing to fight over, so
+              // let an older/unreported client establish the initial layout.
+              return current.layout ?? (yield* terminalManager.setLayout(input));
+            }),
+            { "rpc.aggregate": "terminal" },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
@@ -2089,6 +2383,28 @@ const makeWsRpcLayer = (
                 });
                 yield* Effect.acquireRelease(
                   terminalManager.subscribeMetadata((event) =>
+                    buffer.offer(event).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.subscribeTerminalLayouts]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeTerminalLayouts,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<TerminalLayoutStreamItem>({
+                  maxBytes: TERMINAL_METADATA_STREAM_MAX_BYTES,
+                  maxItems: TERMINAL_STREAM_MAX_ITEMS,
+                  resyncItem: terminalResyncRequired,
+                  sizeOf: terminalLayoutEventByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  terminalManager.subscribeLayouts((event) =>
                     buffer.offer(event).pipe(Effect.asVoid),
                   ),
                   (unsubscribe) => Effect.sync(unsubscribe),
@@ -2216,6 +2532,247 @@ const makeWsRpcLayer = (
             WS_METHODS.remoteControlCancel,
             remoteControlBroker.cancel(input, currentSessionId),
             { "rpc.aggregate": "remote-control" },
+          ),
+        [WS_METHODS.vmAgentCreate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCreate,
+            Effect.gen(function* () {
+              // Create the agent's dedicated chat thread first, then the agent.
+              const threadId = yield* createAgentThread(input.name);
+              const agent = yield* vmManager.create({ ...input, threadId });
+              yield* vmAgentWorkspace
+                .ensure(agent.vmAgentId)
+                .pipe(Effect.ignoreCause({ log: true }));
+              return agent;
+            }),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentDelete,
+            vmManager
+              .deleteAgent(input.vmAgentId)
+              .pipe(
+                Effect.flatMap((threadId) =>
+                  threadId === null ? Effect.void : deleteAgentThread(threadId),
+                ),
+              ),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentStart]: (input) =>
+          observeRpcEffect(WS_METHODS.vmAgentStart, vmManager.start(input.vmAgentId), {
+            "rpc.aggregate": "vm",
+          }),
+        [WS_METHODS.vmAgentStop]: (input) =>
+          observeRpcEffect(WS_METHODS.vmAgentStop, vmManager.stop(input.vmAgentId), {
+            "rpc.aggregate": "vm",
+          }),
+        [WS_METHODS.vmAgentSetControlMode]: (input) =>
+          observeRpcEffect(WS_METHODS.vmAgentSetControlMode, vmManager.setControlMode(input), {
+            "rpc.aggregate": "vm",
+          }),
+        [WS_METHODS.vmAgentSendInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentSendInput,
+            vmManager.sendInput({ vmAgentId: input.vmAgentId, input: input.input }),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentSubscribe]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.vmAgentSubscribe,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<VmAgentStreamItem>({
+                  maxBytes: VM_AGENT_STREAM_MAX_BYTES,
+                  maxItems: VM_STREAM_MAX_ITEMS,
+                  resyncItem: vmResyncRequired,
+                  sizeOf: vmAgentStreamItemByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  vmManager.subscribeAgents((event) => buffer.offer(event).pipe(Effect.asVoid)),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentSubscribeScreen]: (input) =>
+          observeRpcStream(
+            WS_METHODS.vmAgentSubscribeScreen,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<VmScreenStreamItem>({
+                  maxBytes: VM_SCREEN_STREAM_MAX_BYTES,
+                  maxItems: VM_STREAM_MAX_ITEMS,
+                  resyncItem: vmResyncRequired,
+                  sizeOf: vmScreenStreamItemByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  vmManager.subscribeScreen(input.vmAgentId, (event) =>
+                    buffer.offer(event).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentWorkspaceSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.vmAgentWorkspaceSubscribe,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<VmAgentWorkspaceStreamItem>({
+                  maxBytes: VM_WORKSPACE_STREAM_MAX_BYTES,
+                  maxItems: VM_STREAM_MAX_ITEMS,
+                  resyncItem: vmResyncRequired,
+                  sizeOf: vmWorkspaceStreamItemByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  vmAgentWorkspace.subscribe(input.vmAgentId, (snapshot) =>
+                    buffer.offer(snapshot).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentCollaborationSubscribe]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.vmAgentCollaborationSubscribe,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<VmAgentCollaborationStreamItem>({
+                  maxBytes: VM_WORKSPACE_STREAM_MAX_BYTES,
+                  maxItems: VM_STREAM_MAX_ITEMS,
+                  resyncItem: vmResyncRequired,
+                  sizeOf: vmCollaborationStreamItemByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  vmAgentCollaboration.subscribe((snapshot) =>
+                    buffer.offer(snapshot).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "vm-collaboration" },
+          ),
+        [WS_METHODS.vmAgentCollaborationGet]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCollaborationGet,
+            vmAgentCollaboration.getDetail({ kind: "user" }, input.delegationId),
+            { "rpc.aggregate": "vm-collaboration" },
+          ),
+        [WS_METHODS.vmAgentCollaborationSendMessage]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCollaborationSendMessage,
+            vmAgentCollaboration
+              .sendMessage({ kind: "user" }, input)
+              .pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            { "rpc.aggregate": "vm-collaboration" },
+          ),
+        [WS_METHODS.vmAgentCollaborationCancel]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentCollaborationCancel,
+            vmAgentCollaboration.cancel({ kind: "user" }, input.delegationId),
+            { "rpc.aggregate": "vm-collaboration" },
+          ),
+        [WS_METHODS.vmAgentTaskCreate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentTaskCreate,
+            vmAgentWorkspace
+              .createTask({ ...input, createdBy: "user", activate: true })
+              .pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentTaskUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentTaskUpdate,
+            vmAgentWorkspace.updateTask(input).pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentTaskDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentTaskDelete,
+            vmAgentWorkspace.deleteTask(input.vmAgentId, input.taskId),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentTaskRunNow]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentTaskRunNow,
+            vmAgentWorkspace
+              .runTaskNow(input.vmAgentId, input.taskId)
+              .pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentTaskGeneratePrompt]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentTaskGeneratePrompt,
+            Effect.gen(function* () {
+              yield* vmAgentWorkspace.ensure(input.vmAgentId);
+              const agent = yield* vmAgentStore.getById(input.vmAgentId).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new VmAgentWorkspaceOperationError({
+                      operation: "resolving agent for prompt generation",
+                      detail: error.message,
+                    }),
+                ),
+              );
+              if (Option.isNone(agent)) {
+                return yield* new VmAgentNotFoundError({ vmAgentId: input.vmAgentId });
+              }
+              if (agent.value.threadId === null) {
+                return yield* new VmAgentWorkspaceOperationError({
+                  operation: "generating task prompt",
+                  detail: "The agent has no dedicated chat session.",
+                });
+              }
+              const thread = yield* projectionSnapshotQuery
+                .getThreadShellById(agent.value.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new VmAgentWorkspaceOperationError({
+                        operation: "resolving task generation model",
+                        detail: error.message,
+                      }),
+                  ),
+                );
+              if (Option.isNone(thread)) {
+                return yield* new VmAgentWorkspaceOperationError({
+                  operation: "generating task prompt",
+                  detail: "The agent chat session no longer exists.",
+                });
+              }
+              return yield* textGeneration.generateVmAgentTaskPrompt({
+                cwd: config.agentsWorkspaceDir,
+                agentName: agent.value.name,
+                agentPurpose: agent.value.purpose,
+                request: input.request,
+                currentTime: yield* nowIso,
+                modelSelection: thread.value.modelSelection,
+              });
+            }),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentNotificationMarkRead]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentNotificationMarkRead,
+            vmAgentWorkspace.markNotificationRead(input.vmAgentId, input.notificationId),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentNotificationPreferencesUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentNotificationPreferencesUpdate,
+            vmAgentWorkspace.updateNotificationPreferences(input),
+            { "rpc.aggregate": "vm-workspace" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {

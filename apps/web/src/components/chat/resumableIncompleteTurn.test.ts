@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { runResumeIncompleteTurn } from "../ChatView.logic";
 import type { ChatMessage } from "../../types";
 import { RESUME_PROMPT } from "../../resumePrompt";
-import { deriveResumableAssistantMessageId } from "./MessagesTimeline.logic";
+import {
+  deriveResumableAssistantMessageId,
+  deriveResumableRuntimeErrorActivityId,
+} from "./MessagesTimeline.logic";
 
 const TURN_ID = TurnId.make("turn-resumable-incomplete-turn");
 const ASSISTANT_MESSAGE_ID = MessageId.make("message-resumable-incomplete-turn");
@@ -169,5 +172,63 @@ describe("resumable incomplete turns", () => {
     expect(send).toHaveBeenNthCalledWith(1, RESUME_PROMPT);
     expect(send).toHaveBeenNthCalledWith(2, RESUME_PROMPT);
     expect(inFlightRef.current).toBe(false);
+  });
+
+  it("offers Resume for only the final runtime error of a completely dead turn", () => {
+    const runtimeErrorEntry = {
+      id: "runtime-error-activity",
+      kind: "work" as const,
+      createdAt: TIMESTAMP,
+      entry: {
+        id: "runtime-error-activity",
+        createdAt: TIMESTAMP,
+        turnId: TURN_ID,
+        label: "Runtime error",
+        detail: "Provider process exited",
+        tone: "error" as const,
+        sourceActivityKind: "runtime.error" as const,
+      },
+    };
+    const erroredTurn = buildLatestTurn({ state: "error" });
+
+    expect(
+      deriveResumableRuntimeErrorActivityId({
+        timelineEntries: [runtimeErrorEntry],
+        latestTurn: erroredTurn,
+        session: { status: "error", activeTurnId: null },
+      }),
+    ).toBe(runtimeErrorEntry.id);
+
+    expect(
+      deriveResumableRuntimeErrorActivityId({
+        timelineEntries: [runtimeErrorEntry],
+        latestTurn: erroredTurn,
+        session: { status: "running", activeTurnId: TURN_ID },
+      }),
+    ).toBeNull();
+
+    expect(
+      deriveResumableRuntimeErrorActivityId({
+        timelineEntries: [
+          runtimeErrorEntry,
+          {
+            id: "later-message",
+            kind: "message",
+            createdAt: "2026-07-29T12:00:01.000Z",
+            message: {
+              id: MessageId.make("later-message"),
+              role: "user",
+              text: "Already continuing another way",
+              turnId: null,
+              streaming: false,
+              createdAt: "2026-07-29T12:00:01.000Z",
+              updatedAt: "2026-07-29T12:00:01.000Z",
+            },
+          },
+        ],
+        latestTurn: erroredTurn,
+        session: { status: "error", activeTurnId: null },
+      }),
+    ).toBeNull();
   });
 });

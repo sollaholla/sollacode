@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveStartupResumableThreads,
   isStartupAutoResumeRequested,
+  shouldAutomaticallyResumeOnStartup,
   isStartupAutoResumeStalled,
   isStartupResumableThread,
   pruneStartupResumeSelection,
@@ -24,6 +25,18 @@ describe("startup auto-resume request", () => {
   it("does not let hosted URLs trigger automatic turns", () => {
     expect(isStartupAutoResumeRequested("https://example.com/?solla_auto_resume=1")).toBe(false);
     expect(isStartupAutoResumeRequested("sollacode://app/?solla_auto_resume=0")).toBe(false);
+  });
+
+  it("auto-sends resume when the startup setting is on or the desktop requested it", () => {
+    expect(
+      shouldAutomaticallyResumeOnStartup({ showOnStartup: true, autoResumeRequested: false }),
+    ).toBe(true);
+    expect(
+      shouldAutomaticallyResumeOnStartup({ showOnStartup: false, autoResumeRequested: true }),
+    ).toBe(true);
+    expect(
+      shouldAutomaticallyResumeOnStartup({ showOnStartup: false, autoResumeRequested: false }),
+    ).toBe(false);
   });
 
   it("derives the same durable command and message ids on every client", () => {

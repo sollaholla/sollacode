@@ -17,7 +17,11 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
 
 import { EnvironmentRegistry } from "../connection/registry.ts";
-import { connectionProjectionPhase, type PreparedConnection } from "../connection/model.ts";
+import {
+  connectionProjectionPhase,
+  type PreparedConnection,
+  type SupervisorConnectionState,
+} from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
@@ -93,6 +97,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
   );
   const awaitingCompletion = yield* Ref.make(false);
+  // Connection-state delivery and the per-thread stream run on separate
+  // fibers. Remember which connection generation actually completed so a
+  // delayed `connecting` state from that same generation cannot overwrite a
+  // newer completion marker and strand the UI in "Catching up".
+  const synchronizedGeneration = yield* Ref.make(Option.none<number>());
   // Cached snapshots written by older builds can contain a mid-turn streaming
   // bubble; resuming by sequence on top of one keeps rendering stale text.
   // Start those threads from a fresh snapshot instead.
@@ -136,15 +145,37 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           error: Option.none(),
         },
   );
-  const setReady = SubscriptionRef.update(state, (current) =>
-    current.status === "live" || current.status === "deleted"
-      ? current
-      : {
-          ...current,
-          status: "synchronizing" as const,
-          error: Option.none(),
-        },
+  const markCurrentGenerationSynchronized = SubscriptionRef.get(supervisor.state).pipe(
+    Effect.flatMap((connectionState) =>
+      Ref.set(synchronizedGeneration, Option.some(connectionState.generation)),
+    ),
   );
+  const setConnectionSynchronizing = (connectionState: SupervisorConnectionState) =>
+    Ref.get(synchronizedGeneration).pipe(
+      Effect.flatMap((completed) =>
+        Option.isSome(completed) && completed.value === connectionState.generation
+          ? Effect.void
+          : setSynchronizing,
+      ),
+    );
+  const setReady = (connectionState: SupervisorConnectionState) =>
+    Ref.get(synchronizedGeneration).pipe(
+      Effect.flatMap((completed) =>
+        SubscriptionRef.update(state, (current) => {
+          if (current.status === "deleted") return current;
+          const synchronized =
+            Option.isSome(completed) && completed.value === connectionState.generation;
+          return {
+            ...current,
+            status:
+              synchronized && Option.isSome(current.data)
+                ? ("live" as const)
+                : ("synchronizing" as const),
+            error: Option.none(),
+          };
+        }),
+      ),
+    );
   const setDisconnected = Effect.gen(function* () {
     yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.update(state, (current) => ({
@@ -168,6 +199,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     thread: OrchestrationThread,
   ) {
     const waiting = yield* Ref.get(awaitingCompletion);
+    if (!waiting) {
+      yield* markCurrentGenerationSynchronized;
+    }
     yield* SubscriptionRef.set(state, {
       data: Option.some(thread),
       status: waiting ? "synchronizing" : "live",
@@ -207,6 +241,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   ) {
     if (item.kind === "resync-required") {
       yield* Ref.set(forceSnapshot, true);
+      yield* Ref.set(synchronizedGeneration, Option.none());
       yield* setSynchronizing;
       yield* Queue.offer(resubscribeRequests, undefined);
       return;
@@ -214,6 +249,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
+      yield* markCurrentGenerationSynchronized;
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted"
           ? { ...current, status: "live" as const, error: Option.none() }
@@ -251,16 +287,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   });
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
-    Stream.runForEach((connectionState) => {
-      switch (connectionProjectionPhase(connectionState)) {
-        case "synchronizing":
-          return setSynchronizing;
-        case "disconnected":
-          return setDisconnected;
-        case "ready":
-          return setReady;
-      }
-    }),
+    Stream.runForEach(() =>
+      // State changes can queue while the browser is suspended. Apply the
+      // latest state when the fiber resumes instead of replaying stale phases.
+      SubscriptionRef.get(supervisor.state).pipe(
+        Effect.flatMap((connectionState) => {
+          switch (connectionProjectionPhase(connectionState)) {
+            case "synchronizing":
+              return setConnectionSynchronizing(connectionState);
+            case "disconnected":
+              return setDisconnected;
+            case "ready":
+              return setReady(connectionState);
+          }
+        }),
+      ),
+    ),
     Effect.forkScoped,
   );
 
@@ -292,6 +334,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           Effect.map((config) => config.threadResumeCompletionMarker === true),
           Effect.orElseSucceed(() => false),
         );
+        yield* Ref.set(synchronizedGeneration, Option.none());
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
@@ -333,6 +376,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         const sequence = yield* SubscriptionRef.get(lastSequence);
         const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
         if (!supportsCompletionMarker && canResume) {
+          yield* markCurrentGenerationSynchronized;
           yield* SubscriptionRef.update(state, (value) => ({
             ...value,
             status: value.status === "deleted" ? value.status : ("live" as const),

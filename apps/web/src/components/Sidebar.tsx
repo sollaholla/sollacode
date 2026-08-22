@@ -9,7 +9,6 @@ import {
   LoaderIcon,
   SearchIcon,
   SquarePenIcon,
-  TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import {
@@ -17,10 +16,12 @@ import {
   prStatusIndicator,
   PrStatusTooltipContent,
   resolveThreadPr,
-  terminalStatusFromRunningIds,
   ThreadStatusLabel,
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
+import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
+import { useKnownTerminalSessions } from "../state/terminalSessions";
+import { deriveWorkingTerminalActivity } from "../terminalActivity";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { useAtomValue } from "@effect/atom-react";
 import { autoAnimate } from "@formkit/auto-animate";
@@ -84,7 +85,7 @@ import {
   useThreadShellsForProjectRefs,
 } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
-import { useThreadRunningTerminalIds } from "../state/terminalSessions";
+
 import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -165,6 +166,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
+  isSidebarListedThread,
   isTrailingDoubleClick,
   resolveProjectStatusIndicator,
   resolveThreadRowClassName,
@@ -177,9 +179,10 @@ import {
 } from "./Sidebar.logic";
 import { sortThreads } from "../lib/threadSort";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { OrchestratorSidebarEntry } from "./orchestrator/OrchestratorSidebarEntry";
+import { AgentStackSidebarEntry } from "./agents/AgentStackSidebarEntry";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
-import { CommandDialogTrigger } from "./ui/command";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { startThreadExportBackgroundTask } from "../backgroundTasks";
@@ -360,10 +363,11 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   const threadKey = scopedThreadKey(threadRef);
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
-  const runningTerminalIds = useThreadRunningTerminalIds({
+  const knownTerminals = useKnownTerminalSessions({
     environmentId: thread.environmentId,
     threadId: thread.id,
   });
+  const terminalActivity = deriveWorkingTerminalActivity(knownTerminals);
   const isMobile = useIsMobile();
   const discoveredPorts = useThreadDiscoveredPorts({
     environmentId: thread.environmentId,
@@ -445,7 +449,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     gitStatus: gitStatus.data,
   });
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
-  const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const terminalStatus = terminalActivity;
   const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadRunning;
   const threadMetaClassName = isConfirmingArchive
     ? "pointer-events-none opacity-0"
@@ -746,16 +750,22 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                 render={
                   <span
                     role="img"
-                    aria-label={terminalStatus.label}
-                    className={`inline-flex items-center justify-center ${terminalStatus.colorClass}`}
+                    aria-label={
+                      terminalStatus.count === 1
+                        ? "Terminal process running"
+                        : `${terminalStatus.count} terminal processes running`
+                    }
+                    className="inline-flex items-center justify-center text-sky-600 dark:text-sky-400"
                   />
                 }
               >
-                <TerminalIcon
-                  className={`size-3 ${terminalStatus.pulse ? "animate-status-pulse" : ""}`}
-                />
+                <TerminalSessionIcon className="size-3" working={false} />
               </TooltipTrigger>
-              <TooltipPopup side="top">{terminalStatus.label}</TooltipPopup>
+              <TooltipPopup side="top">
+                {terminalStatus.count === 1
+                  ? "Terminal process running"
+                  : `${terminalStatus.count} terminal processes running`}
+              </TooltipPopup>
             </Tooltip>
           )}
           <div
@@ -1173,7 +1183,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // thread-list change).
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
-  const projectThreads = sidebarThreads;
+  // `sidebarThreads` above stays unfiltered because it also backs the by-key
+  // lookup, which callbacks use to resolve any thread, side chat included.
+  const projectThreads = useMemo(
+    () => sidebarThreads.filter(isSidebarListedThread),
+    [sidebarThreads],
+  );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
   const projectExpanded = useUiStateStore((state) =>
     resolveProjectExpanded(state.projectExpandedById, projectPreferenceKeys),
@@ -2854,13 +2869,15 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         <SidebarGroup className="px-2 pt-2 pb-1">
           <SidebarMenu>
             <SidebarMenuItem>
-              <CommandDialogTrigger
-                render={
-                  <SidebarMenuButton
-                    className="focus-visible:ring-0"
-                    data-testid="command-palette-trigger"
-                  />
-                }
+              {/* Opens the palette over the bus rather than as a Dialog.Trigger:
+                  CommandPaletteLoader mounts the CommandDialog root lazily, so
+                  no root exists at startup for a trigger to attach to. */}
+              <SidebarMenuButton
+                type="button"
+                aria-haspopup="dialog"
+                className="focus-visible:ring-0"
+                data-testid="command-palette-trigger"
+                onClick={() => openCommandPalette()}
               >
                 <SearchIcon />
                 <span className="flex-1 truncate">Search</span>
@@ -2869,7 +2886,13 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                     {commandPaletteShortcutLabel}
                   </Kbd>
                 ) : null}
-              </CommandDialogTrigger>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <OrchestratorSidebarEntry />
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <AgentStackSidebarEntry />
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroup>
@@ -3143,7 +3166,7 @@ export default function Sidebar() {
   const threadsByProjectKey = useMemo(() => {
     const next = new Map<string, SidebarThreadSummary[]>();
     for (const thread of sidebarThreads) {
-      if (thread.isSideChat === true) continue;
+      if (!isSidebarListedThread(thread)) continue;
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
           scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3267,7 +3290,9 @@ export default function Sidebar() {
 
   const visibleThreads = useMemo(
     () =>
-      sidebarThreads.filter((thread) => thread.archivedAt === null && thread.isSideChat !== true),
+      sidebarThreads.filter(
+        (thread) => thread.archivedAt === null && isSidebarListedThread(thread),
+      ),
     [sidebarThreads],
   );
   const sortedProjects = useMemo(() => {

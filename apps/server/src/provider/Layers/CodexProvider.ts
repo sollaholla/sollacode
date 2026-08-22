@@ -37,6 +37,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
+export const CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT = "3 seconds" as const;
 
 const CODEX_PRESENTATION = {
   displayName: "Codex",
@@ -313,6 +314,22 @@ const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
   return models;
 });
 
+/**
+ * Usage is useful provider metadata, but it is not part of Codex readiness.
+ * Keep a slow network-backed refresh from turning a healthy local app-server
+ * probe into a provider error.
+ */
+export function settleOptionalCodexRateLimits<E, R>(
+  request: Effect.Effect<CodexSchema.V2GetAccountRateLimitsResponse, E, R>,
+): Effect.Effect<Option.Option<CodexSchema.V2GetAccountRateLimitsResponse>, never, R> {
+  return request.pipe(
+    Effect.option,
+    Effect.timeoutOption(CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT),
+    Effect.map(Option.flatten),
+    Effect.withSpan("CodexProvider.probe.rateLimits"),
+  );
+}
+
 export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   return {
     clientInfo: {
@@ -376,23 +393,27 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     Effect.provide(clientContext),
   );
 
-  const initialize = yield* client.request("initialize", {
-    clientInfo: {
-      name: "t3code_desktop",
-      title: "Solla Code Desktop",
-      version: "0.1.0",
-    },
-    capabilities: {
-      experimentalApi: true,
-    },
-  });
+  const initialize = yield* client
+    .request("initialize", {
+      clientInfo: {
+        name: "t3code_desktop",
+        title: "Solla Code Desktop",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    })
+    .pipe(Effect.withSpan("CodexProvider.probe.initialize"));
   yield* client.notify("initialized", undefined);
 
   // Extract the version string after the first '/' in userAgent, up to the next space or the end
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);
   const version = versionMatch ? versionMatch[1] : undefined;
 
-  const accountResponse = yield* client.request("account/read", {});
+  const accountResponse = yield* client
+    .request("account/read", {})
+    .pipe(Effect.withSpan("CodexProvider.probe.accountRead"));
   if (!accountResponse.account && accountResponse.requiresOpenaiAuth) {
     return {
       account: accountResponse,
@@ -404,11 +425,13 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
-      client.request("skills/list", {
-        cwds: [input.cwd],
-      }),
-      requestAllCodexModels(client),
-      client.request("account/rateLimits/read", undefined).pipe(Effect.option),
+      client
+        .request("skills/list", {
+          cwds: [input.cwd],
+        })
+        .pipe(Effect.withSpan("CodexProvider.probe.skillsList")),
+      requestAllCodexModels(client).pipe(Effect.withSpan("CodexProvider.probe.modelList")),
+      settleOptionalCodexRateLimits(client.request("account/rateLimits/read", undefined)),
     ],
     { concurrency: "unbounded" },
   );
@@ -594,9 +617,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       probe: {
         installed: true,
         version: null,
-        status: "error",
+        status: "warning",
         auth: { status: "unknown" },
-        message: "Timed out while checking Codex app-server provider status.",
+        message:
+          "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
       },
     });
   }

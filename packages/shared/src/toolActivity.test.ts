@@ -54,4 +54,49 @@ describe("toolActivity", () => {
       summary: "Read file",
     });
   });
+
+  it("replaces a generic Tool title using kind, path, and declared tool name", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "Tool",
+        fallbackSummary: "Tool",
+        data: {
+          kind: "other",
+          rawInput: { path: "/tmp/app.ts" },
+        },
+      }),
+    ).toEqual({
+      summary: "Read file",
+      detail: "/tmp/app.ts",
+    });
+
+    expect(
+      deriveToolActivityPresentation({
+        title: "Tool",
+        fallbackSummary: "Tool",
+        data: {
+          kind: "other",
+          command: "rg --files apps/web",
+        },
+      }),
+    ).toEqual({
+      summary: "Ran command",
+      detail: "rg --files apps/web",
+    });
+
+    expect(
+      deriveToolActivityPresentation({
+        title: "Tool",
+        fallbackSummary: "Tool",
+        data: {
+          kind: "other",
+          rawInput: { name: "grep", pattern: "deriveWorkLogEntries" },
+        },
+      }),
+    ).toEqual({
+      summary: "Grep",
+      detail: "deriveWorkLogEntries",
+    });
+  });
 });

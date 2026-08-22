@@ -90,6 +90,142 @@ const isCodexAppServerRequestTimeoutError = Schema.is(
   CodexErrors.CodexAppServerRequestTimeoutError,
 );
 
+type McpFormElicitationPayload = Extract<
+  EffectCodexSchema.McpServerElicitationRequestParams,
+  { readonly mode: "form" }
+>;
+type McpFormProperty = McpFormElicitationPayload["requestedSchema"]["properties"][string];
+
+interface McpElicitationOption {
+  readonly label: string;
+  readonly value: string | boolean;
+}
+
+function readableElicitationLabel(value: string): string {
+  const normalized = value.trim().replaceAll(/[_-]+/g, " ");
+  if (normalized.length === 0) return value;
+  return `${normalized[0]!.toUpperCase()}${normalized.slice(1)}`;
+}
+
+function elicitationOptions(property: McpFormProperty): ReadonlyArray<McpElicitationOption> | null {
+  if (property.type === "boolean") {
+    return [
+      { label: "Yes", value: true },
+      { label: "No", value: false },
+    ];
+  }
+  if (property.type !== "string") return null;
+  if ("oneOf" in property) {
+    return property.oneOf.map((option) => ({
+      label: option.title,
+      value: option.const,
+    }));
+  }
+  if ("enum" in property) {
+    return property.enum.map((value, index) => ({
+      label:
+        "enumNames" in property && Array.isArray(property.enumNames)
+          ? (property.enumNames[index] ?? readableElicitationLabel(value))
+          : readableElicitationLabel(value),
+      value,
+    }));
+  }
+  if (typeof property.default === "string" && property.default.trim().length > 0) {
+    return [{ label: property.default.trim(), value: property.default.trim() }];
+  }
+  return null;
+}
+
+function elicitationHeader(propertyName: string, property: McpFormProperty): string {
+  const candidate =
+    typeof property.title === "string" && property.title.trim().length > 0
+      ? property.title.trim()
+      : readableElicitationLabel(propertyName);
+  return candidate.slice(0, 12) || "Confirm";
+}
+
+export function mcpFormElicitationQuestions(
+  payload: EffectCodexSchema.McpServerElicitationRequestParams,
+): ReadonlyArray<EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion> | null {
+  if (payload.mode !== "form") return null;
+  const entries = Object.entries(payload.requestedSchema.properties);
+  if (entries.length === 0) return null;
+
+  const questions = entries.map(([propertyName, property], index) => {
+    const options = elicitationOptions(property);
+    if (!options || options.length === 0) return null;
+    const header = elicitationHeader(propertyName, property);
+    const propertyDescription =
+      typeof property.description === "string" && property.description.trim().length > 0
+        ? property.description.trim()
+        : undefined;
+    return {
+      id: propertyName,
+      header,
+      question:
+        entries.length === 1
+          ? payload.message
+          : `${payload.message}\n\n${propertyDescription ?? header}`,
+      isOther: false,
+      isSecret: false,
+      options: options.map((option) => ({
+        label: option.label,
+        description: `Select ${option.label}.`,
+      })),
+    } satisfies EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
+  });
+
+  return questions.every((question) => question !== null)
+    ? questions.filter((question) => question !== null)
+    : null;
+}
+
+function firstElicitationAnswer(value: ProviderUserInputAnswers[string]): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.find((entry): entry is string => typeof entry === "string");
+  }
+  if (isCodexUserInputAnswerObject(value)) {
+    return value.answers[0];
+  }
+  return undefined;
+}
+
+export function mcpFormElicitationContent(
+  payload: EffectCodexSchema.McpServerElicitationRequestParams,
+  answers: ProviderUserInputAnswers,
+): Record<string, string | boolean> | null {
+  if (payload.mode !== "form") return null;
+  const content: Record<string, string | boolean> = {};
+  for (const [propertyName, property] of Object.entries(payload.requestedSchema.properties)) {
+    const answer = firstElicitationAnswer(answers[propertyName]);
+    if (property.type === "string" && !("oneOf" in property) && !("enum" in property)) {
+      if (!answer) return null;
+      const trimmed = answer.trim();
+      if (
+        trimmed.length === 0 ||
+        (typeof property.minLength === "number" && trimmed.length < property.minLength) ||
+        (typeof property.maxLength === "number" && trimmed.length > property.maxLength)
+      ) {
+        return null;
+      }
+      content[propertyName] = trimmed;
+      continue;
+    }
+    const options = elicitationOptions(property);
+    if (!answer || !options) return null;
+    const normalized = answer.trim().toLowerCase();
+    const selected = options.find(
+      (option) =>
+        option.label.trim().toLowerCase() === normalized ||
+        String(option.value).trim().toLowerCase() === normalized,
+    );
+    if (!selected) return null;
+    content[propertyName] = selected.value;
+  }
+  return content;
+}
+
 // TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
 // `V2TurnStartParams` schema includes `collaborationMode` directly.
 const CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartParams.pipe(
@@ -1218,6 +1354,71 @@ export const makeCodexSessionRuntime = (
             ),
           ),
         } satisfies EffectCodexSchema.ToolRequestUserInputResponse;
+      }),
+    );
+
+    yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
+      Effect.gen(function* () {
+        const questions = mcpFormElicitationQuestions(payload);
+        if (!questions) {
+          return {
+            action: "decline" as const,
+          } satisfies EffectCodexSchema.McpServerElicitationRequestResponse;
+        }
+
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
+        const currentSession = yield* Ref.get(sessionRef);
+        const turnId = TurnId.make(
+          payload.turnId ?? currentSession.activeTurnId ?? "mcp-elicitation",
+        );
+        const itemId = ProviderItemId.make(`mcp-elicitation-${requestId}`);
+        const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+        const userInputPayload = {
+          itemId,
+          threadId: payload.threadId,
+          turnId,
+          questions,
+        } satisfies EffectCodexSchema.ToolRequestUserInputParams;
+
+        yield* Ref.update(pendingUserInputsRef, (current) => {
+          const next = new Map(current);
+          next.set(requestId, {
+            requestId,
+            turnId,
+            itemId,
+            answers,
+          });
+          return next;
+        });
+
+        yield* emitEvent({
+          kind: "request",
+          threadId: options.threadId,
+          method: "item/tool/requestUserInput",
+          requestId,
+          turnId,
+          itemId,
+          payload: userInputPayload,
+        });
+
+        const resolvedAnswers = yield* Deferred.await(answers).pipe(
+          Effect.ensuring(
+            Ref.update(pendingUserInputsRef, (current) => {
+              const next = new Map(current);
+              next.delete(requestId);
+              return next;
+            }),
+          ),
+        );
+        const content = mcpFormElicitationContent(payload, resolvedAnswers);
+        return content
+          ? ({
+              action: "accept" as const,
+              content,
+            } satisfies EffectCodexSchema.McpServerElicitationRequestResponse)
+          : ({
+              action: "decline" as const,
+            } satisfies EffectCodexSchema.McpServerElicitationRequestResponse);
       }),
     );
 

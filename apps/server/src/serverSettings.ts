@@ -23,6 +23,7 @@ import {
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
+  XAI_API_KEY_ENV,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
@@ -50,7 +51,14 @@ import {
   applyServerSettingsPatch,
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import {
+  LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME,
+  ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME,
+  ORCHESTRATOR_XAI_API_KEY_SECRET_NAME,
+  orchestratorApiKeySecretName,
+} from "./orchestrator/OrchestratorSecretNames.ts";
 
 export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
 
@@ -358,6 +366,80 @@ const make = Effect.gen(function* () {
       };
     });
 
+  const readSecretPresence = (name: string) =>
+    secretStore.get(name).pipe(
+      Effect.map(Option.isSome),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to read orchestrator key presence", { name, cause }).pipe(
+          Effect.as(false),
+        ),
+      ),
+    );
+
+  /**
+   * Reports each backend independently. Grok can also start from `XAI_API_KEY`
+   * when no stored xAI key exists; that fallback never makes OpenAI look
+   * configured. The legacy slot is attributed only to the provider selected by
+   * the settings file that created it.
+   */
+  const overlayOrchestratorKeyPresence = Effect.fn("ServerSettings.overlayOrchestratorKeyPresence")(
+    function* (settings: ServerSettings) {
+      const [openAiStored, xaiStored, legacyStored] = yield* Effect.all([
+        readSecretPresence(ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME),
+        readSecretPresence(ORCHESTRATOR_XAI_API_KEY_SECRET_NAME),
+        readSecretPresence(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME),
+      ]);
+      const env = yield* HostProcessEnvironment;
+      const fromEnv = env[XAI_API_KEY_ENV]?.trim();
+      const xaiFromEnv = fromEnv !== undefined && fromEnv.length > 0;
+      const openAiApiKeyConfigured =
+        openAiStored || (legacyStored && settings.orchestrator.provider === "openai");
+      const xaiApiKeyConfigured =
+        xaiStored || xaiFromEnv || (legacyStored && settings.orchestrator.provider === "xai");
+      const apiKeyConfigured =
+        settings.orchestrator.provider === "xai" ? xaiApiKeyConfigured : openAiApiKeyConfigured;
+      return {
+        ...settings,
+        orchestrator: {
+          ...settings.orchestrator,
+          apiKeyConfigured,
+          openAiApiKeyConfigured,
+          xaiApiKeyConfigured,
+        },
+      };
+    },
+  );
+
+  const mapOrchestratorSecretError =
+    (operation: "read-secret" | "write-secret" | "remove-secret") => (cause: unknown) =>
+      new ServerSettingsError({ settingsPath, operation, cause });
+
+  /**
+   * One-time compatibility bridge for the pre-split secret. Copy first and
+   * remove second, so an interrupted migration never loses the credential.
+   */
+  const migrateLegacyOrchestratorApiKey = Effect.fn(
+    "ServerSettings.migrateLegacyOrchestratorApiKey",
+  )(function* (settings: ServerSettings) {
+    const legacy = yield* secretStore
+      .get(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME)
+      .pipe(Effect.mapError(mapOrchestratorSecretError("read-secret")));
+    if (Option.isNone(legacy)) return;
+
+    const targetName = orchestratorApiKeySecretName(settings.orchestrator.provider);
+    const target = yield* secretStore
+      .get(targetName)
+      .pipe(Effect.mapError(mapOrchestratorSecretError("read-secret")));
+    if (Option.isNone(target)) {
+      yield* secretStore
+        .set(targetName, legacy.value)
+        .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret")));
+    }
+    yield* secretStore
+      .remove(LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME)
+      .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")));
+  });
+
   const materializeChanges = (changes: Stream.Stream<ServerSettings>) =>
     changes.pipe(
       Stream.mapEffect((settings) =>
@@ -373,7 +455,56 @@ const make = Effect.gen(function* () {
         ),
       ),
       Stream.map(resolveTextGenerationProvider),
+      Stream.mapEffect(overlayOrchestratorKeyPresence),
     );
+
+  /**
+   * Moves each write-only API key into its own secret. The legacy patch field
+   * targets the selected provider so older clients remain compatible.
+   */
+  const persistOrchestratorApiKeys = Effect.fn("ServerSettings.persistOrchestratorApiKeys")(
+    function* (
+      current: ServerSettings,
+      next: ServerSettings,
+      patch: ServerSettingsPatch,
+    ): Effect.fn.Return<ServerSettings, ServerSettingsError> {
+      yield* migrateLegacyOrchestratorApiKey(current);
+
+      const legacyApiKey = patch.orchestrator?.apiKey;
+      const openAiApiKey = patch.orchestrator?.openAiApiKey;
+      const xaiApiKey = patch.orchestrator?.xaiApiKey;
+      const writes = [
+        ...(legacyApiKey === undefined
+          ? []
+          : [
+              {
+                name: orchestratorApiKeySecretName(next.orchestrator.provider),
+                value: legacyApiKey,
+              },
+            ]),
+        ...(openAiApiKey === undefined
+          ? []
+          : [{ name: ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME, value: openAiApiKey }]),
+        ...(xaiApiKey === undefined
+          ? []
+          : [{ name: ORCHESTRATOR_XAI_API_KEY_SECRET_NAME, value: xaiApiKey }]),
+      ];
+
+      for (const write of writes) {
+        if (write.value.length === 0) {
+          yield* secretStore
+            .remove(write.name)
+            .pipe(Effect.mapError(mapOrchestratorSecretError("remove-secret")));
+        } else {
+          yield* secretStore
+            .set(write.name, textEncoder.encode(write.value))
+            .pipe(Effect.mapError(mapOrchestratorSecretError("write-secret")));
+        }
+      }
+
+      return yield* overlayOrchestratorKeyPresence(next);
+    },
+  );
 
   const persistProviderEnvironmentSecrets = (
     current: ServerSettings,
@@ -556,7 +687,15 @@ const make = Effect.gen(function* () {
     const startup = Effect.gen(function* () {
       yield* startWatcher;
       yield* Cache.invalidate(settingsCache, cacheKey);
-      yield* getSettingsFromCache;
+      const settings = yield* getSettingsFromCache;
+      yield* migrateLegacyOrchestratorApiKey(settings).pipe(
+        Effect.catch((error: ServerSettingsError) =>
+          Effect.logWarning("failed to migrate legacy orchestrator API key", {
+            operation: error.operation,
+            cause: error.cause,
+          }),
+        ),
+      );
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -574,6 +713,7 @@ const make = Effect.gen(function* () {
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeProviderEnvironmentSecrets),
       Effect.map(resolveTextGenerationProvider),
+      Effect.flatMap(overlayOrchestratorKeyPresence),
     ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
@@ -583,12 +723,17 @@ const make = Effect.gen(function* () {
             current,
             applyServerSettingsPatch(current, patch),
           );
-          const next = yield* normalizeServerSettings(nextPersisted);
+          const withOrchestratorSecret = yield* persistOrchestratorApiKeys(
+            current,
+            nextPersisted,
+            patch,
+          );
+          const next = yield* normalizeServerSettings(withOrchestratorSecret);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
-          return resolveTextGenerationProvider(materialized);
+          return yield* overlayOrchestratorKeyPresence(resolveTextGenerationProvider(materialized));
         }),
       ),
     get streamChanges() {

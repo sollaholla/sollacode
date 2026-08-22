@@ -8,6 +8,8 @@
  */
 import {
   type CanUseTool,
+  type ElicitationRequest,
+  type ElicitationResult,
   forkSession as forkClaudeSession,
   startup,
   type Options as ClaudeQueryOptions,
@@ -22,6 +24,7 @@ import {
   type SDKUserMessage,
   type ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { ACTION_APPROVAL_QUESTION_ID } from "@t3tools/shared/actionApproval";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import {
   ApprovalRequestId,
@@ -76,9 +79,17 @@ import { ServerConfig } from "../../config.ts";
 import { prepareModelCompatibleImage } from "../../modelImageCompatibility.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type ContextRecoveryReason, withContextRecoveryReminder } from "../contextRecovery.ts";
-import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
+import {
+  isMissingClaudeSdkExecutable,
+  resolveClaudeSdkExecutablePath,
+} from "../Drivers/ClaudeExecutable.ts";
+import {
+  CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+  mapKnownProviderFailure,
+} from "../providerFailureMessage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { SOLLA_MCP_AGENT_CONTEXT } from "../sideChatContext.ts";
+import { isProcessShuttingDown, watchProcessShutdown } from "../processShutdown.ts";
 import {
   hasRetryableUpstreamStatus,
   providerOverloadExhaustedMessage,
@@ -303,6 +314,29 @@ function toMessage(cause: unknown, fallback: string): string {
   return fallback;
 }
 
+function isMissingClaudeResumeSession(cause: unknown): boolean {
+  const pending: Array<unknown> = [cause];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      if (/no conversation found with session id\b/iu.test(current)) return true;
+      continue;
+    }
+    if (typeof current !== "object" || current === null || visited.has(current)) continue;
+    visited.add(current);
+    if (
+      current instanceof Error &&
+      /no conversation found with session id\b/iu.test(current.message)
+    ) {
+      return true;
+    }
+    const record = current as Record<string, unknown>;
+    if ("cause" in record) pending.push(record.cause);
+  }
+  return false;
+}
+
 function normalizeClaudeStreamMessages(
   cause: Cause.Cause<ProviderAdapterProcessError>,
 ): ReadonlyArray<string> {
@@ -329,6 +363,52 @@ function getEffectiveClaudeAgentEffort(
   return normalized ? (normalized as ClaudeSdkEffort) : null;
 }
 
+/**
+ * A stream failure's kind, derived from its cause but reproducing none of it.
+ *
+ * Named categories rather than the message because the cause can contain
+ * credential material and this ends up in a stored, client-visible payload.
+ * Matched most-specific first: a rate limit and an auth failure both mention
+ * the request being rejected, and a torn-down pipe can mention almost anything.
+ */
+export type ClaudeStreamFailureReason =
+  | "transport-teardown"
+  | "authentication"
+  | "rate-limit"
+  | "network"
+  | "unknown";
+
+export function classifyClaudeStreamFailure(
+  messages: ReadonlyArray<string>,
+): ClaudeStreamFailureReason {
+  const text = messages.join(" ").toLowerCase();
+  if (messages.some(isClaudeTransportTeardownMessage)) return "transport-teardown";
+  if (
+    text.includes("401") ||
+    text.includes("unauthorized") ||
+    text.includes("authentication") ||
+    text.includes("invalid api key") ||
+    text.includes("credit balance") ||
+    text.includes("insufficient_quota")
+  ) {
+    return "authentication";
+  }
+  if (text.includes("429") || text.includes("rate limit") || text.includes("overloaded")) {
+    return "rate-limit";
+  }
+  if (
+    text.includes("enotfound") ||
+    text.includes("etimedout") ||
+    text.includes("econnrefused") ||
+    text.includes("eai_again") ||
+    text.includes("network") ||
+    text.includes("fetch failed")
+  ) {
+    return "network";
+  }
+  return "unknown";
+}
+
 function isClaudeInterruptedMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return (
@@ -338,13 +418,49 @@ function isClaudeInterruptedMessage(message: string): boolean {
   );
 }
 
+/**
+ * Whether a stream failure is the transport being torn down underneath us.
+ *
+ * A restart kills the Claude CLI process, and the SDK's async iterable rejects
+ * with whatever the broken pipe produced. `handleStreamExit` already suppresses
+ * a *deliberate* shutdown, but the flag it checks is set by the shutdown path —
+ * and the socket dies first, so the error wins the race and the user gets a red
+ * "Claude runtime stream failed." toast for a routine restart they asked for.
+ *
+ * These shapes are the process going away, not the agent failing. The turn was
+ * genuinely interrupted; calling it a failure blames the agent for a restart.
+ */
+function isClaudeTransportTeardownMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("epipe") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("err_stream_premature_close") ||
+    normalized.includes("premature close") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("channel closed") ||
+    normalized.includes("closed pipe") ||
+    normalized.includes("write after end") ||
+    normalized.includes("process exited") ||
+    normalized.includes("sigterm") ||
+    normalized.includes("sigkill")
+  );
+}
+
+function causeMessages(cause: Cause.Cause<ProviderAdapterProcessError>): ReadonlyArray<string> {
+  return [
+    ...normalizeClaudeStreamMessages(cause),
+    ...cause.reasons.flatMap((reason) =>
+      Cause.isFailReason(reason) ? [toMessage(reason.error.cause, "")] : [],
+    ),
+  ];
+}
+
 function isClaudeInterruptedCause(cause: Cause.Cause<ProviderAdapterProcessError>): boolean {
   return (
     Cause.hasInterruptsOnly(cause) ||
-    normalizeClaudeStreamMessages(cause).some(isClaudeInterruptedMessage) ||
-    cause.reasons.some(
-      (reason) =>
-        Cause.isFailReason(reason) && isClaudeInterruptedMessage(toMessage(reason.error.cause, "")),
+    causeMessages(cause).some(
+      (message) => isClaudeInterruptedMessage(message) || isClaudeTransportTeardownMessage(message),
     )
   );
 }
@@ -1517,6 +1633,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
   let stoppingAll = false;
+  // Held for the adapter's lifetime and released with it, so repeated builds
+  // in a test run cannot accumulate signal listeners.
+  const unwatchShutdown = watchProcessShutdown();
+  yield* Effect.addFinalizer(() => Effect.sync(unwatchShutdown));
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -3189,23 +3309,46 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     exit: Exit.Exit<void, ProviderAdapterProcessError>,
   ) {
-    if (stoppingAll || context.stopped) {
+    // The latch, not just the adapter's own flag: `stoppingAll` is set by the
+    // teardown path, and on a quit the stream breaks before that path runs. A
+    // turn interrupted by the app closing is not the agent failing — this is
+    // the whole of the red "Runtime error" that appeared on every app update.
+    if (stoppingAll || context.stopped || isProcessShuttingDown()) {
       return;
     }
 
     if (Exit.isFailure(exit)) {
       if (isClaudeInterruptedCause(exit.cause)) {
         if (context.turnState) {
-          yield* completeTurn(context, "interrupted", "Claude runtime interrupted.");
+          // Distinguish the two so a restart does not read as the user having
+          // hit stop, and neither reads as the agent failing.
+          const tornDown = causeMessages(exit.cause).some(isClaudeTransportTeardownMessage);
+          yield* completeTurn(
+            context,
+            "interrupted",
+            tornDown
+              ? "Claude runtime stopped because the session was restarted."
+              : "Claude runtime interrupted.",
+          );
         }
       } else {
         const failures = exit.cause.reasons.flatMap((reason) =>
           Cause.isFailReason(reason) ? [reason.error] : [],
         );
         const message = failures[0]?.detail ?? "Claude runtime stream failed.";
+        // Every failure used to arrive as those same four words, with nothing
+        // in the event to tell a spent credential from a dropped network from
+        // a killed process — the log said `failureCount: 1` and no more.
+        //
+        // The cause itself deliberately stays out (see "keeps Claude stream
+        // failure events structural": it can carry credential material, and
+        // this payload is stored and projected to clients). A classification is
+        // the part that is safe to keep — it is derived from the cause but
+        // reproduces none of it.
         yield* emitRuntimeError(context, message, {
           failureCount: failures.length,
           failureTags: failures.map((failure) => failure._tag),
+          failureReason: classifyClaudeStreamFailure(causeMessages(exit.cause)),
         });
         yield* completeTurn(context, "failed", message);
       }
@@ -3419,6 +3562,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
+      const missingResumeFallbackSessionId =
+        existingResumeSessionId === undefined ? undefined : yield* randomUUIDv4;
+      let effectiveSessionId = sessionId;
+      let effectiveResumeSessionAt = resumeState?.resumeSessionAt;
 
       const runtimeContext = yield* Effect.context<never>();
       const runFork = Effect.runForkWith(runtimeContext);
@@ -3755,7 +3902,164 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
         runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
 
+      const handleElicitationEffect = Effect.fn("handleElicitation")(function* (
+        request: ElicitationRequest,
+        callbackOptions: { readonly signal: AbortSignal },
+      ) {
+        const context = yield* Ref.get(contextRef);
+        const requestedSchema = request.requestedSchema;
+        const properties =
+          requestedSchema && typeof requestedSchema.properties === "object"
+            ? requestedSchema.properties
+            : undefined;
+        const approvalProperty =
+          properties && !Array.isArray(properties)
+            ? (properties as Record<string, unknown>)[ACTION_APPROVAL_QUESTION_ID]
+            : undefined;
+
+        // Solla currently renders only its reserved external-action approval
+        // elicitation. Let Claude decline unrelated MCP forms instead of
+        // pretending it collected values the client never showed.
+        if (
+          !context ||
+          request.mode !== "form" ||
+          !approvalProperty ||
+          typeof approvalProperty !== "object" ||
+          Array.isArray(approvalProperty)
+        ) {
+          return { action: "decline" } satisfies ElicitationResult;
+        }
+
+        const property = approvalProperty as Record<string, unknown>;
+        const defaultAnswer =
+          typeof property.default === "string" && property.default.trim().length > 0
+            ? property.default.trim()
+            : undefined;
+        if (property.type !== "string" || !defaultAnswer) {
+          return { action: "decline" } satisfies ElicitationResult;
+        }
+
+        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const questions: ReadonlyArray<UserInputQuestion> = [
+          {
+            id: ACTION_APPROVAL_QUESTION_ID,
+            header: "Approval",
+            question: request.message,
+            options: [
+              {
+                label: defaultAnswer,
+                description: `Select ${defaultAnswer}.`,
+              },
+            ],
+            multiSelect: false,
+          },
+        ];
+        const answersDeferred = yield* Deferred.make<ProviderUserInputAnswers>();
+        let aborted = false;
+
+        const requestedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.requested",
+          eventId: requestedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: requestedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState
+            ? {
+                turnId: asCanonicalTurnId(context.turnState.turnId),
+              }
+            : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { questions },
+          providerRefs: {},
+          raw: {
+            source: "claude.sdk.permission",
+            method: "onElicitation",
+            payload: request,
+          },
+        });
+
+        pendingUserInputs.set(requestId, {
+          questions,
+          answers: answersDeferred,
+        });
+
+        const onAbort = () => {
+          if (!pendingUserInputs.has(requestId)) return;
+          aborted = true;
+          pendingUserInputs.delete(requestId);
+          runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
+        };
+        callbackOptions.signal.addEventListener("abort", onAbort, { once: true });
+
+        const answers = yield* Deferred.await(answersDeferred);
+        pendingUserInputs.delete(requestId);
+        callbackOptions.signal.removeEventListener("abort", onAbort);
+
+        const resolvedStamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          eventId: resolvedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: resolvedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState
+            ? {
+                turnId: asCanonicalTurnId(context.turnState.turnId),
+              }
+            : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { answers },
+          providerRefs: {},
+          raw: {
+            source: "claude.sdk.permission",
+            method: "onElicitation/resolved",
+            payload: { answers },
+          },
+        });
+
+        if (aborted) return { action: "cancel" } satisfies ElicitationResult;
+
+        const answer = answers[ACTION_APPROVAL_QUESTION_ID];
+        const answerText =
+          typeof answer === "string"
+            ? answer
+            : Array.isArray(answer)
+              ? answer.find((entry): entry is string => typeof entry === "string")
+              : answer &&
+                  typeof answer === "object" &&
+                  "answers" in answer &&
+                  Array.isArray(answer.answers)
+                ? answer.answers.find((entry): entry is string => typeof entry === "string")
+                : undefined;
+        if (!answerText || answerText.trim().length === 0) {
+          return { action: "decline" } satisfies ElicitationResult;
+        }
+
+        return {
+          action: "accept",
+          content: {
+            [ACTION_APPROVAL_QUESTION_ID]: answerText.trim(),
+          },
+        } satisfies ElicitationResult;
+      });
+
+      const onElicitation: NonNullable<ClaudeQueryOptions["onElicitation"]> = (
+        request,
+        callbackOptions,
+      ) => runPromise(handleElicitationEffect(request, callbackOptions));
+
       const claudeBinaryPath = claudeSdkExecutablePath;
+      if (
+        options?.createQuery === undefined &&
+        (yield* isMissingClaudeSdkExecutable(claudeBinaryPath))
+      ) {
+        return yield* new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId,
+          detail: CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+        });
+      }
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
       const modelSelection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
@@ -3936,6 +4240,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
+        onElicitation,
         env: queryEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
@@ -3973,20 +4278,56 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
-      const queryRuntime = yield* Effect.tryPromise({
-        try: async () =>
-          await createQuery({
-            prompt,
-            options: queryOptions,
-          }),
-        catch: (cause) =>
-          new ProviderAdapterProcessError({
-            provider: PROVIDER,
-            threadId,
-            detail: "Failed to start Claude runtime session.",
-            cause,
-          }),
-      }).pipe(
+      const startQueryRuntime = (options: ClaudeQueryOptions) =>
+        Effect.tryPromise({
+          try: async () =>
+            await createQuery({
+              prompt,
+              options,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId,
+              detail:
+                mapKnownProviderFailure(toMessage(cause, "")) ??
+                "Failed to start Claude runtime session.",
+              cause,
+            }),
+        });
+
+      const queryRuntime = yield* startQueryRuntime(queryOptions).pipe(
+        Effect.catch((cause) => {
+          if (
+            existingResumeSessionId === undefined ||
+            missingResumeFallbackSessionId === undefined ||
+            !isMissingClaudeResumeSession(cause)
+          ) {
+            return Effect.fail(cause);
+          }
+
+          const freshQueryOptions: ClaudeQueryOptions = {
+            ...queryOptions,
+            sessionId: missingResumeFallbackSessionId,
+          };
+          delete freshQueryOptions.resume;
+          delete freshQueryOptions.forkSession;
+          effectiveSessionId = missingResumeFallbackSessionId;
+          effectiveResumeSessionAt = undefined;
+
+          return Effect.gen(function* () {
+            yield* Effect.logWarning("claude.resume.session-missing", {
+              threadId,
+              action: "start-fresh-session",
+            });
+            yield* Effect.annotateCurrentSpan({
+              "claude.resume.recovered_missing_session": true,
+              "claude.query.resume": "",
+              "claude.query.session_id": missingResumeFallbackSessionId,
+            });
+            return yield* startQueryRuntime(freshQueryOptions);
+          });
+        }),
         Effect.tapError(() =>
           Effect.gen(function* () {
             if (mcpProxy) {
@@ -4015,8 +4356,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(threadId ? { threadId } : {}),
         resumeCursor: {
           ...(threadId ? { threadId } : {}),
-          ...(sessionId ? { resume: sessionId } : {}),
-          ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
+          ...(effectiveSessionId ? { resume: effectiveSessionId } : {}),
+          ...(effectiveResumeSessionAt ? { resumeSessionAt: effectiveResumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
         },
         createdAt: startedAt,
@@ -4034,7 +4375,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
-        resumeSessionId: sessionId,
+        resumeSessionId: effectiveSessionId,
         pendingApprovals,
         pendingUserInputs,
         turns: [],
@@ -4045,7 +4386,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         autoCompactionBaseWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
-        lastAssistantUuid: resumeState?.resumeSessionAt,
+        lastAssistantUuid: effectiveResumeSessionAt,
         lastThreadStartedId: undefined,
         lastOverloadRetry: undefined,
         pendingContextRecovery: undefined,

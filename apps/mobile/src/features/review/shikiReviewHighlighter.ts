@@ -1,12 +1,5 @@
 import { createHighlighterCore, type HighlighterCore } from "@shikijs/core";
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
-import bashLanguage from "@shikijs/langs/bash";
-import javascriptLanguage from "@shikijs/langs/javascript";
-import jsonLanguage from "@shikijs/langs/json";
-import jsxLanguage from "@shikijs/langs/jsx";
-import tsxLanguage from "@shikijs/langs/tsx";
-import typescriptLanguage from "@shikijs/langs/typescript";
-import yamlLanguage from "@shikijs/langs/yaml";
 import githubDarkDefault from "@shikijs/themes/github-dark-default";
 import githubLightDefault from "@shikijs/themes/github-light-default";
 import { getFiletypeFromFileName } from "@pierre/diffs/utils/getFiletypeFromFileName";
@@ -74,25 +67,15 @@ const REVIEW_HIGHLIGHT_CHUNK_SIZE = 200;
 const REVIEW_TOKENIZE_MAX_LINE_LENGTH = 1_000;
 const highlightCache = new Map<string, Promise<ReviewHighlightedFile>>();
 const resolvedHighlightCache = new Map<string, ReviewHighlightedFile>();
-const REVIEW_INITIAL_LANGUAGE_MODULES = [
-  bashLanguage,
-  javascriptLanguage,
-  jsonLanguage,
-  jsxLanguage,
-  tsxLanguage,
-  typescriptLanguage,
-  yamlLanguage,
-] satisfies Parameters<typeof createHighlighterCore>[0]["langs"];
-const loadedLanguages = new Set<string>([
-  "text",
-  "bash",
-  "javascript",
-  "json",
-  "jsx",
-  "tsx",
-  "typescript",
-  "yaml",
-]);
+// A thread can contain no code at all, or only one language. Loading the seven
+// common grammars up front evaluated almost a megabyte of raw grammar modules
+// on the first highlighted block. The existing language loaders already
+// deduplicate on-demand work, so keep the core empty and pay only for grammars
+// that are actually visible.
+const REVIEW_INITIAL_LANGUAGE_MODULES = [] satisfies Parameters<
+  typeof createHighlighterCore
+>[0]["langs"];
+const loadedLanguages = new Set<string>(["text"]);
 const languageLoadingPromises = new Map<string, Promise<boolean>>();
 const languageImports: Partial<Record<string, () => Promise<unknown>>> = {
   javascript: () => import("@shikijs/langs/javascript"),

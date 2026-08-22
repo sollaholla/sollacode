@@ -32,6 +32,14 @@ const CONTEXT_WINDOW = selectDescriptor(
   ],
   "1m",
 );
+const FAST_SERVICE_TIER = selectDescriptor(
+  "serviceTier",
+  [
+    { id: "default", label: "Standard" },
+    { id: "priority", label: "Fast" },
+  ],
+  "priority",
+);
 
 function display(descriptors: ReadonlyArray<ProviderOptionDescriptor>, fastModeEnabled: boolean) {
   return buildTraitsTriggerDisplay({
@@ -57,6 +65,32 @@ describe("buildTraitsTriggerDisplay", () => {
     });
   });
 
+  it("shows the bolt for the Codex Fast service tier", () => {
+    expect(display([EFFORT, FAST_SERVICE_TIER], false)).toEqual({
+      label: "High",
+      showFastModeIcon: true,
+    });
+  });
+
+  it("keeps non-fast Codex service tiers as text", () => {
+    expect(
+      display(
+        [
+          EFFORT,
+          selectDescriptor(
+            "serviceTier",
+            [
+              { id: "default", label: "Standard" },
+              { id: "priority", label: "Fast" },
+            ],
+            "default",
+          ),
+        ],
+        false,
+      ),
+    ).toEqual({ label: "High · Standard", showFastModeIcon: false });
+  });
+
   it("keeps non-fastMode booleans as text labels", () => {
     const thinking: Extract<ProviderOptionDescriptor, { type: "boolean" }> = {
       id: "thinking",
@@ -73,7 +107,7 @@ describe("buildTraitsTriggerDisplay", () => {
   it("falls back to a text label when fast mode is the only trait", () => {
     expect(display([fastModeDescriptor(true)], true)).toEqual({
       label: "Fast",
-      showFastModeIcon: false,
+      showFastModeIcon: true,
     });
     expect(display([fastModeDescriptor(false)], false)).toEqual({
       label: "Normal",

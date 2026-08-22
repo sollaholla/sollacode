@@ -24,6 +24,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
@@ -42,6 +43,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generateBranchName",
   "generateThreadTitle",
   "generatePlanRefresh",
+  "generateVmAgentTaskPrompt",
 ]);
 
 type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
@@ -257,7 +259,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh";
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt";
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -638,11 +641,24 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
+    Effect.fn("OpenCodeTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
+      const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
+      return yield* runOpenCodeJson({
+        operation: "generateVmAgentTaskPrompt",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generatePlanRefresh,
+    generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

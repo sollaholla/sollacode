@@ -70,7 +70,39 @@ export interface AcpSessionRuntimeOptions {
     readonly version: string;
   };
   readonly authMethodId: string;
+  readonly authenticateMeta?: Record<string, unknown>;
   readonly mcpServers?: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly filterMcpServers?: (
+    servers: ReadonlyArray<EffectAcpSchema.McpServer>,
+    agentCapabilities: EffectAcpSchema.AgentCapabilities | undefined,
+  ) => ReadonlyArray<EffectAcpSchema.McpServer>;
+  /**
+   * When false, `start()` only initializes and authenticates. Provider health
+   * probes use this so Grok's `session/new` cannot hang on the user's MCP
+   * servers (npx-backed plugins) and fail the whole CLI as "timed out".
+   */
+  readonly createSession?: boolean;
+  /**
+   * Caps `session/new` / `session/fork`. Grok waits for the user's configured
+   * MCP servers there (npx plugins included); without a bound, a hung plugin
+   * leaves the GUI thread stuck while `grok` in a TTY still comes up.
+   */
+  readonly sessionCreateTimeout?: Duration.Input;
+  /**
+   * Extra `session/cancel` notifications after the first. Grok's TUI often
+   * needs a second confirm (Enter / Esc while already cancelling) before the
+   * turn actually stops; ACP clients can emulate that by repeating cancel.
+   */
+  readonly extraCancelNotifications?: number;
+  readonly cancelNotificationMeta?: Record<string, unknown>;
+  /**
+   * When true, `prompt` sends each `session/prompt` immediately instead of
+   * serializing them behind the in-flight one. Grok queues concurrent prompts
+   * natively (`_x.ai/queue/changed`) and runs them at the next turn boundary;
+   * holding them client-side left mid-turn user messages invisible to the
+   * agent for the whole turn, marked delivered but never sent.
+   */
+  readonly concurrentPrompts?: boolean;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -90,6 +122,7 @@ export interface AcpSessionRequestLogEvent {
 export interface AcpSessionRuntimeStartResult {
   readonly sessionId: string;
   readonly initializeResult: EffectAcpSchema.InitializeResponse;
+  readonly authenticateResult?: EffectAcpSchema.AuthenticateResponse;
   readonly sessionSetupResult:
     | EffectAcpSchema.LoadSessionResponse
     | EffectAcpSchema.NewSessionResponse
@@ -227,6 +260,7 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly setSessionModel: (
       modelId: string,
+      meta?: Record<string, unknown>,
     ) => Effect.Effect<EffectAcpSchema.SetSessionModelResponse, EffectAcpErrors.AcpError>;
     /**
      * Sends a generic ACP extension request and records it through the request logger.
@@ -294,13 +328,40 @@ export const make = (
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
     const promptSerializationSemaphore = yield* Semaphore.make(1);
-    const activePromptFiberRef = yield* Ref.make<
-      Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
-    >(Option.none());
+    const activePromptFibersRef = yield* Ref.make<
+      ReadonlyArray<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
+    >([]);
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
+
+    const withOptionalRpcTimeout = <A>(
+      method: string,
+      timeout: Duration.Input | undefined,
+      effect: Effect.Effect<A, EffectAcpErrors.AcpError>,
+    ): Effect.Effect<A, EffectAcpErrors.AcpError> => {
+      if (timeout === undefined) {
+        return effect;
+      }
+      return effect.pipe(
+        Effect.timeoutOption(Duration.fromInputUnsafe(timeout)),
+        Effect.flatMap((result) =>
+          Option.match(result, {
+            onNone: () =>
+              Effect.fail(
+                new EffectAcpErrors.AcpTransportError({
+                  operation: "call-rpc",
+                  method,
+                  detail: `${method} timed out waiting for RPC response`,
+                  cause: undefined,
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
+    };
 
     const runLoggedRequest = <A>(
       method: string,
@@ -544,13 +605,30 @@ export const make = (
 
       const authenticatePayload = {
         methodId: options.authMethodId,
+        ...(options.authenticateMeta ? { _meta: options.authenticateMeta } : {}),
       } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      yield* runLoggedRequest(
+      const authenticateResult = yield* runLoggedRequest(
         "authenticate",
         authenticatePayload,
         acp.agent.authenticate(authenticatePayload),
       );
+
+      if (options.createSession === false) {
+        return {
+          sessionId: "",
+          initializeResult,
+          authenticateResult,
+          sessionSetupResult: { sessionId: "" },
+          modelConfigId: undefined,
+        } satisfies AcpSessionRuntimeStartResult;
+      }
+
+      const mcpServers = yield* resolveSessionMcpServers({
+        servers: options.mcpServers ?? [],
+        agentCapabilities: initializeResult.agentCapabilities,
+        filterMcpServers: options.filterMcpServers,
+      });
 
       let sessionId: string;
       let sessionSetupResult:
@@ -562,12 +640,16 @@ export const make = (
         const forkPayload = {
           sessionId: options.forkSessionId,
           cwd: options.cwd,
-          mcpServers: options.mcpServers ?? [],
+          mcpServers,
         } satisfies EffectAcpSchema.ForkSessionRequest;
         const forked = yield* runLoggedRequest(
           "session/fork",
           forkPayload,
-          acp.agent.forkSession(forkPayload),
+          withOptionalRpcTimeout(
+            "session/fork",
+            options.sessionCreateTimeout,
+            acp.agent.forkSession(forkPayload),
+          ),
         );
         sessionId = forked.sessionId;
         sessionSetupResult = forked;
@@ -575,7 +657,7 @@ export const make = (
         const loadPayload = {
           sessionId: options.resumeSessionId,
           cwd: options.cwd,
-          mcpServers: options.mcpServers ?? [],
+          mcpServers,
         } satisfies EffectAcpSchema.LoadSessionRequest;
         const sessionLoadTimeout = Duration.fromInputUnsafe(
           options.sessionLoadTimeout ?? defaultSessionLoadTimeout,
@@ -648,12 +730,16 @@ export const make = (
       } else {
         const createPayload = {
           cwd: options.cwd,
-          mcpServers: options.mcpServers ?? [],
+          mcpServers,
         } satisfies EffectAcpSchema.NewSessionRequest;
         const created = yield* runLoggedRequest(
           "session/new",
           createPayload,
-          acp.agent.createSession(createPayload),
+          withOptionalRpcTimeout(
+            "session/new",
+            options.sessionCreateTimeout,
+            acp.agent.createSession(createPayload),
+          ),
         );
         sessionId = created.sessionId;
         sessionSetupResult = created;
@@ -665,6 +751,7 @@ export const make = (
       const nextState = {
         sessionId,
         initializeResult,
+        authenticateResult,
         sessionSetupResult,
         modelConfigId: extractModelConfigId(sessionSetupResult),
       } satisfies AcpStartedState;
@@ -731,58 +818,75 @@ export const make = (
       }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
-      prompt: (payload) =>
-        promptSerializationSemaphore.withPermit(
-          Effect.gen(function* () {
-            const started = yield* getStartedState;
-            yield* closeActiveAssistantSegment({
-              queue: eventQueue,
-              assistantSegmentRef,
-            });
-            const requestPayload = {
-              sessionId: started.sessionId,
-              ...payload,
-            } satisfies EffectAcpSchema.PromptRequest;
-            const cancelledResponse = {
-              stopReason: "cancelled",
-            } satisfies EffectAcpSchema.PromptResponse;
-            const promptRpcFiber = yield* runLoggedRequest(
-              "session/prompt",
-              requestPayload,
-              acp.agent.prompt(requestPayload),
-            ).pipe(Effect.forkIn(runtimeScope));
-            yield* Ref.set(activePromptFiberRef, Option.some(promptRpcFiber));
-            return yield* Fiber.join(promptRpcFiber).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.succeed(cancelledResponse)
-                  : Effect.failCause(cause),
-              ),
-              Effect.ensuring(
-                Effect.gen(function* () {
-                  yield* Fiber.interrupt(promptRpcFiber).pipe(Effect.ignore);
-                  yield* Ref.set(activePromptFiberRef, Option.none());
-                }),
-              ),
-              Effect.tap(() =>
-                closeActiveAssistantSegment({
-                  queue: eventQueue,
-                  assistantSegmentRef,
-                }),
-              ),
-            );
-          }),
-        ),
+      prompt: (payload) => {
+        const sendPrompt = Effect.gen(function* () {
+          const started = yield* getStartedState;
+          yield* closeActiveAssistantSegment({
+            queue: eventQueue,
+            assistantSegmentRef,
+          });
+          const requestPayload = {
+            sessionId: started.sessionId,
+            ...payload,
+          } satisfies EffectAcpSchema.PromptRequest;
+          const cancelledResponse = {
+            stopReason: "cancelled",
+          } satisfies EffectAcpSchema.PromptResponse;
+          const promptRpcFiber = yield* runLoggedRequest(
+            "session/prompt",
+            requestPayload,
+            acp.agent.prompt(requestPayload),
+          ).pipe(Effect.forkIn(runtimeScope));
+          yield* Ref.update(activePromptFibersRef, (fibers) => [...fibers, promptRpcFiber]);
+          return yield* Fiber.join(promptRpcFiber).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.succeed(cancelledResponse)
+                : Effect.failCause(cause),
+            ),
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* Fiber.interrupt(promptRpcFiber).pipe(Effect.ignore);
+                yield* Ref.update(activePromptFibersRef, (fibers) =>
+                  fibers.filter((fiber) => fiber !== promptRpcFiber),
+                );
+              }),
+            ),
+            Effect.tap(() =>
+              closeActiveAssistantSegment({
+                queue: eventQueue,
+                assistantSegmentRef,
+              }),
+            ),
+          );
+        });
+        return options.concurrentPrompts === true
+          ? sendPrompt
+          : promptSerializationSemaphore.withPermit(sendPrompt);
+      },
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           Effect.gen(function* () {
-            const activePromptFiber = yield* Ref.get(activePromptFiberRef);
-            if (Option.isSome(activePromptFiber)) {
-              yield* Fiber.interrupt(activePromptFiber.value).pipe(Effect.ignore);
+            const cancelPayload = {
+              sessionId: started.sessionId,
+              ...(options.cancelNotificationMeta ? { _meta: options.cancelNotificationMeta } : {}),
+            } satisfies EffectAcpSchema.CancelNotification;
+            const sendCancel = acp.agent.cancel(cancelPayload).pipe(Effect.ignore);
+            // Deliver cancel to the agent before tearing down the local prompt
+            // RPC, otherwise Grok keeps generating after the GUI already looks
+            // stopped. Repeat when requested so a second confirm matches the
+            // TUI's Enter/Esc-while-cancelling gesture.
+            yield* sendCancel;
+            const extraCancels = options.extraCancelNotifications ?? 0;
+            for (let extra = 0; extra < extraCancels; extra += 1) {
+              yield* sendCancel;
             }
-            yield* acp.agent
-              .cancel({ sessionId: started.sessionId })
-              .pipe(Effect.ignore, Effect.forkIn(runtimeScope));
+            const activePromptFibers = yield* Ref.get(activePromptFibersRef);
+            yield* Effect.forEach(
+              activePromptFibers,
+              (fiber) => Fiber.interrupt(fiber).pipe(Effect.ignore),
+              { concurrency: "unbounded" },
+            );
           }),
         ),
       ),
@@ -804,12 +908,13 @@ export const make = (
           Effect.flatMap((started) => setConfigOption(started.modelConfigId ?? "model", model)),
           Effect.asVoid,
         ),
-      setSessionModel: (modelId) =>
+      setSessionModel: (modelId, meta) =>
         getStartedState.pipe(
           Effect.flatMap((started) => {
             const requestPayload = {
               sessionId: started.sessionId,
               modelId,
+              ...(meta !== undefined ? { _meta: meta } : {}),
             } satisfies EffectAcpSchema.SetSessionModelRequest;
             return runLoggedRequest(
               "session/set_model",
@@ -831,6 +936,32 @@ export const layer = (
   EffectAcpErrors.AcpError,
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto
 > => Layer.effect(AcpSessionRuntime, make(options));
+
+function mcpServerTransport(server: EffectAcpSchema.McpServer): "http" | "sse" | "stdio" {
+  return "type" in server ? server.type : "stdio";
+}
+
+const resolveSessionMcpServers = (input: {
+  readonly servers: ReadonlyArray<EffectAcpSchema.McpServer>;
+  readonly agentCapabilities: EffectAcpSchema.AgentCapabilities | undefined;
+  readonly filterMcpServers: AcpSessionRuntimeOptions["filterMcpServers"];
+}): Effect.Effect<ReadonlyArray<EffectAcpSchema.McpServer>> =>
+  Effect.gen(function* () {
+    const next = input.filterMcpServers
+      ? input.filterMcpServers(input.servers, input.agentCapabilities)
+      : input.servers;
+    for (const server of input.servers) {
+      if (next.includes(server)) {
+        continue;
+      }
+      const transport = mcpServerTransport(server);
+      yield* Effect.logWarning(
+        `Dropping ACP MCP server because the agent did not advertise ${transport} transport support.`,
+        { name: server.name, transport },
+      );
+    }
+    return next;
+  });
 
 function sessionConfigOptionsFromSetup(
   response:

@@ -14,6 +14,7 @@ import {
   type EnvironmentRpcUnavailableError,
   request,
 } from "../rpc/client.ts";
+import { dispatchOrDeferThreadCommand } from "./deferredThreadCommands.ts";
 
 type CommandType = ClientOrchestrationCommand["type"];
 type CommandOf<T extends CommandType> = Extract<ClientOrchestrationCommand, { readonly type: T }>;
@@ -51,6 +52,7 @@ export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.resp
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
 export type RefreshThreadPlanInput = CommandInput<"thread.plan.refresh">;
+export type RecordThreadVoiceTranscriptInput = CommandInput<"thread.voice-transcript.record">;
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<
@@ -80,6 +82,20 @@ function timestampedCommandMetadata(input: {
         ? DateTime.now.pipe(Effect.map(DateTime.formatIso))
         : Effect.succeed(input.createdAt),
   });
+}
+
+function requestResponseCommandId(
+  type: "thread.approval.respond" | "thread.user-input.respond",
+  input: {
+    readonly commandId?: CommandId;
+    readonly threadId: string;
+    readonly requestId: string;
+  },
+): CommandId {
+  return (
+    input.commandId ??
+    CommandId.make(`${type}:${JSON.stringify([input.threadId, input.requestId])}`)
+  );
 }
 
 function dispatch(command: ClientOrchestrationCommand) {
@@ -152,40 +168,40 @@ export const deleteThread: (input: DeleteThreadInput) => CommandEffect = Effect.
   });
 });
 
-export const archiveThread: (input: ArchiveThreadInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.archiveThread",
-)(function* (input) {
-  return yield* dispatch({
+export const archiveThread = Effect.fn("EnvironmentCommands.archiveThread")(function* (
+  input: ArchiveThreadInput,
+) {
+  return yield* dispatchOrDeferThreadCommand({
     ...input,
     type: "thread.archive",
     commandId: yield* commandId(input),
   });
 });
 
-export const unarchiveThread: (input: UnarchiveThreadInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.unarchiveThread",
-)(function* (input) {
-  return yield* dispatch({
+export const unarchiveThread = Effect.fn("EnvironmentCommands.unarchiveThread")(function* (
+  input: UnarchiveThreadInput,
+) {
+  return yield* dispatchOrDeferThreadCommand({
     ...input,
     type: "thread.unarchive",
     commandId: yield* commandId(input),
   });
 });
 
-export const settleThread: (input: SettleThreadInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.settleThread",
-)(function* (input) {
-  return yield* dispatch({
+export const settleThread = Effect.fn("EnvironmentCommands.settleThread")(function* (
+  input: SettleThreadInput,
+) {
+  return yield* dispatchOrDeferThreadCommand({
     ...input,
     type: "thread.settle",
     commandId: yield* commandId(input),
   });
 });
 
-export const unsettleThread: (input: UnsettleThreadInput) => CommandEffect = Effect.fn(
-  "EnvironmentCommands.unsettleThread",
-)(function* (input) {
-  return yield* dispatch({
+export const unsettleThread = Effect.fn("EnvironmentCommands.unsettleThread")(function* (
+  input: UnsettleThreadInput,
+) {
+  return yield* dispatchOrDeferThreadCommand({
     ...input,
     type: "thread.unsettle",
     commandId: yield* commandId(input),
@@ -283,7 +299,10 @@ export const stopThreadTask: (input: StopThreadTaskInput) => CommandEffect = Eff
 
 export const respondToThreadApproval: (input: RespondToThreadApprovalInput) => CommandEffect =
   Effect.fn("EnvironmentCommands.respondToThreadApproval")(function* (input) {
-    const metadata = yield* timestampedCommandMetadata(input);
+    const metadata = yield* timestampedCommandMetadata({
+      ...input,
+      commandId: requestResponseCommandId("thread.approval.respond", input),
+    });
     return yield* dispatch({
       ...input,
       type: "thread.approval.respond",
@@ -294,7 +313,10 @@ export const respondToThreadApproval: (input: RespondToThreadApprovalInput) => C
 
 export const respondToThreadUserInput: (input: RespondToThreadUserInputInput) => CommandEffect =
   Effect.fn("EnvironmentCommands.respondToThreadUserInput")(function* (input) {
-    const metadata = yield* timestampedCommandMetadata(input);
+    const metadata = yield* timestampedCommandMetadata({
+      ...input,
+      commandId: requestResponseCommandId("thread.user-input.respond", input),
+    });
     return yield* dispatch({
       ...input,
       type: "thread.user-input.respond",
@@ -343,3 +365,17 @@ export const refreshThreadPlan: (input: RefreshThreadPlanInput) => CommandEffect
     createdAt: metadata.createdAt,
   });
 });
+
+export const recordThreadVoiceTranscript: (
+  input: RecordThreadVoiceTranscriptInput,
+) => CommandEffect = Effect.fn("EnvironmentCommands.recordThreadVoiceTranscript")(
+  function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.voice-transcript.record",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  },
+);

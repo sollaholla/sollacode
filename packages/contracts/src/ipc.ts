@@ -36,8 +36,11 @@ import type {
   TerminalAttachStreamEvent,
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalListInput,
+  TerminalListResult,
   TerminalMetadataStreamEvent,
   TerminalOpenInput,
+  TerminalReadInput,
   TerminalResizeInput,
   TerminalRestartInput,
   TerminalSessionSnapshot,
@@ -96,6 +99,7 @@ import type {
   SourceControlRepositoryInfo,
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
+import type { DesktopPermissionsBridge } from "./desktopPermissions.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -1065,6 +1069,18 @@ export const DesktopRemoteControlHostStateSchema = Schema.Struct({
 });
 export type DesktopRemoteControlHostState = typeof DesktopRemoteControlHostStateSchema.Type;
 
+/**
+ * Clipboard representations for moving a composer draft between desktop tabs.
+ * Electron writes these together so macOS and Windows retain both the bitmap
+ * and the HTML transfer marker instead of choosing only one representation.
+ */
+export const DesktopComposerClipboardInputSchema = Schema.Struct({
+  text: Schema.String,
+  html: Schema.String,
+  imagePng: Schema.Uint8Array,
+});
+export type DesktopComposerClipboardInput = typeof DesktopComposerClipboardInputSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
@@ -1127,11 +1143,13 @@ export interface DesktopBridge {
     readonly contents: string;
   }) => Promise<string>;
   revealFile: (path: string) => Promise<void>;
+  writeComposerClipboard: (input: DesktopComposerClipboardInput) => Promise<boolean>;
   setPushToTalkSystemAudioMuted: (muted: boolean) => Promise<boolean>;
   captureRemoteControlFrame: (
     input: DesktopRemoteControlCaptureInput,
   ) => Promise<DesktopRemoteControlFrame>;
   listRemoteControlCaptureSources: () => Promise<DesktopRemoteControlCaptureSources>;
+  activateRemoteControlHost: () => Promise<void>;
   sendRemoteControlInput: (
     payload: DesktopRemoteControlInput,
   ) => Promise<DesktopRemoteControlInputResult>;
@@ -1143,15 +1161,76 @@ export interface DesktopBridge {
    */
   readRemoteControlPointerLock: () => Promise<DesktopRemoteControlHostState>;
   startFileDrag: (path: string) => Promise<boolean>;
+  /**
+   * Absolute filesystem path for a File from a desktop drag-drop.
+   * Empty string when Electron cannot map the File (web-only drops).
+   */
+  getPathForFile?: (file: File) => string;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;
   onIntentionalShutdown: (listener: () => void) => () => void;
+  /** macOS permission status and first-run setup. Undefined in older preloads. */
+  permissions?: DesktopPermissionsBridge;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
    * Electron desktop build; web builds have `preview === undefined`.
    */
   preview?: DesktopPreviewBridge;
+  /**
+   * Desktop-only floating voice orb. `undefined` in web builds and under old
+   * preloads, so every caller feature-detects.
+   */
+  orchestratorBubble?: DesktopOrchestratorBubbleBridge;
+}
+
+/**
+ * Mirror of the voice session the floating bubble renders. Published by the
+ * main window's renderer (the only place the WebRTC session lives), relayed by
+ * the main process to the bubble window.
+ */
+export interface DesktopOrchestratorBubbleState {
+  /**
+   * `working` is not a voice-session state — it is the orb's own reading of
+   * "the assistant has the floor but is not making a sound", i.e. a tool call
+   * between sentences. Without it the orb showed a live microphone through
+   * that entire window, which says "talk now" at the one moment the session
+   * cannot hear you.
+   */
+  readonly status: "idle" | "connecting" | "listening" | "speaking" | "working" | "error";
+  /** Instantaneous microphone level, 0..1. */
+  readonly micLevel: number;
+  /** Instantaneous orchestrator playback level, 0..1. */
+  readonly assistantLevel: number;
+}
+
+/**
+ * The always-on-top voice orb. Present iff the renderer is hosted by the
+ * Electron desktop build. The same bridge serves both windows: the main window
+ * publishes state and toggles visibility, the bubble window subscribes, drags
+ * itself, and asks for the orchestrator thread to be opened.
+ */
+export interface DesktopOrchestratorBubbleBridge {
+  /** Create or destroy the bubble window. Idempotent. */
+  setVisible: (visible: boolean) => Promise<void>;
+  /** Push the live voice-session state; the main process relays and latches it. */
+  publishState: (state: DesktopOrchestratorBubbleState) => Promise<void>;
+  /** Fires with the latched state immediately, then on every publish. */
+  onState: (listener: (state: DesktopOrchestratorBubbleState) => void) => () => void;
+  /** Move the bubble window (absolute screen coordinates, top-left origin). */
+  move: (position: { readonly x: number; readonly y: number }) => Promise<void>;
+  /** Persist the bubble's resting position after a drag. */
+  dragEnd: () => Promise<void>;
+  /** Reveal the main window and navigate it to the orchestrator thread. */
+  open: () => Promise<void>;
+  /**
+   * Start or stop the voice session. Routed to the main window, which owns the
+   * only WebRTC session — deliberately without revealing it, so tapping the orb
+   * to talk never yanks the app in front of whatever the user is doing.
+   */
+  toggleVoice: () => Promise<void>;
+  /** Main-window side of {@link toggleVoice}. */
+  onVoiceToggleRequested: (listener: () => void) => () => void;
 }
 
 export interface DesktopPreviewBridge {
@@ -1275,6 +1354,8 @@ export interface EnvironmentApi {
         onResubscribe?: () => void;
       },
     ) => () => void;
+    list: (input?: typeof TerminalListInput.Encoded) => Promise<TerminalListResult>;
+    read: (input: typeof TerminalReadInput.Encoded) => Promise<TerminalSessionSnapshot>;
     write: (input: typeof TerminalWriteInput.Encoded) => Promise<void>;
     resize: (input: typeof TerminalResizeInput.Encoded) => Promise<void>;
     clear: (input: typeof TerminalClearInput.Encoded) => Promise<void>;

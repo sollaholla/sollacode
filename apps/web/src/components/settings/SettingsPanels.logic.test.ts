@@ -16,6 +16,7 @@ import {
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
   resolveBackgroundActivityProfileOption,
+  resolveDefaultProviderInstance,
 } from "./SettingsPanels.logic";
 
 describe("background activity settings restore", () => {
@@ -226,5 +227,45 @@ describe("buildProviderInstanceUpdatePatch", () => {
 
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
+  });
+});
+
+describe("resolveDefaultProviderInstance", () => {
+  it("renders an instance-only provider safely when no legacy config exists", () => {
+    const driver = ProviderDriverKind.make("mcpBridge");
+
+    expect(resolveDefaultProviderInstance({ driver })).toEqual({
+      instance: { driver, enabled: false },
+      isDirty: false,
+    });
+  });
+
+  it("keeps legacy provider defaults and explicit instances intact", () => {
+    const driver = ProviderDriverKind.make("codex");
+    const legacyConfig = DEFAULT_SERVER_SETTINGS.providers.codex;
+    expect(
+      resolveDefaultProviderInstance({
+        driver,
+        legacyConfig,
+        defaultLegacyConfig: legacyConfig,
+      }),
+    ).toEqual({
+      instance: {
+        driver,
+        enabled: legacyConfig.enabled,
+        config: legacyConfig,
+      },
+      isDirty: false,
+    });
+
+    const explicitInstance = {
+      driver,
+      enabled: true,
+      config: { binaryPath: "/custom/codex" },
+    } satisfies ProviderInstanceConfig;
+    expect(resolveDefaultProviderInstance({ driver, explicitInstance })).toEqual({
+      instance: explicitInstance,
+      isDirty: true,
+    });
   });
 });

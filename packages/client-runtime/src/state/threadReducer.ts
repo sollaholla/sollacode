@@ -238,6 +238,13 @@ export function applyThreadDetailEvent(
         id: event.payload.messageId,
         role: event.payload.role,
         text: event.payload.text,
+        // Provenance flags must survive the live path, not just snapshots:
+        // the "Transcribed" badge and the voice-row delivery exemption key on
+        // them the moment the row appears.
+        ...(event.payload.inputOrigin !== undefined
+          ? { inputOrigin: event.payload.inputOrigin }
+          : {}),
+        ...(event.payload.voiceTranscript === true ? { voiceTranscript: true } : {}),
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
           : {}),
@@ -262,6 +269,14 @@ export function applyThreadDetailEvent(
                   streaming: message.streaming,
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
+                  // Sticky, matching the server projection's upsert: an event
+                  // that omits the flags never strips them from the row.
+                  ...(message.inputOrigin !== undefined
+                    ? { inputOrigin: message.inputOrigin }
+                    : {}),
+                  ...(message.voiceTranscript === true || entry.voiceTranscript === true
+                    ? { voiceTranscript: true }
+                    : {}),
                   ...(message.attachments !== undefined
                     ? { attachments: message.attachments }
                     : {}),
@@ -389,6 +404,7 @@ export function applyThreadDetailEvent(
                 ...thread.session,
                 status: "stopped",
                 activeTurnId: null,
+                lastError: null,
                 updatedAt: event.payload.createdAt,
               },
               updatedAt: event.occurredAt,

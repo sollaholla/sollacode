@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EventId,
   MessageId,
+  ThreadArtifactId,
   ThreadId,
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
@@ -25,6 +26,7 @@ import { HEIC_FIXTURE_BASE64 } from "../modelImageCompatibility.test-fixture.ts"
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { encodeArtifactManifest } from "../artifacts/ArtifactManifest.ts";
 import {
   ASSET_ROUTE_PREFIX,
   WORKSPACE_RASTER_IMAGE_MAX_BYTES,
@@ -99,6 +101,124 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "../secret.txt")).toBeNull();
       expect(yield* resolveAsset(token, ".env")).toBeNull();
       expect(yield* resolveAsset(`${token}tampered`, "report.html")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("serves only manifest-listed relative files through one signed artifact revision", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig.ServerConfig;
+      const artifactId = ThreadArtifactId.make("artifact-signed-relative-bundle");
+      const revisionRoot = path.join(config.artifactsDir, artifactId, "revisions", "1");
+      const siteRoot = path.join(revisionRoot, "site");
+      const indexPath = path.join(siteRoot, "index.html");
+      const cssPath = path.join(siteRoot, "styles", "app.css");
+      const jsPath = path.join(siteRoot, "scripts", "app.js");
+      const sharedPath = path.join(revisionRoot, "shared", "base.css");
+      const privatePath = path.join(siteRoot, "private.txt");
+      const iconPath = path.join(revisionRoot, "icon.svg");
+      yield* fileSystem.makeDirectory(path.dirname(cssPath), { recursive: true });
+      yield* fileSystem.makeDirectory(path.dirname(jsPath), { recursive: true });
+      yield* fileSystem.makeDirectory(path.dirname(sharedPath), { recursive: true });
+      yield* fileSystem.writeFileString(
+        indexPath,
+        '<link rel="stylesheet" href="styles/app.css"><link rel="stylesheet" href="../shared/base.css"><script src="scripts/app.js"></script>',
+      );
+      yield* fileSystem.writeFileString(cssPath, "body { color: purple; }");
+      yield* fileSystem.writeFileString(jsPath, "document.body.dataset.ready = 'true';");
+      yield* fileSystem.writeFileString(sharedPath, "html { color-scheme: light; }");
+      yield* fileSystem.writeFileString(privatePath, "must not be served");
+      yield* fileSystem.writeFileString(
+        iconPath,
+        '<svg viewBox="0 0 1 1"><circle cx="0.5" cy="0.5" r="0.5"></circle></svg>',
+      );
+      yield* fileSystem.writeFileString(
+        path.join(revisionRoot, ".manifest.json"),
+        encodeArtifactManifest({
+          version: 1,
+          entryPath: "site/index.html",
+          files: [
+            { path: "site/index.html", contentType: "text/html", byteLength: 86 },
+            { path: "site/styles/app.css", contentType: "text/css", byteLength: 23 },
+            {
+              path: "site/scripts/app.js",
+              contentType: "text/javascript",
+              byteLength: 41,
+            },
+            { path: "shared/base.css", contentType: "text/css", byteLength: 29 },
+          ],
+        }),
+      );
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "artifact-revision",
+          threadId: ThreadId.make("thread-signed-relative-bundle"),
+          artifactId,
+          revision: 1,
+          path: "site/index.html",
+        },
+      });
+      expect(result.relativeUrl.startsWith(`${ASSET_ROUTE_PREFIX}/`)).toBe(true);
+      expect(result.relativeUrl).not.toContain("localhost");
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+      expect(result.relativeUrl.endsWith("/site/index.html")).toBe(true);
+
+      expect(yield* resolveAsset(token, "site/index.html")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(indexPath),
+        artifact: true,
+        contentType: "text/html",
+      });
+      expect(yield* resolveAsset(token, "site/styles/app.css")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(cssPath),
+        artifact: true,
+        contentType: "text/css",
+      });
+      expect(yield* resolveAsset(token, "site/scripts/app.js")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(jsPath),
+        artifact: true,
+        contentType: "text/javascript",
+      });
+      const parentRelativeUrl = new URL(`https://remote.test${result.relativeUrl}`);
+      const resolvedParentRelativeUrl = new URL("../shared/base.css", parentRelativeUrl);
+      const capabilityPrefix = `${ASSET_ROUTE_PREFIX}/${token}/`;
+      const resolvedParentRelativePath = decodeURIComponent(
+        resolvedParentRelativeUrl.pathname.slice(capabilityPrefix.length),
+      );
+      expect(resolvedParentRelativePath).toBe("shared/base.css");
+      expect(yield* resolveAsset(token, resolvedParentRelativePath)).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(sharedPath),
+        artifact: true,
+        contentType: "text/css",
+      });
+      expect(yield* resolveAsset(token, "site/private.txt")).toBeNull();
+      expect(yield* resolveAsset(token, "../.manifest.json")).toBeNull();
+      expect(yield* resolveAsset(`${token}tampered`, "site/index.html")).toBeNull();
+
+      const iconResult = yield* issueAssetUrl({
+        resource: {
+          _tag: "artifact-icon",
+          threadId: ThreadId.make("thread-signed-relative-bundle"),
+          artifactId,
+          revision: 1,
+        },
+      });
+      const iconSuffix = iconResult.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const iconToken = iconSuffix.slice(0, iconSuffix.indexOf("/"));
+      expect(yield* resolveAsset(iconToken, "icon.svg")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(iconPath),
+        artifact: true,
+        contentType: "image/svg+xml",
+      });
+      expect(yield* resolveAsset(iconToken, "index.html")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 

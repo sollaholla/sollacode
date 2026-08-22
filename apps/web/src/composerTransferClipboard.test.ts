@@ -8,6 +8,7 @@ import {
   hasTransferableComposerContent,
   persistComposerTransfer,
   planComposerPaste,
+  readClipboardImageFiles,
   readComposerTransferFromClipboard,
   resolveComposerTransferFromClipboard,
   setComposerTransferPersistenceForTest,
@@ -346,6 +347,36 @@ describe("composer transfer clipboard", () => {
 });
 
 describe("writeComposerTransferToClipboard image bytes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the desktop atomic clipboard bridge for image cuts", async () => {
+    const writeComposerClipboard = vi.fn(() => Promise.resolve(true));
+    vi.stubGlobal("window", { desktopBridge: { writeComposerClipboard } });
+    const png = new File([new Uint8Array([4, 5, 6])], "shot.png", { type: "image/png" });
+    const staged = stageComposerTransfer("move this", [png]);
+
+    await expect(writeComposerTransferToClipboard(staged, [png])).resolves.toBe(true);
+    expect(writeComposerClipboard).toHaveBeenCalledTimes(1);
+    expect(writeComposerClipboard).toHaveBeenCalledWith({
+      text: "move this",
+      html: composerTransferHtml(staged),
+      imagePng: new Uint8Array([4, 5, 6]),
+    });
+    discardComposerTransfer(staged.token);
+  });
+
+  it("keeps an image draft intact when the native clipboard loses a representation", async () => {
+    vi.stubGlobal("window", {
+      desktopBridge: { writeComposerClipboard: () => Promise.resolve(false) },
+    });
+    const png = new File([new Uint8Array([7])], "shot.png", { type: "image/png" });
+    const staged = stageComposerTransfer("keep this", [png]);
+    await expect(writeComposerTransferToClipboard(staged, [png])).resolves.toBe(false);
+    discardComposerTransfer(staged.token);
+  });
+
   it("writes real PNG bytes alongside the text so a stripped clipboard still carries the image", async () => {
     // The bug this covers: cut put only text/html on the clipboard, so pasting
     // into another thread produced text and silently lost every attachment.
@@ -401,6 +432,38 @@ describe("writeComposerTransferToClipboard image bytes", () => {
     const result = await writeComposerTransferToClipboard(staged, []);
     expect(typeof result).toBe("boolean");
     discardComposerTransfer(staged.token);
+  });
+});
+
+describe("readClipboardImageFiles", () => {
+  it("reads a native clipboard bitmap exposed only through DataTransfer.items", () => {
+    const png = new File([new Uint8Array([1, 2])], "clipboard.png", { type: "image/png" });
+    const files = readClipboardImageFiles({
+      files: [] as unknown as FileList,
+      items: [
+        {
+          type: "image/png",
+          getAsFile: () => png,
+        },
+      ] as unknown as DataTransferItemList,
+    });
+
+    expect(files).toEqual([png]);
+  });
+
+  it("does not duplicate images represented in both clipboard collections", () => {
+    const png = new File([new Uint8Array([1])], "clipboard.png", { type: "image/png" });
+    const files = readClipboardImageFiles({
+      files: [png] as unknown as FileList,
+      items: [
+        {
+          type: "image/png",
+          getAsFile: () => png,
+        },
+      ] as unknown as DataTransferItemList,
+    });
+
+    expect(files).toEqual([png]);
   });
 });
 

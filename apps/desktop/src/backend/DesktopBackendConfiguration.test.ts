@@ -137,6 +137,10 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.cwd, environment.backendCwd);
         assert.equal(first.captureOutput, true);
         assert.equal(first.env.ELECTRON_RUN_AS_NODE, "1");
+        assert.equal(first.env.T3CODE_DESKTOP_UPDATER_DIR, "/missing/resources/app-update");
+        assert.equal(first.env.T3CODE_DESKTOP_APP_PATH, process.execPath);
+        assert.equal(first.env.T3CODE_DESKTOP_ROOT_PID, String(process.pid));
+        assert.equal(first.env.T3CODE_DESKTOP_UPDATE_HEALTH_URL, "http://127.0.0.1:4888/");
         assert.isUndefined(first.env.T3CODE_PORT);
         assert.isUndefined(first.env.T3CODE_MODE);
         assert.isUndefined(first.env.T3CODE_DESKTOP_LAN_HOST);
@@ -153,6 +157,23 @@ describe("DesktopBackendConfiguration", () => {
       }),
     ),
   );
+
+  it("derives the enclosing macOS app and keeps the Windows executable target", () => {
+    assert.equal(
+      DesktopBackendConfiguration.resolveDesktopApplicationPath(
+        "darwin",
+        "/Applications/Solla Code.app/Contents/MacOS/Solla Code",
+      ),
+      "/Applications/Solla Code.app",
+    );
+    assert.equal(
+      DesktopBackendConfiguration.resolveDesktopApplicationPath(
+        "win32",
+        "C:\\Program Files\\Solla Code\\Solla Code.exe",
+      ),
+      "C:\\Program Files\\Solla Code\\Solla Code.exe",
+    );
+  });
 
   it.effect("resolveWsl reuses the primary's bootstrap token", () =>
     withHarness(

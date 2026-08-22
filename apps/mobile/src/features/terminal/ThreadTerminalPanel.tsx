@@ -31,7 +31,6 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
   props: ThreadTerminalPanelProps,
 ) {
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
-  const resizeTerminal = useAtomCommand(terminalEnvironment.resize, "terminal resize");
   const closeTerminal = useAtomCommand(terminalEnvironment.close, "terminal close");
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
   const nativeTerminalAvailable = hasNativeTerminalSurface();
@@ -153,27 +152,6 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
     props.onClose();
   }, [attachInput, closeTerminal, isRunning, props, terminal.status, terminalId, terminalKey]);
 
-  const sendResize = useCallback(
-    (size: TerminalGridSize) => {
-      void resizeTerminal({
-        environmentId: props.environmentId,
-        input: {
-          threadId: props.threadId,
-          terminalId,
-          cols: size.cols,
-          rows: size.rows,
-        },
-      });
-    },
-    [props.environmentId, props.threadId, resizeTerminal, terminalId],
-  );
-
-  useEffect(() => {
-    if (isRunning) {
-      sendResize(lastGridSizeRef.current);
-    }
-  }, [isRunning, sendResize]);
-
   const handleInput = useCallback(
     (data: string) => {
       if (!isRunning) {
@@ -192,22 +170,11 @@ export const ThreadTerminalPanel = memo(function ThreadTerminalPanel(
     [isRunning, props.environmentId, props.threadId, terminalId, writeTerminal],
   );
 
-  const handleResize = useCallback(
-    (size: TerminalGridSize) => {
-      const previousSize = lastGridSizeRef.current;
-      if (size.cols === previousSize.cols && size.rows === previousSize.rows) {
-        return;
-      }
-
-      lastGridSizeRef.current = size;
-      if (!isRunning) {
-        return;
-      }
-
-      sendResize(size);
-    },
-    [isRunning, sendResize],
-  );
+  const handleResize = useCallback((size: TerminalGridSize) => {
+    // Phone layout is local. Pushing cols/rows to the shared PTY reflows the
+    // desktop terminal and garbles TUIs; attach still streams the same text.
+    lastGridSizeRef.current = size;
+  }, []);
 
   if (!props.visible) {
     return null;

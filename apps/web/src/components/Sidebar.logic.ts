@@ -1,5 +1,9 @@
 import * as React from "react";
-import type { ContextMenuItem } from "@t3tools/contracts";
+import {
+  isAgentsProjectId,
+  isOrchestratorThreadId,
+  type ContextMenuItem,
+} from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
@@ -299,6 +303,37 @@ export function orderItemsByPreferredIds<TItem, TId>(input: {
   return [...ordered, ...remaining];
 }
 
+/**
+ * Whether a thread earns a row of its own in the sidebar.
+ *
+ * Side chats are spawned by a parent thread and surface inside it — as the
+ * parent row's "N side" badge and in the parent's own view. Listing them again
+ * at the top level double-counts work the user is already looking at, and the
+ * rows have no independent meaning once their parent is gone. Both sidebars
+ * apply this; the V1 project list did not, which leaked every side chat into
+ * its owning project.
+ *
+ * Archived threads are a separate axis and are filtered separately, because
+ * some callers still need archived rows.
+ *
+ * The orchestrator thread is excluded for a different reason: it is pinned to
+ * its own always-visible row above the scroll boundary, so listing it again
+ * would duplicate it, let it be sorted away under a pile of active work, and
+ * expose it to the bulk-selection and ⌘1..9 machinery that operates on listed
+ * rows.
+ */
+export function isSidebarListedThread(thread: {
+  readonly id?: string | undefined;
+  readonly isSideChat?: boolean | undefined;
+  readonly projectId?: string | undefined;
+}) {
+  if (thread.id !== undefined && isOrchestratorThreadId(thread.id)) return false;
+  // Agent chat threads live under the reserved agents project and surface only
+  // in the Agents sidebar section — never in the normal thread list.
+  if (thread.projectId !== undefined && isAgentsProjectId(thread.projectId)) return false;
+  return thread.isSideChat !== true;
+}
+
 export function getVisibleSidebarThreadIds<TThreadId>(
   renderedProjects: readonly {
     shouldShowThreadPanel?: boolean;
@@ -421,9 +456,24 @@ export type SidebarV2Status = "approval" | "input" | "working" | "failed" | "rea
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
   "hasPendingApprovals" | "hasPendingUserInput" | "session"
->;
+> &
+  Partial<Pick<SidebarThreadSummary, "latestTurn">> & {
+    /**
+     * The host is offline or reconnecting, so this row shows last-known state.
+     */
+    readonly environmentUnreachable?: boolean;
+  };
 
 export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
+  // Last-known state is not live state. A row on a host we cannot reach cannot
+  // be observed working, and the user has no way to stop it from here, so the
+  // blue in-motion pill and its climbing timer assert something unverifiable.
+  // Only "working" is suppressed — a pending approval or input still needs the
+  // user, whether or not the host is answering right now.
+  if (thread.environmentUnreachable === true) {
+    const reachableStatus = resolveSidebarV2Status({ ...thread, environmentUnreachable: false });
+    return reachableStatus === "working" ? "ready" : reachableStatus;
+  }
   if (thread.hasPendingApprovals) {
     return "approval";
   }
@@ -435,6 +485,20 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   }
   if (thread.session?.status === "error") {
     return "failed";
+  }
+  // A stopped or interrupted session is the user/server saying the turn is
+  // over. An incomplete latestTurn left behind would otherwise keep the row
+  // on "Working" forever (observed as 8m+ spinners on idle threads).
+  if (thread.session?.status === "stopped" || thread.session?.status === "interrupted") {
+    return "ready";
+  }
+  // The conversation reads "working" from the turn, not the session, so a row
+  // whose session projection lags the turn — the resume window, a turn started
+  // before the session flipped to `running` — went blank in the sidebar while
+  // the chat plainly showed "Working for 3m". Reported 2026-08-15. Reading the
+  // turn here puts both surfaces on the same source of truth.
+  if (thread.latestTurn?.startedAt != null && thread.latestTurn.completedAt == null) {
+    return "working";
   }
   return "ready";
 }
@@ -454,11 +518,26 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
  * here keeps the label at "Working" and the elapsed on the turn's own start
  * instead of backdating it to the queued obligation.
  */
+export const AUTO_RESUME_LABEL_MIN_AGE_MS = 3_000;
+
 export function resolveAutoResumeStartedAt(input: {
   readonly ownStatus: SidebarV2Status;
   readonly startupResumeStartedAt: string | null;
+  /** Omit to skip the settling delay (server-side callers, tests). */
+  readonly nowMs?: number;
 }): string | null {
-  return input.ownStatus === "working" ? null : input.startupResumeStartedAt;
+  if (input.ownStatus === "working") return null;
+  const startedAt = input.startupResumeStartedAt;
+  if (startedAt === null || input.nowMs === undefined) return startedAt;
+  const startedMs = Date.parse(startedAt);
+  // An unparseable stamp cannot be aged; show it rather than hide work.
+  if (!Number.isFinite(startedMs)) return startedAt;
+  // Every hand-off in a healthy agent loop passes through a brief window where
+  // the finished turn has settled and its successor has not started, and the
+  // queued obligation is momentarily the only thing describing the row. Naming
+  // that "Auto-resuming" made the label strobe on every iteration. Work that is
+  // genuinely waiting outlives this delay; a loop hand-off does not.
+  return input.nowMs - startedMs >= AUTO_RESUME_LABEL_MIN_AGE_MS ? startedAt : null;
 }
 
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not

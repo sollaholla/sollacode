@@ -411,6 +411,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     padding-inline-end: calc(env(safe-area-inset-right) + 0.75rem);
   }
 
+  /* The composer's own measure. Everything stacked with the input bar — the
+     bar itself and the status rail above it — uses this, so the rail's edges
+     are the composer's edges. Given separately these drift: the rail was a
+     wider max-width than the composer, which on a large window left the task
+     chip hanging in open space to the right of the input. */
+  .chat-composer-measure {
+    margin-inline: auto;
+    width: 100%;
+    max-width: 48rem;
+  }
+
   .chat-composer-status-container {
     container-name: chat-composer-status;
     container-type: inline-size;
@@ -469,7 +480,11 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     display: none;
   }
 
-  @container chat-composer-status (max-width: 68rem) {
+  /* Sized against the composer's own measure (48rem), not the viewport: the
+     rail is a container, so these are the widths the three slots actually
+     have. Full labels fit the whole measure; the tiers below are where a
+     voice chip, the usage pill, and a task chip stop sharing one row. */
+  @container chat-composer-status (max-width: 36rem) {
     .chat-composer-status-label-full {
       display: none;
     }
@@ -479,7 +494,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
-  @container chat-composer-status (max-width: 48rem) {
+  @container chat-composer-status (max-width: 27rem) {
     .chat-composer-status-rail {
       grid-template-areas:
         "usage usage"
@@ -490,7 +505,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
-  @container chat-composer-status (max-width: 32rem) {
+  @container chat-composer-status (max-width: 20rem) {
     .chat-composer-status-rail {
       grid-template-areas:
         "usage"
@@ -1248,6 +1263,39 @@ code {
 }
 
 /* Terminal drawer scrollbar parity with chat */
+.thread-terminal-drawer .xterm {
+  overflow: hidden !important;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  line-height: 1;
+  transform-origin: 0 0;
+}
+
+.thread-terminal-drawer .xterm .xterm-screen {
+  overflow: hidden;
+}
+
+.thread-terminal-drawer .xterm .xterm-viewport {
+  /* xterm.css defaults this to #000, which shows through as a black strip
+     above the first row when the canvas does not cover the viewport. */
+  background-color: transparent;
+}
+
+.thread-terminal-drawer .xterm canvas {
+  max-width: none;
+  max-height: none;
+}
+
+.thread-terminal-drawer .xterm .xterm-accessibility,
+.thread-terminal-drawer .xterm .xterm-accessibility-tree,
+.thread-terminal-drawer .xterm .xterm-message {
+  /* Body text color otherwise leaks through `color: transparent` on the
+     accessibility overlay and looks like a second, offset copy of the
+     buffer bleeding out of the top of the pane. */
+  color: transparent !important;
+}
+
 .thread-terminal-drawer .xterm .xterm-scrollable-element > .scrollbar.vertical {
   width: 6px !important;
 }

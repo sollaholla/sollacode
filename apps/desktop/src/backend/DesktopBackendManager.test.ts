@@ -701,6 +701,56 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
+  it.effect("starts another readiness window after a complete timeout", () =>
+    Effect.gen(function* () {
+      let requestCount = 0;
+      const failures: Array<DesktopBackendManager.BackendReadinessTimeoutError> = [];
+      const firstRequest = yield* Deferred.make<void>();
+      const secondRequest = yield* Deferred.make<void>();
+
+      const spawnerLayer = Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            makeProcess({
+              exitCode: Effect.never,
+            }),
+          ),
+        ),
+      );
+      const httpLayer = httpClientLayer((_request) => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return Deferred.succeed(firstRequest, void 0).pipe(Effect.andThen(Effect.never));
+        }
+        return Deferred.succeed(secondRequest, void 0).pipe(Effect.andThen(Effect.never));
+      });
+
+      const run = yield* DesktopBackendManager.runBackendProcess({
+        ...baseConfig,
+        desktopTelemetryStream: Stream.empty,
+        readinessTimeout: Duration.millis(20),
+        onReadinessFailure: (error) =>
+          Effect.sync(() => {
+            failures.push(error);
+          }),
+      }).pipe(
+        Effect.provide(Layer.merge(spawnerLayer, httpLayer)),
+        Effect.scoped,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(firstRequest);
+      yield* TestClock.adjust(Duration.millis(20));
+      yield* Deferred.await(secondRequest);
+
+      assert.equal(requestCount, 2);
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0]?.timeoutMs, 20);
+      yield* Fiber.interrupt(run);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("starts the configured backend and closes the scoped process on stop", () =>
     Effect.scoped(
       Effect.gen(function* () {

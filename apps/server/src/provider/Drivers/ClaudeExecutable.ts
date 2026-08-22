@@ -88,3 +88,31 @@ export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecuta
     return binaryPath;
   },
 );
+
+/**
+ * The Claude Agent SDK spawns `pathToClaudeCodeExecutable` without a shell.
+ * On Windows a leftover `claude` command name or an npm shim is not spawnable,
+ * so startSession should fail with a clean "not installed" error instead of
+ * letting the SDK throw `ReferenceError: native binary not found`.
+ */
+export const isMissingClaudeSdkExecutable = Effect.fn("isMissingClaudeSdkExecutable")(function* (
+  binaryPath: string,
+): Effect.fn.Return<boolean> {
+  const platform = yield* HostProcessPlatform;
+  const isFile = yield* ClaudeExecutableFileCheck;
+  if (platform !== "win32") {
+    if (binaryPath.includes("/") && binaryPath.startsWith("/")) {
+      return !isFile(binaryPath);
+    }
+    return false;
+  }
+
+  const extension = NodePath.win32.extname(binaryPath).toLowerCase();
+  if (WINDOWS_SHIM_EXTENSIONS.has(extension)) {
+    return true;
+  }
+  if (!NodePath.win32.isAbsolute(binaryPath)) {
+    return true;
+  }
+  return !isFile(binaryPath);
+});

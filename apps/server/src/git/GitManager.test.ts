@@ -296,6 +296,14 @@ function createTextGeneration(
       Effect.succeed({
         steps: [],
       }),
+    generateVmAgentTaskPrompt: () =>
+      Effect.succeed({
+        title: "Run agent task",
+        prompt: "Run the requested task.",
+        schedule: null,
+        completionCriteria: [],
+        notificationPolicy: "always",
+      }),
     ...overrides,
   };
 
@@ -350,6 +358,17 @@ function createTextGeneration(
           (cause) =>
             new TextGenerationError({
               operation: "generatePlanRefresh",
+              detail: "fake text generation failed",
+              ...(cause !== undefined ? { cause } : {}),
+            }),
+        ),
+      ),
+    generateVmAgentTaskPrompt: (input) =>
+      implementation.generateVmAgentTaskPrompt(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation: "generateVmAgentTaskPrompt",
               detail: "fake text generation failed",
               ...(cause !== undefined ? { cause } : {}),
             }),

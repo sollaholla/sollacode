@@ -92,6 +92,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { Textarea } from "../ui/textarea";
+import { confirmSensitiveReveal, RedactedSensitiveText } from "./RedactedSensitiveText";
 import { getPairingTokenFromUrl, setPairingTokenOnUrl } from "../../pairingUrl";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import {
@@ -543,6 +544,35 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
     [pairingLink.expiresAt],
   );
   const [isRevealDialogOpen, setIsRevealDialogOpen] = useState(false);
+  const [isQrOpen, setIsQrOpen] = useState(false);
+
+  const handleRevealDialogOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setIsRevealDialogOpen(false);
+      return;
+    }
+    if (
+      confirmSensitiveReveal(
+        "Reveal this pairing secret? Anyone who can see it may be able to connect to Solla Code.",
+      )
+    ) {
+      setIsRevealDialogOpen(true);
+    }
+  }, []);
+
+  const handleQrOpenChange = useCallback((open: boolean) => {
+    if (!open) {
+      setIsQrOpen(false);
+      return;
+    }
+    if (
+      confirmSensitiveReveal(
+        "Reveal this pairing QR code? Anyone who scans it may be able to connect to Solla Code.",
+      )
+    ) {
+      setIsQrOpen(true);
+    }
+  }, []);
 
   const currentOriginPairingUrl = useMemo(
     () => resolveCurrentOriginPairingUrl(pairingLink.credential),
@@ -607,7 +637,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
       });
     },
     onError: (error, kind) => {
-      setIsRevealDialogOpen(true);
+      handleRevealDialogOpenChange(true);
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -618,7 +648,9 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                 ? "Could not copy pairing URL"
                 : "Could not copy pairing code"
             : "Clipboard copy unavailable",
-          description: canCopyToClipboard ? error.message : "Showing the full value instead.",
+          description: canCopyToClipboard
+            ? error.message
+            : "Use Show to reveal the value after confirming.",
         }),
       );
     },
@@ -745,13 +777,10 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
               dotClassName="bg-amber-400"
             />
             <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
-            <Popover>
+            <Popover open={isQrOpen} onOpenChange={handleQrOpenChange}>
               {shareablePairingUrl ? (
                 <>
                   <PopoverTrigger
-                    openOnHover
-                    delay={250}
-                    closeDelay={100}
                     render={
                       <button
                         type="button"
@@ -787,7 +816,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
           ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-          <Dialog open={isRevealDialogOpen} onOpenChange={setIsRevealDialogOpen}>
+          <Dialog open={isRevealDialogOpen} onOpenChange={handleRevealDialogOpenChange}>
             {canCopyToClipboard ? (
               <>
                 {shareablePairingUrl ? (
@@ -925,7 +954,6 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
       : null,
     clientSession.client.os ?? null,
     clientSession.client.browser ?? null,
-    clientSession.client.ipAddress ?? null,
   ].filter((value): value is string => value !== null);
   const primaryLabel =
     clientSession.client.label ??
@@ -942,7 +970,13 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
               dotClassName={isLive ? "bg-success" : "bg-muted-foreground/30"}
               pingClassName={isLive ? "bg-success/60 duration-2000" : null}
             />
-            <h3 className="text-sm font-medium text-foreground">{primaryLabel}</h3>
+            <RedactedSensitiveText
+              value={primaryLabel}
+              ariaLabel="Toggle client identity visibility"
+              revealTooltip="Click to reveal client identity"
+              hideTooltip="Click to hide client identity"
+              className="max-w-full truncate font-sans text-sm font-medium leading-normal text-foreground"
+            />
             {clientSession.current ? (
               <span className="text-[10px] text-muted-foreground/80 rounded-md border border-border/50 bg-muted/50 px-1 py-0.5">
                 This device
@@ -950,10 +984,17 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
-            {deviceInfoBits.length > 0 ? (
+            {deviceInfoBits.length > 0 ? <>{deviceInfoBits.join(" · ")} · </> : null}
+            {clientSession.client.ipAddress ? (
               <>
-                {deviceInfoBits.join(" · ")}
-                <span aria-hidden> · </span>
+                <RedactedSensitiveText
+                  value={clientSession.client.ipAddress}
+                  ariaLabel="Toggle client IP address visibility"
+                  revealTooltip="Click to reveal IP address"
+                  hideTooltip="Click to hide IP address"
+                  className="font-sans text-xs leading-normal"
+                />{" "}
+                ·{" "}
               </>
             ) : null}
             <AccessScopeSummary scopes={clientSession.scopes} label="Client scopes" />
@@ -1275,6 +1316,7 @@ export function TailscaleHttpsQrPanel({
 
 function TailscaleHttpsQrControl({ endpoint }: { endpoint: AdvertisedEndpoint }) {
   const endpointUrl = resolveVerifiedTailscaleWebEndpoint(endpoint);
+  const [open, setOpen] = useState(false);
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     target: "Tailscale HTTPS URL",
     onCopy: () => {
@@ -1294,7 +1336,22 @@ function TailscaleHttpsQrControl({ endpoint }: { endpoint: AdvertisedEndpoint })
   if (endpointUrl === null) return null;
 
   return (
-    <Popover>
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setOpen(false);
+          return;
+        }
+        if (
+          confirmSensitiveReveal(
+            "Reveal this private network address and QR code? Make sure nobody else can see your screen.",
+          )
+        ) {
+          setOpen(true);
+        }
+      }}
+    >
       <PopoverTrigger
         render={
           <Button size="icon-xs" variant="outline" aria-label="Show Tailscale HTTPS QR code" />
@@ -1339,12 +1396,13 @@ const AdvertisedEndpointListRow = memo(function AdvertisedEndpointListRow({
             {endpoint.label}
           </h3>
           {shouldShowEndpointUrl ? (
-            <p
-              className="min-w-0 truncate text-xs leading-5 text-muted-foreground"
-              title={endpoint.httpBaseUrl}
-            >
-              {endpoint.httpBaseUrl}
-            </p>
+            <RedactedSensitiveText
+              value={endpoint.httpBaseUrl}
+              ariaLabel="Toggle endpoint address visibility"
+              revealTooltip="Click to reveal endpoint"
+              hideTooltip="Click to hide endpoint"
+              className="max-w-full truncate font-sans text-xs leading-5"
+            />
           ) : null}
           {!isAvailable ? (
             <span className="shrink-0 rounded-md border border-border/70 px-1 py-0.5 text-[10px] text-muted-foreground">
@@ -1409,32 +1467,26 @@ function NetworkAccessDescription({
     return fallback;
   }
 
-  const summary = (
-    <>
-      <span className="min-w-0 truncate">{endpoint.httpBaseUrl}</span>
-      {hiddenEndpointCount > 0 ? (
-        <span className="shrink-0 text-xs font-medium">
-          {expanded ? "Hide" : `+${hiddenEndpointCount}`}
-        </span>
-      ) : null}
-    </>
-  );
-
   return (
     <span className="inline-flex min-w-0 max-w-full items-baseline gap-1">
       <span className="shrink-0">Reachable at</span>
+      <RedactedSensitiveText
+        value={endpoint.httpBaseUrl}
+        ariaLabel="Toggle network address visibility"
+        revealTooltip="Click to reveal network address"
+        hideTooltip="Click to hide network address"
+        className="max-w-full truncate font-sans text-xs leading-normal"
+      />
       {hiddenEndpointCount > 0 ? (
         <button
           type="button"
-          className="inline-flex min-w-0 max-w-full items-baseline gap-2 border-b border-dotted border-muted-foreground/60 text-left text-muted-foreground underline-offset-4 hover:border-foreground hover:text-foreground"
+          className="shrink-0 border-b border-dotted border-muted-foreground/60 text-xs font-medium text-muted-foreground underline-offset-4 hover:border-foreground hover:text-foreground"
           onClick={onToggleExpanded}
           aria-expanded={expanded}
         >
-          {summary}
+          {expanded ? "Hide" : `+${hiddenEndpointCount}`}
         </button>
-      ) : (
-        <span className="inline-flex min-w-0 max-w-full items-baseline gap-2">{summary}</span>
-      )}
+      ) : null}
     </span>
   );
 }
@@ -1527,7 +1579,13 @@ function SavedBackendListRow({
             <h3 className="text-sm font-medium text-foreground">{environment.label}</h3>
           </div>
           {metadataBits.length > 0 ? (
-            <p className="text-xs text-muted-foreground">{metadataBits.join(" · ")}</p>
+            <RedactedSensitiveText
+              value={metadataBits.join(" · ")}
+              ariaLabel="Toggle remote address visibility"
+              revealTooltip="Click to reveal remote address"
+              hideTooltip="Click to hide remote address"
+              className="font-sans text-xs leading-normal"
+            />
           ) : null}
           {versionMismatch ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -1634,8 +1692,22 @@ const DesktopSshHostRow = memo(function DesktopSshHostRow({
     <div className="rounded-xl px-3 py-3 sm:px-4">
       <div className={ITEM_ROW_INNER_CLASSNAME}>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-sm font-medium text-foreground">{target.alias}</h3>
-          {showAddress ? <p className="truncate text-xs text-muted-foreground">{address}</p> : null}
+          <RedactedSensitiveText
+            value={target.alias}
+            ariaLabel="Toggle SSH host visibility"
+            revealTooltip="Click to reveal SSH host"
+            hideTooltip="Click to hide SSH host"
+            className="max-w-full truncate font-sans text-sm font-medium leading-normal text-foreground"
+          />
+          {showAddress ? (
+            <RedactedSensitiveText
+              value={address}
+              ariaLabel="Toggle SSH address visibility"
+              revealTooltip="Click to reveal SSH address"
+              hideTooltip="Click to hide SSH address"
+              className="max-w-full truncate font-sans text-xs leading-normal"
+            />
+          ) : null}
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
           <Button

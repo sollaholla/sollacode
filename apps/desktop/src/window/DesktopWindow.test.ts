@@ -73,6 +73,10 @@ function makeFakeBrowserWindow() {
     reload: vi.fn(),
     replaceMisspelling: vi.fn(),
     send: vi.fn(),
+    session: {
+      setPermissionRequestHandler: vi.fn(),
+      setPermissionCheckHandler: vi.fn(),
+    },
     setWindowOpenHandler: vi.fn(),
   };
 
@@ -117,6 +121,8 @@ function makeFakeBrowserWindow() {
     reload: webContents.reload,
     send: webContents.send,
     setAutoHideCursor: window.setAutoHideCursor,
+    setPermissionRequestHandler: webContents.session.setPermissionRequestHandler,
+    setPermissionCheckHandler: webContents.session.setPermissionCheckHandler,
     webContentsListeners,
     windowListeners,
   };
@@ -212,6 +218,8 @@ function makeTestLayer(input: {
         }
         return { settings: desktopSettings, changed };
       }),
+    setOrchestratorBubblePosition: () => Effect.die("unexpected bubble position update"),
+    setPermissionSetupVersion: () => Effect.die("unexpected permission setup update"),
     setServerExposureMode: () => Effect.die("unexpected server exposure update"),
     setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),
     setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
@@ -233,6 +241,7 @@ function makeTestLayer(input: {
     currentMainOrFirst: Ref.get(input.mainWindow),
     focusedMainOrFirst: Ref.get(input.mainWindow),
     setMain: (window) => Ref.set(input.mainWindow, Option.some(window)),
+    markAuxiliary: () => Effect.void,
     clearMain: () => Ref.set(input.mainWindow, Option.none()),
     reveal: () => Effect.void,
     sendAll: () => Effect.void,
@@ -256,6 +265,7 @@ function makeTestLayer(input: {
               return true;
             }),
           copyText: () => Effect.void,
+          writeComposerClipboard: () => Effect.succeed(true),
         } satisfies ElectronShell.ElectronShell["Service"]),
         electronThemeLayer,
         electronWindowLayer,
@@ -332,6 +342,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
       currentMainOrFirst,
       focusedMainOrFirst: currentMainOrFirst,
       setMain: (window) => Ref.set(mainWindow, Option.some(window)),
+      markAuxiliary: () => Effect.void,
       clearMain: () => Ref.set(mainWindow, Option.none()),
       reveal: (window) => Ref.update(revealedWindows, (windows) => [...windows, window]),
       sendAll: () => Effect.void,
@@ -350,6 +361,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
           Layer.succeed(ElectronShell.ElectronShell, {
             openExternal: () => Effect.succeed(true),
             copyText: () => Effect.void,
+            writeComposerClipboard: () => Effect.succeed(true),
           } satisfies ElectronShell.ElectronShell["Service"]),
           electronThemeLayer,
           Layer.succeed(ElectronWindow.ElectronWindow, electronWindowShape),
@@ -447,12 +459,85 @@ describe("DesktopWindow", () => {
         assert.isUndefined(createdWindowOptions[0]?.x);
         assert.isUndefined(createdWindowOptions[0]?.y);
         assert.isTrue(createdWindowOptions[0]?.disableAutoHideCursor);
-        // Keep Electron's default background throttling for the main renderer.
-        // Provider work is server-owned and must not require an unthrottled UI.
-        assert.isUndefined(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
+        // Provider work is server-owned and still must not require an
+        // unthrottled UI — but remote control is hosted *in* this renderer, and
+        // throttling it stalls consent and screen capture exactly when the
+        // window is minimized, which is when someone is driving this machine
+        // from another device.
+        assert.isFalse(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("allows audio capture but denies every other renderer permission", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+
+        const handler = fakeWindow.setPermissionRequestHandler.mock.calls[0]?.[0] as (
+          contents: unknown,
+          permission: string,
+          callback: (granted: boolean) => void,
+          details: unknown,
+        ) => void;
+        assert.isFunction(handler);
+
+        const decide = (permission: string, details: unknown) => {
+          let granted: boolean | undefined;
+          handler(
+            null,
+            permission,
+            (value) => {
+              granted = value;
+            },
+            details,
+          );
+          return granted;
+        };
+
+        // Dictation and the voice orchestrator both need audio.
+        assert.isTrue(decide("media", { mediaTypes: ["audio"] }));
+        // The app never captures video; a video request means something
+        // unexpected is asking.
+        assert.isFalse(decide("media", { mediaTypes: ["audio", "video"] }));
+        assert.isFalse(decide("media", { mediaTypes: ["video"] }));
+        // Electron would otherwise default to granting these.
+        assert.isFalse(decide("geolocation", {}));
+        assert.isFalse(decide("notifications", {}));
+
+        // navigator.clipboard.writeText() is gated on this permission — NOT on
+        // "clipboard-write", which is not a valid Electron permission name.
+        // Denying it broke every copy button in the app with "Write permission
+        // denied".
+        assert.isTrue(decide("clipboard-sanitized-write", {}));
+        assert.isTrue(decide("clipboard-read", {}));
+
+        // Async clipboard writes consult the check handler as well, so a
+        // request handler that allows it on its own is not enough.
+        const check = fakeWindow.setPermissionCheckHandler.mock.calls[0]?.[0] as (
+          contents: unknown,
+          permission: string,
+          origin: string,
+          details: unknown,
+        ) => boolean;
+        assert.isFunction(check);
+        assert.isTrue(check(null, "clipboard-sanitized-write", "sollacode://app", {}));
+        assert.isTrue(check(null, "media", "sollacode://app", { mediaType: "audio" }));
+        assert.isFalse(check(null, "media", "sollacode://app", { mediaType: "video" }));
+        // Chromium runs this check with "unknown" for device enumeration.
+        // Answering no there tells the app the microphone is unavailable.
+        assert.isTrue(check(null, "media", "sollacode://app", { mediaType: "unknown" }));
+        assert.isTrue(check(null, "media", "sollacode://app", {}));
+        assert.isFalse(check(null, "geolocation", "sollacode://app", {}));
       }).pipe(Effect.provide(layer));
     }),
   );

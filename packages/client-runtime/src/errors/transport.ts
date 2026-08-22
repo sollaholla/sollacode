@@ -34,6 +34,28 @@ export function isTransportConnectionErrorMessage(message: string | null | undef
  * Returns `null` for transport errors so the UI can distinguish between
  * real errors and transient connection issues.
  */
+const STACK_FRAME_LINE = /^\s*at\s+/u;
+
+function stripErrorStack(message: string): string {
+  const lines: string[] = [];
+  for (const line of message.split(/\r?\n/u)) {
+    if (STACK_FRAME_LINE.test(line)) break;
+    lines.push(line);
+  }
+  const cleaned = lines.join("\n").trim();
+  return cleaned.length > 0 ? cleaned : message.trim();
+}
+
 export function sanitizeThreadErrorMessage(message: string | null | undefined): string | null {
-  return isTransportConnectionErrorMessage(message) ? null : (message ?? null);
+  if (isTransportConnectionErrorMessage(message)) {
+    return null;
+  }
+  if (typeof message !== "string") {
+    return message ?? null;
+  }
+  const trimmed = message.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return stripErrorStack(trimmed);
 }

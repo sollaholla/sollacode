@@ -58,6 +58,15 @@ import Migration0042 from "./Migrations/042_HardenThreadWorkObligations.ts";
 import Migration0043 from "./Migrations/043_SeedThreadWorkProjector.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadSessionFailureKind.ts";
 import Migration0045 from "./Migrations/045_ProjectionThreadsPendingWork.ts";
+import Migration0046 from "./Migrations/046_ProjectionThreadMessageVoiceTranscript.ts";
+import Migration0047 from "./Migrations/047_ClearLeftoverActionableProposedPlans.ts";
+import Migration0048 from "./Migrations/048_VmAgents.ts";
+import Migration0049 from "./Migrations/049_VmAgentThread.ts";
+import Migration0050 from "./Migrations/050_StartupRecoveryIndexes.ts";
+import Migration0051 from "./Migrations/051_VmAgentWorkspaces.ts";
+import Migration0052 from "./Migrations/052_BackfillStandardVmScope.ts";
+import Migration0053 from "./Migrations/053_VmAgentCollaboration.ts";
+import Migration0054 from "./Migrations/054_ThreadArtifacts.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -115,6 +124,15 @@ export const migrationEntries = [
   [43, "SeedThreadWorkProjector", Migration0043],
   [44, "ProjectionThreadSessionFailureKind", Migration0044],
   [45, "ProjectionThreadsPendingWork", Migration0045],
+  [46, "ProjectionThreadMessageVoiceTranscript", Migration0046],
+  [47, "ClearLeftoverActionableProposedPlans", Migration0047],
+  [48, "VmAgents", Migration0048],
+  [49, "VmAgentThread", Migration0049],
+  [50, "StartupRecoveryIndexes", Migration0050],
+  [51, "VmAgentWorkspaces", Migration0051],
+  [52, "BackfillStandardVmScope", Migration0052],
+  [53, "VmAgentCollaboration", Migration0053],
+  [54, "ThreadArtifacts", Migration0054],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

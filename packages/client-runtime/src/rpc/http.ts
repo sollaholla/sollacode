@@ -8,6 +8,7 @@ import {
   type EnvironmentResourceNotFoundError,
   type EnvironmentScopeRequiredError,
 } from "@t3tools/contracts";
+import { redactEndpointHost } from "@t3tools/shared/endpointRedaction";
 import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
@@ -43,7 +44,7 @@ export class RemoteEnvironmentAuthUndeclaredStatusError extends Data.TaggedError
 }> {
   constructor(requestUrl: string, status: number) {
     super({
-      message: `Remote environment endpoint ${requestUrl} returned undeclared status ${status}.`,
+      message: `Remote environment endpoint ${redactEndpointHost(requestUrl)} returned undeclared status ${status}.`,
       requestUrl,
       status,
     });
@@ -59,7 +60,7 @@ export class RemoteEnvironmentAuthTimeoutError extends Data.TaggedError(
 }> {
   constructor(requestUrl: string, timeoutMs: number) {
     super({
-      message: `Remote environment endpoint ${requestUrl} timed out after ${timeoutMs}ms.`,
+      message: `Remote environment endpoint ${redactEndpointHost(requestUrl)} timed out after ${timeoutMs}ms.`,
       requestUrl,
       timeoutMs,
     });
@@ -112,7 +113,7 @@ const failRemoteRequest = (
   if (Schema.isSchemaError(cause)) {
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
-        message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
+        message: `Remote environment endpoint returned an invalid response from ${redactEndpointHost(requestUrl)}.`,
         cause,
       }),
     );
@@ -126,14 +127,14 @@ const failRemoteRequest = (
     }
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
-        message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
+        message: `Remote environment endpoint returned an invalid response from ${redactEndpointHost(requestUrl)}.`,
         cause,
       }),
     );
   }
   return Effect.fail(
     new RemoteEnvironmentAuthFetchError({
-      message: `Failed to fetch remote environment endpoint ${requestUrl} (${String(cause)}).`,
+      message: `Failed to fetch remote environment endpoint ${redactEndpointHost(requestUrl)} (${String(cause)}).`,
       cause,
     }),
   );

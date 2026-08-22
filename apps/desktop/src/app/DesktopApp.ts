@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -221,7 +222,15 @@ const startup = Effect.gen(function* () {
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
 
-  yield* shellEnvironment.installIntoProcess;
+  // Login-shell discovery is usually the longest main-process startup step
+  // (roughly 260ms on a representative macOS install, and occasionally much
+  // longer for a cold shell). It does not touch Electron state, so overlap it
+  // with the user-data/identity/ready work below. We still join it before
+  // bootstrap because backend configuration must see the completed PATH and
+  // SSH_AUTH_SOCK patch.
+  const shellEnvironmentInstall = yield* Effect.forkScoped(shellEnvironment.installIntoProcess, {
+    startImmediately: true,
+  });
   const userDataPath = yield* appIdentity.resolveUserDataPath;
   yield* electronApp.setPath("userData", userDataPath);
   yield* logStartupInfo("runtime logging configured", { logDir: environment.logDir });
@@ -231,15 +240,16 @@ const startup = Effect.gen(function* () {
     yield* electronApp.appendCommandLineSwitch("class", environment.linuxWmClass);
   }
 
-  yield* appIdentity.configure;
+  yield* appIdentity.configureBeforeReady;
   yield* lifecycle.register;
   yield* electronApp.whenReady.pipe(
     Effect.withSpan("desktop.electron.whenReady"),
     Effect.catchCause((cause) => fatalStartupCause("whenReady", cause)),
   );
   yield* logStartupInfo("app ready");
-  yield* appIdentity.configure;
+  yield* appIdentity.configureAfterReady;
   yield* applicationMenu.configure;
+  yield* Fiber.join(shellEnvironmentInstall);
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
 }).pipe(Effect.withSpan("desktop.startup"));
 

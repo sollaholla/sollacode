@@ -1,5 +1,6 @@
 import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
 import { makeLocalFileTracer, makeTraceSink } from "@t3tools/shared/observability";
+import type { EffectTraceRecord } from "@t3tools/shared/observability";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
@@ -15,6 +16,19 @@ import { ServerLoggerLive } from "../../serverLogger.ts";
 import * as BrowserTraceCollector from "../BrowserTraceCollector.ts";
 
 const otlpSerializationLayer = OtlpSerialization.layerJson;
+
+const HIGH_FREQUENCY_LOCAL_SPANS = new Set(["sql.execute"]);
+
+export function shouldPersistServerEffectSpan(
+  record: Pick<EffectTraceRecord, "durationMs" | "exit" | "name">,
+): boolean {
+  return (
+    record.exit._tag !== "Success" ||
+    record.durationMs >= 100 ||
+    record.name.startsWith("server.startup") ||
+    !HIGH_FREQUENCY_LOCAL_SPANS.has(record.name)
+  );
+}
 
 export const ObservabilityLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -64,6 +78,7 @@ export const ObservabilityLive = Layer.unwrap(
           maxFiles: config.traceMaxFiles,
           batchWindowMs: config.traceBatchWindowMs,
           sink,
+          shouldPersist: shouldPersistServerEffectSpan,
           ...(delegate ? { delegate } : {}),
         });
 

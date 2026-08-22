@@ -364,6 +364,8 @@ describe("DesktopServerExposure", () => {
       get: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
       load: Effect.succeed(DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
       setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),
+      setOrchestratorBubblePosition: () => Effect.die("unexpected bubble position update"),
+      setPermissionSetupVersion: () => Effect.die("unexpected permission setup update"),
       setServerExposureMode: () => Effect.fail(settingsFailure),
       setTailscaleServe: () => Effect.fail(settingsFailure),
       setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),

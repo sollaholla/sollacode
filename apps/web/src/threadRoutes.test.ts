@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ORCHESTRATOR_THREAD_ID, ThreadId } from "@t3tools/contracts";
 import { DraftId } from "./composerDraftStore";
 
 import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
+  canonicalizeOrchestratorThreadRef,
   resolveActiveThreadRouteRef,
   resolveThreadRouteRenderState,
   resolveThreadRouteRef,
@@ -20,6 +21,27 @@ describe("threadRoutes", () => {
       environmentId: "env-1",
       threadId: "thread-1",
     });
+  });
+
+  it("canonicalizes only orchestrator routes onto the primary environment", () => {
+    const primaryEnvironmentId = EnvironmentId.make("environment-primary");
+    const remoteOrchestrator = scopeThreadRef(
+      EnvironmentId.make("environment-remote"),
+      ORCHESTRATOR_THREAD_ID,
+    );
+    const ordinaryRemote = scopeThreadRef(
+      EnvironmentId.make("environment-remote"),
+      ThreadId.make("thread-1"),
+    );
+
+    expect(canonicalizeOrchestratorThreadRef(remoteOrchestrator, primaryEnvironmentId)).toEqual({
+      environmentId: primaryEnvironmentId,
+      threadId: ORCHESTRATOR_THREAD_ID,
+    });
+    expect(canonicalizeOrchestratorThreadRef(ordinaryRemote, primaryEnvironmentId)).toBe(
+      ordinaryRemote,
+    );
+    expect(canonicalizeOrchestratorThreadRef(remoteOrchestrator, null)).toBe(remoteOrchestrator);
   });
 
   it("resolves a scoped ref only when both params are present", () => {

@@ -2,8 +2,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_TERMINAL_ID,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
+  type TerminalLayoutStreamEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
   type TerminalRestartInput,
@@ -29,7 +33,14 @@ import { expect } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as TerminalManager from "./Manager.ts";
+import type { McpProviderSessionConfig } from "../mcp/McpProviderSession.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
+import {
+  encodeAgentCliResumeState,
+  parseAgentCliResumeState,
+  resumeStateFilePath,
+} from "./agentCliResume.ts";
+import { encodeTerminalLaunchContext, launchContextFilePath } from "./launchContext.ts";
 
 class WaitForConditionError extends Data.TaggedError("WaitForConditionError")<{
   readonly message: string;
@@ -203,6 +214,8 @@ const multiTerminalHistoryLogPath = (
   );
 
 interface CreateManagerOptions {
+  /** Boot over an existing directory (e.g. pre-seeded launch/resume files). */
+  logsDir?: string;
   historyByteLimit?: number;
   pendingProcessEventByteLimit?: number;
   shellResolver?: () => string;
@@ -215,7 +228,18 @@ interface CreateManagerOptions {
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
+  resolveAgentCliSessionId?: (input: {
+    readonly command: string;
+    readonly processIds: ReadonlyArray<number>;
+    readonly processArgs: string | null;
+  }) => Effect.Effect<string | null>;
   ptyAdapter?: FakePtyAdapter;
+  issueTerminalAgentMcpCredential?: (input: {
+    readonly threadId: string;
+    readonly terminalId: string;
+  }) => Effect.Effect<McpProviderSessionConfig | null>;
+  revokeTerminalAgentMcpCredential?: (providerSessionId: string) => Effect.Effect<void>;
+  touchTerminalAgentMcpCredential?: (providerSessionId: string) => Effect.Effect<void>;
 }
 
 interface ManagerFixture {
@@ -238,7 +262,7 @@ const createManager = (
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-terminal-" });
-      const logsDir = join(baseDir, "userdata", "logs", "terminals");
+      const logsDir = options.logsDir ?? join(baseDir, "userdata", "logs", "terminals");
       const ptyAdapter = options.ptyAdapter ?? new FakePtyAdapter();
 
       const manager = yield* TerminalManager.makeWithOptions({
@@ -262,6 +286,18 @@ const createManager = (
         processKillGraceMs: options.processKillGraceMs ?? 1,
         ...(options.maxRetainedInactiveSessions !== undefined
           ? { maxRetainedInactiveSessions: options.maxRetainedInactiveSessions }
+          : {}),
+        ...(options.resolveAgentCliSessionId !== undefined
+          ? { resolveAgentCliSessionId: options.resolveAgentCliSessionId }
+          : {}),
+        ...(options.issueTerminalAgentMcpCredential !== undefined
+          ? { issueTerminalAgentMcpCredential: options.issueTerminalAgentMcpCredential }
+          : {}),
+        ...(options.revokeTerminalAgentMcpCredential !== undefined
+          ? { revokeTerminalAgentMcpCredential: options.revokeTerminalAgentMcpCredential }
+          : {}),
+        ...(options.touchTerminalAgentMcpCredential !== undefined
+          ? { touchTerminalAgentMcpCredential: options.touchTerminalAgentMcpCredential }
           : {}),
       });
       const eventsRef = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
@@ -288,6 +324,36 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect("derives every terminal subtree from one POSIX process snapshot", () =>
+    Effect.sync(() => {
+      const rows = TerminalManager.parsePosixProcessSnapshot(`
+        100 1 /bin/zsh /bin/zsh
+        101 100 /usr/bin/node node wrapper.js
+        102 101 /opt/homebrew/bin/claude claude --resume session-1
+        200 1 /bin/zsh /bin/zsh
+        201 200 /usr/bin/vim vim README.md
+      `);
+
+      expect(TerminalManager.inspectPosixSubprocessFromRows(100, rows)).toEqual({
+        hasRunningSubprocess: true,
+        childCommand: "claude",
+        processIds: [100, 101, 102],
+        processArgs: "claude --resume session-1",
+      });
+      expect(TerminalManager.inspectPosixSubprocessFromRows(200, rows)).toEqual({
+        hasRunningSubprocess: true,
+        childCommand: "vim",
+        processIds: [200, 201],
+        processArgs: "vim README.md",
+      });
+      expect(TerminalManager.inspectPosixSubprocessFromRows(300, rows)).toEqual({
+        hasRunningSubprocess: false,
+        childCommand: null,
+        processIds: [],
+      });
+    }),
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
@@ -302,6 +368,47 @@ it.layer(
       assert.equal(second.threadId, "thread-1");
       assert.equal(third.threadId, "thread-1");
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
+  it.effect("lists known sessions without spawning, and reads history in place", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      expect(yield* manager.list({})).toEqual([]);
+
+      yield* manager.open(openInput());
+      ptyAdapter.processes[0]?.emitData("hello from the pane");
+      yield* waitFor(
+        manager
+          .read({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID })
+          .pipe(Effect.map((snapshot) => snapshot.history.includes("hello from the pane"))),
+        "2500 millis",
+      );
+
+      const listed = yield* manager.list({});
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.threadId).toBe("thread-1");
+      expect(listed[0]?.terminalId).toBe(DEFAULT_TERMINAL_ID);
+      expect(listed[0]?.status).toBe("running");
+
+      const snapshot = yield* manager.read({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+      });
+      expect(snapshot.history).toContain("hello from the pane");
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+
+      expect(yield* manager.list({ threadId: "thread-other" })).toEqual([]);
+    }),
+  );
+
+  it.effect("fails a read of a terminal that was never opened", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager();
+      const error = yield* Effect.flip(
+        manager.read({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID }),
+      );
+      expect(error._tag).toBe("TerminalSessionLookupError");
     }),
   );
 
@@ -328,6 +435,30 @@ it.layer(
       assert.equal(snapshot.snapshot.threadId, "thread-1");
       assert.equal(snapshot.snapshot.terminalId, DEFAULT_TERMINAL_ID);
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+      expect(ptyAdapter.processes[0]?.resizeCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("does not let an attaching viewer resize a running PTY", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput({ cols: 132, rows: 40 }));
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const unsubscribe = yield* manager.attachStream(
+        {
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          cols: 40,
+          rows: 12,
+        },
+        () => Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      expect(process.resizeCalls).toEqual([]);
     }),
   );
 
@@ -547,6 +678,330 @@ it.layer(
 
       expect(process.writes).toEqual(["ls\n"]);
       expect(process.resizeCalls).toEqual([{ cols: 120, rows: 30 }]);
+    }),
+  );
+
+  it.effect("drops degenerate resize requests from mid-animation layouts", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      // A pane mid-split fits a 1–2 column grid; applying it makes ConPTY
+      // rewrap and re-emit its whole buffer one character per line.
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 2,
+        rows: 30,
+      });
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 120,
+        rows: 2,
+      });
+
+      expect(process.resizeCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("publishes refreshed metadata with the new grid on resize", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager();
+      yield* manager.open(openInput());
+
+      const metadataEvents: TerminalMetadataStreamEvent[] = [];
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Effect.sync(() => {
+          metadataEvents.push(event);
+        }),
+      );
+
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 121,
+        rows: 31,
+      });
+      unsubscribe();
+
+      // Passive viewers adopt the PTY grid from these summaries; a resize
+      // must therefore push one even though it has no TerminalEvent.
+      const gridUpsert = metadataEvents.find(
+        (event) =>
+          event.type === "upsert" && event.terminal.cols === 121 && event.terminal.rows === 31,
+      );
+      expect(gridUpsert).toBeDefined();
+    }),
+  );
+
+  it.effect("ignores resize from a non-owner client while the owner is active", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput({ clientId: "machine-a" }));
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      // Two machines viewing the same terminal must not ping-pong the PTY
+      // between their pane grids; the opener owns the geometry.
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 80,
+        rows: 20,
+        clientId: "machine-b",
+      });
+      expect(process.resizeCalls).toEqual([]);
+
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 132,
+        rows: 40,
+        clientId: "machine-a",
+      });
+      expect(process.resizeCalls).toEqual([{ cols: 132, rows: 40 }]);
+
+      // Old clients that send no clientId cannot stomp an owned grid either.
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 70,
+        rows: 18,
+      });
+      expect(process.resizeCalls).toEqual([{ cols: 132, rows: 40 }]);
+    }),
+  );
+
+  it.effect("typing transfers geometry ownership to the writing client", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput({ clientId: "machine-a" }));
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const metadataEvents: TerminalMetadataStreamEvent[] = [];
+      const unsubscribe = yield* manager.subscribeMetadata((event) =>
+        Effect.sync(() => {
+          metadataEvents.push(event);
+        }),
+      );
+
+      yield* manager.write({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        data: "ls\n",
+        clientId: "machine-b",
+      });
+      unsubscribe();
+
+      // The transfer is broadcast so the old owner starts mirroring.
+      const transferUpsert = metadataEvents.find(
+        (event) => event.type === "upsert" && event.terminal.geometryOwner === "machine-b",
+      );
+      expect(transferUpsert).toBeDefined();
+
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 90,
+        rows: 22,
+        clientId: "machine-a",
+      });
+      expect(process.resizeCalls).toEqual([]);
+
+      yield* manager.resize({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+        cols: 90,
+        rows: 22,
+        clientId: "machine-b",
+      });
+      expect(process.resizeCalls).toEqual([{ cols: 90, rows: 22 }]);
+    }),
+  );
+
+  it.effect("re-opening by another client does not resize an owned running grid", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput({ clientId: "machine-a" }));
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const reopened = yield* manager.open(
+        openInput({ clientId: "machine-b", cols: 80, rows: 20 }),
+      );
+
+      expect(process.resizeCalls).toEqual([]);
+      assert.equal(reopened.cols, 100);
+      assert.equal(reopened.rows, 24);
+    }),
+  );
+
+  it.effect("does not resurrect an explicitly closed terminal on attach", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      yield* manager.close({
+        threadId: "thread-1",
+        terminalId: DEFAULT_TERMINAL_ID,
+      });
+
+      // A pane that outlived the close on another machine attaches with a
+      // cwd; recreating the session would resurrect the closed terminal and
+      // permanently diverge pane layouts between machines.
+      const failure = yield* Effect.flip(manager.attachStream(openInput(), () => Effect.void));
+      assert.equal(failure._tag, "TerminalSessionLookupError");
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+
+      // An explicit open is user intent and revives the terminal id.
+      const snapshot = yield* manager.open(openInput());
+      assert.equal(snapshot.status, "running");
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
+    }),
+  );
+
+  it.effect("stores, broadcasts, and persists thread pane layouts", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const { manager, baseDir } = yield* createManager();
+      const logsDir = path.join(baseDir, "userdata", "logs", "terminals");
+
+      const empty = yield* manager.getLayout({ threadId: "thread-1" });
+      expect(empty.layout).toBeNull();
+
+      const layoutEvents: TerminalLayoutStreamEvent[] = [];
+      const unsubscribe = yield* manager.subscribeLayouts((event) =>
+        Effect.sync(() => {
+          layoutEvents.push(event);
+        }),
+      );
+      expect(layoutEvents).toEqual([{ type: "snapshot", layouts: [] }]);
+
+      const groups = [
+        {
+          id: "group-term-1",
+          terminalIds: ["term-1", "term-2"],
+          layout: {
+            kind: "split" as const,
+            direction: "horizontal" as const,
+            children: [
+              { kind: "terminal" as const, terminalId: "term-1" },
+              { kind: "terminal" as const, terminalId: "term-2" },
+            ],
+          },
+        },
+      ];
+      const first = yield* manager.setLayout({ threadId: "thread-1", groups });
+      expect(first.revision).toBe(1);
+      const second = yield* manager.setLayout({
+        threadId: "thread-1",
+        groups,
+        baseRevision: first.revision,
+      });
+      expect(second.revision).toBe(2);
+      unsubscribe();
+
+      expect(
+        layoutEvents
+          .filter((event) => event.type === "layout")
+          .map((event) => event.layout.revision),
+      ).toEqual([1, 2]);
+
+      const read = yield* manager.getLayout({ threadId: "thread-1" });
+      expect(read.layout?.revision).toBe(2);
+      expect(read.layout?.groups).toEqual(groups);
+
+      // A new manager over the same logs directory reloads the document.
+      const restarted = yield* createManager(5, { logsDir });
+      const restored = yield* restarted.manager.getLayout({ threadId: "thread-1" });
+      expect(restored.layout?.revision).toBe(2);
+      expect(restored.layout?.groups).toEqual(groups);
+    }),
+  );
+
+  it.effect("repairs stale layout membership from the restartable session inventory", () =>
+    Effect.gen(function* () {
+      const { manager, logsDir } = yield* createManager();
+      yield* manager.setLayout({
+        threadId: "thread-1",
+        groups: [
+          {
+            id: "group-main",
+            terminalIds: ["term-1", "term-3"],
+            layout: {
+              kind: "split",
+              direction: "horizontal",
+              children: [
+                { kind: "terminal", terminalId: "term-1" },
+                { kind: "terminal", terminalId: "term-3" },
+              ],
+            },
+          },
+        ],
+      });
+      yield* manager.open(openInput({ terminalId: "term-1" }));
+      yield* manager.open(openInput({ terminalId: "term-2" }));
+
+      // This is the observed broken state: the layout still names a removed
+      // terminal while the restart records contain its replacement.
+      expect((yield* manager.getLayout({ threadId: "thread-1" })).layout?.groups).toEqual([
+        expect.objectContaining({ terminalIds: ["term-1", "term-3"] }),
+        expect.objectContaining({ terminalIds: ["term-2"] }),
+      ]);
+
+      const restarted = yield* createManager(5, { logsDir });
+      yield* restarted.manager.list({ threadId: "thread-1" });
+      const repaired = yield* restarted.manager.getLayout({ threadId: "thread-1" });
+      expect(repaired.layout?.groups).toEqual([
+        expect.objectContaining({ terminalIds: ["term-1"] }),
+        expect.objectContaining({ terminalIds: ["term-2"] }),
+      ]);
+    }),
+  );
+
+  it.effect("persists terminal opens and closes into the layout document", () =>
+    Effect.gen(function* () {
+      const { manager, logsDir } = yield* createManager();
+      yield* manager.open(openInput({ terminalId: "term-1" }));
+      yield* manager.open(openInput({ terminalId: "term-3" }));
+      yield* manager.setLayout({
+        threadId: "thread-1",
+        groups: [
+          {
+            id: "group-main",
+            terminalIds: ["term-1", "term-3"],
+            layout: {
+              kind: "split",
+              direction: "horizontal",
+              children: [
+                { kind: "terminal", terminalId: "term-1" },
+                { kind: "terminal", terminalId: "term-3" },
+              ],
+            },
+          },
+        ],
+      });
+
+      yield* manager.close({ threadId: "thread-1", terminalId: "term-3" });
+      yield* manager.open(openInput({ terminalId: "term-2" }));
+
+      const current = yield* manager.getLayout({ threadId: "thread-1" });
+      expect(current.layout?.groups).toEqual([
+        expect.objectContaining({ terminalIds: ["term-1"] }),
+        expect.objectContaining({ terminalIds: ["term-2"] }),
+      ]);
+
+      const restarted = yield* createManager(5, { logsDir });
+      yield* restarted.manager.list({ threadId: "thread-1" });
+      const restored = yield* restarted.manager.getLayout({ threadId: "thread-1" });
+      expect(restored.layout?.groups).toEqual(current.layout?.groups);
     }),
   );
 
@@ -936,6 +1391,370 @@ it.layer(
     }),
   );
 
+  it.effect("does not mark an idle agent TUI as working", () =>
+    Effect.gen(function* () {
+      let inspect: {
+        readonly hasRunningSubprocess: boolean;
+        readonly childCommand: string | null;
+        readonly processIds: ReadonlyArray<number>;
+      } = { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+      const { manager, ptyAdapter, getEvents } = yield* createManager(5, {
+        subprocessInspector: () => Effect.succeed(inspect),
+        subprocessPollIntervalMs: 20,
+      });
+
+      yield* manager.open(openInput());
+      inspect = { hasRunningSubprocess: true, childCommand: "claude", processIds: [100] };
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some(
+            (event) =>
+              event.type === "activity" &&
+              event.hasRunningSubprocess === true &&
+              event.label === "claude",
+          ),
+        ),
+        "1200 millis",
+      );
+      expect((yield* manager.list({}))[0]?.working).toBe(false);
+
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      process.emitData("Reading src/foo.ts\nesc to interrupt\n");
+      yield* waitFor(
+        manager
+          .list({})
+          .pipe(Effect.map((terminals) => terminals.some((terminal) => terminal.working === true))),
+        "2500 millis",
+      );
+    }),
+  );
+
+  it.effect(
+    "persists agent CLI resume metadata while grok is running and clears it when idle",
+    () =>
+      Effect.gen(function* () {
+        let inspect: {
+          readonly hasRunningSubprocess: boolean;
+          readonly childCommand: string | null;
+          readonly processIds: ReadonlyArray<number>;
+        } = { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+        const { manager, logsDir, getEvents } = yield* createManager(5, {
+          subprocessInspector: () => Effect.succeed(inspect),
+          subprocessPollIntervalMs: 20,
+          resolveAgentCliSessionId: () => Effect.succeed("sess-1"),
+        });
+        const path = yield* Path.Path;
+        const resumePath = resumeStateFilePath(
+          yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path)),
+        );
+
+        yield* manager.open(openInput());
+        inspect = { hasRunningSubprocess: true, childCommand: "grok", processIds: [100] };
+        yield* waitFor(
+          Effect.map(getEvents, (events) =>
+            events.some(
+              (event) =>
+                event.type === "activity" &&
+                event.hasRunningSubprocess === true &&
+                event.label === "grok",
+            ),
+          ),
+          "1200 millis",
+        );
+        yield* waitFor(
+          readFileString(resumePath).pipe(
+            Effect.map((raw) => {
+              const state = parseAgentCliResumeState(raw);
+              return state?.resumeOnRestore === true && state.sessionId === "sess-1";
+            }),
+            Effect.orElseSucceed(() => false),
+          ),
+          "1200 millis",
+        );
+
+        inspect = { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+        yield* waitFor(
+          readFileString(resumePath).pipe(
+            Effect.map((raw) => parseAgentCliResumeState(raw)?.resumeOnRestore === false),
+            Effect.orElseSucceed(() => false),
+          ),
+          "1200 millis",
+        );
+      }),
+  );
+
+  it.effect("does not persist resume metadata for a non-agent subprocess", () =>
+    Effect.gen(function* () {
+      let inspect: {
+        readonly hasRunningSubprocess: boolean;
+        readonly childCommand: string | null;
+        readonly processIds: ReadonlyArray<number>;
+      } = { hasRunningSubprocess: true, childCommand: "vim", processIds: [100] };
+      const { manager, logsDir, getEvents } = yield* createManager(5, {
+        subprocessInspector: () => Effect.succeed(inspect),
+        subprocessPollIntervalMs: 20,
+      });
+      const path = yield* Path.Path;
+      const resumePath = resumeStateFilePath(
+        yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path)),
+      );
+
+      yield* manager.open(openInput());
+      yield* waitFor(
+        Effect.map(getEvents, (events) =>
+          events.some((event) => event.type === "activity" && event.label === "vim"),
+        ),
+        "1200 millis",
+      );
+      yield* Effect.sleep("80 millis");
+      expect(yield* pathExists(resumePath)).toBe(false);
+    }),
+  );
+
+  it.effect("restores persisted sessions at boot and types the CLI resume", () =>
+    Effect.gen(function* () {
+      const fs = yield* Effect.service(FileSystem.FileSystem);
+      const path = yield* Path.Path;
+      // Seed the directory the way a dying server leaves it: history, a
+      // launch context (session was still running), and a resume mark.
+      const preparedDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-terminal-boot-" });
+      const logsDir = path.join(preparedDir, "terminals");
+      yield* makeDirectory(logsDir);
+      const logPath = yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path));
+      yield* writeFileString(logPath, "old shell output\n");
+      yield* writeFileString(
+        launchContextFilePath(logPath),
+        encodeTerminalLaunchContext(
+          {
+            threadId: "thread-1",
+            terminalId: DEFAULT_TERMINAL_ID,
+            cwd: process.cwd(),
+            worktreePath: null,
+            runtimeEnv: null,
+            cols: 100,
+            rows: 24,
+          },
+          "2026-08-20T00:00:00.000Z",
+        ),
+      );
+      yield* writeFileString(
+        resumeStateFilePath(logPath),
+        encodeAgentCliResumeState(
+          { command: "grok", sessionId: "sess-9", resumeOnRestore: true },
+          "2026-08-20T00:00:00.000Z",
+        ),
+      );
+
+      const { manager, ptyAdapter } = yield* createManager(5, { logsDir });
+      yield* waitFor(
+        Effect.sync(() => ptyAdapter.processes.length === 1),
+        "2500 millis",
+      );
+      const listed = yield* manager.list({});
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0]?.threadId, "thread-1");
+      assert.equal(listed[0]?.status, "running");
+
+      const spawned = ptyAdapter.processes[0];
+      expect(spawned).toBeDefined();
+      if (!spawned) return;
+      spawned.emitData("% ");
+      yield* waitFor(
+        Effect.sync(() => spawned.writes.some((chunk) => chunk.includes("grok --resume sess-9"))),
+        "2500 millis",
+      );
+    }),
+  );
+
+  it.effect("restores every persisted pane before any client attaches", () =>
+    Effect.gen(function* () {
+      const fs = yield* Effect.service(FileSystem.FileSystem);
+      const path = yield* Path.Path;
+      const preparedDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3code-terminal-background-boot-",
+      });
+      const logsDir = path.join(preparedDir, "terminals");
+      yield* makeDirectory(logsDir);
+
+      const persisted = [
+        { threadId: "thread-background-a", terminalId: DEFAULT_TERMINAL_ID },
+        { threadId: "thread-background-a", terminalId: "term-2" },
+        { threadId: "thread-background-b", terminalId: DEFAULT_TERMINAL_ID },
+      ] as const;
+      yield* Effect.forEach(
+        persisted,
+        ({ threadId, terminalId }) =>
+          multiTerminalHistoryLogPath(logsDir, threadId, terminalId).pipe(
+            Effect.provideService(Path.Path, path),
+            Effect.flatMap((logPath) =>
+              writeFileString(
+                launchContextFilePath(logPath),
+                encodeTerminalLaunchContext(
+                  {
+                    threadId,
+                    terminalId,
+                    cwd: process.cwd(),
+                    worktreePath: null,
+                    runtimeEnv: null,
+                    cols: 100,
+                    rows: 24,
+                  },
+                  "2026-08-20T00:00:00.000Z",
+                ),
+              ),
+            ),
+          ),
+        { discard: true },
+      );
+
+      const { manager, ptyAdapter } = yield* createManager(5, { logsDir });
+      const restored = yield* manager.list({});
+
+      expect(ptyAdapter.spawnInputs).toHaveLength(3);
+      expect(
+        restored
+          .map(({ threadId, terminalId, status }) => ({ threadId, terminalId, status }))
+          .toSorted((left, right) =>
+            `${left.threadId}:${left.terminalId}`.localeCompare(
+              `${right.threadId}:${right.terminalId}`,
+            ),
+          ),
+      ).toEqual([
+        {
+          threadId: "thread-background-a",
+          terminalId: DEFAULT_TERMINAL_ID,
+          status: "running",
+        },
+        { threadId: "thread-background-a", terminalId: "term-2", status: "running" },
+        {
+          threadId: "thread-background-b",
+          terminalId: DEFAULT_TERMINAL_ID,
+          status: "running",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("drops the launch context when the shell exits on its own", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      const path = yield* Path.Path;
+      const logPath = yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path));
+      const launchPath = launchContextFilePath(logPath);
+
+      yield* manager.open(openInput());
+      yield* waitFor(pathExists(launchPath), "2500 millis");
+
+      const spawned = ptyAdapter.processes[0];
+      expect(spawned).toBeDefined();
+      if (!spawned) return;
+      spawned.emitExit({ exitCode: 0, signal: 0 });
+      yield* waitFor(pathExists(launchPath).pipe(Effect.map((exists) => !exists)), "2500 millis");
+    }),
+  );
+
+  it.effect("relaunches a persisted grok CLI with --resume <session id> after a cold start", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      const path = yield* Path.Path;
+      const logPath = yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path));
+      const resumePath = resumeStateFilePath(logPath);
+      yield* writeFileString(logPath, "garbled tui frame >\n");
+      yield* writeFileString(
+        resumePath,
+        encodeAgentCliResumeState(
+          { command: "grok", sessionId: "sess-1", resumeOnRestore: true },
+          "2026-08-19T00:00:00.000Z",
+        ),
+      );
+
+      const opened = yield* manager.open(openInput());
+      expect(opened.history).toBe("");
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      process.emitData("% ");
+
+      yield* waitFor(
+        Effect.sync(() => process.writes.some((chunk) => chunk.includes("grok --resume sess-1"))),
+        "2500 millis",
+      );
+      expect(parseAgentCliResumeState(yield* readFileString(resumePath))).toEqual({
+        command: "grok",
+        sessionId: "sess-1",
+        resumeOnRestore: false,
+      });
+    }),
+  );
+
+  it.effect("still types the resume command when a shell helper is the only child", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+        subprocessInspector: () =>
+          Effect.succeed({
+            hasRunningSubprocess: true,
+            childCommand: "gitstatusd",
+            processIds: [100],
+          }),
+        subprocessPollIntervalMs: 20,
+      });
+      const path = yield* Path.Path;
+      const resumePath = resumeStateFilePath(
+        yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path)),
+      );
+      yield* writeFileString(
+        resumePath,
+        encodeAgentCliResumeState(
+          { command: "claude", sessionId: "claude-sess", resumeOnRestore: true },
+          "2026-08-19T00:00:00.000Z",
+        ),
+      );
+
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      process.emitData("% ");
+
+      yield* waitFor(
+        Effect.sync(() =>
+          process.writes.some((chunk) => chunk.includes("claude --resume claude-sess")),
+        ),
+        "2500 millis",
+      );
+    }),
+  );
+
+  it.effect("does not relaunch an agent CLI when no session id was captured", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      const path = yield* Path.Path;
+      const logPath = yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path));
+      const resumePath = resumeStateFilePath(logPath);
+      yield* writeFileString(logPath, "garbled tui frame\n");
+      yield* writeFileString(
+        resumePath,
+        encodeAgentCliResumeState(
+          { command: "grok", sessionId: null, resumeOnRestore: true },
+          "2026-08-19T00:00:00.000Z",
+        ),
+      );
+
+      const opened = yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+      assert.equal(opened.history, "");
+      yield* Effect.sleep("700 millis");
+      expect(process.writes).toEqual([]);
+      expect(parseAgentCliResumeState(yield* readFileString(resumePath))?.resumeOnRestore).toBe(
+        false,
+      );
+    }),
+  );
+
   it.effect("does not invoke subprocess polling until a terminal session is running", () =>
     Effect.gen(function* () {
       let checks = 0;
@@ -1016,13 +1835,17 @@ it.layer(
       process.emitData("prompt ");
       process.emitData("\u001b[32mok\u001b[0m ");
       process.emitData("\u001b]11;rgb:ffff/ffff/ffff\u0007");
+      process.emitData("\u001b]11;?\u0007");
       process.emitData("\u001b[1;1R");
       process.emitData("done\n");
 
       yield* manager.close({ threadId: "thread-1" });
 
       const reopened = yield* manager.open(openInput());
-      assert.equal(reopened.history, "prompt \u001b[32mok\u001b[0m done\n");
+      assert.equal(
+        reopened.history,
+        "prompt \u001b[32mok\u001b[0m \u001b]11;rgb:ffff/ffff/ffff\u0007done\n",
+      );
     }),
   );
 
@@ -1048,7 +1871,7 @@ it.layer(
         const reopened = yield* manager.open(openInput());
         assert.equal(
           reopened.history,
-          "before clear\n\u001b[H\u001b[2Jprompt \u001b[36mdone\u001b[0m\n",
+          "before clear\n\u001b[H\u001b[2Jprompt \u001b]11;rgb:ffff/ffff/ffff\u0007\u001b[36mdone\u001b[0m\n",
         );
       }),
   );
@@ -1395,6 +2218,84 @@ it.layer(
     }),
   );
 
+  it.effect(
+    "injects thread-scoped Codex, Claude, and Grok awareness without persisting secrets",
+    () =>
+      Effect.gen(function* () {
+        const revoked: string[] = [];
+        const touched: string[] = [];
+        const { manager, ptyAdapter, logsDir } = yield* createManager(5, {
+          env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
+          subprocessInspector: () =>
+            Effect.succeed({
+              hasRunningSubprocess: false,
+              childCommand: null,
+              processIds: [],
+            }),
+          subprocessPollIntervalMs: 20,
+          issueTerminalAgentMcpCredential: ({ threadId }) =>
+            Effect.succeed({
+              environmentId: EnvironmentId.make("environment-terminal-test"),
+              threadId: ThreadId.make(threadId),
+              providerSessionId: "terminal-provider-session",
+              providerInstanceId: ProviderInstanceId.make("solla-terminal-agent"),
+              endpoint: "http://127.0.0.1:3773/mcp",
+              authorizationHeader: "Bearer terminal-secret-token",
+            }),
+          revokeTerminalAgentMcpCredential: (providerSessionId) =>
+            Effect.sync(() => {
+              revoked.push(providerSessionId);
+            }),
+          touchTerminalAgentMcpCredential: (providerSessionId) =>
+            Effect.sync(() => {
+              touched.push(providerSessionId);
+            }),
+        });
+        const path = yield* Path.Path;
+
+        yield* manager.open(
+          openInput({
+            terminalId: "term-aware",
+            env: { SOLLA_TERMINAL_MCP_BEARER_TOKEN: "client-spoofed-token" },
+          }),
+        );
+        const spawnInput = ptyAdapter.spawnInputs[0];
+        expect(spawnInput).toBeDefined();
+        if (!spawnInput) return;
+
+        const launcherDirectory = path.join(logsDir, ".agent-launchers");
+        expect(spawnInput.env.PATH).toBe(`${launcherDirectory}:/usr/local/bin:/usr/bin:/bin`);
+        expect(spawnInput.env.SOLLA_TERMINAL_MCP_ENDPOINT).toBe("http://127.0.0.1:3773/mcp");
+        expect(spawnInput.env.SOLLA_TERMINAL_MCP_BEARER_TOKEN).toBe("terminal-secret-token");
+        expect(spawnInput.env.SOLLA_TERMINAL_AGENT_CONTEXT).toContain(
+          "thread thread-1 and terminal term-aware",
+        );
+        expect(spawnInput.env.GROK_CONFIG_PATH).toBe(
+          path.join(launcherDirectory, "grok-config.toml"),
+        );
+
+        for (const provider of ["codex", "claude", "grok"]) {
+          const launcher = yield* readFileString(path.join(launcherDirectory, provider));
+          expect(launcher).not.toContain("terminal-secret-token");
+        }
+        const logPath = yield* multiTerminalHistoryLogPath(logsDir, "thread-1", "term-aware").pipe(
+          Effect.provideService(Path.Path, path),
+        );
+        const persistedLaunchContext = yield* readFileString(launchContextFilePath(logPath));
+        expect(persistedLaunchContext).not.toContain("terminal-secret-token");
+        expect(persistedLaunchContext).not.toContain("client-spoofed-token");
+        expect(persistedLaunchContext).not.toContain("SOLLA_TERMINAL_MCP");
+
+        yield* waitFor(
+          Effect.sync(() => touched.includes("terminal-provider-session")),
+          "1200 millis",
+        );
+
+        yield* manager.close({ threadId: "thread-1", terminalId: "term-aware" });
+        expect(revoked).toEqual(["terminal-provider-session"]);
+      }),
+  );
+
   it.effect("strips AppImage runtime env from terminal sessions", () =>
     Effect.gen(function* () {
       const appDir = "/tmp/.mount_T3Codeabc123";
@@ -1449,6 +2350,40 @@ it.layer(
       expect(spawnInput.env.PATH).toBe("/usr/local/bin:/usr/bin:/bin");
       expect(spawnInput.env.LD_LIBRARY_PATH).toBe("/home/user/.local/lib");
       expect(spawnInput.env.OWD).toBe("/home/user/keep-this");
+    }),
+  );
+
+  it.effect("defaults CLAUDE_CODE_NO_FLICKER without clobbering a user value", () =>
+    Effect.gen(function* () {
+      // Claude Code's fullscreen renderer repaints in place instead of
+      // appending frames to scrollback; terminals default it on.
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin" },
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.env.CLAUDE_CODE_NO_FLICKER).toBe("1");
+      expect(ptyAdapter.spawnInputs[0]?.env.COLORTERM).toBe("truecolor");
+      expect(ptyAdapter.spawnInputs[0]?.env.COLORFGBG).toBe("15;0");
+
+      const { manager: optOutManager, ptyAdapter: optOutAdapter } = yield* createManager(5, {
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", CLAUDE_CODE_NO_FLICKER: "0" },
+      });
+      yield* optOutManager.open(openInput());
+      expect(optOutAdapter.spawnInputs[0]?.env.CLAUDE_CODE_NO_FLICKER).toBe("0");
+    }),
+  );
+
+  it.effect("does not inherit macOS Terminal session restore into the PTY", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: {
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          TERM_SESSION_ID: "A82E6EC8-77C5-402B-8E26-44CA06B1E0F1",
+        },
+      });
+      yield* manager.open(openInput());
+      expect(ptyAdapter.spawnInputs[0]?.env.TERM_SESSION_ID).toBeUndefined();
+      expect(ptyAdapter.spawnInputs[0]?.env.SHELL_SESSIONS_DISABLE).toBe("1");
     }),
   );
 
@@ -1796,6 +2731,12 @@ it.layer(
       const scope = yield* Scope.make("sequential");
       const { manager, ptyAdapter } = yield* createManager(5, {
         processKillGraceMs: 10,
+        subprocessInspector: () =>
+          Effect.succeed({
+            hasRunningSubprocess: false,
+            childCommand: null,
+            processIds: [],
+          }),
       }).pipe(Effect.provideService(Scope.Scope, scope));
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0];
@@ -1810,5 +2751,59 @@ it.layer(
       assert.equal(process.killSignals[0], "SIGTERM");
       expect(process.killSignals).toContain("SIGKILL");
     }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("captures a newly started agent CLI during shutdown", () =>
+    Effect.gen(function* () {
+      const fs = yield* Effect.service(FileSystem.FileSystem);
+      const path = yield* Path.Path;
+      const preparedDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3code-terminal-shutdown-resume-",
+      });
+      const logsDir = path.join(preparedDir, "terminals");
+      yield* makeDirectory(logsDir);
+      const logPath = yield* historyLogPath(logsDir).pipe(Effect.provideService(Path.Path, path));
+      const resumePath = resumeStateFilePath(logPath);
+      const firstPollStarted = yield* Deferred.make<void>();
+      const holdFirstPoll = yield* Deferred.make<void>();
+      let inspectCalls = 0;
+
+      const scope = yield* Scope.make("sequential");
+      const { manager } = yield* createManager(5, {
+        logsDir,
+        processKillGraceMs: 1,
+        subprocessPollIntervalMs: 1,
+        subprocessInspector: () =>
+          Effect.gen(function* () {
+            inspectCalls += 1;
+            if (inspectCalls === 1) {
+              yield* Deferred.succeed(firstPollStarted, undefined);
+              yield* Deferred.await(holdFirstPoll);
+              return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+            }
+            return {
+              hasRunningSubprocess: true,
+              childCommand: "grok",
+              processIds: [100, 101],
+              processArgs: "grok --resume sess-shutdown",
+            };
+          }),
+        resolveAgentCliSessionId: () => Effect.succeed("sess-shutdown"),
+      }).pipe(Effect.provideService(Scope.Scope, scope));
+
+      yield* manager.open(openInput());
+      yield* Deferred.await(firstPollStarted).pipe(Effect.timeout("2 seconds"));
+
+      // Close while the ordinary poll is deliberately still in flight. The
+      // shutdown pass must independently capture the CLI and its session ID.
+      yield* Scope.close(scope, Exit.void);
+
+      expect(inspectCalls).toBeGreaterThanOrEqual(2);
+      expect(parseAgentCliResumeState(yield* readFileString(resumePath))).toEqual({
+        command: "grok",
+        sessionId: "sess-shutdown",
+        resumeOnRestore: true,
+      });
+    }),
   );
 });

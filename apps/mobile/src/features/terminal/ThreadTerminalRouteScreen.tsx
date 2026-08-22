@@ -5,7 +5,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, View, useColorScheme } from "react-native";
+import { Platform, Pressable, ScrollView, Text, View, useColorScheme } from "react-native";
 import {
   KeyboardController,
   KeyboardEvents,
@@ -161,7 +161,6 @@ type ThreadTerminalRouteScreenProps = StaticScreenProps<{
 export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps) {
   const navigation = useNavigation();
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
-  const resizeTerminal = useAtomCommand(terminalEnvironment.resize, "terminal resize");
   const clearTerminal = useAtomCommand(terminalEnvironment.clear, "terminal clear");
   const closeTerminal = useAtomCommand(terminalEnvironment.close, "terminal close");
   const openTerminal = useAtomCommand(terminalEnvironment.open, "terminal open");
@@ -531,6 +530,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           cwd: cwd ?? null,
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
+          working: terminal.working,
           displayLabel: resolveTerminalSessionLabel(terminalId, terminal.summary),
           updatedAt: terminal.updatedAt,
         },
@@ -540,6 +540,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
       knownSessions,
       selectedThreadProject?.workspaceRoot,
       terminal.hasRunningSubprocess,
+      terminal.working,
       terminal.summary,
       terminal.status,
       terminal.updatedAt,
@@ -754,32 +755,18 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
         return;
       }
 
+      // Phone layout is local. Do not resize the shared PTY — that reflows
+      // the desktop terminal. Attach still streams the same text.
       setLastGridSize(size);
-      if (!selectedThread || !isRunning) {
-        return;
-      }
-
-      void resizeTerminal({
-        environmentId: selectedThread.environmentId,
-        input: {
-          threadId: selectedThread.id,
-          terminalId,
-          cols: size.cols,
-          rows: size.rows,
-        },
-      });
     },
     [
-      isRunning,
       lastGridSize.cols,
       lastGridSize.rows,
       bufferReplayKey,
       readyBufferReplayKey,
       routeEnvironmentId,
       routeThreadId,
-      resizeTerminal,
       scheduleBufferReplayReady,
-      selectedThread,
       terminalId,
       terminalKey,
     ],
@@ -951,7 +938,13 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
         (session): MenuAction => ({
           id: `terminal-session:${session.terminalId}`,
           title: session.displayLabel,
-          subtitle: [getTerminalStatusLabel({ status: session.status }), basename(session.cwd)]
+          subtitle: [
+            getTerminalStatusLabel({
+              status: session.status,
+              working: session.working,
+            }),
+            basename(session.cwd),
+          ]
             .filter(Boolean)
             .join(" · "),
           state: session.terminalId === terminalId ? ("on" as const) : undefined,
@@ -1121,6 +1114,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
                   title={getTerminalStatusLabel({
                     status: terminal.status,
                     hasRunningSubprocess: terminal.hasRunningSubprocess,
+                    working: terminal.working,
                   })}
                   onPressAction={handleAndroidTerminalMenuAction}
                 >
@@ -1152,6 +1146,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
               {getTerminalStatusLabel({
                 status: terminal.status,
                 hasRunningSubprocess: terminal.hasRunningSubprocess,
+                working: terminal.working,
               })}
             </NativeHeaderToolbar.Label>
             <NativeHeaderToolbar.Menu icon="textformat.size" inline title="Text size">
@@ -1177,7 +1172,10 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
                 icon={session.terminalId === terminalId ? "checkmark" : "terminal"}
                 onPress={() => handleSelectTerminal(session.terminalId)}
                 subtitle={[
-                  getTerminalStatusLabel({ status: session.status }),
+                  getTerminalStatusLabel({
+                    status: session.status,
+                    working: session.working,
+                  }),
                   basename(session.cwd),
                 ]
                   .filter(Boolean)
@@ -1217,6 +1215,38 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
           />
         ) : (
           <>
+            {terminalMenuSessions.length > 1 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View className="flex-row items-center gap-1.5 px-2 py-1.5">
+                  {terminalMenuSessions.map((session) => {
+                    const isActive = session.terminalId === terminalId;
+                    return (
+                      <Pressable
+                        key={session.terminalId}
+                        accessibilityRole="tab"
+                        accessibilityState={{ selected: isActive }}
+                        onPress={() => handleSelectTerminal(session.terminalId)}
+                        className={`flex-row items-center rounded-full border px-3 py-1 ${
+                          isActive ? "border-foreground bg-foreground/10" : "border-border"
+                        }`}
+                      >
+                        <Text
+                          className={`text-xs ${isActive ? "text-foreground" : "text-muted-foreground"}`}
+                        >
+                          {session.displayLabel}
+                        </Text>
+                        {session.working ? (
+                          <View
+                            accessibilityLabel="Working"
+                            className="ml-1.5 size-1.5 rounded-full bg-sky-500"
+                          />
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+            ) : null}
             <View className="flex-1" style={{ paddingBottom: terminalBottomInset }}>
               <TerminalSurface
                 autoFocus={!SHOWCASE_ENABLED}

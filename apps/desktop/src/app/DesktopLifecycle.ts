@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -14,7 +16,10 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
-import { shouldInterceptWindowCloseForQuit } from "./DesktopLifecycle.logic.ts";
+import {
+  shouldInterceptWindowCloseForQuit,
+  withDesktopRelaunchArguments,
+} from "./DesktopLifecycle.logic.ts";
 import { INTENTIONAL_SHUTDOWN_CHANNEL } from "../ipc/channels.ts";
 
 export class DesktopLifecycleRelaunchError extends Schema.TaggedErrorClass<DesktopLifecycleRelaunchError>()(
@@ -50,9 +55,13 @@ export class DesktopLifecycle extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopLifecycle") {}
 
-const { logInfo: logLifecycleInfo, logError: logLifecycleError } =
-  makeComponentLogger("desktop-lifecycle");
+const {
+  logInfo: logLifecycleInfo,
+  logWarning: logLifecycleWarning,
+  logError: logLifecycleError,
+} = makeComponentLogger("desktop-lifecycle");
 export const INTENTIONAL_SHUTDOWN_PAINT_DELAY_MS = 120;
+export const DESKTOP_RELAUNCH_SHUTDOWN_TIMEOUT = Duration.seconds(5);
 
 function addScopedListener<Args extends ReadonlyArray<unknown>>(
   target: unknown,
@@ -167,16 +176,29 @@ export const make = DesktopLifecycle.of({
     yield* Effect.gen(function* () {
       yield* Effect.yieldNow;
       yield* Ref.set(state.quitting, true);
+      if (!environment.isDevelopment) {
+        // Register the replacement before teardown starts. Electron launches it
+        // only after this process exits, and a bounded teardown below prevents
+        // a stuck provider from silently losing the restart request.
+        yield* electronApp.relaunch({
+          execPath: process.execPath,
+          args: [...withDesktopRelaunchArguments(process.argv.slice(1))],
+        });
+      }
       yield* notifyIntentionalShutdown;
-      yield* requestDesktopShutdownAndWait();
+      const shutdownCompleted = yield* requestDesktopShutdownAndWait().pipe(
+        Effect.timeoutOption(DESKTOP_RELAUNCH_SHUTDOWN_TIMEOUT),
+      );
+      if (Option.isNone(shutdownCompleted)) {
+        yield* logLifecycleWarning("desktop relaunch teardown reached its deadline", {
+          reason,
+          timeoutMs: Duration.toMillis(DESKTOP_RELAUNCH_SHUTDOWN_TIMEOUT),
+        });
+      }
       if (environment.isDevelopment) {
         yield* electronApp.exit(75);
         return;
       }
-      yield* electronApp.relaunch({
-        execPath: process.execPath,
-        args: process.argv.slice(1),
-      });
       yield* electronApp.exit(0);
     }).pipe(
       Effect.catchCause((cause) => {

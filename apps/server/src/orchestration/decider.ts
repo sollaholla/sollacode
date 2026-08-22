@@ -1,5 +1,7 @@
 import {
   EventId,
+  isOrchestratorProjectId,
+  isOrchestratorThreadId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -108,7 +110,11 @@ function hasOpenBlockingRequest(thread: {
  */
 function threadHasQueuedTurnStart(
   thread: {
-    readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
+    readonly messages: ReadonlyArray<{
+      readonly role: string;
+      readonly createdAt: string;
+      readonly voiceTranscript?: boolean | undefined;
+    }>;
     readonly latestTurn: {
       readonly requestedAt: string;
       readonly startedAt: string | null;
@@ -118,9 +124,14 @@ function threadHasQueuedTurnStart(
   },
   occurredAt: string,
 ): boolean {
+  // Voice-transcript rows are history, not a pending turn: no provider work
+  // follows them, so counting them here would reject settle/snooze for the
+  // whole grace window after every spoken exchange.
   const latestUserMessageAtMs = thread.messages.reduce(
     (latest, message) =>
-      message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
+      message.role === "user" && message.voiceTranscript !== true
+        ? Math.max(latest, Date.parse(message.createdAt))
+        : latest,
     Number.NEGATIVE_INFINITY,
   );
   const latestTurnAtMs =
@@ -296,6 +307,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.delete": {
+      // The orchestrator owns a dedicated project so that no ordinary project
+      // deletion can cascade into it (a forced delete synthesizes a
+      // `thread.delete` for every active thread it owns). Refusing here keeps
+      // that cascade from ever being constructed.
+      if (isOrchestratorProjectId(command.projectId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The orchestrator project cannot be deleted.",
+        });
+      }
       yield* requireProject({
         readModel,
         command,
@@ -449,6 +470,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
+      // The orchestrator thread is permanent. This guard is not merely a UX
+      // nicety: `requireThreadAbsent` consults a read model that retains
+      // soft-deleted rows, so a single successful delete would burn the
+      // reserved id forever — the seed could never recreate it.
+      if (isOrchestratorThreadId(command.threadId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The orchestrator thread cannot be deleted.",
+        });
+      }
       yield* requireThreadNotDeleted({
         readModel,
         command,
@@ -471,6 +502,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
+      // Archiving emits `thread-removed` on the shell stream exactly like a
+      // delete does, so an archived orchestrator would vanish from every
+      // client. Same reasoning as `thread.delete` above.
+      if (isOrchestratorThreadId(command.threadId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The orchestrator thread cannot be archived.",
+        });
+      }
       yield* requireThreadNotArchived({
         readModel,
         command,
@@ -835,6 +875,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.message.inputOrigin !== undefined
             ? { inputOrigin: command.message.inputOrigin }
             : {}),
+          ...(command.message.delegationId !== undefined
+            ? { delegationId: command.message.delegationId }
+            : {}),
           attachments: command.message.attachments,
           turnId: null,
           streaming: false,
@@ -1071,6 +1114,54 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.voice-transcript.record": {
+      // Only the orchestrator thread has a voice conversation to mirror, and
+      // keeping the surface this narrow means no other thread can ever grow
+      // provider-less messages through this command.
+      if (!isOrchestratorThreadId(command.threadId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Voice transcripts can only be recorded on the orchestrator thread, not '${command.threadId}'.`,
+        });
+      }
+      yield* requireThreadNotDeleted({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Plain message-sent events with no turn: the spoken reply already
+      // happened, so nothing here may start provider work. Turn-sensitive
+      // consumers all guard on a non-null turnId.
+      return yield* Effect.forEach(command.entries, (entry) =>
+        Effect.map(
+          withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          (eventBase): Omit<OrchestrationEvent, "sequence"> => ({
+            ...eventBase,
+            type: "thread.message-sent",
+            payload: {
+              threadId: command.threadId,
+              messageId: entry.messageId,
+              role: entry.role,
+              text: entry.text,
+              // The user rows carry the same origin dictation uses, so the
+              // existing "Transcribed" badge renders without new UI.
+              ...(entry.role === "user" ? { inputOrigin: "transcription" as const } : {}),
+              voiceTranscript: true,
+              turnId: null,
+              streaming: false,
+              createdAt: command.createdAt,
+              updatedAt: command.createdAt,
+            },
+          }),
+        ),
+      );
     }
 
     case "thread.session.set": {

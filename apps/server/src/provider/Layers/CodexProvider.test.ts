@@ -1,7 +1,27 @@
 import { assert, it } from "@effect/vitest";
 import { getProviderOptionDescriptors } from "@t3tools/shared/model";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
-import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
+import {
+  applyPreferredCodexDefaultModel,
+  CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT,
+  mapCodexModelCapabilities,
+  settleOptionalCodexRateLimits,
+} from "./CodexProvider.ts";
+
+it.effect("does not let optional rate limits block Codex readiness", () =>
+  Effect.gen(function* () {
+    const fiber = yield* settleOptionalCodexRateLimits(Effect.never).pipe(Effect.forkChild);
+
+    yield* TestClock.adjust(CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT);
+
+    const result = yield* Fiber.join(fiber);
+    assert.isTrue(Option.isNone(result));
+  }),
+);
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({

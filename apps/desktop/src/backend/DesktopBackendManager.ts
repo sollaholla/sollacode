@@ -563,19 +563,27 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       ).pipe(Effect.forkScoped),
     );
   }
-  yield* waitForHttpReady({
-    executablePath: options.executablePath,
-    entryPath: options.entryPath,
-    cwd: options.cwd,
-    httpBaseUrl: options.httpBaseUrl,
-    timeout: options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT,
-  }).pipe(
-    Effect.tap(() => options.onReady?.() ?? Effect.void),
-    Effect.catchTags({
-      BackendReadinessTimeoutError: (error) => options.onReadinessFailure?.(error) ?? Effect.void,
-    }),
-    Effect.forkScoped,
+  const waitUntilReady: Effect.Effect<void, never, HttpClient.HttpClient> = Effect.suspend(() =>
+    waitForHttpReady({
+      executablePath: options.executablePath,
+      entryPath: options.entryPath,
+      cwd: options.cwd,
+      httpBaseUrl: options.httpBaseUrl,
+      timeout: options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT,
+    }).pipe(
+      Effect.catchTag("BackendReadinessTimeoutError", (error) =>
+        (options.onReadinessFailure?.(error) ?? Effect.void).pipe(
+          // A busy restore can bind the port before the HTTP handler has enough
+          // event-loop time to answer. Giving up after one bounded probe window
+          // leaves the backend alive but permanently prevents the main window
+          // from opening. Keep using bounded windows (and report each timeout)
+          // until this process becomes ready or its enclosing scope ends on exit.
+          Effect.andThen(waitUntilReady),
+        ),
+      ),
+    ),
   );
+  yield* waitUntilReady.pipe(Effect.andThen(options.onReady?.() ?? Effect.void), Effect.forkScoped);
 
   const exit = yield* handle.exitCode.pipe(
     Effect.mapError(

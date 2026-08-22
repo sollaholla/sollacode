@@ -88,7 +88,7 @@ import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
-import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
@@ -109,6 +109,7 @@ import {
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
+  isSidebarListedThread,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
@@ -139,7 +140,6 @@ import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
 import { primaryServerProvidersAtom } from "../state/server";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { CommandDialogTrigger } from "./ui/command";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -156,6 +156,8 @@ import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./u
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { OrchestratorSidebarEntry } from "./orchestrator/OrchestratorSidebarEntry";
+import { AgentStackSidebarEntry } from "./agents/AgentStackSidebarEntry";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -167,6 +169,9 @@ import {
   type WorkingSideChatActivity,
 } from "../sideChat";
 import { useStartupResumeStore } from "../startupResumeStore";
+import { useKnownTerminalSessions } from "../state/terminalSessions";
+import { deriveWorkingTerminalActivity } from "../terminalActivity";
+import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -209,6 +214,49 @@ function JumpHintBadge(props: { label: string }) {
       className="pointer-events-none absolute right-1.5 top-1/2 z-10 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-border/80 bg-background/95 px-1.5 font-mono text-[10px] font-medium tracking-tight text-foreground shadow-sm"
     >
       {props.label}
+    </span>
+  );
+}
+
+function WorkingActivityCounts(props: { terminalCount: number; sideChatCount: number }) {
+  const showTerminal = props.terminalCount > 0;
+  const showSideChat = props.sideChatCount > 0;
+  if (!showTerminal && !showSideChat) {
+    return null;
+  }
+  return (
+    <span className="inline-flex items-center gap-1 font-medium">
+      {showTerminal ? (
+        <span
+          className="inline-flex items-center gap-0.5"
+          title={
+            props.terminalCount === 1
+              ? "1 terminal is working"
+              : `${props.terminalCount} terminals are working`
+          }
+        >
+          <TerminalSessionIcon className="size-3.5" working={false} />
+          <span>{props.terminalCount}</span>
+        </span>
+      ) : null}
+      {showTerminal && showSideChat ? (
+        <span aria-hidden className="opacity-70">
+          •
+        </span>
+      ) : null}
+      {showSideChat ? (
+        <span
+          className="inline-flex items-center gap-0.5"
+          title={
+            props.sideChatCount === 1
+              ? "1 side chat is working"
+              : `${props.sideChatCount} side chats are working`
+          }
+        >
+          <MessageSquareIcon aria-hidden className="size-3.5" />
+          <span>{props.sideChatCount}</span>
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -440,21 +488,57 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const ownStatus = resolveSidebarV2Status(thread);
-  const status =
+  // A row on an unreachable host shows last-known state, so it must not claim
+  // to be working — the same rule the conversation timeline follows.
+  const rowEnvironment = useEnvironment(thread.environmentId);
+  const environmentUnreachable =
+    rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
+  const knownTerminals = useKnownTerminalSessions({
+    environmentId: thread.environmentId,
+    threadId: thread.id,
+  });
+  const terminalActivity = useMemo(
+    () => deriveWorkingTerminalActivity(knownTerminals),
+    [knownTerminals],
+  );
+  const ownStatus = resolveSidebarV2Status({ ...thread, environmentUnreachable });
+  // A turn that backgrounds a task settles, and the server parks the
+  // continuation until the task exits. The conversation keeps reading
+  // "Working" through that wait, but the sidebar had no signal for it — the
+  // turn is complete and the session is idle — so the row went blank on a
+  // thread that was plainly still in motion. The parked obligation is that
+  // signal.
+  const hasParkedContinuation = thread.pendingWork?.kind === "agent-continuation";
+  const promotedStatus =
     ownStatus === "ready" &&
-    (props.sideChatActivity !== null || props.startupResumeStartedAt !== null)
+    (props.sideChatActivity !== null ||
+      props.startupResumeStartedAt !== null ||
+      hasParkedContinuation ||
+      terminalActivity !== null)
       ? "working"
       : ownStatus;
+  // Applied *after* the promotion above, not before it. Suppressing only
+  // `ownStatus` was useless: queued server work promoted the row straight back
+  // to "working", which is exactly the state an unreachable host is most
+  // likely to be in — its last-known pendingWork never drains because nothing
+  // can report progress. The row kept counting seconds for a machine that was
+  // not answering.
+  const status = environmentUnreachable && promotedStatus === "working" ? "ready" : promotedStatus;
   // Only a row promoted to working by queued server work may call itself
   // auto-resuming; a thread running its own turn is just working.
   const autoResumeStartedAt = resolveAutoResumeStartedAt({
     ownStatus,
     startupResumeStartedAt: props.startupResumeStartedAt,
+    nowMs: Date.now(),
   });
   const ownWorkingStartedAt = ownStatus === "working" ? resolveWorkingStartedAt(thread) : null;
   const workingStartedAt =
-    [ownWorkingStartedAt, props.sideChatActivity?.startedAt ?? null, autoResumeStartedAt]
+    [
+      ownWorkingStartedAt,
+      props.sideChatActivity?.startedAt ?? null,
+      terminalActivity?.startedAt ?? null,
+      autoResumeStartedAt,
+    ]
       .filter((value): value is string => value !== null && !Number.isNaN(Date.parse(value)))
       .toSorted((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
   // A woken thread reappears at its original position (the sort is
@@ -934,6 +1018,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                         topStatus.className,
                       )}
                     >
+                      <WorkingActivityCounts
+                        terminalCount={terminalActivity?.count ?? 0}
+                        sideChatCount={props.sideChatActivity?.count ?? 0}
+                      />
                       {topStatus.icon === "working" ? (
                         <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
                       ) : topStatus.icon === "done" ? (
@@ -1005,15 +1093,6 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 {isRemote ? (
                   <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
                     <ServerIcon aria-hidden className="size-3.5" />
-                  </span>
-                ) : null}
-                {props.sideChatActivity ? (
-                  <span
-                    className="inline-flex shrink-0 items-center gap-0.5 font-medium text-sky-600 dark:text-sky-400"
-                    title={`${props.sideChatActivity.count} side ${props.sideChatActivity.count === 1 ? "chat is" : "chats are"} working`}
-                  >
-                    <CircleDashedIcon aria-hidden className="size-3.5" />
-                    <span>{props.sideChatActivity.count} side</span>
                   </span>
                 ) : null}
                 {driverKind ? (
@@ -1447,7 +1526,7 @@ export default function SidebarV2() {
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     for (const thread of visible) {
-      if (thread.isSideChat === true) {
+      if (!isSidebarListedThread(thread)) {
         continue;
       }
       // Threads on servers without the settlement capability (old server,
@@ -2194,6 +2273,7 @@ export default function SidebarV2() {
               { id: "fork", label: "Fork conversation" },
               { id: "rename", label: "Rename thread" },
               { id: "mark-unread", label: "Mark unread" },
+              { id: "copy-thread-id", label: "Copy thread ID" },
               { id: "export-json", label: "Export conversation as JSON" },
               { id: "delete", label: "Delete", destructive: true, icon: "trash" },
             ],
@@ -2230,6 +2310,30 @@ export default function SidebarV2() {
                 }),
               );
             }
+            return;
+          }
+          // Lets a thread be referenced by id from another chat, which is the
+          // only handle the agent tooling can resolve a thread by.
+          case "copy-thread-id": {
+            const threadId = String(threadRef.threadId);
+            void navigator.clipboard.writeText(threadId).then(
+              () => {
+                toastManager.add({
+                  type: "success",
+                  title: "Thread ID copied",
+                  description: threadId,
+                });
+              },
+              (error) => {
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Could not copy thread ID",
+                    description: error instanceof Error ? error.message : "An error occurred.",
+                  }),
+                );
+              },
+            );
             return;
           }
           case "settle":
@@ -2430,15 +2534,16 @@ export default function SidebarV2() {
           <SidebarGroup className="gap-1 p-2">
             <div className="flex items-center gap-1">
               <div className="min-w-0 flex-1">
-                <CommandDialogTrigger
-                  render={
-                    <SidebarMenuButton
-                      type="button"
-                      aria-label="Search threads and commands"
-                      className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
-                      data-testid="command-palette-trigger"
-                    />
-                  }
+                {/* Opens the palette over the bus rather than as a Dialog.Trigger:
+                    CommandPaletteLoader mounts the CommandDialog root lazily, so
+                    no root exists at startup for a trigger to attach to. */}
+                <SidebarMenuButton
+                  type="button"
+                  aria-label="Search threads and commands"
+                  aria-haspopup="dialog"
+                  className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                  data-testid="command-palette-trigger"
+                  onClick={() => openCommandPalette()}
                 >
                   <SearchIcon />
                   <div className="flex-1 truncate text-left">Search</div>
@@ -2447,7 +2552,7 @@ export default function SidebarV2() {
                       {commandPaletteShortcutLabel}
                     </Kbd>
                   ) : null}
-                </CommandDialogTrigger>
+                </SidebarMenuButton>
               </div>
               <div className="shrink-0">
                 <Tooltip>
@@ -2572,6 +2677,10 @@ export default function SidebarV2() {
                 </Tooltip>
               </div>
             ) : null}
+            <OrchestratorSidebarEntry
+              onNavigate={isMobile ? () => setOpenMobile(false) : undefined}
+            />
+            <AgentStackSidebarEntry />
           </SidebarGroup>
         }
       >

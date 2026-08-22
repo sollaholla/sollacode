@@ -15,6 +15,10 @@
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"
     },
+    "./endpointRedaction": {
+      "types": "./src/endpointRedaction.ts",
+      "import": "./src/endpointRedaction.ts"
+    },
     "./agentAwareness": {
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"
@@ -22,6 +26,10 @@
     "./agentMode": {
       "types": "./src/agentMode.ts",
       "import": "./src/agentMode.ts"
+    },
+    "./actionApproval": {
+      "types": "./src/actionApproval.ts",
+      "import": "./src/actionApproval.ts"
     },
     "./git": {
       "types": "./src/git.ts",
@@ -178,6 +186,14 @@
     "./terminalLabels": {
       "types": "./src/terminalLabels.ts",
       "import": "./src/terminalLabels.ts"
+    },
+    "./terminalText": {
+      "types": "./src/terminalText.ts",
+      "import": "./src/terminalText.ts"
+    },
+    "./terminalProvider": {
+      "types": "./src/terminalProvider.ts",
+      "import": "./src/terminalProvider.ts"
     },
     "./preview": {
       "types": "./src/preview.ts",

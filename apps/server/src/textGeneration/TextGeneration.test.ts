@@ -22,6 +22,8 @@ const makeStubTextGeneration = (
     generateBranchName: () => Effect.die("generateBranchName stub not configured for this test"),
     generateThreadTitle: () => Effect.die("generateThreadTitle stub not configured for this test"),
     generatePlanRefresh: () => Effect.die("generatePlanRefresh stub not configured for this test"),
+    generateVmAgentTaskPrompt: () =>
+      Effect.die("generateVmAgentTaskPrompt stub not configured for this test"),
     ...overrides,
   });
 
@@ -39,7 +41,9 @@ const makeStubInstance = (
     displayName: undefined,
     enabled: true,
     snapshot: {} as ProviderInstance["snapshot"],
-    adapter: {} as ProviderInstance["adapter"],
+    adapter: {
+      capabilities: { textGeneration: true },
+    } as ProviderInstance["adapter"],
     textGeneration,
   }) satisfies ProviderInstance;
 
@@ -116,6 +120,43 @@ describe("makeTextGenerationFromRegistry", () => {
         expect(result.failure._tag).toBe("TextGenerationError");
         expect(result.failure.operation).toBe("generateBranchName");
         expect(result.failure.detail).toContain("missing_instance");
+      }
+    }),
+  );
+
+  it.effect("excludes a provider instance that advertises text generation as unsupported", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("external_without_text_generation");
+      let delegated = false;
+      const instance = {
+        ...makeStubInstance(
+          instanceId,
+          makeStubTextGeneration({
+            generateThreadTitle: () => {
+              delegated = true;
+              return Effect.succeed({ title: "must not run" });
+            },
+          }),
+        ),
+        adapter: {
+          capabilities: { textGeneration: false },
+        } as ProviderInstance["adapter"],
+      } satisfies ProviderInstance;
+      const tg = TextGeneration.makeTextGenerationFromRegistry(makeStubRegistry([instance]));
+
+      const result = yield* tg
+        .generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Name this thread",
+          modelSelection: createModelSelection(instanceId, "fake-model"),
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(delegated).toBe(false);
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe("TextGenerationError");
+        expect(result.failure.detail).toContain("does not advertise text-generation support");
       }
     }),
   );

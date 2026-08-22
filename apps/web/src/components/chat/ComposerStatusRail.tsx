@@ -9,7 +9,7 @@ export function ComposerStatusRail(props: {
 
   return (
     <div
-      className="chat-composer-status-container pointer-events-none relative z-20 mx-auto w-full max-w-6xl"
+      className="chat-composer-status-container chat-composer-measure pointer-events-none relative z-20"
       data-chat-composer-status-container="true"
     >
       <div className="chat-composer-status-rail" data-chat-composer-status-rail="true">

@@ -1,6 +1,6 @@
 import type { ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 
-const REFRESHABLE_USAGE_DRIVERS = new Set(["codex", "claudeAgent"]);
+const REFRESHABLE_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok"]);
 export const PROVIDER_USAGE_REFRESH_FAILURE_BACKOFF_MS = 30_000;
 
 export class ProviderUsageRefreshBackoffError extends Error {

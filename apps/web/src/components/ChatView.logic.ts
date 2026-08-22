@@ -2,8 +2,8 @@ import {
   type EnvironmentId,
   ProjectId,
   type ModelSelection,
+  type OrchestrationThreadPendingWork,
   type ProviderDriverKind,
-  type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
@@ -27,7 +27,6 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { RESUME_PROMPT } from "../resumePrompt";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
-export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
@@ -205,6 +204,39 @@ export function resolveVisibleServerThreadError(
   return serverError !== null && serverError === dismissedServerError ? null : serverError;
 }
 
+/**
+ * How long ago a thread's recorded error happened, in words.
+ *
+ * The banner shows a provider's last error with no sense of when it happened,
+ * and that error is carried indefinitely — a thread that failed once and then
+ * sat idle keeps presenting it. A two-hour-old spawn failure read as a live
+ * one and sent a user debugging a CLI that was working perfectly.
+ *
+ * Returns null when there is no usable timestamp, or when the error is recent
+ * enough that saying "just now" adds nothing.
+ */
+export const RECENT_THREAD_ERROR_MS = 60_000;
+
+export function describeThreadErrorAge(
+  occurredAt: string | null | undefined,
+  nowMs: number,
+): string | null {
+  if (!occurredAt) return null;
+  const at = Date.parse(occurredAt);
+  if (!Number.isFinite(at)) return null;
+  const elapsed = nowMs - at;
+  // A clock that disagrees is not evidence of age; say nothing rather than
+  // claiming an error arrived from the future.
+  if (elapsed < RECENT_THREAD_ERROR_MS) return null;
+
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
   threadId: ThreadId;
   turnId?: TurnId;
@@ -216,20 +248,37 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
   };
 }
 
-export function reconcileMountedTerminalThreadIds(input: {
-  currentThreadIds: ReadonlyArray<string>;
-  openThreadIds: ReadonlyArray<string>;
-  activeThreadId: string | null;
-  activeThreadTerminalOpen: boolean;
-  maxHiddenThreadCount?: number;
-}): string[] {
-  return reconcileRetainedMountedThreadIds({
-    currentThreadIds: input.currentThreadIds,
-    openThreadIds: input.openThreadIds,
-    activeThreadId: input.activeThreadId,
-    activeThreadOpen: input.activeThreadTerminalOpen,
-    maxHiddenThreadCount: input.maxHiddenThreadCount ?? MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
-  });
+const INTERRUPTIBLE_PENDING_WORK_STATES: ReadonlySet<string> = new Set([
+  "pending",
+  "claimed",
+  "executing",
+  "sleeping",
+]);
+
+export function isThreadWorkInterruptible(input: {
+  readonly phase: SessionPhase;
+  readonly pendingWork: OrchestrationThreadPendingWork | null | undefined;
+}): boolean {
+  return (
+    input.phase === "running" ||
+    input.phase === "connecting" ||
+    (input.pendingWork?.kind === "active-turn-recovery" &&
+      INTERRUPTIBLE_PENDING_WORK_STATES.has(input.pendingWork.state))
+  );
+}
+
+export function shouldMountActiveTerminalDrawer(input: {
+  readonly hasActiveThread: boolean;
+  readonly embeddedSideChat: boolean;
+  readonly terminalOpen: boolean;
+  readonly terminalMainSurfaceActive: boolean;
+}): boolean {
+  return (
+    input.hasActiveThread &&
+    !input.embeddedSideChat &&
+    input.terminalOpen &&
+    !input.terminalMainSurfaceActive
+  );
 }
 
 export function reconcileRetainedMountedThreadIds(input: {
@@ -460,6 +509,33 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
   );
 }
 
+export function shouldCreateServerThreadForTerminalStart(input: {
+  readonly isLocalDraftThread: boolean;
+  readonly isServerThread: boolean;
+}): boolean {
+  return input.isLocalDraftThread && !input.isServerThread;
+}
+
+export function isThreadAlreadyExistsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("already exists") && /thread/i.test(message);
+}
+
+export function resolveDraftThreadCreateModelSelection(input: {
+  readonly composerModelSelection: ModelSelection | null | undefined;
+  readonly projectDefaultModelSelection: ModelSelection | null | undefined;
+}): ModelSelection | null {
+  const composer = input.composerModelSelection;
+  if (composer && composer.model.length > 0) {
+    return composer;
+  }
+  const projectDefault = input.projectDefaultModelSelection;
+  if (projectDefault && projectDefault.model.length > 0) {
+    return projectDefault;
+  }
+  return null;
+}
+
 // Provider selection controls the next composer submission. A currently
 // active turn keeps running on the provider that started it, but must not lock
 // the picker: users can choose a different provider for their queued follow-up.
@@ -469,47 +545,6 @@ export function deriveLockedProvider(_input: {
   threadProvider: string | null;
 }): ProviderDriverKind | null {
   return null;
-}
-
-export function getStartedThreadModelChangeBlockReason(input: {
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
-  hasStartedSession: boolean;
-  currentModelSelection: ModelSelection;
-  currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
-  nextModelSelection: ModelSelection;
-}): { title: string; description: string } | null {
-  if (!input.hasStartedSession) {
-    return null;
-  }
-  const currentModelSelection = {
-    ...input.currentModelSelection,
-    instanceId: input.currentProviderInstanceId ?? input.currentModelSelection.instanceId,
-  };
-  if (
-    currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
-    currentModelSelection.model === input.nextModelSelection.model
-  ) {
-    return null;
-  }
-  if (currentModelSelection.instanceId !== input.nextModelSelection.instanceId) {
-    return null;
-  }
-  const currentProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === currentModelSelection.instanceId,
-  );
-  const nextProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
-  );
-  if (
-    currentProvider?.requiresNewThreadForModelChange !== true &&
-    nextProvider?.requiresNewThreadForModelChange !== true
-  ) {
-    return null;
-  }
-  return {
-    title: "Start a new chat to change models",
-    description: "This provider does not allow switching models after a conversation has started.",
-  };
 }
 
 export async function waitForStartedServerThread(

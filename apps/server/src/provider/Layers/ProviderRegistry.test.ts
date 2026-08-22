@@ -548,10 +548,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           yield* Effect.yieldNow;
 
           const status = yield* Fiber.join(statusFiber);
-          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.status, "warning");
+          assert.strictEqual(status.installed, true);
           assert.strictEqual(
             status.message,
-            "Timed out while checking Codex app-server provider status.",
+            "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
           );
           assert.strictEqual(yield* Ref.get(killCalls), 1);
         }),

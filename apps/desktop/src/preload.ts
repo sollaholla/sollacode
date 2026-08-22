@@ -1,10 +1,11 @@
 import type {
   DesktopBridge,
+  DesktopOrchestratorBubbleState,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
 } from "@t3tools/contracts";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 
@@ -121,12 +122,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   saveThreadExportJson: (input) =>
     ipcRenderer.invoke(IpcChannels.SAVE_THREAD_EXPORT_JSON_CHANNEL, input),
   revealFile: (path) => ipcRenderer.invoke(IpcChannels.REVEAL_FILE_CHANNEL, path),
+  writeComposerClipboard: (input) =>
+    ipcRenderer.invoke(IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL, input),
   setPushToTalkSystemAudioMuted: (muted) =>
     ipcRenderer.invoke(IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL, muted),
   captureRemoteControlFrame: (input) =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL, input),
   listRemoteControlCaptureSources: () =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL, {}),
+  activateRemoteControlHost: () =>
+    ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_ACTIVATE_HOST_CHANNEL, {}),
   sendRemoteControlInput: (payload) =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_SEND_INPUT_CHANNEL, payload),
   resetRemoteControlInput: () =>
@@ -134,6 +139,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   readRemoteControlPointerLock: () =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_POINTER_LOCK_CHANNEL, {}),
   startFileDrag: (path) => ipcRenderer.invoke(IpcChannels.START_FILE_DRAG_CHANNEL, path),
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;
@@ -164,6 +176,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return () => {
       ipcRenderer.removeListener(IpcChannels.INTENTIONAL_SHUTDOWN_CHANNEL, wrappedListener);
     };
+  },
+  permissions: {
+    getSnapshot: () => ipcRenderer.invoke(IpcChannels.GET_DESKTOP_PERMISSIONS_CHANNEL),
+    request: (input) => ipcRenderer.invoke(IpcChannels.REQUEST_DESKTOP_PERMISSION_CHANNEL, input),
+    openSystemSettings: (input) =>
+      ipcRenderer.invoke(IpcChannels.OPEN_DESKTOP_PERMISSION_SETTINGS_CHANNEL, input),
+    completeOnboarding: () =>
+      ipcRenderer.invoke(IpcChannels.COMPLETE_DESKTOP_PERMISSIONS_ONBOARDING_CHANNEL),
+    relaunch: () => ipcRenderer.invoke(IpcChannels.RELAUNCH_FOR_DESKTOP_PERMISSIONS_CHANNEL),
   },
   preview: {
     createTab: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_CREATE_TAB_CHANNEL, { tabId }),
@@ -270,6 +291,31 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.on(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
       return () =>
         ipcRenderer.removeListener(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
+    },
+  },
+  orchestratorBubble: {
+    setVisible: (visible) =>
+      ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_SET_VISIBLE_CHANNEL, visible),
+    publishState: (state) =>
+      ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_PUBLISH_STATE_CHANNEL, state),
+    onState: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+        if (typeof state !== "object" || state === null) return;
+        listener(state as DesktopOrchestratorBubbleState);
+      };
+      ipcRenderer.on(IpcChannels.ORCHESTRATOR_BUBBLE_STATE_CHANNEL, wrappedListener);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.ORCHESTRATOR_BUBBLE_STATE_CHANNEL, wrappedListener);
+    },
+    move: (position) => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_MOVE_CHANNEL, position),
+    dragEnd: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_DRAG_END_CHANNEL),
+    open: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_OPEN_CHANNEL),
+    toggleVoice: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_TOGGLE_VOICE_CHANNEL),
+    onVoiceToggleRequested: (listener) => {
+      const wrappedListener = () => listener();
+      ipcRenderer.on(IpcChannels.ORCHESTRATOR_VOICE_TOGGLE_CHANNEL, wrappedListener);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.ORCHESTRATOR_VOICE_TOGGLE_CHANNEL, wrappedListener);
     },
   },
 } satisfies DesktopBridge);

@@ -31,6 +31,7 @@ import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
+import { disabledCaptureFeatures } from "./app/DesktopCaptureCompatibility.ts";
 import * as DesktopAppIdentity from "./app/DesktopAppIdentity.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
@@ -56,9 +57,18 @@ import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublishe
 import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
+import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
 import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
+
+// This must happen synchronously during module initialization. Windows shell
+// environment discovery is asynchronous and can otherwise cross Electron's
+// ready boundary before the capture backend override is registered.
+const disabledCaptureFeatureList = disabledCaptureFeatures(process.platform);
+if (disabledCaptureFeatureList) {
+  Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
+}
 
 // Custom schemes must be registered before Electron becomes ready. Marking
 // them standard and CORS-capable gives renderer assets a real same-origin
@@ -165,7 +175,7 @@ const desktopPreviewLayer = PreviewManager.layer.pipe(
   Layer.provideMerge(desktopFoundationLayer),
 );
 
-const desktopWindowLayer = DesktopWindow.layer.pipe(
+const desktopWindowLayer = Layer.mergeAll(DesktopWindow.layer, OrchestratorBubbleWindow.layer).pipe(
   Layer.provideMerge(desktopServerExposureLayer),
   Layer.provideMerge(desktopPreviewLayer),
 );

@@ -88,27 +88,28 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
   );
 
   const sendTurn = vi.fn(
@@ -1118,34 +1119,80 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("dies when an active session conflicts with its persisted binding", () =>
+  it.effect("omits leftover sessions that conflict with the persisted binding", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
       const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
-      const threadId = asThreadId("thread-binding-mismatch");
+      const healthyThreadId = asThreadId("thread-healthy");
+      const leftoverThreadId = asThreadId("thread-binding-mismatch");
 
-      yield* provider.startSession(threadId, {
+      yield* provider.startSession(healthyThreadId, {
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
-        threadId,
+        threadId: healthyThreadId,
+        cwd: "/tmp/project-healthy",
+        runtimeMode: "full-access",
+      });
+      yield* provider.startSession(leftoverThreadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: leftoverThreadId,
         cwd: "/tmp/project-binding-mismatch",
         runtimeMode: "full-access",
       });
       yield* directory.upsert({
-        threadId,
+        threadId: leftoverThreadId,
         provider: ProviderDriverKind.make("claudeAgent"),
         providerInstanceId: claudeAgentInstanceId,
         runtimeMode: "full-access",
       });
 
-      const exit = yield* Effect.exit(provider.listSessions());
-      assert.equal(Exit.hasDies(exit), true);
+      const sessions = yield* provider.listSessions();
+      assert.equal(
+        sessions.some((session) => session.threadId === leftoverThreadId),
+        false,
+      );
+      assert.equal(
+        sessions.some((session) => session.threadId === healthyThreadId),
+        true,
+      );
+
       yield* directory.upsert({
-        threadId,
+        threadId: leftoverThreadId,
         provider: ProviderDriverKind.make("codex"),
         providerInstanceId: codexInstanceId,
         runtimeMode: "full-access",
       });
+    }),
+  );
+
+  it.effect("stopSession also stops leftover sessions on other providers", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-stop-leftover");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-stop-leftover",
+        runtimeMode: "full-access",
+      });
+      yield* routing.claude.startSession({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-stop-leftover",
+        runtimeMode: "full-access",
+      });
+
+      routing.codex.stopSession.mockClear();
+      routing.claude.stopSession.mockClear();
+
+      yield* provider.stopSession({ threadId });
+
+      assert.deepEqual(routing.codex.stopSession.mock.calls, [[threadId]]);
+      assert.deepEqual(routing.claude.stopSession.mock.calls, [[threadId]]);
     }),
   );
 
@@ -1279,6 +1326,122 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("recovers sendTurn from cwd alone when no resume cursor is persisted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-send-turn-fresh");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-turn-fresh",
+        runtimeMode: "full-access",
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: null,
+        runtimePayload: { cwd: "/tmp/project-send-turn-fresh" },
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      yield* provider.sendTurn({
+        threadId,
+        input: "continue after restart",
+        attachments: [],
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      const startPayload = routing.codex.startSession.mock.calls[0]?.[0] as {
+        cwd?: string;
+        resumeCursor?: unknown;
+      };
+      assert.equal(startPayload.cwd, "/tmp/project-send-turn-fresh");
+      assert.equal(startPayload.resumeCursor, undefined);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("starts a fresh session when persisted resume fails during sendTurn recovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const initial = yield* provider.startSession(asThreadId("thread-send-turn-resume-fail"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-send-turn-resume-fail"),
+        cwd: "/tmp/project-send-turn-resume-fail",
+        runtimeMode: "full-access",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.startSession.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: String(CODEX_DRIVER),
+            method: "session/load",
+            detail: "unknown session",
+          }),
+        ),
+      );
+
+      yield* provider.sendTurn({
+        threadId: initial.threadId,
+        input: "continue",
+        attachments: [],
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 2);
+      const resumed = routing.codex.startSession.mock.calls[0]?.[0] as { resumeCursor?: unknown };
+      const fresh = routing.codex.startSession.mock.calls[1]?.[0] as {
+        cwd?: string;
+        resumeCursor?: unknown;
+      };
+      assert.deepEqual(resumed.resumeCursor, initial.resumeCursor);
+      assert.equal(fresh.resumeCursor, undefined);
+      assert.equal(fresh.cwd, "/tmp/project-send-turn-resume-fail");
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("retries sendTurn after the adapter reports the session missing", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const initial = yield* provider.startSession(asThreadId("thread-send-turn-missing"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-send-turn-missing"),
+        cwd: "/tmp/project-send-turn-missing",
+        runtimeMode: "full-access",
+      });
+
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input: ProviderSendTurnInput) =>
+        Effect.fail(
+          new ProviderAdapterSessionNotFoundError({
+            provider: String(CODEX_DRIVER),
+            threadId: input.threadId,
+          }),
+        ),
+      );
+
+      yield* provider.sendTurn({
+        threadId: initial.threadId,
+        input: "hello after restart",
+        attachments: [],
+      });
+
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
     }),
   );
 

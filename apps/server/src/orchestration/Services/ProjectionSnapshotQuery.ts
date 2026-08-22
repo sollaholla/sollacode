@@ -29,6 +29,7 @@ import type {
   ProjectId,
   ThreadId,
   TurnId,
+  VmAgentDelegationId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
@@ -93,6 +94,16 @@ export interface ProjectionPersistedTurnStartContext {
 export interface ProjectionProviderTurnForMessage {
   readonly turnId: TurnId;
   readonly state: OrchestrationLatestTurn["state"];
+}
+
+/**
+ * Server-owned delegation provenance for the exact turn currently running on
+ * a thread. This is intentionally narrower than "is this an agent thread": a
+ * named agent can also be serving an unrelated user turn at the same time a
+ * delegation remains queued for it.
+ */
+export interface ProjectionActiveTurnDelegation {
+  readonly delegationId: VmAgentDelegationId;
 }
 
 /**
@@ -240,6 +251,11 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     turnId: TurnId,
   ) => Effect.Effect<Option.Option<ProjectionProviderTurnForMessage>, ProjectionRepositoryError>;
+
+  /** Resolve delegation provenance from the active turn's exact input message. */
+  readonly getActiveTurnDelegation?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionActiveTurnDelegation>, ProjectionRepositoryError>;
 
   /**
    * Read only the bounded message/plan state needed while ingesting provider

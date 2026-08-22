@@ -408,6 +408,11 @@ describe("AcpSessionRuntime", () => {
             args: mockAgentArgs,
           },
           cwd: process.cwd(),
+          clientCapabilities: {
+            _meta: {
+              parameterizedModelPicker: true,
+            },
+          },
           clientInfo: { name: "t3-test", version: "0.0.0" },
           requestLogger: (event) =>
             Effect.sync(() => {
@@ -443,6 +448,11 @@ describe("AcpSessionRuntime", () => {
             args: mockAgentArgs,
           },
           cwd: process.cwd(),
+          clientCapabilities: {
+            _meta: {
+              parameterizedModelPicker: true,
+            },
+          },
           clientInfo: { name: "t3-test", version: "0.0.0" },
           requestLogger: (event) =>
             Effect.sync(() => {
@@ -656,7 +666,7 @@ describe("AcpSessionRuntime", () => {
         expect(error.message).toContain(
           'Invalid value "composer-2[fast=false]" for session config option "model"',
         );
-        expect(error.message).toContain("composer-2[fast=true]");
+        expect(error.message).toContain("composer-2");
       }
 
       const recordedRequests = NodeFS.readFileSync(requestLogPath, "utf8")
@@ -683,6 +693,11 @@ describe("AcpSessionRuntime", () => {
             },
           },
           cwd: process.cwd(),
+          clientCapabilities: {
+            _meta: {
+              parameterizedModelPicker: true,
+            },
+          },
           clientInfo: { name: "t3-test", version: "0.0.0" },
         }),
       ),

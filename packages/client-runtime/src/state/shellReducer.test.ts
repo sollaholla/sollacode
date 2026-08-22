@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import type { OrchestrationShellSnapshot, OrchestrationShellStreamEvent } from "@t3tools/contracts";
 
-import { applyShellStreamEvent } from "./shellReducer.ts";
+import { applyShellPendingWorkItem, applyShellStreamEvent } from "./shellReducer.ts";
 
 const baseSnapshot: OrchestrationShellSnapshot = {
   snapshotSequence: 0,
@@ -181,5 +181,74 @@ describe("applyShellStreamEvent", () => {
     const unknownEvent = { kind: "unknown-future-event", sequence: 99 } as any;
     const next = applyShellStreamEvent(baseSnapshot, unknownEvent);
     expect(next).toBe(baseSnapshot);
+  });
+});
+
+describe("applyShellPendingWorkItem", () => {
+  const queued = {
+    kind: "startup-resume",
+    state: "pending",
+    since: "2026-04-01T00:00:00.000Z",
+  } as const;
+  const snapshotWithQueuedWork: OrchestrationShellSnapshot = {
+    ...baseSnapshot,
+    snapshotSequence: 7,
+    threads: [{ ...stubThread, pendingWork: queued }],
+  };
+
+  // The bug this whole item exists for: the scheduler resolves the obligation
+  // after the thread's last event, so nothing else will ever correct the row.
+  it("clears queued work the scheduler resolved silently", () => {
+    const next = applyShellPendingWorkItem(snapshotWithQueuedWork, {
+      kind: "thread-pending-work",
+      threadId: stubThread.id,
+      pendingWork: null,
+    });
+
+    expect(next.threads[0]?.pendingWork).toBeNull();
+  });
+
+  it("does not advance the snapshot sequence", () => {
+    const next = applyShellPendingWorkItem(snapshotWithQueuedWork, {
+      kind: "thread-pending-work",
+      threadId: stubThread.id,
+      pendingWork: null,
+    });
+
+    expect(next.snapshotSequence).toBe(7);
+  });
+
+  it("replaces one queued obligation with another", () => {
+    const next = applyShellPendingWorkItem(snapshotWithQueuedWork, {
+      kind: "thread-pending-work",
+      threadId: stubThread.id,
+      pendingWork: { ...queued, kind: "agent-continuation", state: "sleeping" },
+    });
+
+    expect(next.threads[0]?.pendingWork).toEqual({
+      kind: "agent-continuation",
+      state: "sleeping",
+      since: queued.since,
+    });
+  });
+
+  it("keeps the same snapshot when the value already matches", () => {
+    const next = applyShellPendingWorkItem(snapshotWithQueuedWork, {
+      kind: "thread-pending-work",
+      threadId: stubThread.id,
+      pendingWork: { ...queued },
+    });
+
+    expect(next).toBe(snapshotWithQueuedWork);
+  });
+
+  it("ignores a thread this client does not hold", () => {
+    const next = applyShellPendingWorkItem(snapshotWithQueuedWork, {
+      kind: "thread-pending-work",
+      threadId: ThreadId.make("thread-elsewhere"),
+      pendingWork: null,
+    });
+
+    expect(next).toBe(snapshotWithQueuedWork);
   });
 });

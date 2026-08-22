@@ -1,0 +1,198 @@
+import {
+  ThreadId,
+  VmAgentId,
+  VmAgentTaskRunId,
+  VmId,
+  type VmAgent,
+  type VmAgentWorkspaceSnapshot,
+} from "@t3tools/contracts";
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { VmAgentStoreLive } from "../persistence/Layers/VmAgents.ts";
+import { VmAgentWorkspaceStoreLive } from "../persistence/Layers/VmAgentWorkspaces.ts";
+import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
+import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
+import { VmAgentWorkspace, VmAgentWorkspaceLive } from "./VmAgentWorkspace.ts";
+
+const stores = Layer.mergeAll(VmAgentStoreLive, VmAgentWorkspaceStoreLive).pipe(
+  Layer.provideMerge(SqlitePersistenceMemory),
+);
+const workspaceLayer = it.layer(VmAgentWorkspaceLive.pipe(Layer.provideMerge(stores)));
+
+const insertAgent = (suffix: string) =>
+  Effect.gen(function* () {
+    const store = yield* VmAgentStore;
+    const createdAt = "2026-08-21T20:00:00.000Z";
+    const agent: VmAgent = {
+      vmAgentId: VmAgentId.make(`agent-${suffix}`),
+      name: `Agent ${suffix}`,
+      handle: `agent-${suffix}`,
+      purpose: "Test durable work",
+      vmId: VmId.make(`vm-${suffix}`),
+      threadId: ThreadId.make(`thread-${suffix}`),
+      status: "running",
+      controlMode: "agent",
+      guestIp: "127.0.0.1",
+      lastError: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    yield* store.insert(agent);
+    return agent;
+  });
+
+workspaceLayer("VmAgentWorkspace", (it) => {
+  it.effect("creates default schedule state and enforces approval for agent recurrence", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("approval");
+
+      yield* workspace.ensure(agent.vmAgentId);
+      const initial = yield* workspace.snapshot(agent.vmAgentId);
+      assert.strictEqual(initial.artifact?.definition.kind, "schedule");
+      assert.strictEqual(initial.notificationPreferences.enabled, true);
+
+      const task = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Daily dashboard",
+        prompt: "Check the dashboard and summarize changes.",
+        completionCriteria: ["Summary recorded"],
+        schedule: { kind: "interval", everyMinutes: 1_440 },
+        createdBy: "agent",
+        activate: true,
+      });
+      assert.strictEqual(task.status, "draft");
+      assert.strictEqual(task.approvalState, "pending");
+      assert.strictEqual(task.nextRunAt, null);
+
+      const approved = yield* workspace.updateTask({
+        vmAgentId: agent.vmAgentId,
+        taskId: task.taskId,
+        status: "active",
+        approvalState: "approved",
+      });
+      assert.strictEqual(approved.status, "active");
+      assert.strictEqual(approved.approvalState, "approved");
+      assert.isNotNull(approved.nextRunAt);
+      yield* workspace.updateTask({
+        vmAgentId: agent.vmAgentId,
+        taskId: task.taskId,
+        status: "paused",
+      });
+    }),
+  );
+
+  it.effect("publishes complete snapshots after mutations", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("stream");
+      const snapshots: VmAgentWorkspaceSnapshot[] = [];
+      const unsubscribe = yield* workspace.subscribe(agent.vmAgentId, (snapshot) =>
+        Effect.sync(() => snapshots.push(snapshot)),
+      );
+      yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Manual check",
+        prompt: "Check the current page.",
+        completionCriteria: [],
+        schedule: null,
+        createdBy: "user",
+      });
+      unsubscribe();
+
+      assert.strictEqual(snapshots.length, 2);
+      assert.strictEqual(snapshots[0]?.tasks.length, 0);
+      assert.strictEqual(snapshots[1]?.tasks[0]?.title, "Manual check");
+    }),
+  );
+
+  it.effect("claims only one due run per agent and advances recurrence", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const store = yield* VmAgentWorkspaceStore;
+      const agent = yield* insertAgent("claim");
+      const first = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "First",
+        prompt: "Run first.",
+        completionCriteria: [],
+        schedule: { kind: "once", runAt: "2020-01-01T00:00:00.000Z" },
+        createdBy: "user",
+      });
+      yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Second",
+        prompt: "Run second.",
+        completionCriteria: [],
+        schedule: { kind: "once", runAt: "2020-01-01T00:01:00.000Z" },
+        createdBy: "user",
+      });
+
+      const claimed = yield* store.claimNextDue({
+        runId: VmAgentTaskRunId.make("run-first"),
+        now: "2026-08-21T21:00:00.000Z",
+      });
+      assert.isTrue(Option.isSome(claimed));
+      assert.strictEqual(Option.getOrThrow(claimed).task.taskId, first.taskId);
+
+      const blocked = yield* store.claimNextDue({
+        runId: VmAgentTaskRunId.make("run-second"),
+        now: "2026-08-21T21:00:00.000Z",
+      });
+      assert.isTrue(Option.isNone(blocked));
+    }),
+  );
+
+  it.effect("honors notification preferences and rate-limits direct agent messages", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("notify");
+      yield* workspace.ensure(agent.vmAgentId);
+      yield* workspace.updateNotificationPreferences({
+        vmAgentId: agent.vmAgentId,
+        enabled: false,
+        taskCompletions: true,
+        taskFailures: true,
+        agentMessages: true,
+      });
+      const suppressed = yield* workspace.notify({
+        vmAgentId: agent.vmAgentId,
+        kind: "agent-message",
+        title: "Hidden",
+        body: "This is disabled.",
+      });
+      assert.isFalse(suppressed);
+      assert.strictEqual((yield* workspace.snapshot(agent.vmAgentId)).notifications.length, 0);
+
+      yield* workspace.updateNotificationPreferences({
+        vmAgentId: agent.vmAgentId,
+        enabled: true,
+        taskCompletions: true,
+        taskFailures: true,
+        agentMessages: true,
+      });
+      for (let index = 0; index < 10; index += 1) {
+        const delivered = yield* workspace.notify({
+          vmAgentId: agent.vmAgentId,
+          kind: "agent-message",
+          title: `Message ${index}`,
+          body: "Update",
+        });
+        assert.isTrue(delivered);
+      }
+      const error = yield* Effect.flip(
+        workspace.notify({
+          vmAgentId: agent.vmAgentId,
+          kind: "agent-message",
+          title: "Too many",
+          body: "Update",
+        }),
+      );
+      assert.strictEqual(error._tag, "VmAgentWorkspaceOperationError");
+    }),
+  );
+});

@@ -10,6 +10,11 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import {
+  SOLLA_MCP_SERVER_INSTRUCTIONS,
+  SOLLA_TERMINAL_MCP_SERVER_INSTRUCTIONS,
+  TERMINAL_AGENT_PROVIDER_INSTANCE_ID,
+} from "./McpServerInstructions.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
@@ -48,6 +53,39 @@ it("normalizes empty successful notification responses to accepted", () => {
     HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: 1, result: {} }),
   );
   expect(resultResponse.status).toBe(200);
+});
+
+it("adds scope-aware host instructions only to MCP initialize responses", () => {
+  const initialize = HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: 1,
+    result: {
+      protocolVersion: "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "Solla Code", version: "1.0.0" },
+    },
+  });
+  const terminalResponse = McpHttpServer.normalizeMcpHttpResponse(initialize, {
+    ...invocation,
+    providerInstanceId: ProviderInstanceId.make(TERMINAL_AGENT_PROVIDER_INSTANCE_ID),
+  });
+  expect(terminalResponse.body._tag).toBe("Uint8Array");
+  if (terminalResponse.body._tag !== "Uint8Array") return;
+  const terminalPayload = JSON.parse(new TextDecoder().decode(terminalResponse.body.body));
+  expect(terminalPayload.result.instructions).toBe(SOLLA_TERMINAL_MCP_SERVER_INSTRUCTIONS);
+
+  const providerResponse = McpHttpServer.normalizeMcpHttpResponse(initialize, invocation);
+  expect(providerResponse.body._tag).toBe("Uint8Array");
+  if (providerResponse.body._tag !== "Uint8Array") return;
+  const providerPayload = JSON.parse(new TextDecoder().decode(providerResponse.body.body));
+  expect(providerPayload.result.instructions).toBe(SOLLA_MCP_SERVER_INSTRUCTIONS);
+
+  const toolResponse = HttpServerResponse.jsonUnsafe({
+    jsonrpc: "2.0",
+    id: 2,
+    result: { content: [] },
+  });
+  expect(McpHttpServer.normalizeMcpHttpResponse(toolResponse, invocation)).toBe(toolResponse);
 });
 
 it.effect("returns bounded structural preview snapshot failures", () =>

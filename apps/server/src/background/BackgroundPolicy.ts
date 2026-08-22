@@ -147,6 +147,45 @@ function isForegroundLease(lease: ClientActivityLease, now: DateTime.Utc): boole
   return isLeaseActive(lease, now) && lease.visible && (lease.focused || lease.recentlyInteracted);
 }
 
+export function selectTerminalLayoutMaster(
+  leases: ReadonlyArray<ClientActivityLease>,
+  now: DateTime.Utc,
+): ClientActivityLease | undefined {
+  return leases
+    .filter((lease) => isLeaseActive(lease, now) && lease.visible && lease.focused)
+    .toSorted((left, right) => {
+      const priority = (lease: ClientActivityLease) =>
+        lease.environmentHost === true
+          ? 3
+          : lease.clientKind === "desktop-renderer"
+            ? 2
+            : lease.clientKind === "web"
+              ? 1
+              : 0;
+      const priorityOrder = priority(right) - priority(left);
+      if (priorityOrder !== 0) return priorityOrder;
+      const clientOrder = left.clientId.localeCompare(right.clientId);
+      if (clientOrder !== 0) return clientOrder;
+      const sessionOrder = String(left.sessionId).localeCompare(String(right.sessionId));
+      if (sessionOrder !== 0) return sessionOrder;
+      return Number(left.rpcClientId) - Number(right.rpcClientId);
+    })[0];
+}
+
+export function mayPublishTerminalLayout(
+  policy: BackgroundPolicy["Service"],
+  sessionId: AuthSessionId,
+  rpcClientId: RpcClientId,
+): Effect.Effect<boolean> {
+  return Effect.map(policy.snapshot, (current) => {
+    const master = selectTerminalLayoutMaster(current.leases, current.updatedAt);
+    // Preserve compatibility before any activity reporter has established a
+    // lease. Once clients report, an unfocused window must not keep writing.
+    if (master === undefined) return current.leases.length === 0;
+    return master.sessionId === sessionId && master.rpcClientId === rpcClientId;
+  });
+}
+
 function leaseHasScope(lease: ClientActivityLease, scope: BackgroundScope): boolean {
   const key = scopeKey(scope);
   return lease.scopes.some((leaseScope) => scopeKey(leaseScope) === key);
@@ -303,6 +342,9 @@ export const make = Effect.fn("background.policy.make")(function* () {
           rpcClientId,
           clientId: input.clientId,
           clientKind: input.clientKind,
+          ...(input.environmentHost !== undefined
+            ? { environmentHost: input.environmentHost }
+            : {}),
           visible: input.visible,
           focused: input.focused,
           recentlyInteracted: input.recentlyInteracted,

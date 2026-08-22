@@ -230,6 +230,7 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly timeout: Duration.Duration;
+  readonly reportFailure?: boolean;
   readonly shell?: boolean;
 }): Effect.fn.Return<string, never, ChildProcessSpawner.ChildProcessSpawner> {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -256,7 +257,9 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
       ),
       Effect.catchTags({
         DesktopShellEnvironmentCommandError: (error) =>
-          logShellEnvironmentCommandError(error).pipe(Effect.as("")),
+          input.reportFailure === false
+            ? Effect.succeed("")
+            : logShellEnvironmentCommandError(error).pipe(Effect.as("")),
       }),
       Effect.timeoutOption(input.timeout),
     );
@@ -270,7 +273,9 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
     argumentCount: input.args.length,
     timeoutMs: Duration.toMillis(input.timeout),
   });
-  yield* logShellEnvironmentCommandError(error);
+  if (input.reportFailure !== false) {
+    yield* logShellEnvironmentCommandError(error);
+  }
   return "";
 });
 
@@ -309,11 +314,15 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
       captureWindowsEnvironmentCommand(names),
     ];
 
-    for (const command of WINDOWS_SHELL_CANDIDATES) {
+    for (const [index, command] of WINDOWS_SHELL_CANDIDATES.entries()) {
       const output = yield* runCommandOutput({
         probe: options.loadProfile ? "powershell-profile" : "powershell-no-profile",
         command,
         args,
+        // PowerShell 7 is optional on Windows. A missing `pwsh.exe` is an
+        // expected candidate miss, so only report a failure after the built-in
+        // Windows PowerShell fallback also fails.
+        reportFailure: index === WINDOWS_SHELL_CANDIDATES.length - 1,
         timeout: LOGIN_SHELL_TIMEOUT,
       });
       const environment = extractEnvironment(output, names);

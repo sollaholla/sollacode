@@ -37,6 +37,12 @@ export interface DesktopSettings {
   // this requires a desktop restart because the pool's primary spec is
   // chosen once at layer init.
   readonly wslOnly: boolean;
+  // Resting position of the floating orchestrator voice orb (top-left corner,
+  // absolute screen coordinates). Null until the user first drags it.
+  readonly orchestratorBubblePosition: DesktopBubblePosition | null;
+  // Version of the macOS permission explainer the user has completed or
+  // skipped. Zero means the current onboarding has not been shown yet.
+  readonly permissionSetupVersion: number;
 }
 
 export interface DesktopSettingsChange {
@@ -61,6 +67,12 @@ export const DEFAULT_MAIN_WINDOW_SIZE = {
   height: 780,
 } as const;
 
+export const DesktopBubblePositionSchema = Schema.Struct({
+  x: Schema.Int,
+  y: Schema.Int,
+});
+export type DesktopBubblePosition = typeof DesktopBubblePositionSchema.Type;
+
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   mainWindowBounds: null,
   mainWindowMaximized: false,
@@ -72,6 +84,8 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   wslBackendEnabled: false,
   wslDistro: null,
   wslOnly: false,
+  orchestratorBubblePosition: null,
+  permissionSetupVersion: 0,
 };
 
 const DesktopWindowBoundsDocument = Schema.Struct({
@@ -94,6 +108,10 @@ const DesktopSettingsDocument = Schema.Struct({
   wslMode: Schema.optionalKey(Schema.Literals(["local", "wsl"])),
   wslDistro: Schema.optionalKey(Schema.NullOr(Schema.String)),
   wslOnly: Schema.optionalKey(Schema.Boolean),
+  orchestratorBubblePosition: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ x: Schema.Number, y: Schema.Number })),
+  ),
+  permissionSetupVersion: Schema.optionalKey(Schema.Number),
 });
 
 type DesktopSettingsDocument = typeof DesktopSettingsDocument.Type;
@@ -103,6 +121,7 @@ const DesktopSettingsJson = fromLenientJson(DesktopSettingsDocument);
 const decodeDesktopSettingsJson = Schema.decodeEffect(DesktopSettingsJson);
 const encodeDesktopSettingsJson = Schema.encodeEffect(DesktopSettingsJson);
 const decodeDesktopWindowBounds = Schema.decodeUnknownOption(DesktopWindowBoundsSchema);
+const decodeDesktopBubblePosition = Schema.decodeUnknownOption(DesktopBubblePositionSchema);
 const desktopWindowBoundsEquivalence = Schema.toEquivalence(DesktopWindowBoundsSchema);
 
 const settingsChange = (settings: DesktopSettings, changed: boolean): DesktopSettingsChange => ({
@@ -140,6 +159,12 @@ export class DesktopAppSettings extends Context.Service<
     readonly setMainWindowBounds: (
       bounds: DesktopWindowBounds,
       isMaximized: boolean,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
+    readonly setOrchestratorBubblePosition: (
+      position: DesktopBubblePosition,
+    ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
+    readonly setPermissionSetupVersion: (
+      version: number,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
     readonly setServerExposureMode: (
       mode: DesktopServerExposureMode,
@@ -198,6 +223,15 @@ function normalizeDesktopSettingsDocument(parsed: DesktopSettingsDocument): Desk
     wslBackendEnabled,
     wslDistro: normalizeWslDistro(parsed.wslDistro),
     wslOnly: parsed.wslOnly === true,
+    orchestratorBubblePosition: Option.getOrNull(
+      decodeDesktopBubblePosition(parsed.orchestratorBubblePosition),
+    ),
+    permissionSetupVersion:
+      typeof parsed.permissionSetupVersion === "number" &&
+      Number.isInteger(parsed.permissionSetupVersion) &&
+      parsed.permissionSetupVersion >= 0
+        ? parsed.permissionSetupVersion
+        : 0,
   };
 }
 
@@ -231,8 +265,35 @@ function toDesktopSettingsDocument(
   if (settings.wslOnly !== defaults.wslOnly) {
     document.wslOnly = settings.wslOnly;
   }
+  if (settings.orchestratorBubblePosition !== null) {
+    document.orchestratorBubblePosition = settings.orchestratorBubblePosition;
+  }
+  if (settings.permissionSetupVersion !== defaults.permissionSetupVersion) {
+    document.permissionSetupVersion = settings.permissionSetupVersion;
+  }
 
   return document;
+}
+
+function setOrchestratorBubblePosition(
+  settings: DesktopSettings,
+  position: DesktopBubblePosition,
+): DesktopSettings {
+  return settings.orchestratorBubblePosition !== null &&
+    settings.orchestratorBubblePosition.x === position.x &&
+    settings.orchestratorBubblePosition.y === position.y
+    ? settings
+    : {
+        ...settings,
+        orchestratorBubblePosition: position,
+      };
+}
+
+function setPermissionSetupVersion(settings: DesktopSettings, version: number): DesktopSettings {
+  if (!Number.isInteger(version) || version < 0 || settings.permissionSetupVersion === version) {
+    return settings;
+  }
+  return { ...settings, permissionSetupVersion: version };
 }
 
 function setServerExposureMode(
@@ -451,6 +512,18 @@ export const make = Effect.gen(function* () {
           },
         }),
       ),
+    setOrchestratorBubblePosition: (position) =>
+      persist((settings) => setOrchestratorBubblePosition(settings, position)).pipe(
+        Effect.withSpan("desktop.settings.setOrchestratorBubblePosition", {
+          attributes: { x: position.x, y: position.y },
+        }),
+      ),
+    setPermissionSetupVersion: (version) =>
+      persist((settings) => setPermissionSetupVersion(settings, version)).pipe(
+        Effect.withSpan("desktop.settings.setPermissionSetupVersion", {
+          attributes: { version },
+        }),
+      ),
     setServerExposureMode: (mode) =>
       persist((settings) => setServerExposureMode(settings, mode)).pipe(
         Effect.withSpan("desktop.settings.setServerExposureMode", { attributes: { mode } }),
@@ -506,6 +579,10 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
         load: SynchronizedRef.get(settingsRef),
         setMainWindowBounds: (bounds, isMaximized) =>
           update((settings) => setMainWindowBounds(settings, bounds, isMaximized)),
+        setOrchestratorBubblePosition: (position) =>
+          update((settings) => setOrchestratorBubblePosition(settings, position)),
+        setPermissionSetupVersion: (version) =>
+          update((settings) => setPermissionSetupVersion(settings, version)),
         setServerExposureMode: (mode) =>
           update((settings) => setServerExposureMode(settings, mode)),
         setTailscaleServe: (input) => update((settings) => setTailscaleServe(settings, input)),

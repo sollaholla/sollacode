@@ -34,6 +34,7 @@ import {
   ThreadUnsnoozedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadSessionStopRequestedPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 
@@ -589,6 +590,8 @@ export function projectEvent(
             role: payload.role,
             text: payload.text,
             ...(payload.inputOrigin !== undefined ? { inputOrigin: payload.inputOrigin } : {}),
+            ...(payload.delegationId !== undefined ? { delegationId: payload.delegationId } : {}),
+            ...(payload.voiceTranscript === true ? { voiceTranscript: true } : {}),
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
@@ -626,6 +629,46 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.session-stop-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadSessionStopRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread?.session) {
+          return nextBase;
+        }
+        const { failureKind: _failureKind, ...sessionWithoutFailure } = thread.session;
+        const session: OrchestrationSession = {
+          ...sessionWithoutFailure,
+          status: "stopped",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: payload.createdAt,
+        };
+        const settledTurnState = settledTurnStateForSessionStatus(session.status);
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            session,
+            latestTurn:
+              thread.latestTurn !== null &&
+              thread.latestTurn.state === "running" &&
+              settledTurnState !== null
+                ? {
+                    ...thread.latestTurn,
+                    state: settledTurnState,
+                    completedAt: session.updatedAt,
+                  }
+                : thread.latestTurn,
             updatedAt: event.occurredAt,
           }),
         };

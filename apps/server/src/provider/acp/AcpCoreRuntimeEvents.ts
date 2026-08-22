@@ -220,6 +220,7 @@ export function makeAcpContentDeltaEvent(input: {
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
   readonly text: string;
+  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   return {
@@ -230,8 +231,35 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
+    },
+    raw: {
+      source: "acp.jsonrpc",
+      method: "session/update",
+      payload: input.rawPayload,
+    },
+  };
+}
+
+export function makeAcpReasoningItemEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderDriverKind;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly rawPayload: unknown;
+}): ProviderRuntimeEvent {
+  return {
+    type: "item.updated",
+    ...input.stamp,
+    provider: input.provider,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    itemId: RuntimeItemId.make(`${input.threadId}:reasoning`),
+    payload: {
+      itemType: "reasoning",
+      status: "inProgress",
+      title: "Thinking",
     },
     raw: {
       source: "acp.jsonrpc",

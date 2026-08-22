@@ -25,11 +25,39 @@ export const DEFAULT_THREAD_TERMINAL_ID = "term-1";
 export const MAX_TERMINALS_PER_GROUP = 4;
 export type ProjectScript = ContractProjectScript;
 
+/**
+ * Recursive pane layout for one terminal group. Splitting the focused pane
+ * nests a new split node in place of its leaf, so each split only divides the
+ * pane it was invoked on — never the whole group.
+ */
+export type TerminalPaneLayout =
+  | { kind: "terminal"; terminalId: string }
+  | {
+      kind: "split";
+      direction: "horizontal" | "vertical";
+      children: TerminalPaneLayout[];
+      /**
+       * Flex fractions aligned with children. Absent means equal shares;
+       * dropped whenever the child count changes.
+       */
+      sizes?: number[];
+    };
+
 export interface ThreadTerminalGroup {
   id: string;
+  /** User-assigned name; groups without one display a positional default. */
+  name?: string;
   terminalIds: string[];
+  /** Legacy flat-split direction; migrated into `layout` on normalization. */
   splitDirection?: "horizontal" | "vertical";
+  /** Legacy flat-split fractions; migrated into `layout` on normalization. */
+  paneSizes?: number[];
+  /** Split tree over terminalIds. Absent for single-terminal groups. */
+  layout?: TerminalPaneLayout;
 }
+
+/** Which surface fills a thread's main column: the chat timeline or the terminal workspace. */
+export type ThreadMainSurface = "chat" | "terminal";
 
 export interface ChatImageAttachment extends ContractChatImageAttachment {
   readonly previewUrl?: string;

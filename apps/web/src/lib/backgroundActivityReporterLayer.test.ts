@@ -77,7 +77,9 @@ function registryLayer() {
     EnvironmentRegistry,
     Effect.gen(function* () {
       const entries = yield* SubscriptionRef.make(
-        new Map([[ENVIRONMENT_ID, {} as never]]) as ReadonlyMap<EnvironmentId, never>,
+        new Map([
+          [ENVIRONMENT_ID, { target: { _tag: "PrimaryConnectionTarget" } } as never],
+        ]) as ReadonlyMap<EnvironmentId, never>,
       );
       return {
         entries,
@@ -127,5 +129,8 @@ it.live("always claims the provider-status scope so the usage probe keeps a dema
 
     expect(report?.scopes?.some((scope) => scope.type === "provider-status")).toBe(true);
     expect(report?.visible).toBe(true);
+    expect((report as { readonly environmentHost?: boolean } | undefined)?.environmentHost).toBe(
+      true,
+    );
   }),
 );

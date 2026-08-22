@@ -1,14 +1,25 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { ChatAttachment, ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  ModelSelection,
+  ProviderInstanceId,
+  VmAgentTaskPromptGenerationResult,
+} from "@t3tools/contracts";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 
-export type TextGenerationProvider = "codex" | "claudeAgent" | "cursor" | "grok" | "opencode";
+export type TextGenerationProvider =
+  | "codex"
+  | "claudeAgent"
+  | "cursor"
+  | "grok"
+  | "opencode"
+  | "mcpBridge";
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -94,6 +105,15 @@ export interface PlanRefreshGenerationResult {
   steps: ReadonlyArray<PlanRefreshStep>;
 }
 
+export interface VmAgentTaskPromptGenerationInput {
+  cwd: string;
+  agentName: string;
+  agentPurpose: string;
+  request: string;
+  currentTime: string;
+  modelSelection: ModelSelection;
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -102,6 +122,9 @@ export interface TextGenerationService {
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
   generatePlanRefresh(input: PlanRefreshGenerationInput): Promise<PlanRefreshGenerationResult>;
+  generateVmAgentTaskPrompt(
+    input: VmAgentTaskPromptGenerationInput,
+  ): Promise<VmAgentTaskPromptGenerationResult>;
 }
 
 /**
@@ -144,6 +167,11 @@ export class TextGeneration extends Context.Service<
     readonly generatePlanRefresh: (
       input: PlanRefreshGenerationInput,
     ) => Effect.Effect<PlanRefreshGenerationResult, TextGenerationError>;
+
+    /** Turn a plain-language automation request into a bounded agent task. */
+    readonly generateVmAgentTaskPrompt: (
+      input: VmAgentTaskPromptGenerationInput,
+    ) => Effect.Effect<VmAgentTaskPromptGenerationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -155,7 +183,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generatePlanRefresh";
+  | "generatePlanRefresh"
+  | "generateVmAgentTaskPrompt";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -165,7 +194,14 @@ const resolveInstance = (
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
       instance
-        ? Effect.succeed(instance.textGeneration)
+        ? instance.adapter.capabilities.textGeneration === false
+          ? Effect.fail(
+              new TextGenerationError({
+                operation,
+                detail: `Provider instance '${instanceId}' does not advertise text-generation support.`,
+              }),
+            )
+          : Effect.succeed(instance.textGeneration)
         : Effect.fail(
             new TextGenerationError({
               operation,
@@ -198,6 +234,10 @@ export const makeTextGenerationFromRegistry = (
     generatePlanRefresh: (input) =>
       resolveInstance(registry, "generatePlanRefresh", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generatePlanRefresh(input)),
+      ),
+    generateVmAgentTaskPrompt: (input) =>
+      resolveInstance(registry, "generateVmAgentTaskPrompt", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateVmAgentTaskPrompt(input)),
       ),
   });
 

@@ -1,5 +1,6 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import { interactionModeConfig, interactionModeOptions } from "./interactionModes";
+import { runtimeModeConfig, runtimeModeDangerClasses, runtimeModeOptions } from "./runtimeModes";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon, ListTodoIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -75,10 +76,20 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="auto">Auto</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+          {runtimeModeOptions.map((mode) => {
+            const option = runtimeModeConfig[mode];
+            return (
+              <MenuRadioItem
+                key={mode}
+                value={mode}
+                className={
+                  option.tone === "danger" ? runtimeModeDangerClasses.compactItem : undefined
+                }
+              >
+                {option.label}
+              </MenuRadioItem>
+            );
+          })}
         </MenuRadioGroup>
         {props.activePlan ? (
           <>

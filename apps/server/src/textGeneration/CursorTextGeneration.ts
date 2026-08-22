@@ -17,6 +17,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -57,7 +58,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
-      | "generatePlanRefresh";
+      | "generatePlanRefresh"
+      | "generateVmAgentTaskPrompt";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -281,11 +283,24 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       };
     });
 
+  const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
+    Effect.fn("CursorTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
+      const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
+      return yield* runCursorJson({
+        operation: "generateVmAgentTaskPrompt",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generatePlanRefresh,
+    generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];
 });

@@ -71,17 +71,29 @@ function Alert({
       role="alert"
       {...props}
     >
-      <div className="flex items-center gap-2">
-        {icon.length > 0 && (
-          <div className="flex size-4 shrink-0 items-center justify-center [&>svg]:size-full">
-            {icon}
-          </div>
-        )}
-        {content.length > 0 && (
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">{content}</div>
-        )}
+      {/*
+        Wraps rather than holding one row. The actions are `shrink-0`, so on a
+        phone two buttons took their full width and left the message a column
+        barely wider than a word — the title broke one word per line and the
+        banner grew taller than the composer. Giving the message a basis wide
+        enough to be readable pushes the actions onto their own line instead,
+        while anything with room to spare stays on a single row.
+      */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-64 items-center gap-2">
+          {icon.length > 0 && (
+            <div className="flex size-4 shrink-0 items-center justify-center [&>svg]:size-full">
+              {icon}
+            </div>
+          )}
+          {content.length > 0 && (
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">{content}</div>
+          )}
+        </div>
         {action.length > 0 && (
-          <div className="flex shrink-0 items-center self-center">{action}</div>
+          <div className="flex shrink-0 items-center gap-1 max-sm:w-full max-sm:justify-end">
+            {action}
+          </div>
         )}
       </div>
     </div>

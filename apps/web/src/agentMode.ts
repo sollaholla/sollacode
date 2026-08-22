@@ -104,3 +104,23 @@ export function buildAgentAnswers(
   }
   return answers;
 }
+
+/**
+ * Should the UI announce an imminent agent auto-resume?
+ *
+ * A backgrounded task keeps running after the turn that launched it ends — that
+ * is the point of backgrounding one — and the provider harness re-invokes the
+ * agent when it exits. The server already parks the continuation for exactly
+ * this reason (`agentContinuationShouldAwaitBackgroundTask`), but it parks it
+ * in `sleeping` and the projected pendingWork carries only kind/state/since. No
+ * reason field reaches the client, so a parked continuation is indistinguishable
+ * from an imminent one, and the UI claimed "Agent auto-resuming" for as long as
+ * the task ran — a resume the user could neither wait out nor stop.
+ */
+export function shouldAnnounceAgentAutoResume(input: {
+  readonly pending: boolean;
+  readonly isWorking: boolean;
+  readonly hasRunningBackgroundTask: boolean;
+}): boolean {
+  return input.pending && !input.isWorking && !input.hasRunningBackgroundTask;
+}

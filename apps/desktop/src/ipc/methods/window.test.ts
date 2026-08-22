@@ -7,8 +7,13 @@ import type * as Electron from "electron";
 
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
+import * as ElectronShell from "../../electron/ElectronShell.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
-import { getLocalEnvironmentBootstraps, getWindowFullscreenState } from "./window.ts";
+import {
+  getLocalEnvironmentBootstraps,
+  getWindowFullscreenState,
+  writeComposerClipboard,
+} from "./window.ts";
 
 const readyWslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
   executablePath: "wsl.exe",
@@ -141,6 +146,39 @@ describe("getWindowFullscreenState", () => {
       Effect.provide(
         Layer.mock(ElectronWindow.ElectronWindow)({
           currentMainOrFirst: Effect.succeed(Option.some(window)),
+        }),
+      ),
+    );
+  });
+});
+
+describe("writeComposerClipboard", () => {
+  it.effect("validates the IPC payload and delegates the atomic native write", () => {
+    let received:
+      | Parameters<ElectronShell.ElectronShell["Service"]["writeComposerClipboard"]>[0]
+      | null = null;
+
+    return Effect.gen(function* () {
+      const result = yield* writeComposerClipboard.handler({
+        text: "move this",
+        html: '<div data-solla-composer-transfer="solla-token">move this</div>',
+        imagePng: new Uint8Array([1, 2, 3]),
+      });
+
+      assert.isTrue(result);
+      assert.deepEqual(received, {
+        text: "move this",
+        html: '<div data-solla-composer-transfer="solla-token">move this</div>',
+        imagePng: new Uint8Array([1, 2, 3]),
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.mock(ElectronShell.ElectronShell)({
+          writeComposerClipboard: (input) =>
+            Effect.sync(() => {
+              received = input;
+              return true;
+            }),
         }),
       ),
     );

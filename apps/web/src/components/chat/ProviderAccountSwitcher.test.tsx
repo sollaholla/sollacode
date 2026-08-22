@@ -31,7 +31,8 @@ describe("ProviderAccountSwitcher", () => {
     );
 
     expect(markup).toContain('data-chat-provider-account-switcher="true"');
-    expect(markup).toContain('aria-label="Provider account: personal@example.com"');
+    expect(markup).toContain('aria-label="Provider account and switch-user controls"');
+    expect(markup).not.toContain("personal@example.com");
   });
 
   it("truthfully labels an unauthenticated configured profile", () => {
@@ -48,6 +49,7 @@ describe("ProviderAccountSwitcher", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Provider account: Not signed in"');
+    expect(markup).toContain('aria-label="Provider account and switch-user controls"');
+    expect(markup).not.toContain("personal@example.com");
   });
 });

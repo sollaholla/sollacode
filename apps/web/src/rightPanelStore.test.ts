@@ -103,6 +103,106 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("normalizes persisted custom tab names", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "plan",
+            surfaces: [
+              { id: "plan", kind: "plan", customTitle: "  Release plan  " },
+              { id: "diff", kind: "diff", customTitle: 42 },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "plan",
+          surfaces: [
+            { id: "plan", kind: "plan", customTitle: "Release plan" },
+            { id: "diff", kind: "diff" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("keeps valid persisted artifact surfaces and drops malformed revisions", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "artifact:dashboard",
+            surfaces: [
+              {
+                id: "artifact:dashboard",
+                kind: "artifact",
+                resourceId: "dashboard",
+                revision: 3,
+                title: "  Dashboard  ",
+              },
+              {
+                id: "artifact:broken",
+                kind: "artifact",
+                resourceId: "broken",
+                revision: 0,
+                title: "Broken",
+              },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "artifact:dashboard",
+          surfaces: [
+            {
+              id: "artifact:dashboard",
+              kind: "artifact",
+              resourceId: "dashboard",
+              revision: 3,
+              title: "Dashboard",
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("opens one pinned artifact surface and explicitly advances its revision", () => {
+    useRightPanelStore.getState().openArtifact(refA, "dashboard", 2, "Dashboard");
+    useRightPanelStore.getState().openArtifact(refA, "dashboard", 2, "Dashboard renamed");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "artifact:dashboard",
+      surfaces: [
+        {
+          id: "artifact:dashboard",
+          kind: "artifact",
+          resourceId: "dashboard",
+          revision: 2,
+          title: "Dashboard renamed",
+        },
+      ],
+    });
+
+    useRightPanelStore.getState().updateArtifactRevision(refA, "dashboard", 3, "Dashboard");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "artifact:dashboard",
+      kind: "artifact",
+      resourceId: "dashboard",
+      revision: 3,
+      title: "Dashboard",
+    });
+  });
+
   it("open sets the active panel for a thread", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");
@@ -460,6 +560,27 @@ describe("rightPanelStore", () => {
       },
     ]);
     expect(state.activeSurfaceId).toBe("terminal:term-2");
+  });
+
+  it("persists trimmed tab names and resets an empty name to the live default", () => {
+    useRightPanelStore.getState().openTerminal(refA, "term-1");
+    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "  Deployment  ");
+
+    const renamedState = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      refA,
+    );
+    expect(renamedState.surfaces[0]).toMatchObject({ customTitle: "Deployment" });
+
+    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "Deployment");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      renamedState,
+    );
+
+    useRightPanelStore.getState().renameSurface(refA, "terminal:term-1", "   ");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces[0],
+    ).not.toHaveProperty("customTitle");
   });
 
   it("tracks split panes and the active pane within a terminal surface", () => {

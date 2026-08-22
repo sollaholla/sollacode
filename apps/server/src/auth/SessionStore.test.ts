@@ -1,8 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { AuthStandardClientScopes } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -85,6 +87,49 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(verified.expiresAt?.toString()).toBe(issued.expiresAt.toString());
     }).pipe(Effect.provide(makeSessionStoreLayer())),
   );
+  it.effect("uses persisted scope grants when a signed browser session is migrated", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const repository = yield* AuthSessions.AuthSessionRepository;
+      const issued = yield* sessions.issue({
+        subject: "legacy-standard-browser",
+        scopes: [
+          "orchestration:read",
+          "orchestration:operate",
+          "terminal:operate",
+          "review:write",
+          "relay:read",
+        ],
+        client: {
+          deviceType: "mobile",
+          os: "iOS",
+          browser: "Safari",
+        },
+      });
+      const stored = yield* repository.getById({ sessionId: issued.sessionId });
+      if (Option.isNone(stored)) throw new Error("Expected issued session to be persisted.");
+
+      yield* repository.upsert({
+        sessionId: stored.value.sessionId,
+        subject: stored.value.subject,
+        scopes: [...stored.value.scopes, "vm:operate"],
+        method: stored.value.method,
+        client: stored.value.client,
+        issuedAt: stored.value.issuedAt,
+        expiresAt: stored.value.expiresAt,
+      });
+
+      const verified = yield* sessions.verify(issued.token);
+      expect(verified.scopes).toEqual([
+        "orchestration:read",
+        "orchestration:operate",
+        "terminal:operate",
+        "review:write",
+        "relay:read",
+        "vm:operate",
+      ]);
+    }).pipe(Effect.provide(makeSessionStoreLayer())),
+  );
   it.effect("rejects malformed session tokens", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
@@ -141,13 +186,7 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
 
       expect(verified.method).toBe("bearer-access-token");
       expect(verified.subject).toBe("test-clock");
-      expect(verified.scopes).toEqual([
-        "orchestration:read",
-        "orchestration:operate",
-        "terminal:operate",
-        "review:write",
-        "relay:read",
-      ]);
+      expect(verified.scopes).toEqual([...AuthStandardClientScopes]);
     }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
   );
 

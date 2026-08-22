@@ -34,6 +34,7 @@ import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+import { drainDeferredThreadCommands } from "../operations/deferredThreadCommands.ts";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
 
@@ -123,6 +124,7 @@ export const make = Effect.gen(function* () {
   const storage = yield* Persistence.ConnectionTargetStore;
   const registrations = yield* Persistence.ConnectionRegistrationStore;
   const cache = yield* Persistence.EnvironmentCacheStore;
+  const deferredThreadCommands = yield* Persistence.DeferredThreadCommandStore;
   const ownedDataCleanup = yield* Persistence.EnvironmentOwnedDataCleanup;
   const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
   const credentials = yield* ConnectionCredentialStore.ConnectionCredentialStore;
@@ -252,6 +254,25 @@ export const make = Effect.gen(function* () {
             Effect.provideService(ConnectionWakeups.ConnectionWakeups, wakeups),
             Scope.provide(scope),
             Effect.onError(() => Scope.close(scope, Exit.void)),
+          );
+          yield* SubscriptionRef.changes(supervisor.session).pipe(
+            Stream.filter(Option.isSome),
+            Stream.runForEach(() =>
+              drainDeferredThreadCommands(environmentId).pipe(
+                Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+                Effect.provideService(
+                  Persistence.DeferredThreadCommandStore,
+                  deferredThreadCommands,
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Could not drain deferred thread commands.", {
+                    environmentId,
+                    cause,
+                  }),
+                ),
+              ),
+            ),
+            Effect.forkIn(scope),
           );
           yield* supervisor.connect;
           yield* SubscriptionRef.update(serviceScopes, (current) => {
@@ -502,6 +523,14 @@ export const make = Effect.gen(function* () {
                 ),
               ),
               ownedDataCleanup.clear(environmentId),
+              deferredThreadCommands.clear(environmentId).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Could not clear deferred thread commands after removal.", {
+                    environmentId,
+                    error,
+                  }),
+                ),
+              ),
             ],
             { concurrency: "unbounded", discard: true },
           );
@@ -573,6 +602,14 @@ export const make = Effect.gen(function* () {
               ),
             ),
             ownedDataCleanup.clear(environmentId),
+            deferredThreadCommands.clear(environmentId).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Could not clear deferred thread commands after removal.", {
+                  environmentId,
+                  error,
+                }),
+              ),
+            ),
           ],
           { concurrency: "unbounded", discard: true },
         );

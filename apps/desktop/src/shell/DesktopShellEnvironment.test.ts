@@ -67,7 +67,9 @@ function runShellEnvironment(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
   readonly handler: (command: ChildProcess.Command) => string;
-  readonly failure?: PlatformError.PlatformError;
+  readonly failure?:
+    | PlatformError.PlatformError
+    | ((command: ChildProcess.Command) => PlatformError.PlatformError | undefined);
 }) {
   const environmentLayer = Layer.succeed(
     DesktopEnvironment.DesktopEnvironment,
@@ -77,11 +79,12 @@ function runShellEnvironment(input: {
   );
   const spawnerLayer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) =>
-      input.failure === undefined
+    ChildProcessSpawner.make((command) => {
+      const failure = typeof input.failure === "function" ? input.failure(command) : input.failure;
+      return failure === undefined
         ? Effect.succeed(makeProcess(input.handler(command)))
-        : Effect.fail(input.failure),
-    ),
+        : Effect.fail(failure);
+    }),
   );
 
   const program = Effect.gen(function* () {
@@ -243,6 +246,49 @@ describe("DesktopShellEnvironment", () => {
       );
     }),
   );
+
+  it.effect("silently falls back when optional PowerShell 7 is not installed", () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "C:\\Windows\\System32",
+    };
+    const commands: string[] = [];
+    const messages: Array<unknown> = [];
+    const logger = Logger.make(({ message }) => {
+      messages.push(message);
+    });
+    const missingPowerShell7 = PlatformError.systemError({
+      _tag: "NotFound",
+      module: "ChildProcess",
+      method: "spawn",
+      pathOrDescriptor: "pwsh.exe",
+    });
+
+    return runShellEnvironment({
+      env,
+      platform: "win32",
+      handler: (command) => {
+        if (command._tag !== "StandardCommand") return "";
+        return envOutput({ PATH: "C:\\Windows\\System32;C:\\Tools" });
+      },
+      failure: (command) => {
+        if (command._tag !== "StandardCommand") return undefined;
+        commands.push(command.command);
+        return command.command === "pwsh.exe" ? missingPowerShell7 : undefined;
+      },
+    }).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          assert.deepEqual(commands, ["pwsh.exe", "powershell.exe", "pwsh.exe", "powershell.exe"]);
+          const errors = messages
+            .flatMap((message) => (Array.isArray(message) ? message : [message]))
+            .filter(isDesktopShellEnvironmentCommandError);
+          assert.lengthOf(errors, 0);
+          assert.equal(env.PATH, "C:\\Windows\\System32;C:\\Tools");
+        }),
+      ),
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    );
+  });
 
   it.effect("logs command failures with safe probe context and the exact cause", () => {
     const env: NodeJS.ProcessEnv = {

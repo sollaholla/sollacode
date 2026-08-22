@@ -200,7 +200,7 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
         <View className="w-full max-w-[720px] self-center gap-3">
           <View className="flex-row items-center gap-2.5">
             <View className="flex-1">
-              <BrandMark compact stageLabel="Alpha" />
+              <BrandMark compact />
             </View>
 
             <ControlPillMenu

@@ -25,7 +25,11 @@ const isSingleOriginDev = process.env.T3CODE_SINGLE_ORIGIN_DEV === "1";
 
 const port = Number(process.env.PORT ?? 5733);
 const explicitHost = process.env.HOST?.trim();
-const host = explicitHost || "localhost";
+// `tailscale serve` proxies to 127.0.0.1. On macOS, Node resolves `localhost`
+// to ::1 and Vite may bind only IPv6, leaving every `vp run dev --share` URL
+// returning 502 even though the local page works. Pin the default listener to
+// the same loopback address the share layer targets.
+const host = explicitHost || "127.0.0.1";
 const configuredWsUrl = isSingleOriginDev ? undefined : process.env.VITE_WS_URL?.trim();
 const configuredHttpUrl = isSingleOriginDev ? undefined : process.env.VITE_HTTP_URL?.trim();
 const configuredHostedAppChannel = process.env.VITE_HOSTED_APP_CHANNEL?.trim() || "";
@@ -51,12 +55,14 @@ const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
 const bundledDevEnv = process.env.T3CODE_BUNDLED_DEV?.trim().toLowerCase();
 const bundledDev = bundledDevEnv === "1" || bundledDevEnv === "true";
 
+// Production source maps nearly double the deployed web artifact and are not
+// used by the app at runtime. Keep them opt-in for maintainer diagnostics.
 const buildSourcemap: boolean | "hidden" =
-  sourcemapEnv === "0" || sourcemapEnv === "false"
-    ? false
+  sourcemapEnv === "1" || sourcemapEnv === "true"
+    ? true
     : sourcemapEnv === "hidden"
       ? "hidden"
-      : true;
+      : false;
 
 const unitTestProject = {
   extends: true,

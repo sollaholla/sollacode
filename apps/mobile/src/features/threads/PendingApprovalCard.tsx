@@ -14,12 +14,13 @@ export interface PendingApprovalCardProps {
 }
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
+  const isResponding = props.respondingApprovalId === props.approval.requestId;
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
   return (
     <View className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900">
       <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
-        Approval needed
+        {isResponding ? "Resolving approval…" : "Approval needed"}
       </Text>
       <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
         {props.approval.requestKind}
@@ -31,15 +32,15 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       ) : null}
       <View className="flex-row flex-wrap gap-2.5">
         <Pressable
-          className="items-center justify-center rounded-[14px] bg-blue-500 px-3.5 py-3"
-          disabled={props.respondingApprovalId === props.approval.requestId}
+          className="min-h-11 items-center justify-center rounded-[14px] bg-blue-500 px-3.5 py-3"
+          disabled={isResponding}
           onPress={() => void props.onRespond(props.approval.requestId, "accept")}
         >
           <Text className="font-t3-extrabold text-sm text-white">Allow once</Text>
         </Pressable>
         <Pressable
-          className="items-center justify-center rounded-[14px] bg-neutral-200 px-3.5 py-3 dark:bg-neutral-800"
-          disabled={props.respondingApprovalId === props.approval.requestId}
+          className="min-h-11 items-center justify-center rounded-[14px] bg-neutral-200 px-3.5 py-3 dark:bg-neutral-800"
+          disabled={isResponding}
           onPress={() => void props.onRespond(props.approval.requestId, "acceptForSession")}
         >
           <Text className="font-t3-bold text-sm text-neutral-950 dark:text-neutral-50">
@@ -47,8 +48,8 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           </Text>
         </Pressable>
         <Pressable
-          className="items-center justify-center rounded-[14px] bg-rose-100 px-3.5 py-3 dark:bg-rose-500/18"
-          disabled={props.respondingApprovalId === props.approval.requestId}
+          className="min-h-11 items-center justify-center rounded-[14px] bg-rose-100 px-3.5 py-3 dark:bg-rose-500/18"
+          disabled={isResponding}
           onPress={() => void props.onRespond(props.approval.requestId, "decline")}
         >
           <Text className="font-t3-bold text-sm text-rose-700 dark:text-rose-300">Decline</Text>

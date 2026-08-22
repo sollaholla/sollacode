@@ -1,6 +1,5 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, lazyRouteComponent, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
-import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
 import {
   DraftId,
@@ -11,6 +10,8 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { waitForDraftHeroTransition } from "../components/chat/draftHeroTransition";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useThread, useThreadRefs } from "../state/entities";
+
+const ChatView = lazyRouteComponent(() => import("../components/ChatView"));
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();

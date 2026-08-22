@@ -1,5 +1,10 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import {
+  isOrchestratorThreadId,
+  type EnvironmentId,
+  type ScopedThreadRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
 
 export type ThreadRouteTarget =
@@ -47,6 +52,22 @@ export function buildThreadRouteParams(ref: ScopedThreadRef): {
     environmentId: ref.environmentId,
     threadId: ref.threadId,
   };
+}
+
+/** Keeps stale/deep orchestrator routes pinned to the app's primary environment. */
+export function canonicalizeOrchestratorThreadRef(
+  ref: ScopedThreadRef | null,
+  primaryEnvironmentId: EnvironmentId | null,
+): ScopedThreadRef | null {
+  if (
+    ref === null ||
+    primaryEnvironmentId === null ||
+    !isOrchestratorThreadId(ref.threadId) ||
+    ref.environmentId === primaryEnvironmentId
+  ) {
+    return ref;
+  }
+  return scopeThreadRef(primaryEnvironmentId, ref.threadId);
 }
 
 export function buildDraftThreadRouteParams(draftId: DraftId): {

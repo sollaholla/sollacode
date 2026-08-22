@@ -63,6 +63,64 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("never persists orchestrator API keys into server settings", () => {
+    const next = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      orchestrator: {
+        apiKey: "legacy-super-secret",
+        openAiApiKey: "openai-super-secret",
+        xaiApiKey: "xai-super-secret",
+        enabled: true,
+      },
+    });
+
+    // The key is write-only: it rides the patch so the server can move it into
+    // the secret store, but settings are serialized to disk and broadcast to
+    // clients, so it must not appear anywhere in the result.
+    expect(JSON.stringify(next)).not.toContain("legacy-super-secret");
+    expect(JSON.stringify(next)).not.toContain("openai-super-secret");
+    expect(JSON.stringify(next)).not.toContain("xai-super-secret");
+    expect("apiKey" in next.orchestrator).toBe(false);
+    expect("openAiApiKey" in next.orchestrator).toBe(false);
+    expect("xaiApiKey" in next.orchestrator).toBe(false);
+    expect(next.orchestrator.enabled).toBe(true);
+  });
+
+  it("merges orchestrator settings without dropping untouched fields", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      orchestrator: {
+        ...DEFAULT_SERVER_SETTINGS.orchestrator,
+        voice: "cedar",
+        authority: "full" as const,
+      },
+    };
+
+    const next = applyServerSettingsPatch(current, {
+      orchestrator: { authority: "read-only", spokenEvents: { taskCompleted: true } },
+    });
+
+    expect(next.orchestrator.authority).toBe("read-only");
+    expect(next.orchestrator.voice).toBe("cedar");
+    expect(next.orchestrator.spokenEvents.taskCompleted).toBe(true);
+    // Untouched sibling flags keep their defaults rather than being wiped.
+    expect(next.orchestrator.spokenEvents.threadFinished).toBe(true);
+  });
+
+  it("defaults the orchestrator language and floating bubble for old settings files", () => {
+    // Both fields postdate the first orchestrator release; existing settings
+    // documents must decode to the safe defaults rather than fail.
+    expect(DEFAULT_SERVER_SETTINGS.orchestrator.language).toBe("en");
+    expect(DEFAULT_SERVER_SETTINGS.orchestrator.floatingBubble).toBe(true);
+
+    const next = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      orchestrator: { language: "de", floatingBubble: false },
+    });
+    expect(next.orchestrator.language).toBe("de");
+    expect(next.orchestrator.floatingBubble).toBe(false);
+    // Untouched orchestrator fields survive the patch.
+    expect(next.orchestrator.voice).toBe(DEFAULT_SERVER_SETTINGS.orchestrator.voice);
+  });
+
   it("replaces text generation selection when provider/model are provided", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

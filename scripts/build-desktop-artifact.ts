@@ -598,6 +598,11 @@ interface StagePackageJson {
 export const STAGE_INSTALL_ARGS = ["install", "--prod"] as const;
 export const DESKTOP_ELECTRON_LANGUAGES = ["en-US"] as const;
 export const DESKTOP_FILE_EXCLUSIONS = [
+  // Source maps account for roughly half of the built server/client output
+  // (about 52MB in a representative release tree) and are never loaded during
+  // normal operation. Keep them in local dist directories for maintainers,
+  // but do not make every user download and install that debugging payload.
+  "!**/*.map",
   // T3 Code always passes the user's installed Claude executable to the SDK,
   // so the SDK's optional platform packages (each a ~200MB bundled executable)
   // are dead weight. The trailing dash keeps the SDK's own JS package.
@@ -614,6 +619,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
+  },
+  {
+    from: "apps/desktop/prod-resources/app-update",
+    to: "app-update",
   },
 ] as const;
 
@@ -710,6 +719,31 @@ export const MacPasskeySigningConfigurationError = Schema.Union([
 export type MacPasskeySigningConfigurationError = typeof MacPasskeySigningConfigurationError.Type;
 export const isMacPasskeySigningConfigurationError = Schema.is(MacPasskeySigningConfigurationError);
 
+const CLERK_PUBLISHABLE_KEY_PREFIX = /^pk_(?:test|live)_/u;
+
+/**
+ * A Clerk publishable key is `pk_test_`/`pk_live_` followed by the base64 of
+ * the frontend API host with a `$` terminator — `pk_test_Zm9vLmNsZXJrLmFjY291bnRzLmRldiQ`
+ * carries `foo.clerk.accounts.dev$`. Passkeys are scoped to that host, so it is
+ * the relying-party domain the entitlements have to name.
+ *
+ * Throws rather than returning a fallback: a build that guesses this wrong
+ * ships an app whose associated domains do not match the Clerk instance, and
+ * passkeys fail at runtime with nothing at build time having complained.
+ */
+function decodeClerkPublishableKeyHost(publishableKey: string): string {
+  if (!CLERK_PUBLISHABLE_KEY_PREFIX.test(publishableKey)) {
+    throw new Error("Publishable key is missing its pk_test_/pk_live_ prefix.");
+  }
+  // atob throws on non-base64 input, which is the invalid-key signal.
+  const decoded = atob(publishableKey.replace(CLERK_PUBLISHABLE_KEY_PREFIX, ""));
+  const host = decoded.endsWith("$") ? decoded.slice(0, -1) : decoded;
+  if (host.length === 0) {
+    throw new Error("Publishable key decoded to an empty frontend API host.");
+  }
+  return host;
+}
+
 function normalizePasskeyRpDomain(value: string): string {
   const normalized = value.trim().toLowerCase();
   const inputLength = value.length;
@@ -775,8 +809,9 @@ export function resolveMacPasskeySigningConfiguration(
     }
     let hostname: string;
     try {
-      hostname = publishableKey;
+      hostname = decodeClerkPublishableKeyHost(publishableKey);
     } catch (cause) {
+      // The key itself never reaches the error — only that it was rejected.
       throw new InvalidMacPasskeyPublishableKeyError({ cause });
     }
     rpDomains = [normalizePasskeyRpDomain(hostname)];
@@ -1436,15 +1471,95 @@ export function resolveDesktopProductName(_version: string): string {
   return desktopPackageJson.productName ?? "Solla Code";
 }
 
+export const LOCAL_MAC_ADHOC_IDENTITY = "-";
+
+const MAC_CODE_SIGNING_IDENTITY_PATTERN = /^\s*\d+\)\s+[0-9A-F]+\s+"([^"]+)"(?:\s|$)/gimu;
+const LOCAL_MAC_IDENTITY_PREFERENCE = [
+  "Apple Development:",
+  "Developer ID Application:",
+  "Apple Distribution:",
+  "Mac Developer:",
+] as const;
+
+/**
+ * Select a stable certificate identity from `security find-identity` output.
+ * Ad-hoc signatures have a CDHash-only designated requirement, so every local
+ * rebuild otherwise looks like a different app to macOS privacy controls.
+ */
+export function selectLocalMacSigningIdentity(output: string): string | undefined {
+  const identities = Array.from(output.matchAll(MAC_CODE_SIGNING_IDENTITY_PATTERN), (match) =>
+    match[1]?.trim(),
+  ).filter((identity): identity is string => identity !== undefined && identity.length > 0);
+
+  for (const prefix of LOCAL_MAC_IDENTITY_PREFERENCE) {
+    const identity = identities.find((candidate) => candidate.startsWith(prefix));
+    if (identity !== undefined) return identity;
+  }
+  return identities[0];
+}
+
+const resolveLocalMacSigningIdentity = Effect.fn("resolveLocalMacSigningIdentity")(function* (
+  configuredIdentity: string | undefined,
+) {
+  const configured = configuredIdentity?.trim();
+  if (configured) return configured;
+
+  const probe = yield* spawnAndCollectOutput(
+    ChildProcess.make("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"]),
+  ).pipe(
+    Effect.orElseSucceed(() => ({
+      stdout: "",
+      stderr: "",
+      exitCode: 1,
+    })),
+  );
+  if (probe.exitCode !== 0) return LOCAL_MAC_ADHOC_IDENTITY;
+  return selectLocalMacSigningIdentity(probe.stdout) ?? LOCAL_MAC_ADHOC_IDENTITY;
+});
+
+export const MACOS_PRIVACY_USAGE_DESCRIPTIONS = {
+  NSAppDataUsageDescription:
+    "Solla Code accesses data owned by another app only when an agent command you start reaches those files.",
+  NSMicrophoneUsageDescription:
+    "Solla Code uses the microphone while you hold the push-to-talk shortcut, and for the duration of a voice orchestrator conversation that you start.",
+  NSDesktopFolderUsageDescription:
+    "Solla Code accesses Desktop files only when an agent works in a project located there.",
+  NSDocumentsFolderUsageDescription:
+    "Solla Code accesses Documents files only when an agent works in a project located there.",
+  NSDownloadsFolderUsageDescription:
+    "Solla Code accesses Downloads files only when an agent works in a project located there.",
+  NSNetworkVolumesUsageDescription:
+    "Solla Code accesses a network volume only when an agent works in a project located there.",
+  NSRemovableVolumesUsageDescription:
+    "Solla Code accesses a removable volume only when an agent works in a project located there.",
+} as const;
+
+export const LOCAL_MAC_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+  </dict>
+</plist>
+`;
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
   version: string,
   signed: boolean,
-  macPasskeySigning:
+  macSigning:
     | {
         readonly entitlementsPath: string;
-        readonly provisioningProfilePath: string;
+        readonly provisioningProfilePath?: string;
+        readonly identity?: string;
       }
     | undefined,
 ) {
@@ -1468,20 +1583,35 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
-      extendInfo: {
-        NSMicrophoneUsageDescription:
-          "Solla Code uses the microphone only while you hold the push-to-talk shortcut.",
-      },
+      // Purpose strings cover both deliberate feature grants and the fallback
+      // folder prompt if someone skips Full Disk Access. No personal-data keys
+      // are declared because Solla Code does not use those APIs.
+      extendInfo: MACOS_PRIVACY_USAGE_DESCRIPTIONS,
       protocols: [
         {
           name: "Solla Code",
           schemes: ["sollacode"],
         },
       ],
-      ...(macPasskeySigning
+      // Local builds prefer a stable Apple Development identity so TCC grants
+      // survive rebuilds, then fall back to ad-hoc signing. Either route keeps
+      // Electron's entitlements and sealed resources intact; `codesign --deep`
+      // after the fact breaks them.
+      ...(!signed
         ? {
-            entitlements: macPasskeySigning.entitlementsPath,
-            provisioningProfile: macPasskeySigning.provisioningProfilePath,
+            identity: macSigning?.identity ?? LOCAL_MAC_ADHOC_IDENTITY,
+            hardenedRuntime: true,
+            gatekeeperAssess: false,
+          }
+        : {}),
+      ...(macSigning?.entitlementsPath
+        ? {
+            entitlements: macSigning.entitlementsPath,
+          }
+        : {}),
+      ...(macSigning?.provisioningProfilePath
+        ? {
+            provisioningProfile: macSigning.provisioningProfilePath,
           }
         : {}),
     };
@@ -1774,10 +1904,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
 
+  const repoEnv = loadRepoEnv({ repoRoot });
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
@@ -1790,16 +1921,31 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ),
       }
     : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
-  if (macPasskeySigning && macEntitlementsPath) {
-    if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
-      return yield* new MacProvisioningProfileNotFoundError({
-        provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-      });
+  const macEntitlementsPath =
+    options.platform === "mac" ? path.join(stageAppDir, "entitlements.mac.plist") : undefined;
+  const localMacSigningIdentity =
+    options.platform === "mac" && !options.signed
+      ? yield* resolveLocalMacSigningIdentity(repoEnv.T3CODE_MACOS_LOCAL_SIGNING_IDENTITY)
+      : undefined;
+  if (localMacSigningIdentity === LOCAL_MAC_ADHOC_IDENTITY) {
+    yield* Effect.logWarning(
+      "[desktop-artifact] No stable macOS code-signing identity was found. Privacy grants may need to be renewed after each ad-hoc signed rebuild. Set T3CODE_MACOS_LOCAL_SIGNING_IDENTITY or install an Apple Development certificate.",
+    );
+  }
+  if (macEntitlementsPath) {
+    if (macPasskeySigning) {
+      if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
+        return yield* new MacProvisioningProfileNotFoundError({
+          provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+        });
+      }
+      yield* fs.writeFileString(
+        macEntitlementsPath,
+        renderMacPasskeyEntitlements(macPasskeySigning),
+      );
+    } else {
+      yield* fs.writeFileString(macEntitlementsPath, LOCAL_MAC_ENTITLEMENTS);
     }
-    yield* fs.writeFileString(macEntitlementsPath, renderMacPasskeyEntitlements(macPasskeySigning));
   }
 
   const stageDependencies = {
@@ -1841,10 +1987,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.target,
       appVersion,
       options.signed,
-      macPasskeySigning && macEntitlementsPath
+      macEntitlementsPath
         ? {
             entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+            ...(localMacSigningIdentity ? { identity: localMacSigningIdentity } : {}),
+            ...(macPasskeySigning
+              ? { provisioningProfilePath: macPasskeySigning.provisioningProfilePath }
+              : {}),
           }
         : undefined,
     ),

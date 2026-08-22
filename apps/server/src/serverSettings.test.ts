@@ -7,6 +7,7 @@ import {
   ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
@@ -18,6 +19,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ServerConfig from "./config.ts";
+import {
+  LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME,
+  ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME,
+  ORCHESTRATOR_XAI_API_KEY_SECRET_NAME,
+} from "./orchestrator/OrchestratorSecretNames.ts";
 import * as ServerSettingsModule from "./serverSettings.ts";
 
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
@@ -202,7 +208,90 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           ],
         ),
       );
-    }).pipe(Effect.provide(makeServerSettingsLayer())),
+    }).pipe(
+      Effect.provide(makeServerSettingsLayer()),
+      Effect.provideService(HostProcessEnvironment, {}),
+    ),
+  );
+
+  it.effect("stores OpenAI and Grok Voice API keys independently", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+
+      const openAiOnly = yield* serverSettings.updateSettings({
+        orchestrator: { openAiApiKey: "sk-openai-only" },
+      });
+      assert.strictEqual(openAiOnly.orchestrator.openAiApiKeyConfigured, true);
+      assert.strictEqual(openAiOnly.orchestrator.xaiApiKeyConfigured, false);
+      assert.strictEqual(openAiOnly.orchestrator.apiKeyConfigured, true);
+
+      const both = yield* serverSettings.updateSettings({
+        orchestrator: { xaiApiKey: "xai-grok-only" },
+      });
+      assert.strictEqual(both.orchestrator.openAiApiKeyConfigured, true);
+      assert.strictEqual(both.orchestrator.xaiApiKeyConfigured, true);
+
+      const switched = yield* serverSettings.updateSettings({
+        orchestrator: { provider: "xai" },
+      });
+      assert.strictEqual(switched.orchestrator.apiKeyConfigured, true);
+
+      const openAiSecret = yield* fileSystem.readFile(
+        `${serverConfig.secretsDir}/${ORCHESTRATOR_OPENAI_API_KEY_SECRET_NAME}.bin`,
+      );
+      const xaiSecret = yield* fileSystem.readFile(
+        `${serverConfig.secretsDir}/${ORCHESTRATOR_XAI_API_KEY_SECRET_NAME}.bin`,
+      );
+      assert.strictEqual(new TextDecoder().decode(openAiSecret), "sk-openai-only");
+      assert.strictEqual(new TextDecoder().decode(xaiSecret), "xai-grok-only");
+
+      const xaiOnly = yield* serverSettings.updateSettings({
+        orchestrator: { openAiApiKey: "" },
+      });
+      assert.strictEqual(xaiOnly.orchestrator.openAiApiKeyConfigured, false);
+      assert.strictEqual(xaiOnly.orchestrator.xaiApiKeyConfigured, true);
+      assert.strictEqual(xaiOnly.orchestrator.apiKeyConfigured, true);
+
+      const rawSettings = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(rawSettings, "sk-openai-only");
+      assert.notInclude(rawSettings, "xai-grok-only");
+    }).pipe(
+      Effect.provide(makeServerSettingsLayer()),
+      Effect.provideService(HostProcessEnvironment, {}),
+    ),
+  );
+
+  it.effect("migrates the legacy shared voice key to the selected provider", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const legacySecretPath = `${serverConfig.secretsDir}/${LEGACY_ORCHESTRATOR_API_KEY_SECRET_NAME}.bin`;
+      const xaiSecretPath = `${serverConfig.secretsDir}/${ORCHESTRATOR_XAI_API_KEY_SECRET_NAME}.bin`;
+
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"orchestrator":{"provider":"xai"}}',
+      );
+      yield* fileSystem.writeFile(legacySecretPath, new TextEncoder().encode("legacy-xai-key"));
+
+      yield* serverSettings.start;
+
+      const settings = yield* serverSettings.getSettings;
+      assert.strictEqual(settings.orchestrator.openAiApiKeyConfigured, false);
+      assert.strictEqual(settings.orchestrator.xaiApiKeyConfigured, true);
+      assert.strictEqual(settings.orchestrator.apiKeyConfigured, true);
+      assert.strictEqual(
+        new TextDecoder().decode(yield* fileSystem.readFile(xaiSecretPath)),
+        "legacy-xai-key",
+      );
+      assert.strictEqual(yield* fileSystem.exists(legacySecretPath), false);
+    }).pipe(
+      Effect.provide(makeServerSettingsLayer()),
+      Effect.provideService(HostProcessEnvironment, {}),
+    ),
   );
 
   it.effect("buffers changes after a subscription is acquired but before it is consumed", () =>

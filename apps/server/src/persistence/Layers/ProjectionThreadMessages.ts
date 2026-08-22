@@ -5,7 +5,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
-import { ChatAttachment, OrchestrationMessageInputOrigin } from "@t3tools/contracts";
+import {
+  ChatAttachment,
+  OrchestrationMessageInputOrigin,
+  VmAgentDelegationId,
+} from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -22,6 +26,8 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     inputOrigin: Schema.NullOr(OrchestrationMessageInputOrigin),
+    delegationId: Schema.NullOr(VmAgentDelegationId),
+    voiceTranscript: Schema.Number,
   }),
 );
 
@@ -35,6 +41,8 @@ function toProjectionThreadMessage(
     role: row.role,
     text: row.text,
     ...(row.inputOrigin !== null ? { inputOrigin: row.inputOrigin } : {}),
+    ...(row.delegationId !== null ? { delegationId: row.delegationId } : {}),
+    ...(row.voiceTranscript === 1 ? { voiceTranscript: true } : {}),
     isStreaming: row.isStreaming === 1,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -58,6 +66,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role,
           text,
           input_origin,
+          delegation_id,
+          voice_transcript,
           attachments_json,
           is_streaming,
           created_at,
@@ -70,6 +80,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           ${row.role},
           ${row.text},
           ${row.inputOrigin ?? null},
+          ${row.delegationId ?? null},
+          ${row.voiceTranscript === true ? 1 : 0},
           COALESCE(
             ${nextAttachmentsJson},
             (
@@ -89,6 +101,14 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role = excluded.role,
           text = excluded.text,
           input_origin = COALESCE(excluded.input_origin, projection_thread_messages.input_origin),
+          delegation_id = COALESCE(
+            excluded.delegation_id,
+            projection_thread_messages.delegation_id
+          ),
+          voice_transcript = MAX(
+            excluded.voice_transcript,
+            projection_thread_messages.voice_transcript
+          ),
           attachments_json = COALESCE(
             excluded.attachments_json,
             projection_thread_messages.attachments_json
@@ -112,6 +132,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -134,6 +156,8 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role,
           text,
           input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",

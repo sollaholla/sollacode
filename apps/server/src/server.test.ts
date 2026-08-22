@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
+  AuthAdministrativeScopes,
   AuthAccessTokenType,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
@@ -17,6 +18,7 @@ import {
   MessageId,
   ExternalLauncherCommandNotFoundError,
   type OrchestrationThreadShell,
+  type OrchestrationThreadStreamItem,
   TerminalNotRunningError,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -73,7 +75,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { makeRoutesLayer } from "./server.ts";
-import { resolveAvailableEditorsForConfig } from "./ws.ts";
+import { coalesceThreadStreamItems, resolveAvailableEditorsForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -82,6 +84,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadSubscriptionRegistryLive } from "./orchestration/Layers/ThreadSubscriptionRegistry.ts";
+import * as ThreadPendingWorkSignal from "./persistence/Services/ThreadPendingWorkSignal.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
@@ -90,6 +93,13 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as VmManager from "./vm/VmManager.ts";
+import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
+import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
+import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
+import { VmAgentCollaborationStore } from "./persistence/Services/VmAgentCollaborations.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
@@ -342,7 +352,9 @@ const buildAppUnderTest = (options?: {
       ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]
     >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
+    vmManager?: Partial<VmManager.VmManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
+    threadPendingWorkSignal?: Partial<ThreadPendingWorkSignal.ThreadPendingWorkSignal["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
@@ -695,6 +707,21 @@ const buildAppUnderTest = (options?: {
               registerTerminalProcesses: () => Effect.void,
               unregisterTerminal: () => Effect.void,
             }),
+            Layer.mock(VmManager.VmManager)({
+              subscribeAgents: (listener) =>
+                listener({ type: "snapshot", agents: [] }).pipe(Effect.as(() => {})),
+              ...options?.layers?.vmManager,
+            }),
+            Layer.mock(VmAgentTaskScheduler.VmAgentTaskScheduler)({}),
+            Layer.mock(VmAgentWorkspace.VmAgentWorkspace)({}),
+            Layer.mock(VmAgentCollaboration.VmAgentCollaboration)({}),
+            Layer.mock(TextGeneration.TextGeneration)({}),
+            // No test thread is a VM agent, so getByThreadId resolves to none;
+            // this satisfies the vm_computer toolkit + capability-grant lookups.
+            Layer.mock(VmAgentStore)({
+              getByThreadId: () => Effect.succeed(Option.none()),
+            }),
+            Layer.mock(VmAgentCollaborationStore)({}),
           ),
         ),
         Layer.provide(
@@ -757,7 +784,18 @@ const buildAppUnderTest = (options?: {
           }),
         ),
       )
-      .pipe(Layer.provide(ThreadSubscriptionRegistryLive));
+      .pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ThreadSubscriptionRegistryLive,
+            Layer.mock(ThreadPendingWorkSignal.ThreadPendingWorkSignal)({
+              publish: () => Effect.void,
+              changes: Stream.empty,
+              ...options?.layers?.threadPendingWorkSignal,
+            }),
+          ),
+        ),
+      );
 
     const appLayer = servedRoutesLayer.pipe(
       Layer.provide(resourceTelemetryLayer),
@@ -971,9 +1009,7 @@ const exchangeAccessToken = (
         subject_token: credential,
         subject_token_type: AuthEnvironmentBootstrapTokenType,
         requested_token_type: AuthAccessTokenType,
-        scope:
-          options?.scope ??
-          "orchestration:read orchestration:operate terminal:operate review:write relay:read access:read access:write relay:write",
+        scope: options?.scope ?? AuthAdministrativeScopes.join(" "),
         ...(options?.clientMetadata?.label ? { client_label: options.clientMetadata.label } : {}),
         ...(options?.clientMetadata?.deviceType
           ? { client_device_type: options.clientMetadata.deviceType }
@@ -1425,10 +1461,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(tokenResponse.status, 200);
       assert.equal(tokenBody.issued_token_type, AuthAccessTokenType);
       assert.equal(tokenBody.token_type, "Bearer");
-      assert.equal(
-        tokenBody.scope,
-        "orchestration:read orchestration:operate terminal:operate review:write relay:read access:read access:write relay:write",
-      );
+      assert.equal(tokenBody.scope, AuthAdministrativeScopes.join(" "));
       assert.equal(typeof tokenBody.access_token, "string");
 
       const sessionUrl = yield* getHttpServerUrl("/api/auth/session");
@@ -1446,16 +1479,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(sessionResponse.status, 200);
       assert.equal(sessionBody.authenticated, true);
       assert.equal(sessionBody.sessionMethod, "bearer-access-token");
-      assert.deepEqual(sessionBody.scopes, [
-        "orchestration:read",
-        "orchestration:operate",
-        "terminal:operate",
-        "review:write",
-        "relay:read",
-        "access:read",
-        "access:write",
-        "relay:write",
-      ]);
+      assert.deepEqual(sessionBody.scopes, [...AuthAdministrativeScopes]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4528,6 +4552,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("coalesces adjacent streaming assistant deltas without crossing a marker", () =>
+    Effect.sync(() => {
+      const delta = (
+        sequence: number,
+        text: string,
+        createdAt: string,
+      ): OrchestrationThreadStreamItem => ({
+        kind: "event",
+        event: {
+          sequence,
+          eventId: EventId.make(`event-streaming-delta-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: createdAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make("message-streaming"),
+            role: "assistant",
+            text,
+            turnId: null,
+            streaming: true,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        },
+      });
+
+      const items = coalesceThreadStreamItems([
+        delta(2, "one", "2026-01-01T00:00:01.000Z"),
+        delta(3, " two", "2026-01-01T00:00:01.010Z"),
+        delta(4, " three", "2026-01-01T00:00:01.020Z"),
+        { kind: "synchronized" },
+        delta(5, "after", "2026-01-01T00:00:01.030Z"),
+      ]);
+
+      assert.equal(items.length, 3);
+      const merged = items[0];
+      assert.equal(merged?.kind, "event");
+      if (merged?.kind === "event" && merged.event.type === "thread.message-sent") {
+        assert.equal(merged.event.sequence, 4);
+        assert.equal(merged.event.payload.text, "one two three");
+        assert.equal(merged.event.payload.createdAt, "2026-01-01T00:00:01.000Z");
+        assert.equal(merged.event.payload.updatedAt, "2026-01-01T00:00:01.020Z");
+      }
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items[2]?.kind === "event" ? items[2].event.sequence : null, 5);
+    }),
+  );
+
   it.effect("buffers shell events published while the fallback snapshot loads", () =>
     Effect.gen(function* () {
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
@@ -5069,6 +5147,134 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.include(liveUpsertedIds, busyThreadId);
       assert.include(liveUpsertedIds, newThreadId);
       assert.isBelow(shellFetches.filter((id) => id === busyThreadId).length, 20);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  // The scheduler resolves obligations without appending anything to the event
+  // log, so a resume that ends after its thread's last event has no other way
+  // to reach a connected client — the row it left behind read "Auto-resuming"
+  // for four hours (2026-08-11).
+  it.effect("subscribeShell reports pending work that changed with no event behind it", () =>
+    Effect.gen(function* () {
+      const resumedThreadId = ThreadId.make("thread-pending-work");
+      const pendingWorkSignals = yield* PubSub.unbounded<ThreadId>();
+      const synchronized = yield* Deferred.make<void>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: { streamDomainEvents: Stream.empty },
+          threadPendingWorkSignal: { changes: Stream.fromPubSub(pendingWorkSignals) },
+          projectionSnapshotQuery: {
+            // The obligation is already resolved by the time the signal is
+            // read, which is exactly the value the client is missing.
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationThreadShell({ id: threadId }),
+                  pendingWork: null,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const itemsFiber = yield* withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+              requestPendingWorkUpdates: true,
+            }).pipe(
+              Stream.tap((item) =>
+                item.kind === "synchronized"
+                  ? Deferred.succeed(synchronized, undefined).pipe(Effect.ignore)
+                  : Effect.void,
+              ),
+              Stream.takeUntil((item) => item.kind === "thread-pending-work"),
+              Stream.runCollect,
+            ),
+          ).pipe(Effect.forkScoped);
+
+          yield* Deferred.await(synchronized);
+          yield* PubSub.publish(pendingWorkSignals, resumedThreadId);
+
+          return yield* Fiber.join(itemsFiber);
+        }),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const correction = Array.from(items).at(-1);
+      assert.equal(correction?.kind, "thread-pending-work");
+      assert.deepEqual(
+        correction?.kind === "thread-pending-work"
+          ? { threadId: correction.threadId, pendingWork: correction.pendingWork }
+          : null,
+        { threadId: resumedThreadId, pendingWork: null },
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  // Older clients decode the stream against a union without this variant, so
+  // one arriving unasked would fail their decode outright.
+  it.effect("subscribeShell withholds pending-work items from clients that did not ask", () =>
+    Effect.gen(function* () {
+      const resumedThreadId = ThreadId.make("thread-pending-work-unasked");
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const pendingWorkSignals = yield* PubSub.unbounded<ThreadId>();
+      const synchronized = yield* Deferred.make<void>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: { streamDomainEvents: Stream.fromPubSub(liveEvents) },
+          threadPendingWorkSignal: { changes: Stream.fromPubSub(pendingWorkSignals) },
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }))),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const itemsFiber = yield* withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+              requestCompletionMarker: true,
+            }).pipe(
+              Stream.tap((item) =>
+                item.kind === "synchronized"
+                  ? Deferred.succeed(synchronized, undefined).pipe(Effect.ignore)
+                  : Effect.void,
+              ),
+              // The upsert is the fence: it is published after the signal, so
+              // receiving it proves the signal was not going to arrive.
+              Stream.takeUntil((item) => item.kind === "thread-upserted"),
+              Stream.runCollect,
+            ),
+          ).pipe(Effect.forkScoped);
+
+          yield* Deferred.await(synchronized);
+          yield* PubSub.publish(pendingWorkSignals, resumedThreadId);
+          yield* PubSub.publish(liveEvents, {
+            sequence: 50,
+            eventId: EventId.make("event-after-pending-work"),
+            aggregateKind: "thread",
+            aggregateId: resumedThreadId,
+            occurredAt: "2026-01-01T00:00:00.000Z",
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.created",
+            payload: {} as never,
+          });
+
+          return yield* Fiber.join(itemsFiber);
+        }),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.isUndefined(Array.from(items).find((item) => item.kind === "thread-pending-work"));
+      assert.equal(Array.from(items).at(-1)?.kind, "thread-upserted");
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

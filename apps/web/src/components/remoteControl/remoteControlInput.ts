@@ -19,6 +19,26 @@ export function shouldForwardRemoteSurfaceInput(input: {
   return input.inputCaptured;
 }
 
+export function shouldForwardEscapeOnPointerUnlock(input: {
+  readonly wasLocked: boolean;
+  readonly isLocked: boolean;
+  readonly programmatic: boolean;
+  readonly inputCaptured: boolean;
+  readonly keyboardGranted: boolean;
+  readonly documentVisible: boolean;
+  readonly documentFocused: boolean;
+}): boolean {
+  return (
+    input.wasLocked &&
+    !input.isLocked &&
+    !input.programmatic &&
+    input.inputCaptured &&
+    input.keyboardGranted &&
+    input.documentVisible &&
+    input.documentFocused
+  );
+}
+
 export function controllerPlatform(userAgent: string): RemoteControlPlatform {
   const normalized = userAgent.toLowerCase();
   if (normalized.includes("mac") || normalized.includes("iphone") || normalized.includes("ipad")) {

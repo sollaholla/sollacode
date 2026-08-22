@@ -84,6 +84,7 @@ describe("brand-assets", () => {
   });
 
   it("keeps development, nightly, and production icon families separate", () => {
+    expect(BRAND_ASSET_PATHS.sharedGoldSMarkPng).toBe("assets/source/solla-code-gold-s-master.png");
     expect([
       BRAND_ASSET_PATHS.developmentIconComposerProject,
       BRAND_ASSET_PATHS.nightlyIconComposerProject,

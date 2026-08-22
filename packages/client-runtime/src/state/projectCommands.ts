@@ -74,6 +74,27 @@ export function createProjectEnvironmentAtoms<R, E>(
     }),
     optimisticFile: (target: OptimisticProjectFileTarget) =>
       optimisticFileFamily(optimisticProjectFileKey(target)),
+    // Imperative read-only counterparts of the query atoms above. The query
+    // form is for React surfaces that re-render on the result; the orchestrator
+    // calls these from a tool handler, where there is no component to suspend
+    // and the answer is needed once. Same RPCs, same server-side confinement to
+    // the project's workspace root.
+    readFileNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:read-file",
+      tag: WS_METHODS.projectsReadFile,
+    }),
+    listEntriesNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:list-entries",
+      tag: WS_METHODS.projectsListEntries,
+    }),
+    searchEntriesNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:search-entries",
+      tag: WS_METHODS.projectsSearchEntries,
+    }),
+    searchContentsNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:project:search-contents",
+      tag: WS_METHODS.projectsSearchContents,
+    }),
     create: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:project:create",
       execute: (input: CreateProjectInput) => createProject(input),

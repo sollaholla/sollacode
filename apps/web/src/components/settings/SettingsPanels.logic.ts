@@ -190,3 +190,38 @@ export function buildProviderInstanceUpdatePatch(input: {
       : {}),
   };
 }
+
+type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
+
+/**
+ * Resolve the built-in card shown for a provider driver. Older drivers have a
+ * mirrored entry under `settings.providers`; instance-only drivers do not.
+ * Keep those newer drivers visible and safely disabled until their first edit
+ * creates an explicit provider instance.
+ */
+export function resolveDefaultProviderInstance(input: {
+  readonly driver: ProviderDriverKind;
+  readonly explicitInstance?: ProviderInstanceConfig | undefined;
+  readonly legacyConfig?: LegacyProviderSettings | undefined;
+  readonly defaultLegacyConfig?: LegacyProviderSettings | undefined;
+}): { readonly instance: ProviderInstanceConfig; readonly isDirty: boolean } {
+  if (input.explicitInstance !== undefined) {
+    return { instance: input.explicitInstance, isDirty: true };
+  }
+
+  if (input.legacyConfig !== undefined) {
+    return {
+      instance: {
+        driver: input.driver,
+        enabled: input.legacyConfig.enabled,
+        config: input.legacyConfig,
+      },
+      isDirty: !Equal.equals(input.legacyConfig, input.defaultLegacyConfig),
+    };
+  }
+
+  return {
+    instance: { driver: input.driver, enabled: false },
+    isDirty: false,
+  };
+}

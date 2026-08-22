@@ -129,6 +129,7 @@ export interface TraceSink {
 export interface LocalFileTracerOptions extends TraceSinkOptions {
   readonly delegate?: Tracer.Tracer;
   readonly sink?: TraceSink;
+  readonly shouldPersist?: (record: EffectTraceRecord) => boolean;
 }
 
 type OtlpSpan = OtlpTracer.ScopeSpan["spans"][number];
@@ -465,7 +466,11 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
 
   return Tracer.make({
     span(spanOptions) {
-      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), sink.push);
+      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), (record) => {
+        if (options.shouldPersist?.(record) ?? true) {
+          sink.push(record);
+        }
+      });
     },
     ...(delegate.context ? { context: delegate.context } : {}),
   });
