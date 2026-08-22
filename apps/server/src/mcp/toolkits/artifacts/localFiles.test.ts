@@ -76,3 +76,13 @@ describe("isInside", () => {
     expect(isInside(ROOT, NodePath.dirname(ROOT))).toBe(false);
   });
 });
+
+describe("isInside with a symlinked root", () => {
+  it("matches once both sides are resolved", () => {
+    // /tmp is a link to /private/tmp on macOS. Resolving only the file side
+    // makes every path beneath it look like an escape — which it did, and the
+    // first real bundle publish failed on exactly this.
+    expect(isInside("/private/tmp/ap", "/private/tmp/ap/index.html")).toBe(true);
+    expect(isInside("/tmp/ap", "/private/tmp/ap/index.html")).toBe(false);
+  });
+});

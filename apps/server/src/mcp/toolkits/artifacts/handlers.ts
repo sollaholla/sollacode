@@ -266,8 +266,23 @@ const readLocalArtifactFile = Effect.fn("ThreadArtifact.readLocalFile")(function
       reason: `'${input.localPath}' does not exist or cannot be read`,
     });
   }
-  // The link target, not the link, is what would actually be published.
-  if (!isInside(input.localDir ?? "", real)) {
+  // The link target, not the link, is what would actually be published — but
+  // compare it against the resolved directory, not the one as written. On
+  // macOS /tmp is itself a link to /private/tmp, so realpathing only one side
+  // makes every path under it look like an escape.
+  const realDir = yield* Effect.promise(() =>
+    NodeFSP.realpath(input.localDir ?? "").then(
+      (value): string | null => value,
+      () => null,
+    ),
+  );
+  if (realDir === null) {
+    return yield* new ThreadArtifactInvalidInputError({
+      field: "localDir",
+      reason: `'${input.localDir ?? ""}' does not exist or cannot be read`,
+    });
+  }
+  if (!isInside(realDir, real)) {
     return yield* new ThreadArtifactInvalidInputError({
       field: `files.${input.path}.localPath`,
       reason: `'${input.localPath}' resolves through a link to '${real}', outside localDir`,
