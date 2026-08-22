@@ -55,6 +55,7 @@ export function AgentStackSidebarEntry() {
   const { environments } = useEnvironments();
   const expanded = useUiStateStore((state) => state.agentsSectionExpanded);
   const setExpanded = useUiStateStore((state) => state.setAgentsSectionExpanded);
+  const [createForEnvironmentId, setCreateForEnvironmentId] = useState<EnvironmentId | null>(null);
   const orderedEnvironments = useMemo(() => {
     const entries = environments.map((environment) => ({
       environmentId: environment.environmentId,
@@ -69,26 +70,39 @@ export function AgentStackSidebarEntry() {
     return sortAgentEnvironments(entries, primaryEnvironmentId);
   }, [environments, primaryEnvironmentId]);
 
+  // Which host's create dialog is open, hoisted so the section header can
+  // raise it for the single-host case without owning a dialog per host.
+  const singleEnvironmentId =
+    orderedEnvironments.length === 1 ? (orderedEnvironments[0]?.environmentId ?? null) : null;
+
   if (!enabled || orderedEnvironments.length === 0) return null;
 
   return (
     <div className="mt-1 flex min-w-0 flex-col gap-1" data-agent-environment-list>
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        // Only while the body is mounted: collapsed unmounts it, and pointing
-        // aria-controls at an id that is not in the document is worse than omitting it.
-        aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
-        data-testid="agents-section-toggle"
-        className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
-      >
-        <span className="min-w-0 truncate">Agents</span>
-        <ChevronDownIcon
-          aria-hidden
-          className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
-        />
-      </button>
+      {/* The add control belongs on this row, beside the section it adds to —
+          not on a row of its own below it. It cannot go inside the toggle
+          (nesting a button in a button), so the two share a flex row. */}
+      <div className="flex min-w-0 items-center gap-1 pr-1">
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          // Only while the body is mounted: collapsed unmounts it, and pointing
+          // aria-controls at an id that is not in the document is worse than omitting it.
+          aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
+          data-testid="agents-section-toggle"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
+        >
+          <span className="min-w-0 truncate">Agents</span>
+          <ChevronDownIcon
+            aria-hidden
+            className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+          />
+        </button>
+        {singleEnvironmentId ? (
+          <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
+        ) : null}
+      </div>
       {/* Collapsed drops the sections entirely rather than hiding them: each one
           holds a live agent-registry subscription per host, and a closed section
           has no reason to keep streaming. */}
@@ -100,6 +114,10 @@ export function AgentStackSidebarEntry() {
               environmentId={environment.environmentId}
               environmentLabel={environment.label}
               showEnvironmentLabel={orderedEnvironments.length > 1}
+              createOpen={createForEnvironmentId === environment.environmentId}
+              onCreateOpenChange={(open) =>
+                setCreateForEnvironmentId(open ? environment.environmentId : null)
+              }
             />
           ))}
         </div>
@@ -108,14 +126,38 @@ export function AgentStackSidebarEntry() {
   );
 }
 
+function NewAgentButton(props: { readonly onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label="New agent"
+            data-testid="agents-add"
+            // The 44px target is for touch; on a fine pointer it is just a
+            // tall band beside a one-line header.
+            className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
+            onClick={props.onClick}
+          />
+        }
+      >
+        <PlusIcon className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipPopup side="right">New agent</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function AgentEnvironmentSection(props: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly showEnvironmentLabel: boolean;
+  readonly createOpen: boolean;
+  readonly onCreateOpenChange: (open: boolean) => void;
 }) {
   const router = useRouter();
   const environment = useEnvironment(props.environmentId);
-  const [createOpen, setCreateOpen] = useState(false);
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
@@ -150,40 +192,21 @@ function AgentEnvironmentSection(props: {
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5" data-agent-environment={props.environmentId}>
-      {/* `justify-between` alone put this on the LEFT whenever the label is
-          hidden: `sr-only` is `position: absolute`, so it stops being a flex
-          item and the button becomes the only one, landing at flex-start. The
-          button carries its own `ml-auto` so it stays at the trailing edge
-          either way. */}
-      <div className="flex min-w-0 items-center justify-between pl-2 pr-1">
-        <span
-          className={cn(
-            "min-w-0 truncate text-[11px] text-sidebar-muted-foreground/65",
-            !props.showEnvironmentLabel && "sr-only",
-          )}
-          title={props.environmentLabel}
-        >
-          {props.environmentLabel}
-        </span>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                aria-label="New agent"
-                data-testid="agents-add"
-                // The 44px target is for touch; on a fine pointer it is just
-                // a tall empty band next to a one-line section header.
-                className="ml-auto inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
-                onClick={() => setCreateOpen(true)}
-              />
-            }
+      {/* Only when there is a host name to attach it to. With a single host
+          the label is hidden, which left this row holding nothing but the
+          button — a band of empty sidebar between the section header and the
+          first agent. The header carries the button in that case. */}
+      {props.showEnvironmentLabel ? (
+        <div className="flex min-w-0 items-center justify-between pl-2 pr-1">
+          <span
+            className="min-w-0 truncate text-[11px] text-sidebar-muted-foreground/65"
+            title={props.environmentLabel}
           >
-            <PlusIcon className="size-3.5" />
-          </TooltipTrigger>
-          <TooltipPopup side="right">New agent</TooltipPopup>
-        </Tooltip>
-      </div>
+            {props.environmentLabel}
+          </span>
+          <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
+        </div>
+      ) : null}
 
       {agents.length === 0 && notice !== null && notice !== "stale" ? (
         <p className="min-w-0 break-words px-2 py-1 text-xs leading-relaxed text-sidebar-muted-foreground/60">
@@ -242,8 +265,8 @@ function AgentEnvironmentSection(props: {
       ) : null}
 
       <CreateAgentDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
+        open={props.createOpen}
+        onOpenChange={props.onCreateOpenChange}
         environmentId={props.environmentId}
       />
     </div>
