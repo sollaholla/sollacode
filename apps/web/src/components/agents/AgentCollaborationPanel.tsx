@@ -202,7 +202,9 @@ export function AgentCollaborationPanel(props: {
 
   const waitingQuestion =
     selectedSummary?.delegation.status === "waiting-input"
-      ? ([...(detail?.messages ?? [])].reverse().find((message) => message.kind === "question") ??
+      ? ([...(detail?.messages ?? [])]
+          .toReversed()
+          .find((message) => message.kind === "question") ??
         (selectedSummary.latestMessage?.kind === "question" ? selectedSummary.latestMessage : null))
       : null;
 

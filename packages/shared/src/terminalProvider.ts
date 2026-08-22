@@ -33,7 +33,7 @@ export const AGENT_CLI_OUTPUT_STALE_MS = 10_000;
  */
 const AGENT_CLI_BUSY_MARKERS: ReadonlyArray<RegExp> = [
   /esc(?:ape)?\s+to\s+(?:interrupt|cancel|stop)/gi,
-  /(?:ctrl|control)[+\-][a-z]\s+to\s+(?:interrupt|cancel|stop|run in background)/gi,
+  /(?:ctrl|control)[+-][a-z]\s+to\s+(?:interrupt|cancel|stop|run in background)/gi,
   /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g,
   // Star-glyph spinner status lines: "✻ Thinking…", "✶ Puttering… (2m 4s)".
   /[✢✳✶✻✽✿❋✸]\s*\p{L}+(?:…|\.{3})/gu,

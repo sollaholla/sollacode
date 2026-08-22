@@ -425,6 +425,16 @@ it.effect("streams video chunks in order and replays the init segment to late wa
       yield* broker.publishVideoChunk(chunk(1, false, "c3RhbGU="), hostSessionId);
       yield* Effect.yieldNow;
       expect(events).toEqual(["aW5pdA==", "b25l", "dHdv"]);
+
+      // Attaching a watcher to an already-encoding session asks the host to
+      // cut a fresh container: a WebM stream cannot be decoded from the
+      // middle, and the bytes between the retained header and "now" are gone.
+      const restart = hostEvents.find((event) => event.type === "video-restart-requested");
+      expect(restart).toMatchObject({
+        type: "video-restart-requested",
+        connectionId: connected.connectionId,
+        sessionId: waiting.sessionId,
+      });
     }),
   ),
 );

@@ -42,6 +42,8 @@ interface ChatHeaderProps {
   onMainSurfaceChange?: (surface: "chat" | "terminal") => void;
   /** A subprocess is actively working in one of this thread's terminals. */
   terminalsWorking?: boolean;
+  /** The thread's own agent turn is in flight (the chat surface is working). */
+  chatWorking?: boolean;
   onNewThreadInProject: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
@@ -81,6 +83,7 @@ export const ChatHeader = memo(function ChatHeader({
   mainSurface,
   onMainSurfaceChange,
   terminalsWorking = false,
+  chatWorking = false,
   onNewThreadInProject,
   onRunProjectScript,
   onAddProjectScript,
@@ -173,11 +176,15 @@ export const ChatHeader = memo(function ChatHeader({
               }
             >
               {mainSurface === "terminal" ? (
+                // The dot advertises activity on the surface the button
+                // switches TO: on the chat icon it means the agent is
+                // mid-turn, not that a terminal is busy — that activity is
+                // already visible right behind this header.
                 <span className="relative inline-flex size-4 items-center justify-center">
                   <MessageSquareIcon className="size-4" aria-hidden />
-                  {terminalsWorking ? (
+                  {chatWorking ? (
                     <span
-                      aria-label="Terminals working"
+                      aria-label="Chat working"
                       className={TERMINAL_WORKING_DOT_CLASS}
                       role="status"
                     />

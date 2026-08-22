@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="./docs/media/readme/solla-code-hero.png">
-    <img src="./docs/media/readme/solla-code-hero.png" alt="The installed Solla Code desktop app rendering a styled thread artifact" width="1100" />
+    <img src="./docs/media/readme/solla-code-hero.png" alt="Reconstruction of the Solla Code desktop workspace: sidebar with agents and threads, and a streaming agent turn" width="1100" />
   </a>
 </p>
 
@@ -50,12 +50,30 @@ Solla Code is built on the open core of [T3 Code](https://github.com/pingdotgg/t
 ## See it in action
 
 <p align="center">
-  <a href="./docs/media/readme/thread-artifacts.gif">
-    <img src="./docs/media/readme/thread-artifacts.gif" alt="A real signed Solla Code thread artifact scrolling through its responsive feature tour" width="1100" />
+  <a href="./docs/media/readme/workspace-tour.gif">
+    <img src="./docs/media/readme/workspace-tour.gif" alt="Solla Code workspace: collapsible Agents and Threads sections in the sidebar while an agent turn streams into the thread" width="1100" />
   </a>
 </p>
 
-<p align="center"><sub>The screenshot above comes from the installed desktop app. This GIF is the same real, signed artifact bundle rendered from the Solla host, not a design mockup.</sub></p>
+<p align="center"><sub>Durable threads in the sidebar, with Agents and Threads as collapsible sections, and an agent turn streaming in.</sub></p>
+
+<p align="center">
+  <a href="./docs/media/readme/terminal-workspaces.gif">
+    <img src="./docs/media/readme/terminal-workspaces.gif" alt="A named four-pane Solla Code terminal layout running a dev server, tests, an agent CLI, and git" width="1100" />
+  </a>
+</p>
+
+<p align="center"><sub>A named terminal layout: four retained panes running a dev server, the test suite, an agent CLI, and git.</sub></p>
+
+<p align="center">
+  <a href="./docs/media/readme/agents-collaboration.gif">
+    <img src="./docs/media/readme/agents-collaboration.gif" alt="Delegating work to a named Solla Code agent, which asks a question, receives an answer, and returns a result" width="1100" />
+  </a>
+</p>
+
+<p align="center"><sub>Bounded collaboration: delegate to a named agent, answer its question, and get the result back in the same thread.</sub></p>
+
+<p align="center"><sub>These are interface reconstructions rendered with <a href="./tools/motion/README.md">Remotion</a> for documentation, not screen recordings. Every state shown is one the product produces.</sub></p>
 
 ## Providers
 

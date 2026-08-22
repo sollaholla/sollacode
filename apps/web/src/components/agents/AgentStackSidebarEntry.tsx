@@ -6,12 +6,13 @@ import type {
   VmAgentCollaborationAgentSummary,
   VmAgentStatus,
 } from "@t3tools/contracts";
-import { BotIcon, PlusIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useMemo, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
+import { useUiStateStore } from "../../uiStateStore";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
@@ -22,6 +23,7 @@ import {
   agentRegistryNoticeCopy,
   environmentIdFromUnknown,
   resolveAgentRegistryNotice,
+  sortAgentEnvironments,
 } from "./agentRegistryState";
 
 const STATUS_DOT: Record<VmAgentStatus, string> = {
@@ -32,6 +34,8 @@ const STATUS_DOT: Record<VmAgentStatus, string> = {
   stopped: "bg-muted-foreground/40",
   failed: "bg-destructive",
 };
+
+const AGENT_SECTION_BODY_ID = "agent-stack-sections";
 
 export function activeDelegationsForAgent(
   agents: ReadonlyArray<Pick<VmAgentCollaborationAgentSummary, "vmAgentId" | "activeDelegations">>,
@@ -49,11 +53,8 @@ export function AgentStackSidebarEntry() {
   const enabled = useClientSettings((settings) => settings.agentStackEnabled);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
-  const routeEnvironmentId = useParams({
-    strict: false,
-    select: (params) =>
-      environmentIdFromUnknown((params as { environmentId?: unknown }).environmentId),
-  });
+  const expanded = useUiStateStore((state) => state.agentsSectionExpanded);
+  const setExpanded = useUiStateStore((state) => state.setAgentsSectionExpanded);
   const orderedEnvironments = useMemo(() => {
     const entries = environments.map((environment) => ({
       environmentId: environment.environmentId,
@@ -63,30 +64,46 @@ export function AgentStackSidebarEntry() {
       primaryEnvironmentId !== null &&
       !entries.some((entry) => entry.environmentId === primaryEnvironmentId)
     ) {
-      entries.unshift({ environmentId: primaryEnvironmentId, label: "Local host" });
+      entries.push({ environmentId: primaryEnvironmentId, label: "Local host" });
     }
-    return entries.toSorted((left, right) => {
-      if (left.environmentId === routeEnvironmentId) return -1;
-      if (right.environmentId === routeEnvironmentId) return 1;
-      if (left.environmentId === primaryEnvironmentId) return -1;
-      if (right.environmentId === primaryEnvironmentId) return 1;
-      return left.label.localeCompare(right.label);
-    });
-  }, [environments, primaryEnvironmentId, routeEnvironmentId]);
+    return sortAgentEnvironments(entries, primaryEnvironmentId);
+  }, [environments, primaryEnvironmentId]);
 
   if (!enabled || orderedEnvironments.length === 0) return null;
 
   return (
     <div className="mt-1 flex min-w-0 flex-col gap-1" data-agent-environment-list>
-      <div className="px-2 text-xs font-medium text-sidebar-muted-foreground/80">Agents</div>
-      {orderedEnvironments.map((environment) => (
-        <AgentEnvironmentSection
-          key={environment.environmentId}
-          environmentId={environment.environmentId}
-          environmentLabel={environment.label}
-          showEnvironmentLabel={orderedEnvironments.length > 1}
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+        // Only while the body is mounted: collapsed unmounts it, and pointing
+        // aria-controls at an id that is not in the document is worse than omitting it.
+        aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
+        data-testid="agents-section-toggle"
+        className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
+      >
+        <span className="min-w-0 truncate">Agents</span>
+        <ChevronDownIcon
+          aria-hidden
+          className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
         />
-      ))}
+      </button>
+      {/* Collapsed drops the sections entirely rather than hiding them: each one
+          holds a live agent-registry subscription per host, and a closed section
+          has no reason to keep streaming. */}
+      {expanded ? (
+        <div id={AGENT_SECTION_BODY_ID} className="flex min-w-0 flex-col gap-1">
+          {orderedEnvironments.map((environment) => (
+            <AgentEnvironmentSection
+              key={environment.environmentId}
+              environmentId={environment.environmentId}
+              environmentLabel={environment.label}
+              showEnvironmentLabel={orderedEnvironments.length > 1}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

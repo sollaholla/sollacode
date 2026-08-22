@@ -34,10 +34,18 @@ export function createRemoteControlEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.clientId]),
       },
     }),
+    // Serial per session: inputs carry a monotonic sequence and the broker
+    // silently drops anything that arrives with an older one, so two
+    // concurrent sends racing each other over the wire turn into dropped
+    // keystrokes and clicks that never land. FIFO delivery is the contract.
     sendInput: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:send-input",
       tag: WS_METHODS.remoteControlSendInput,
       scheduler: controllerScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sessionId]),
+      },
     }),
     cancel: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:remote-control:cancel",

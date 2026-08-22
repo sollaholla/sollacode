@@ -95,6 +95,7 @@ describe("browserSurfaceStore", () => {
           hidden: {
             rect: staleRect,
             visible: false,
+            interactive: true,
             content: null,
             fittedSourceContent: null,
             fitSourceContent: false,
@@ -105,6 +106,7 @@ describe("browserSurfaceStore", () => {
           active: {
             rect: liveRect,
             visible: true,
+            interactive: true,
             content: null,
             fittedSourceContent: null,
             fitSourceContent: false,

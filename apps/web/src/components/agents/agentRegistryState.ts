@@ -24,6 +24,38 @@ export function resolveAgentEnvironmentId(input: {
   return input.routeEnvironmentId ?? input.searchEnvironmentId ?? input.primaryEnvironmentId;
 }
 
+export interface AgentEnvironmentEntry {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+}
+
+/**
+ * Stable display order for the Agent Stack's per-host sections.
+ *
+ * Deliberately independent of whatever thread is focused. Ranking the focused
+ * route's host first made the whole list re-sort the moment you opened a thread
+ * on a remote host, so hosts swapped places underneath the pointer. Focus is
+ * communicated by highlighting the active agent row, not by moving hosts: the
+ * primary host stays pinned to the top and the rest stay alphabetical, so a
+ * given host sits in the same place no matter where you navigate.
+ */
+export function sortAgentEnvironments(
+  entries: ReadonlyArray<AgentEnvironmentEntry>,
+  primaryEnvironmentId: EnvironmentId | null,
+): ReadonlyArray<AgentEnvironmentEntry> {
+  const rank = (entry: AgentEnvironmentEntry): number =>
+    entry.environmentId === primaryEnvironmentId ? 0 : 1;
+  return entries.toSorted(
+    (left, right) =>
+      rank(left) - rank(right) ||
+      left.label.localeCompare(right.label) ||
+      // Two hosts can share a label (same machine name, two pairings). Falling
+      // through to the id keeps the comparator total, so the order is the same
+      // on every render instead of depending on the input order.
+      left.environmentId.localeCompare(right.environmentId),
+  );
+}
+
 function isAgentAuthorizationFailure(cause: Cause.Cause<unknown> | null): boolean {
   if (cause === null) return false;
   const error = Cause.squash(cause);

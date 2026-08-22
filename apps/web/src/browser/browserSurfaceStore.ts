@@ -10,6 +10,8 @@ export interface BrowserSurfaceRect {
 export interface BrowserSurfacePresentation {
   readonly rect: BrowserSurfaceRect | null;
   readonly visible: boolean;
+  /** False while the owner presents the surface as a non-clickable thumbnail. */
+  readonly interactive: boolean;
   readonly content: BrowserSurfaceContentPresentation | null;
   readonly fittedSourceContent: BrowserSurfaceContentPresentation | null;
   readonly fitSourceContent: boolean;
@@ -37,13 +39,19 @@ interface BrowserSurfaceStoreState {
     rect: BrowserSurfaceRect,
     visible: boolean,
     cornerRadius: number,
+    interactive: boolean,
   ) => void;
   readonly presentContent: (tabId: string, content: BrowserSurfaceContentPresentation) => void;
   readonly release: (tabId: string, owner: symbol) => void;
 }
 
 export interface BrowserSurfaceLease {
-  readonly present: (rect: BrowserSurfaceRect, visible: boolean, cornerRadius?: number) => boolean;
+  readonly present: (
+    rect: BrowserSurfaceRect,
+    visible: boolean,
+    cornerRadius?: number,
+    interactive?: boolean,
+  ) => boolean;
   readonly release: () => void;
 }
 
@@ -74,6 +82,7 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
           [tabId]: {
             rect: current?.rect ?? null,
             visible: false,
+            interactive: current?.interactive ?? true,
             content: current?.content ?? null,
             fittedSourceContent: fitSourceContent ? (current?.content ?? null) : null,
             fitSourceContent,
@@ -84,7 +93,7 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
         },
       };
     }),
-  present: (tabId, owner, rect, visible, cornerRadius) =>
+  present: (tabId, owner, rect, visible, cornerRadius, interactive) =>
     set((state) => {
       const current = state.byTabId[tabId];
       if (current?.owner !== owner) return state;
@@ -92,6 +101,7 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
         current &&
         current.visible === visible &&
         current.cornerRadius === cornerRadius &&
+        current.interactive === interactive &&
         rectEquals(current.rect, rect)
       ) {
         return state;
@@ -99,7 +109,7 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
       return {
         byTabId: {
           ...state.byTabId,
-          [tabId]: { ...current, rect, visible, cornerRadius, updatedAt: Date.now() },
+          [tabId]: { ...current, rect, visible, cornerRadius, interactive, updatedAt: Date.now() },
         },
       };
     }),
@@ -113,6 +123,7 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
             [tabId]: {
               rect: null,
               visible: false,
+              interactive: true,
               content,
               fittedSourceContent: null,
               fitSourceContent: false,
@@ -161,6 +172,10 @@ export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) =
           [tabId]: {
             ...current,
             visible: false,
+            // Reset rather than inherit: the mini player presents
+            // non-interactively, and a stale `false` carried into the next
+            // owner's first frame would leave the right panel unclickable.
+            interactive: true,
             fittedSourceContent: null,
             fitSourceContent: false,
             updatedAt: Date.now(),
@@ -180,10 +195,12 @@ export function acquireBrowserSurface(
   useBrowserSurfaceStore.getState().claim(tabId, owner, fitSourceContent);
 
   return {
-    present: (rect, visible, cornerRadius = 0) => {
+    present: (rect, visible, cornerRadius = 0, interactive = true) => {
       if (released) return false;
       if (useBrowserSurfaceStore.getState().byTabId[tabId]?.owner !== owner) return false;
-      useBrowserSurfaceStore.getState().present(tabId, owner, rect, visible, cornerRadius);
+      useBrowserSurfaceStore
+        .getState()
+        .present(tabId, owner, rect, visible, cornerRadius, interactive);
       return true;
     },
     release: () => {

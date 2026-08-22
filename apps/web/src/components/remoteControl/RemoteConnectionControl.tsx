@@ -21,11 +21,17 @@ export function remoteConnectionHeaderAction(input: {
   readonly activeEnvironmentId: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly connectionPhase: string | null;
+  /** True when this client IS the desktop app — i.e. the machine itself. */
+  readonly isDesktopApp: boolean;
 }): "hidden" | "connect-control" | "open-control" {
-  if (
-    input.primaryEnvironmentId === null ||
-    input.activeEnvironmentId === input.primaryEnvironmentId
-  ) {
+  if (input.primaryEnvironmentId === null) return "hidden";
+  // The one case remote control makes no sense is controlling the machine you
+  // are sitting at: the desktop app viewing its own environment. A phone or
+  // browser viewing its *primary* environment is still a remote device — that
+  // environment's desktop is somewhere else — so the button must show there.
+  // (This is what previously buried remote control in Settings → Connections
+  // for anyone connected to a single machine.)
+  if (input.activeEnvironmentId === input.primaryEnvironmentId && input.isDesktopApp) {
     return "hidden";
   }
   return input.connectionPhase === "connected" ? "open-control" : "connect-control";
@@ -45,6 +51,7 @@ export function RemoteConnectionControl(props: { readonly activeEnvironmentId: E
     activeEnvironmentId,
     primaryEnvironmentId,
     connectionPhase: environment?.connection.phase ?? null,
+    isDesktopApp: window.desktopBridge !== undefined,
   });
   const isConnecting = pendingEnvironmentId === activeEnvironmentId;
   const label = action === "open-control" ? "Remote control" : "Connect and control";

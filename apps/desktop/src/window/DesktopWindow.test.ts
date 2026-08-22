@@ -521,6 +521,12 @@ describe("DesktopWindow", () => {
         assert.isTrue(decide("clipboard-sanitized-write", {}));
         assert.isTrue(decide("clipboard-read", {}));
 
+        // The remote-control viewer needs both: element fullscreen for its
+        // fullscreen button, pointer lock for the mouse-look mirror. Denied,
+        // each request fails silently and the buttons read as dead clicks.
+        assert.isTrue(decide("fullscreen", {}));
+        assert.isTrue(decide("pointerLock", {}));
+
         // Async clipboard writes consult the check handler as well, so a
         // request handler that allows it on its own is not enough.
         const check = fakeWindow.setPermissionCheckHandler.mock.calls[0]?.[0] as (

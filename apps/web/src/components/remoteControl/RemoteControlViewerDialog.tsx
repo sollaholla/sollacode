@@ -9,7 +9,13 @@ import type {
   RemoteControlSession,
   RemoteControlVideoChunk,
 } from "@t3tools/contracts";
-import { MaximizeIcon, MinimizeIcon, MonitorIcon, ShieldCheckIcon } from "lucide-react";
+import {
+  KeyboardIcon,
+  MaximizeIcon,
+  MinimizeIcon,
+  MonitorIcon,
+  ShieldCheckIcon,
+} from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -41,6 +47,7 @@ import {
   normalizeRemoteControlKeyCode,
   normalizedRemotePoint,
   remotePointerButton,
+  remoteSurfaceCursorStyle,
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
@@ -93,6 +100,11 @@ export function RemoteControlViewerDialog(props: {
   // `pointerLocked` is what the browser actually granted, which can lag or be
   // refused (pointer lock needs a user gesture and can be denied outright).
   const [remoteLocked, setRemoteLocked] = useState(false);
+  const remoteLockedRef = useRef(false);
+  remoteLockedRef.current = remoteLocked;
+  // Host OS cursor shape, mirrored onto the local cursor while input is
+  // captured so hovering a remote text field shows the beam, a link the hand.
+  const [remoteCursorShape, setRemoteCursorShape] = useState("default");
   const [pointerLocked, setPointerLocked] = useState(false);
   const pointerLockedRef = useRef(false);
   const programmaticPointerUnlockRef = useRef(false);
@@ -101,6 +113,9 @@ export function RemoteControlViewerDialog(props: {
   const frameImageRef = useRef<HTMLImageElement>(null);
   const frameVideoRef = useRef<HTMLVideoElement>(null);
   const [videoMimeType, setVideoMimeType] = useState<string | null>(null);
+  // Bumped per init segment: each container needs a fresh MediaSource even
+  // when the codec string is identical across encoder restarts.
+  const [videoEpoch, setVideoEpoch] = useState(0);
   const videoSinkRef = useRef<RemoteControlVideoSink | null>(null);
   const videoMimeTypeRef = useRef<string | null>(null);
   const pendingChunksRef = useRef<RemoteControlVideoChunk[]>([]);
@@ -122,6 +137,10 @@ export function RemoteControlViewerDialog(props: {
   const [hasRenderedFrame, setHasRenderedFrame] = useState(false);
   const [firstFrameSlow, setFirstFrameSlow] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  // Touch devices have no hardware keyboard to capture; this summons the
+  // on-screen one via a hidden input and forwards its text natively.
+  const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
+  const virtualKeyboardInputRef = useRef<HTMLInputElement>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const inputSequenceRef = useRef(0);
@@ -182,13 +201,21 @@ export function RemoteControlViewerDialog(props: {
    */
   const appendVideoChunk = useCallback((chunk: RemoteControlVideoChunk) => {
     if (videoUnavailableRef.current) return;
-    // A fresh init segment supersedes any earlier container (monitor switch).
-    if (chunk.isInit && videoMimeTypeRef.current !== chunk.mimeType) {
+    // EVERY init segment supersedes the current container, same codec or not:
+    // a host encoder restart (watcher joined, monitor switch, capture
+    // recovery) restarts timestamps at zero, and appending a second WebM
+    // header into a live SourceBuffer is exactly the "stream parsing failed"
+    // demuxer error that used to kill video. A fresh MediaSource per
+    // container is the only shape Chromium accepts.
+    if (chunk.isInit) {
       videoSinkRef.current?.dispose();
       videoSinkRef.current = null;
       videoMimeTypeRef.current = chunk.mimeType;
       pendingChunksRef.current = [chunk];
       setVideoMimeType(chunk.mimeType);
+      // The mime is often unchanged across restarts, so a separate nonce is
+      // what actually re-runs the sink-attach effect.
+      setVideoEpoch((epoch) => epoch + 1);
       return;
     }
     if (videoSinkRef.current) {
@@ -200,7 +227,8 @@ export function RemoteControlViewerDialog(props: {
     if (pendingChunksRef.current.length > 0) pendingChunksRef.current.push(chunk);
   }, []);
 
-  // Attaches the sink once the element for this codec has mounted.
+  // Attaches the sink once the element for this codec has mounted; re-runs per
+  // init segment (videoEpoch) because each container needs its own MediaSource.
   useEffect(() => {
     if (!videoMimeType || videoSinkRef.current) return;
     const unsupported = describeUnsupportedCodec(videoMimeType);
@@ -223,7 +251,7 @@ export function RemoteControlViewerDialog(props: {
     video.src = sink.url;
     for (const pending of pendingChunksRef.current) sink.append(pending);
     pendingChunksRef.current = [];
-  }, [videoMimeType]);
+  }, [videoEpoch, videoMimeType]);
 
   /**
    * Watchdog. Chunks can arrive and append cleanly yet still decode to nothing,
@@ -245,7 +273,9 @@ export function RemoteControlViewerDialog(props: {
       );
     }, 5_000);
     return () => window.clearTimeout(timer);
-  }, [videoMimeType, videoUnavailable]);
+    // videoEpoch re-arms the window per container: an encoder restart replaces
+    // the element's media, so the previous container's verdict is stale.
+  }, [videoEpoch, videoMimeType, videoUnavailable]);
 
   useEffect(
     () => () => {
@@ -266,6 +296,10 @@ export function RemoteControlViewerDialog(props: {
     }
     if (event.type === "pointer-lock-changed") {
       setRemoteLocked(event.locked);
+      return;
+    }
+    if (event.type === "cursor-changed") {
+      setRemoteCursorShape(event.shape);
       return;
     }
     if (event.type === "host-status") {
@@ -500,23 +534,34 @@ export function RemoteControlViewerDialog(props: {
     hasRenderedFrame,
   });
 
+  /**
+   * Ask the browser to actually lock the mouse to the surface. Chromium only
+   * grants pointer lock with transient user activation, so a request fired
+   * from an effect (the host reporting "locked" mid-session) can be refused
+   * even with the permission granted. This is therefore called from BOTH
+   * places: the state effect below (works when the state change follows a
+   * recent click) and directly inside pointer-down handlers, where activation
+   * is guaranteed — the first click on the surface after a game grabs the
+   * remote cursor is what reliably engages the local lock.
+   */
+  const engagePointerLock = useCallback(() => {
+    const surface = surfaceElementRef.current;
+    if (!surface || document.pointerLockElement === surface) return;
+    void Promise.resolve(surface.requestPointerLock()).catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     const surface = surfaceElementRef.current;
     if (!surface) return;
     if (remoteLocked && inputCaptured && canPointer) {
-      if (document.pointerLockElement !== surface) {
-        // Can reject when the browser has no recent user gesture; the click
-        // that captured input normally satisfies it, and a failure just leaves
-        // the session in absolute mode rather than breaking it.
-        void Promise.resolve(surface.requestPointerLock()).catch(() => undefined);
-      }
+      engagePointerLock();
       return;
     }
     if (document.pointerLockElement === surface) {
       programmaticPointerUnlockRef.current = true;
       document.exitPointerLock();
     }
-  }, [canPointer, inputCaptured, remoteLocked]);
+  }, [canPointer, engagePointerLock, inputCaptured, remoteLocked]);
 
   useEffect(() => {
     if (!canControl && inputCaptured) releaseInputCapture();
@@ -543,26 +588,82 @@ export function RemoteControlViewerDialog(props: {
   /**
    * Full screen is driven by the browser, not by us: the user can leave with
    * Escape or the system chrome without touching our button, so the flag is
-   * only ever a mirror of `document.fullscreenElement`.
+   * only ever a mirror of the fullscreen element. WebKit engines that predate
+   * the unprefixed API fire the prefixed event and expose the prefixed
+   * element, so both spellings are mirrored.
    */
   useEffect(() => {
-    const sync = () => setIsFullScreen(document.fullscreenElement === surfaceElementRef.current);
+    const sync = () => {
+      const fullscreenElement =
+        document.fullscreenElement ??
+        (document as { webkitFullscreenElement?: Element | null }).webkitFullscreenElement ??
+        null;
+      setIsFullScreen(
+        fullscreenElement !== null && fullscreenElement === surfaceElementRef.current,
+      );
+    };
     document.addEventListener("fullscreenchange", sync);
-    return () => document.removeEventListener("fullscreenchange", sync);
+    document.addEventListener("webkitfullscreenchange", sync);
+    return () => {
+      document.removeEventListener("fullscreenchange", sync);
+      document.removeEventListener("webkitfullscreenchange", sync);
+    };
   }, []);
 
   const toggleFullScreen = useCallback(() => {
-    if (document.fullscreenElement) {
-      void Promise.resolve(document.exitFullscreen()).catch(() => undefined);
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => void;
+    };
+    if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+      if (doc.exitFullscreen) {
+        void Promise.resolve(doc.exitFullscreen()).catch(() => undefined);
+      } else {
+        doc.webkitExitFullscreen?.();
+      }
       return;
     }
-    const surface = surfaceElementRef.current;
+    const surface = surfaceElementRef.current as
+      | (HTMLDivElement & { webkitRequestFullscreen?: () => void })
+      | null;
     if (!surface) return;
-    // Refusable (needs a user gesture, and can be blocked by policy). A refusal
-    // just leaves the viewer windowed, which is the state it was already in.
-    void Promise.resolve(surface.requestFullscreen({ navigationUI: "hide" })).catch(
-      () => undefined,
-    );
+    // Fallback ladder: standard element fullscreen → prefixed WebKit element
+    // fullscreen → iOS Safari, which only fullscreens <video> elements via its
+    // own non-fullscreen-API method. Only when every rung is missing or
+    // refused does the button admit it cannot work here.
+    const enterVideoFullscreen = () => {
+      const video = frameVideoRef.current as
+        | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
+        | null;
+      if (video?.webkitEnterFullscreen) {
+        try {
+          video.webkitEnterFullscreen();
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    };
+    const reportUnavailable = () => {
+      if (enterVideoFullscreen()) return;
+      setInputError("Full screen is not available in this browser.");
+    };
+    if (surface.requestFullscreen) {
+      void Promise.resolve(surface.requestFullscreen({ navigationUI: "hide" })).catch(
+        reportUnavailable,
+      );
+      return;
+    }
+    if (surface.webkitRequestFullscreen) {
+      try {
+        surface.webkitRequestFullscreen();
+        return;
+      } catch {
+        // Fall through to the video rung.
+      }
+    }
+    reportUnavailable();
   }, []);
 
   // Leaving the dialog while still full screen would strand the browser there.
@@ -594,7 +695,13 @@ export function RemoteControlViewerDialog(props: {
     // cursor position is meaningless to it. The scheduler samples these at
     // display-frame cadence and keeps only one replaceable successor; there is
     // deliberately no residual motion to replay later.
-    if (pointerLockedRef.current) {
+    //
+    // The HOST's lock state decides the mode, not just the local browser
+    // lock: the moment a remote game captures the cursor, absolute warps
+    // would spin its aim, and movementX/Y are available on ordinary moves
+    // too. Local pointer lock (which can lag behind by one click) only adds
+    // cursor confinement on top.
+    if (pointerLockedRef.current || remoteLockedRef.current) {
       const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
       if (action === "move") {
         const dx = clampPointerDelta(event.movementX);
@@ -699,7 +806,9 @@ export function RemoteControlViewerDialog(props: {
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && void close()}>
       <DialogPopup
-        className="h-[min(90dvh,900px)] w-[min(94vw,1500px)] max-w-none"
+        // Full-bleed on phones — the remote desktop needs every pixel — and a
+        // large centered panel on anything bigger.
+        className="h-dvh max-h-none w-screen max-w-none rounded-none sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
         showCloseButton={false}
         bottomStickOnMobile={false}
       >
@@ -778,6 +887,13 @@ export function RemoteControlViewerDialog(props: {
               data-remote-input-capture={inputCaptured ? "active" : "inactive"}
               data-remote-pointer-lock={pointerLocked ? "locked" : "unlocked"}
               data-remote-video-fallback={videoUnavailable ?? undefined}
+              style={{
+                cursor: remoteSurfaceCursorStyle({
+                  shape: remoteCursorShape,
+                  inputCaptured,
+                  pointerGranted: canPointer,
+                }),
+              }}
               className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-lg bg-black outline-hidden overscroll-none ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
@@ -787,7 +903,13 @@ export function RemoteControlViewerDialog(props: {
               onFocus={() => {
                 if (canControl) captureInput();
               }}
-              onBlur={releaseInputCapture}
+              onBlur={(event) => {
+                // Focus moving to a child (the virtual-keyboard input) is not
+                // leaving the surface; releasing capture would close the
+                // keyboard the moment it opens.
+                if (event.currentTarget.contains(event.relatedTarget)) return;
+                releaseInputCapture();
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -807,6 +929,13 @@ export function RemoteControlViewerDialog(props: {
                 captureInput();
                 event.currentTarget.focus({ preventScroll: true });
                 if (!canPointer) return;
+                // Inside a genuine gesture — the one place pointer lock is
+                // always grantable. This is what actually engages the local
+                // lock when the host reported "locked" while no click was
+                // recent enough for the effect-driven request to succeed.
+                if (remoteLockedRef.current && !pointerLockedRef.current) {
+                  engagePointerLock();
+                }
                 event.currentTarget.setPointerCapture(event.pointerId);
                 const button = remotePointerButton(event.button);
                 pressedPointerButtonRef.current = button;
@@ -875,27 +1004,129 @@ export function RemoteControlViewerDialog(props: {
                   ) : null}
                 </div>
               ) : null}
-              <button
-                type="button"
-                aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
-                // Bottom right, opposite the status pill: the top edge belongs
-                // to the host/input notices, which span the full width.
-                className="absolute right-3 bottom-3 flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
-                onClick={(event) => {
-                  // The surface below forwards clicks to the remote desktop;
-                  // pressing this must not also click over there.
-                  event.stopPropagation();
-                  toggleFullScreen();
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                {isFullScreen ? (
-                  <MinimizeIcon className="size-3.5" />
-                ) : (
-                  <MaximizeIcon className="size-3.5" />
-                )}
-                {isFullScreen ? "Exit full screen" : "Full screen"}
-              </button>
+              {canKeyboard ? (
+                <input
+                  ref={virtualKeyboardInputRef}
+                  // Always mounted, never visible: it exists to summon the
+                  // on-screen keyboard and receive its text. It must already
+                  // be in the DOM when the Keyboard button is tapped — mobile
+                  // browsers only raise the keyboard for a focus() issued
+                  // synchronously inside the tap gesture, so mounting it on
+                  // demand (focus deferred a frame) read as a dead click.
+                  // Characters are forwarded as native text injection
+                  // (layout-independent); Enter and Backspace arrive as key
+                  // edits of the field and are mapped back to key taps. Keys
+                  // that carry a real `code` are handled by the window-level
+                  // capture listener before they reach here.
+                  className="absolute bottom-0 left-0 size-px opacity-0"
+                  aria-label="Remote keyboard input"
+                  tabIndex={-1}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onFocus={() => setVirtualKeyboardOpen(true)}
+                  onBlur={() => setVirtualKeyboardOpen(false)}
+                  onBeforeInput={(event) => {
+                    const native = event.nativeEvent as InputEvent;
+                    if (
+                      native.inputType === "insertText" ||
+                      native.inputType === "insertFromPaste" ||
+                      native.inputType === "insertCompositionText"
+                    ) {
+                      event.preventDefault();
+                      const text = native.data;
+                      if (text) enqueueInput({ type: "text", text: text.slice(0, 256) });
+                      return;
+                    }
+                    if (native.inputType === "insertLineBreak") {
+                      event.preventDefault();
+                      enqueueInput({
+                        type: "key",
+                        action: "down",
+                        code: "Enter",
+                        key: "Enter",
+                        repeat: false,
+                      });
+                      enqueueInput({
+                        type: "key",
+                        action: "up",
+                        code: "Enter",
+                        key: "Enter",
+                        repeat: false,
+                      });
+                      return;
+                    }
+                    if (native.inputType === "deleteContentBackward") {
+                      event.preventDefault();
+                      enqueueInput({
+                        type: "key",
+                        action: "down",
+                        code: "Backspace",
+                        key: "Backspace",
+                        repeat: false,
+                      });
+                      enqueueInput({
+                        type: "key",
+                        action: "up",
+                        code: "Backspace",
+                        key: "Backspace",
+                        repeat: false,
+                      });
+                    }
+                  }}
+                />
+              ) : null}
+              <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                {canKeyboard ? (
+                  <button
+                    type="button"
+                    aria-label={virtualKeyboardOpen ? "Hide keyboard" : "Show keyboard"}
+                    aria-pressed={virtualKeyboardOpen}
+                    className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (virtualKeyboardOpen) {
+                        virtualKeyboardInputRef.current?.blur();
+                        return;
+                      }
+                      captureInput();
+                      // Synchronously, inside the tap gesture — mobile
+                      // browsers refuse to raise the keyboard for a deferred
+                      // focus. Open/closed state follows the input's own
+                      // focus events.
+                      virtualKeyboardInputRef.current?.focus();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <KeyboardIcon className="size-3.5" />
+                    <span className="sr-only sm:not-sr-only">Keyboard</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
+                  // Bottom right, opposite the status pill: the top edge belongs
+                  // to the host/input notices, which span the full width.
+                  className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
+                  onClick={(event) => {
+                    // The surface below forwards clicks to the remote desktop;
+                    // pressing this must not also click over there.
+                    event.stopPropagation();
+                    toggleFullScreen();
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  {isFullScreen ? (
+                    <MinimizeIcon className="size-3.5" />
+                  ) : (
+                    <MaximizeIcon className="size-3.5" />
+                  )}
+                  <span className="sr-only sm:not-sr-only">
+                    {isFullScreen ? "Exit full screen" : "Full screen"}
+                  </span>
+                </button>
+              </div>
               <div className="absolute bottom-3 left-3 flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                 <span
                   className={`size-1.5 rounded-full ${
@@ -903,9 +1134,13 @@ export function RemoteControlViewerDialog(props: {
                   }`}
                 />
                 {canControl
-                  ? inputCaptured
-                    ? "Live · input focused"
-                    : "Live · click to focus"
+                  ? pointerLocked
+                    ? "Live · mouse captured — Esc releases"
+                    : remoteLocked && canPointer && inputCaptured
+                      ? "Live · click to capture your mouse"
+                      : inputCaptured
+                        ? "Live · input focused"
+                        : "Live · click to focus"
                   : "Live · view only"}
               </div>
               {hostNotice ? (

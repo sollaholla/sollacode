@@ -213,6 +213,25 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
    */
   const hostStatusBySession = yield* Ref.make(new Map<string, string>());
 
+  /** Last cursor shape broadcast per session — same edge collapsing again. */
+  const cursorShapeBySession = yield* Ref.make(new Map<string, string>());
+
+  const publishCursorShapeIfChanged = Effect.fn("RemoteControlBroker.publishCursorShape")(
+    function* (record: RemoteControlSessionRecord, shape: string | undefined) {
+      // Absence means the host predates the field, not "shape unknown now".
+      if (shape === undefined) return;
+      const sessionId = String(record.session.sessionId);
+      const seen = yield* Ref.get(cursorShapeBySession);
+      if (seen.get(sessionId) === shape) return;
+      yield* Ref.update(cursorShapeBySession, (current) => {
+        const next = new Map(current);
+        next.set(sessionId, shape);
+        return next;
+      });
+      yield* PubSub.publish(record.changes, { type: "cursor-changed", shape });
+    },
+  );
+
   const publishPointerLockIfChanged = Effect.fn("RemoteControlBroker.publishPointerLock")(
     function* (record: RemoteControlSessionRecord, locked: boolean | undefined) {
       // A host that never reports says nothing about lock state, as opposed to
@@ -585,9 +604,12 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
         ) {
           return [{ _tag: "Invalid", session: record.session }, current];
         }
+        // 40ms floor (~25fps): frames are independent JPEGs, so this only
+        // sheds load when a host outruns its viewers. The old 65ms floor
+        // capped the fallback path at ~15fps and made it feel like slideware.
         if (
           input.frame.sequence <= record.lastFrameSequence ||
-          now - record.lastFramePublishedAt < 65
+          now - record.lastFramePublishedAt < 40
         ) {
           return [{ _tag: "Dropped" }, current];
         }
@@ -626,6 +648,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
           frame: input.frame,
         });
         yield* publishPointerLockIfChanged(result.record, input.pointerLocked);
+        yield* publishCursorShapeIfChanged(result.record, input.cursorShape);
         return;
     }
   });
@@ -705,6 +728,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
               // Video is the default transport, so this is the path that
               // actually carries lock state in a normal session.
               yield* publishPointerLockIfChanged(result.record, input.pointerLocked);
+              yield* publishCursorShapeIfChanged(result.record, input.cursorShape);
               yield* SynchronizedRef.update(state, (current) => {
                 const record = current.sessions.get(input.chunk.sessionId);
                 if (
@@ -846,7 +870,7 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
     // Retargeting capture is a screen concern, not an input one, so a
     // view-only grant can still switch monitors without gaining pointer rights.
     const requiredCapability: RemoteControlCapability =
-      input.input.type === "key"
+      input.input.type === "key" || input.input.type === "text"
         ? "keyboard"
         : input.input.type === "select-display" || input.input.type === "request-image-fallback"
           ? "screen"
@@ -956,6 +980,22 @@ export const make = Effect.gen(function* RemoteControlBrokerMake() {
             const changes = yield* PubSub.subscribe(initialRecord.changes);
             const frames = yield* PubSub.subscribe(initialRecord.frames);
             const videoChunks = yield* PubSub.subscribe(initialRecord.videoChunks);
+            // A subscriber joining an ALREADY-approved session lands in the
+            // middle of a WebM container, and Chromium's demuxer hard-fails
+            // on the discontinuity (replaying just the retained init segment
+            // is not enough — the bytes in between are gone). Ask the host to
+            // restart its encoder so a fresh init segment and a contiguous
+            // stream begin at this subscription. Ordered after the PubSub
+            // subscriptions above so the restarted stream cannot be missed.
+            // Best-effort: a full host queue only means a restart request is
+            // already in flight.
+            if (initialRecord.session.status === "approved") {
+              yield* Queue.offer(initialRecord.hostQueue, {
+                type: "video-restart-requested",
+                connectionId: initialRecord.hostConnectionId,
+                sessionId: initialRecord.session.sessionId,
+              }).pipe(Effect.ignore);
+            }
             // Replay the retained init segment so a controller joining an
             // already-running video stream can decode what follows.
             const preamble: ReadonlyArray<RemoteControlControllerStreamEvent> = [

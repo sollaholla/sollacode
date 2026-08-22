@@ -26,6 +26,8 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     defaultAdvertisedEndpointKey: null,
     showProviderUsageBar: false,
     settledShelfExpanded: false,
+    agentsSectionExpanded: true,
+    threadsSectionExpanded: true,
     ...overrides,
   };
 }
@@ -187,6 +189,8 @@ describe("parsePersistedState", () => {
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       showProviderUsageBar: true,
       settledShelfExpanded: false,
+      agentsSectionExpanded: true,
+      threadsSectionExpanded: true,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -317,6 +321,8 @@ describe("uiStateStore persistence", () => {
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
       showProviderUsageBar: false,
       settledShelfExpanded: false,
+      agentsSectionExpanded: true,
+      threadsSectionExpanded: true,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {

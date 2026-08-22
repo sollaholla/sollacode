@@ -1,4 +1,4 @@
-import { CircleHelp, LoaderCircle } from "lucide-react";
+import { HammerIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 
 import {
@@ -27,14 +27,11 @@ export function ProviderTaskChip(props: {
   if (label === null) return null;
   const running = countActiveProviderTasks(props.tasks);
   const stalled = props.tasks.filter((task) => task.status === "stale").length;
-  const compactLabel =
-    running > 0
-      ? `${running} running${stalled > 0 ? ` · ${stalled} stalled` : ""}`
-      : `${stalled} stalled`;
-  const minimalLabel = String(running + stalled);
 
   return (
     <button
+      // The full sentence lives in the accessible name; the visible chip is
+      // icon + count only, matching the terminal and side-chat chips.
       aria-label={`${label}. Show agents and tasks.`}
       data-chat-composer-status-chip="provider-tasks"
       className={cn(
@@ -45,20 +42,13 @@ export function ProviderTaskChip(props: {
       title="Show agents and tasks"
       type="button"
     >
-      {running > 0 ? (
-        <LoaderCircle aria-hidden className="size-3 animate-spin" />
-      ) : (
-        // Stalled-only: a spinner here would assert liveness we do not have.
-        <CircleHelp aria-hidden className="size-3 text-amber-500" />
-      )}
-      <span aria-hidden className="chat-composer-status-label-full">
-        {label}
-      </span>
-      <span aria-hidden className="chat-composer-status-label-compact">
-        {compactLabel}
-      </span>
-      <span aria-hidden className="chat-composer-status-label-minimal">
-        {minimalLabel}
+      <HammerIcon
+        aria-hidden
+        // Stalled-only work is a question, not progress; keep the amber tell.
+        className={cn("size-3", running === 0 && stalled > 0 && "text-amber-500")}
+      />
+      <span aria-hidden className="tabular-nums">
+        {running + stalled}
       </span>
     </button>
   );

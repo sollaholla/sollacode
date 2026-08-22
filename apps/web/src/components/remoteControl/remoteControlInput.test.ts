@@ -5,6 +5,7 @@ import {
   normalizeRemoteControlKeyCode,
   normalizedRemotePoint,
   remotePointerButton,
+  remoteSurfaceCursorStyle,
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
@@ -110,5 +111,32 @@ describe("remote-control input mapping", () => {
     ]) {
       expect(shouldForwardEscapeOnPointerUnlock({ ...nativeEscape, ...override })).toBe(false);
     }
+  });
+});
+
+describe("remoteSurfaceCursorStyle", () => {
+  it("mirrors the host cursor only while captured with pointer rights", () => {
+    expect(
+      remoteSurfaceCursorStyle({ shape: "text", inputCaptured: true, pointerGranted: true }),
+    ).toBe("text");
+    expect(
+      remoteSurfaceCursorStyle({ shape: "none", inputCaptured: true, pointerGranted: true }),
+    ).toBe("none");
+    expect(
+      remoteSurfaceCursorStyle({ shape: "text", inputCaptured: false, pointerGranted: true }),
+    ).toBe("default");
+    expect(
+      remoteSurfaceCursorStyle({ shape: "text", inputCaptured: true, pointerGranted: false }),
+    ).toBe("default");
+  });
+
+  it("degrades unknown wire values to the arrow", () => {
+    expect(
+      remoteSurfaceCursorStyle({
+        shape: "url(evil.png)",
+        inputCaptured: true,
+        pointerGranted: true,
+      }),
+    ).toBe("default");
   });
 });

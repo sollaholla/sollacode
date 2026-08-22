@@ -57,4 +57,31 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       visibility: "visible",
     });
   });
+
+  it("blocks guest input when the owner presents the surface non-interactively", () => {
+    // The floating mini player presents the live guest as a thumbnail. Without
+    // this the first click lands in the page instead of grabbing the window.
+    const style = resolveHostedBrowserWebviewWrapperStyle({
+      active: true,
+      rect: { x: 12, y: 34, width: 320, height: 200 },
+      hiddenSize: { width: 1280, height: 800 },
+      interactive: false,
+    });
+
+    expect(style.pointerEvents).toBe("none");
+    // Still presented at its real rect: non-interactive, not hidden.
+    expect(style.left).toBe(12);
+    expect(style.top).toBe(34);
+    expect(style.zIndex).toBe(30);
+  });
+
+  it("defaults to an interactive guest so the panel keeps accepting input", () => {
+    expect(
+      resolveHostedBrowserWebviewWrapperStyle({
+        active: true,
+        rect: { x: 0, y: 0, width: 320, height: 200 },
+        hiddenSize: { width: 1280, height: 800 },
+      }).pointerEvents,
+    ).toBe("auto");
+  });
 });
