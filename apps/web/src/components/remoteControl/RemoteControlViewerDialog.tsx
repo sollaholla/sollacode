@@ -917,7 +917,15 @@ export function RemoteControlViewerDialog(props: {
       <DialogPopup
         // Full-bleed on phones — the remote desktop needs every pixel — and a
         // large centered panel on anything bigger.
-        className="h-dvh max-h-none w-screen max-w-none rounded-none sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
+        //
+        // `max-sm:fixed max-sm:inset-0` is load-bearing, not decoration. The
+        // dialog viewport is a `p-4` grid, and opting out of the mobile sheet
+        // (`bottomStickOnMobile={false}`) is also what opts out of the
+        // `max-sm:p-0` that would have removed it. A `100vw` popup inside 16px
+        // of padding starts 16px in and runs 16px past the right edge, which
+        // clipped the Close button off-screen. Going fixed positions against
+        // the viewport instead, the same escape ProviderModelPicker uses.
+        className="h-dvh max-h-none w-screen max-w-none rounded-none max-sm:fixed max-sm:inset-0 sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
         showCloseButton={false}
         bottomStickOnMobile={false}
       >

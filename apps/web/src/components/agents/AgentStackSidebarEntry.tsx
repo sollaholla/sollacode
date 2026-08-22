@@ -150,6 +150,11 @@ function AgentEnvironmentSection(props: {
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5" data-agent-environment={props.environmentId}>
+      {/* `justify-between` alone put this on the LEFT whenever the label is
+          hidden: `sr-only` is `position: absolute`, so it stops being a flex
+          item and the button becomes the only one, landing at flex-start. The
+          button carries its own `ml-auto` so it stays at the trailing edge
+          either way. */}
       <div className="flex min-w-0 items-center justify-between pl-2 pr-1">
         <span
           className={cn(
@@ -167,7 +172,9 @@ function AgentEnvironmentSection(props: {
                 type="button"
                 aria-label="New agent"
                 data-testid="agents-add"
-                className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                // The 44px target is for touch; on a fine pointer it is just
+                // a tall empty band next to a one-line section header.
+                className="ml-auto inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
                 onClick={() => setCreateOpen(true)}
               />
             }

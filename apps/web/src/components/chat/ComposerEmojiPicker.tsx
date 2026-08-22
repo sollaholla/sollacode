@@ -1,5 +1,5 @@
 import { EllipsisIcon, SearchIcon, SmilePlusIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
@@ -18,6 +18,30 @@ export function ComposerEmojiPicker(props: {
   const [query, setQuery] = useState("");
   const [recentEmojis, setRecentEmojis] = useState(loadRecentComposerEmojis);
   const results = useMemo(() => searchComposerEmojis(query), [query]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  const closeDrawer = () => {
+    setQuickDrawerOpen(false);
+    setFullPickerOpen(false);
+    setQuery("");
+  };
+
+  // Collapse when the next interaction is somewhere else. The full picker
+  // renders through a portal, so "outside" has to mean outside this row AND
+  // outside the popup — testing only the row would tear the drawer down the
+  // moment someone reached for the emoji table it opened.
+  useEffect(() => {
+    if (!quickDrawerOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (rootRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-slot='popover-popup']")) return;
+      closeDrawer();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [quickDrawerOpen]);
 
   const selectEmoji = (emoji: string) => {
     recordComposerEmojiUsage(emoji);
@@ -26,9 +50,7 @@ export function ComposerEmojiPicker(props: {
 
   const toggleQuickDrawer = () => {
     if (quickDrawerOpen) {
-      setQuickDrawerOpen(false);
-      setFullPickerOpen(false);
-      setQuery("");
+      closeDrawer();
       return;
     }
     setRecentEmojis(loadRecentComposerEmojis());
@@ -37,6 +59,7 @@ export function ComposerEmojiPicker(props: {
 
   return (
     <div
+      ref={rootRef}
       data-chat-composer-emoji-picker="true"
       data-chat-composer-emoji-underlay={props.hasTextUnderlay ? "true" : "false"}
       className={cn(
@@ -46,19 +69,6 @@ export function ComposerEmojiPicker(props: {
           : "opacity-100",
       )}
     >
-      <button
-        type="button"
-        className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
-        disabled={props.disabled}
-        aria-label={quickDrawerOpen ? "Close emoji shortcuts" : "Open emoji shortcuts"}
-        aria-expanded={quickDrawerOpen}
-        title={quickDrawerOpen ? "Close emoji shortcuts" : "Emoji"}
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={toggleQuickDrawer}
-      >
-        <SmilePlusIcon className="size-4" />
-      </button>
-
       {quickDrawerOpen
         ? recentEmojis.map((emoji) => (
             <button
@@ -139,6 +149,25 @@ export function ComposerEmojiPicker(props: {
           </PopoverPopup>
         </Popover>
       ) : null}
+
+      {/* Last, therefore rightmost: this row is anchored to the right edge and
+          grows leftwards, so whatever renders last stays under the spot that
+          was just tapped. With the toggle first, opening slid it left and put
+          the "more" ellipsis under that thumb — a second tap opened the full
+          table instead of closing the drawer. Now a second tap toggles, and
+          the ellipsis sits just inside it. */}
+      <button
+        type="button"
+        className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+        disabled={props.disabled}
+        aria-label={quickDrawerOpen ? "Close emoji shortcuts" : "Open emoji shortcuts"}
+        aria-expanded={quickDrawerOpen}
+        title={quickDrawerOpen ? "Close emoji shortcuts" : "Emoji"}
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={toggleQuickDrawer}
+      >
+        <SmilePlusIcon className="size-4" />
+      </button>
     </div>
   );
 }
