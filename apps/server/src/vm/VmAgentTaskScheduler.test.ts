@@ -16,9 +16,11 @@ import {
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -193,6 +195,169 @@ it.effect(
         }
       }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
     }),
+);
+
+it.effect("fails a running run whose turn never projected instead of retrying forever", () =>
+  Effect.gen(function* () {
+    const failed = yield* Deferred.make<void>();
+    let completed: { status: string; error: string | null } | null = null;
+    // A turn.start that raced an already-running turn: the command was
+    // receipted, so retries dedupe to nothing and no turn ever projects.
+    const stuckRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-stuck"),
+      status: "running",
+      messageId: MessageId.make("vm-task:run-stuck"),
+      startedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          { run: stuckRun, projectionState: null, projectionTurnId: null, assistantText: null },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      completeRun: (input) =>
+        Effect.sync(() => {
+          completed = { status: input.status, error: input.error };
+        }).pipe(Effect.andThen(Deferred.succeed(failed, undefined)), Effect.asVoid),
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    // The dedicated thread stays busy, so the launch fallback path can never
+    // dispatch — only the stall detector can resolve this run.
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.succeed(
+          Option.some({
+            latestTurn: { state: "running" },
+            pendingWork: null,
+          } as never),
+        ),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({
+      refresh: () => Effect.void,
+      snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+    });
+    const stallCollaborationLayer = Layer.mock(VmAgentCollaborationStore)({
+      getByRunId: () => Effect.succeed(Option.none()),
+      getByTaskId: () => Effect.succeed(Option.none()),
+      listExpired: () => Effect.succeed([]),
+      complete: () => Effect.void,
+    });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: () => Effect.succeed({ sequence: 1 } as never),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      Layer.mock(VmManager)({}),
+      workspaceLayer,
+      engineLayer,
+      stallCollaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      // Under the stall threshold nothing is failed; past it, the drain
+      // terminalizes the run so the agent's schedule stops being starved.
+      yield* TestClock.adjust(Duration.minutes(3));
+      yield* scheduler.wake();
+      yield* Deferred.await(failed);
+      assert.strictEqual(completed?.status, "failed");
+      assert.include(completed?.error ?? "", "never started");
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
+);
+
+it.effect("fails a running run whose projected turn never left pending", () =>
+  Effect.gen(function* () {
+    const failed = yield* Deferred.make<void>();
+    let completed: { status: string; error: string | null } | null = null;
+    // Observed in the wild: the dispatch DID project a turn, but it sat in
+    // `pending` with no turn id for over an hour. Keying the stall check on
+    // `projectionState === null` missed it entirely — the run stayed `running`
+    // and starved every later task for that agent.
+    const pendingRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-pending"),
+      status: "running",
+      messageId: MessageId.make("vm-task:run-pending"),
+      startedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          {
+            run: pendingRun,
+            projectionState: "pending",
+            projectionTurnId: null,
+            assistantText: null,
+          },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      completeRun: (input) =>
+        Effect.sync(() => {
+          completed = { status: input.status, error: input.error };
+        }).pipe(Effect.andThen(Deferred.succeed(failed, undefined)), Effect.asVoid),
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    // Deliberately NOT busy: the real case had an idle `ready` session whose
+    // previous turn completed twenty minutes earlier, so this is not the
+    // already-running race — and the launch fallback still cannot fire,
+    // because it only handles a wholly absent projection.
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.succeed(
+          Option.some({
+            latestTurn: { state: "completed" },
+            pendingWork: null,
+          } as never),
+        ),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({
+      refresh: () => Effect.void,
+      snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+    });
+    const pendingCollaborationLayer = Layer.mock(VmAgentCollaborationStore)({
+      getByRunId: () => Effect.succeed(Option.none()),
+      getByTaskId: () => Effect.succeed(Option.none()),
+      listExpired: () => Effect.succeed([]),
+      complete: () => Effect.void,
+    });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: () => Effect.succeed({ sequence: 1 } as never),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      Layer.mock(VmManager)({}),
+      workspaceLayer,
+      engineLayer,
+      pendingCollaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      yield* TestClock.adjust(Duration.minutes(3));
+      yield* scheduler.wake();
+      yield* Deferred.await(failed);
+      assert.strictEqual(completed?.status, "failed");
+      assert.include(completed?.error ?? "", "never started");
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
 );
 
 it.effect("persists a deduplicated notification before terminalizing a completed run", () =>

@@ -38,6 +38,18 @@ import { VmManager } from "./VmManager.ts";
 
 const POLL_INTERVAL_MS = 1_000;
 const MAX_CLAIMS_PER_DRAIN = 8;
+/**
+ * How long a run may sit "running" with no projected turn before it is failed.
+ *
+ * A turn.start can race a turn that was already running (the pre-dispatch idle
+ * check reads an eventually-consistent projection), and the engine's command
+ * receipt then dedupes every retry of the same commandId into a silent no-op —
+ * the run stays "running" forever, no turn ever exists, and because claiming
+ * skips an agent with any live run, one stuck run starves the agent's entire
+ * schedule. Two minutes is far beyond projection lag, so a runless run this
+ * old is unstartable, not slow.
+ */
+const RUN_START_STALL_MS = 120_000;
 
 export interface VmAgentTaskSchedulerShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -444,6 +456,41 @@ export const make = Effect.gen(function* () {
     const observations = yield* store.listRunObservations();
     for (const observation of observations) {
       if (yield* finishObservation(observation)) continue;
+      // `projectionTurnId`, not `projectionState`: a dispatch can also leave a
+      // projected turn sitting in `pending` with no turn id, which is just as
+      // unstarted as having no projection row at all but was invisible to this
+      // check. Observed in the wild — a run stuck `running` for over an hour
+      // against an idle `ready` session whose previous turn had completed 20
+      // minutes earlier, so this is not only the already-running race below.
+      // `projectionTurnId`, not `projectionState`: a dispatch can also leave a
+      // projected turn sitting in `pending` with no turn id, which is just as
+      // unstarted as having no projection row at all but was invisible to this
+      // check. Observed in the wild — a run stuck `running` for over an hour
+      // against an idle `ready` session whose previous turn had completed 20
+      // minutes earlier, so this is not only the already-running race below.
+      if (observation.run.status === "running" && observation.projectionTurnId === null) {
+        const startedAt = observation.run.startedAt;
+        const startedAtMs = (() => {
+          if (startedAt === null) return null;
+          try {
+            return DateTime.toEpochMillis(DateTime.makeUnsafe(startedAt));
+          } catch {
+            return null;
+          }
+        })();
+        const nowMs = DateTime.toEpochMillis(DateTime.makeUnsafe(yield* nowIso));
+        if (startedAtMs !== null && nowMs - startedAtMs >= RUN_START_STALL_MS) {
+          const task = yield* getTask(observation.run);
+          yield* failRun(
+            task,
+            observation.run,
+            new Error(
+              "The scheduled turn never started — it likely raced a turn that was already running. Run the task again or wait for its next occurrence.",
+            ),
+          ).pipe(Effect.ignoreCause({ log: true }));
+          continue;
+        }
+      }
       if (
         observation.run.status === "queued" ||
         observation.run.status === "booting" ||

@@ -123,7 +123,18 @@ const nextRunAt = (
   now: string,
 ): string | null => {
   if (status !== "active" || approvalState !== "approved" || schedule === null) return null;
-  if (schedule.kind === "once") return schedule.runAt;
+  if (schedule.kind === "once") {
+    // Normalize to UTC ISO: the due check is a lexicographic SQL comparison
+    // against a Z-suffixed now, so an offset form like "12:00:00-04:00"
+    // compares by its LOCAL digits and fires hours off (a real agent-written
+    // noon-ET task fired at 08:00 ET this way). An unparseable value schedules
+    // nothing rather than something wrong.
+    try {
+      return DateTime.formatIso(DateTime.makeUnsafe(schedule.runAt));
+    } catch {
+      return null;
+    }
+  }
   return DateTime.formatIso(
     DateTime.add(DateTime.makeUnsafe(now), { minutes: schedule.everyMinutes }),
   );
