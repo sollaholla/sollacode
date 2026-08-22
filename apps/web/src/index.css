@@ -4,6 +4,172 @@
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
 
+/* On mobile, morph the expanded hero composer into the compact docked
+   composer while it moves; the rest of the app remains visually stationary. */
+html[data-mobile-composer-route-transition="true"]::view-transition-old(root),
+html[data-mobile-composer-route-transition="true"]::view-transition-new(root) {
+  animation: none;
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-composer) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(t3-mobile-composer) {
+  isolation: isolate;
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-composer) {
+  animation: t3-mobile-composer-old 180ms linear both;
+  mix-blend-mode: normal;
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobile-composer) {
+  animation: t3-mobile-composer-new 180ms linear both;
+  mix-blend-mode: normal;
+}
+
+/* The expanded and compact composers have different internal layouts. Use a
+   brief crossfade while their shared wrapper moves so the layout change does
+   not read as a single-frame cut. */
+@keyframes t3-mobile-composer-old {
+  0%,
+  35% {
+    opacity: 1;
+  }
+  65%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes t3-mobile-composer-new {
+  0%,
+  35% {
+    opacity: 0;
+  }
+  65%,
+  100% {
+    opacity: 1;
+  }
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
+  animation-duration: 130ms;
+}
+
+html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-draft-headline) {
+  animation: t3-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
+  mix-blend-mode: normal;
+}
+
+@keyframes t3-mobile-draft-headline-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes provider-usage-elapsed-dots {
+  from {
+    background-position: 0 center;
+  }
+  to {
+    background-position: 6px center;
+  }
+}
+
+/* A marching dotted line distinguishes elapsed wall-clock time from the solid
+   quota-consumption fill without obscuring either side of their crossover.
+   The light core plus dark halo keeps every dot legible over yellow/red fills,
+   the neutral track, and both color schemes. */
+.provider-usage-elapsed-dots {
+  background-image: radial-gradient(
+    circle at center,
+    rgb(255 255 255 / 96%) 0 0.8px,
+    rgb(0 0 0 / 78%) 0.95px 1.55px,
+    transparent 1.7px
+  );
+  background-repeat: repeat-x;
+  background-position: 0 center;
+  background-size: 6px 100%;
+  animation: provider-usage-elapsed-dots 900ms linear infinite;
+  will-change: background-position;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-usage-elapsed-dots {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+:root {
+  --app-scrollbar-width: 6px;
+  --app-scrollbar-thumb: rgb(217 217 217);
+  --app-scrollbar-thumb-hover: rgb(191 191 191);
+  --glass-blur: 12px;
+  --glass-opacity: 80%;
+  --glass-saturation: 1.14;
+  --desktop-window-right-resize-inset: 0px;
+  --workspace-topbar-height: 52px;
+  --workspace-controls-top: 0px;
+  --workspace-controls-left: calc(env(safe-area-inset-left) + 0.75rem);
+  --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
+  --workspace-native-controls-inset: 0px;
+  --workspace-titlebar-control-size: 1.75rem;
+  --workspace-titlebar-control-gap: 0.75rem;
+}
+
+.dark {
+  --app-scrollbar-thumb: rgb(255 255 255 / 8%);
+  --app-scrollbar-thumb-hover: rgb(255 255 255 / 12%);
+  --glass-blur: 16px;
+  --glass-saturation: 1.08;
+}
+
+[data-slot="sidebar-wrapper"] {
+  --workspace-titlebar-content-left: calc(
+    var(--workspace-controls-left) + var(--workspace-titlebar-control-size) +
+      var(--workspace-titlebar-control-gap)
+  );
+
+  /* Mirror of the left inset, for the right-panel toggle parked absolutely at
+     the top right whenever the panel is closed. It is a `Toggle size="sm"`:
+     2rem wide below the `sm` breakpoint and 1.75rem at and above it. Header
+     content has to clear it, or the trailing action renders underneath rather
+     than beside it — worst on phones, where the toggle is at its widest. */
+  --workspace-titlebar-content-right: calc(
+    var(--workspace-controls-right) + 2rem + var(--workspace-titlebar-control-gap)
+  );
+}
+
+@media (min-width: 40rem) {
+  [data-slot="sidebar-wrapper"] {
+    --workspace-titlebar-content-right: calc(
+      var(--workspace-controls-right) + var(--workspace-titlebar-control-size) +
+        var(--workspace-titlebar-control-gap)
+    );
+  }
+}
+
+.wco {
+  --workspace-topbar-height: env(titlebar-area-height, 52px);
+  --workspace-controls-top: env(titlebar-area-y, 0px);
+  --workspace-controls-left: calc(env(titlebar-area-x, 0px) + 0.75rem);
+  --workspace-controls-right: calc(
+    100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
+  );
+  --workspace-native-controls-inset: calc(
+    100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
+  );
+}
+
 @theme inline {
   --color-zinc-25: oklch(99.2% 0 0);
   --animate-skeleton: skeleton 2s -1s infinite linear;
