@@ -14,6 +14,7 @@ import {
   providerTaskTypeLabel,
   pageProviderTasks,
   resolveProviderTaskPanelPlacement,
+  shouldCollapseProviderTaskPanelByDefault,
   shouldShowProviderTaskPanel,
   type ProviderTask,
 } from "./providerTasks.ts";
@@ -477,5 +478,15 @@ describe("describeSendOverRunningTasks", () => {
       describeSendOverRunningTasks(3),
       "3 background tasks are still running. Sending now will cancel them. Send anyway?",
     );
+  });
+});
+
+describe("shouldCollapseProviderTaskPanelByDefault", () => {
+  it("folds on a compact layout, where it would crowd everything above it", () => {
+    NodeAssert.equal(shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout: true }), true);
+  });
+
+  it("stays open where there is room for it", () => {
+    NodeAssert.equal(shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout: false }), false);
   });
 });
