@@ -75,6 +75,7 @@ const decodeSessionUpdate = Schema.decodeUnknownEffect(AcpSchema.SessionNotifica
 const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
+const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const parserFactory = RpcSerialization.ndJsonRpc();
 
 export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(function* (
@@ -532,10 +533,12 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       stage: "decoded",
       payload: { _tag: "Notification", tag: method, payload },
     });
-    const encoded = yield* Effect.try({
-      try: () => `${JSON.stringify(decoded)}\n`,
-      catch: (cause) => AcpError.AcpProtocolParseError.fromEncodingError(method, undefined, cause),
-    });
+    const encoded = yield* encodeUnknownJsonString(decoded).pipe(
+      Effect.map((json) => `${json}\n`),
+      Effect.mapError((cause) =>
+        AcpError.AcpProtocolParseError.fromEncodingError(method, undefined, cause),
+      ),
+    );
     yield* logProtocol({
       direction: "outgoing",
       stage: "raw",
