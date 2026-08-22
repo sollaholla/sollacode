@@ -527,8 +527,14 @@ describe("rightPanelStore", () => {
   });
 
   it("drops an unconfirmed side chat after the spawn grace window expires", () => {
-    const spawnedAt = Date.now();
     useRightPanelStore.getState().openSideChat(refA, "side-1", "Investigate auth");
+    // Read the clock after the spawn, never before. openSideChat stamps its own
+    // Date.now() and expiry is `now - spawnedAt > GRACE`, so stamping first made
+    // this pass only when both calls landed in the same millisecond; a loaded CI
+    // runner ticking 1ms between them failed the release preflight. The sibling
+    // "keeps a freshly spawned side chat" case stamps early on purpose — there an
+    // early stamp only shortens the elapsed window, which is the safe direction.
+    const spawnedAt = Date.now();
 
     useRightPanelStore
       .getState()
