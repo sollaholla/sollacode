@@ -153,3 +153,15 @@ describe("describeSwipeAction", () => {
     expect(describeSwipeAction("unsnooze")).toEqual({ label: "Wake", tone: "snooze" });
   });
 });
+
+describe("swipe thresholds relate sensibly to each other", () => {
+  it("cannot commit before the gesture is even claimed", () => {
+    // If the slop ever exceeded the activation distance, a swipe could commit
+    // during movement the scroller still owns.
+    expect(SWIPE_SLOP_PX).toBeLessThan(SWIPE_ACTIVATE_PX);
+  });
+
+  it("leaves travel past the commit point to show resistance in", () => {
+    expect(SWIPE_MAX_PX).toBeGreaterThan(SWIPE_ACTIVATE_PX);
+  });
+});
