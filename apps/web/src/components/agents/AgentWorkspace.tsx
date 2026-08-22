@@ -27,6 +27,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
+import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { AgentChatSurface } from "./AgentChatSurface";
@@ -140,7 +141,15 @@ function AgentWorkspaceResolved(props: {
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
-      <header className="flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3">
+      {/* Same inset every other top-level header carries: with the sidebar
+          collapsed, its open button floats over this row, and without the
+          reserve it lands on top of the agent's name and purpose. */}
+      <header
+        className={cn(
+          "flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3",
+          COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+        )}
+      >
         <div className="min-w-0 md:flex-1">
           <h1 className="truncate text-sm font-semibold">{agent.name}</h1>
           <p className="truncate text-xs text-muted-foreground">{agent.purpose}</p>
