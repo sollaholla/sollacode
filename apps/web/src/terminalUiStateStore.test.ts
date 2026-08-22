@@ -33,7 +33,6 @@ describe("terminalUiStateStore actions", () => {
     expect(terminalUiState).toEqual({
       mainSurface: "chat",
       terminalFullscreen: false,
-      terminalOpen: false,
       terminalHeight: 280,
       sidebarWidth: 144,
       terminalIds: [],
@@ -45,7 +44,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("renames groups and clears the name when renamed to blank", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.splitTerminal(THREAD_REF, "terminal-2");
 
     const groupId = selectThreadTerminalUiState(
@@ -72,7 +71,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("clamps the sidebar width into its bounds", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
 
     store.setTerminalSidebarWidth(THREAD_REF, 300);
     expect(
@@ -101,14 +100,13 @@ describe("terminalUiStateStore actions", () => {
 
   it("opens and splits terminals into the active group", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.splitTerminal(THREAD_REF, "terminal-2");
 
     const terminalUiState = selectThreadTerminalUiState(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
     );
-    expect(terminalUiState.terminalOpen).toBe(true);
     expect(terminalUiState.terminalIds).toEqual([DEFAULT_THREAD_TERMINAL_ID, "terminal-2"]);
     expect(terminalUiState.activeTerminalId).toBe("terminal-2");
     expect(terminalUiState.terminalGroups).toEqual([
@@ -129,7 +127,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("stacks vertically split terminals in the active group", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.splitTerminalVertical(THREAD_REF, "terminal-2");
 
     const terminalUiState = selectThreadTerminalUiState(
@@ -152,17 +150,16 @@ describe("terminalUiStateStore actions", () => {
     ]);
   });
 
-  it("materializes the default terminal when opening an empty drawer", () => {
-    useTerminalUiStateStore.getState().setTerminalOpen(THREAD_REF, true);
+  it("materializes the default terminal when entering an empty terminal mode", () => {
+    useTerminalUiStateStore.getState().setMainSurface(THREAD_REF, "terminal");
 
     const terminalUiState = selectThreadTerminalUiState(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
     );
     expect(terminalUiState).toEqual({
-      mainSurface: "chat",
+      mainSurface: "terminal",
       terminalFullscreen: false,
-      terminalOpen: true,
       terminalHeight: 280,
       sidebarWidth: 144,
       terminalIds: [DEFAULT_THREAD_TERMINAL_ID],
@@ -230,13 +227,12 @@ describe("terminalUiStateStore actions", () => {
 
   it("ensures unknown server terminals are registered, opened, and activated", () => {
     const store = useTerminalUiStateStore.getState();
-    store.ensureTerminal(THREAD_REF, "setup-setup", { open: true, active: true });
+    store.ensureTerminal(THREAD_REF, "setup-setup", { active: true });
 
     const terminalUiState = selectThreadTerminalUiState(
       useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
       THREAD_REF,
     );
-    expect(terminalUiState.terminalOpen).toBe(true);
     expect(terminalUiState.terminalIds).toEqual(["setup-setup"]);
     expect(terminalUiState.activeTerminalId).toBe("setup-setup");
     expect(terminalUiState.terminalGroups).toEqual([
@@ -246,15 +242,15 @@ describe("terminalUiStateStore actions", () => {
 
   it("keeps state isolated per environment when raw thread ids collide", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.newTerminal(OTHER_THREAD_REF, "env-b-terminal");
 
     expect(
       selectThreadTerminalUiState(
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
         THREAD_REF,
-      ).terminalOpen,
-    ).toBe(true);
+      ).mainSurface,
+    ).toBe("terminal");
     expect(
       selectThreadTerminalUiState(
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
@@ -268,7 +264,6 @@ describe("terminalUiStateStore actions", () => {
       {
         terminalStateByThreadKey: {
           [scopedThreadKey(THREAD_REF)]: {
-            terminalOpen: true,
             terminalHeight: 320,
             terminalIds: ["term-1"],
             activeTerminalId: "term-1",
@@ -276,7 +271,6 @@ describe("terminalUiStateStore actions", () => {
             activeTerminalGroupId: "group-term-1",
           },
           "legacy-thread-id": {
-            terminalOpen: true,
             terminalHeight: 320,
             terminalIds: ["term-1"],
             activeTerminalId: "term-1",
@@ -297,7 +291,6 @@ describe("terminalUiStateStore actions", () => {
         [scopedThreadKey(THREAD_REF)]: {
           mainSurface: "chat",
           terminalFullscreen: false,
-          terminalOpen: true,
           terminalHeight: 320,
           sidebarWidth: 144,
           terminalIds: ["term-1"],
@@ -366,7 +359,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("keeps a locally opened terminal until the server confirms it, then defers to the server", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     // The server list lags the just-opened default terminal: keep it, adopt
     // the rest.
     store.reconcileTerminalIds(THREAD_REF, ["term-a", "term-b"]);
@@ -395,7 +388,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("rolls back a failed optimistic terminal without suppressing a future server session", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.rejectPendingTerminalOpen(THREAD_REF, DEFAULT_THREAD_TERMINAL_ID);
 
     expect(
@@ -403,7 +396,7 @@ describe("terminalUiStateStore actions", () => {
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
         THREAD_REF,
       ),
-    ).toEqual(expect.objectContaining({ terminalOpen: false, terminalIds: [] }));
+    ).toEqual(expect.objectContaining({ terminalIds: [] }));
     expect(useTerminalUiStateStore.getState().suppressedTerminalIdsByThreadKey).toEqual({});
 
     store.reconcileTerminalIds(THREAD_REF, [DEFAULT_THREAD_TERMINAL_ID]);
@@ -417,7 +410,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("does not roll back a terminal after the server confirms it", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.reconcileTerminalIds(THREAD_REF, [DEFAULT_THREAD_TERMINAL_ID]);
     store.rejectPendingTerminalOpen(THREAD_REF, DEFAULT_THREAD_TERMINAL_ID);
 
@@ -431,7 +424,7 @@ describe("terminalUiStateStore actions", () => {
 
   it("removes only the failed split while preserving a confirmed terminal", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.reconcileTerminalIds(THREAD_REF, [DEFAULT_THREAD_TERMINAL_ID]);
     store.splitTerminal(THREAD_REF, "term-2");
 
@@ -444,7 +437,6 @@ describe("terminalUiStateStore actions", () => {
       ),
     ).toEqual(
       expect.objectContaining({
-        terminalOpen: true,
         terminalIds: [DEFAULT_THREAD_TERMINAL_ID],
         activeTerminalId: DEFAULT_THREAD_TERMINAL_ID,
       }),
@@ -549,9 +541,9 @@ describe("terminalUiStateStore actions", () => {
     expect(useTerminalUiStateStore.getState().suppressedTerminalIdsByThreadKey).toEqual({});
   });
 
-  it("keeps the drawer open state when switching between chat and terminal mode", () => {
+  it("resets terminal fullscreen when switching back to chat", () => {
     const store = useTerminalUiStateStore.getState();
-    store.setTerminalOpen(THREAD_REF, true);
+    store.setMainSurface(THREAD_REF, "terminal");
     store.setMainSurface(THREAD_REF, "terminal");
 
     expect(
@@ -562,7 +554,6 @@ describe("terminalUiStateStore actions", () => {
     ).toEqual(
       expect.objectContaining({
         mainSurface: "terminal",
-        terminalOpen: true,
       }),
     );
 
@@ -573,11 +564,10 @@ describe("terminalUiStateStore actions", () => {
       THREAD_REF,
     );
     expect(terminalUiState.mainSurface).toBe("chat");
-    expect(terminalUiState.terminalOpen).toBe(true);
     expect(terminalUiState.terminalFullscreen).toBe(false);
   });
 
-  it("enters terminal mode without opening the bottom drawer", () => {
+  it("launches a terminal when entering terminal mode with none", () => {
     const store = useTerminalUiStateStore.getState();
     store.setMainSurface(THREAD_REF, "terminal");
 
@@ -586,7 +576,6 @@ describe("terminalUiStateStore actions", () => {
       THREAD_REF,
     );
     expect(terminalUiState.mainSurface).toBe("terminal");
-    expect(terminalUiState.terminalOpen).toBe(false);
     expect(terminalUiState.terminalFullscreen).toBe(false);
     expect(terminalUiState.terminalIds.length).toBeGreaterThan(0);
   });
@@ -594,7 +583,6 @@ describe("terminalUiStateStore actions", () => {
   it("returns a stable selector identity for persisted state missing terminalFullscreen", () => {
     const persisted = {
       mainSurface: "terminal" as const,
-      terminalOpen: false,
       terminalHeight: 280,
       sidebarWidth: 144,
       terminalIds: ["term-1"],

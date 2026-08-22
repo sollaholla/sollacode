@@ -143,6 +143,51 @@ export function scaleFpsLookDelta(
   return clampPointerDelta(delta * bounded);
 }
 
+export interface HeldInputTracker<Code> {
+  /** Record a press. False when it was already held, so nothing is emitted. */
+  readonly press: (code: Code) => boolean;
+  /** Record a release. False when it was not held, so nothing is emitted. */
+  readonly release: (code: Code) => boolean;
+  /** Everything still held, in press order, clearing the tracker. */
+  readonly drain: () => readonly Code[];
+  readonly isHeld: (code: Code) => boolean;
+  readonly size: () => number;
+}
+
+/**
+ * Press/release bookkeeping for input the remote host holds on our behalf.
+ *
+ * The controller is the only thing that knows a touch ended. A remote key has
+ * no idea this UI exists, so a press whose release never arrives leaves the
+ * character running into a wall until the session ends — and the ways a touch
+ * can end without a tidy `pointerup` are numerous: `pointercancel` from a
+ * system gesture, the overlay unmounting because the lock dropped, the dialog
+ * closing mid-press.
+ *
+ * Centralising it makes the two rules testable rather than merely intended:
+ * a press is emitted at most once no matter how many times it arrives, and
+ * `drain` returns exactly what is outstanding so teardown can release it.
+ */
+export function createHeldInputTracker<Code>(): HeldInputTracker<Code> {
+  // Insertion-ordered, so a drain releases in the order things were pressed.
+  const held = new Set<Code>();
+  return {
+    press: (code) => {
+      if (held.has(code)) return false;
+      held.add(code);
+      return true;
+    },
+    release: (code) => held.delete(code),
+    drain: () => {
+      const outstanding = [...held];
+      held.clear();
+      return outstanding;
+    },
+    isHeld: (code) => held.has(code),
+    size: () => held.size,
+  };
+}
+
 /**
  * Whether the FPS controller should be on screen.
  *
