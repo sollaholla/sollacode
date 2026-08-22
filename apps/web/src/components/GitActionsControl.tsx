@@ -1690,7 +1690,11 @@ export default function GitActionsControl({
             onClick={() => setGitInitDialogOpen(true)}
           >
             <GitBranchPlusIcon className="size-3.5" aria-hidden />
-            <span className="ml-0.5">
+            {/* Same collapse as every sibling header control: the label is the
+                widest thing in this row, and at mobile widths keeping it
+                visible pushed the button under the absolutely-positioned panel
+                toggle. `sr-only` keeps it announced. */}
+            <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
               {initAction.isPending ? "Initializing..." : "Initialize Git"}
             </span>
           </Button>
