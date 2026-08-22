@@ -86,6 +86,37 @@ workspaceLayer("VmAgentWorkspace", (it) => {
     }),
   );
 
+  it.effect("normalizes once schedules to UTC so the due comparison cannot misfire", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("timezone");
+
+      // Offset-ISO is exactly what an agent writes for "noon Eastern". Stored
+      // verbatim, the lexicographic due check reads its LOCAL digits and fires
+      // four hours early.
+      const offsetTask = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Noon Eastern check",
+        prompt: "Check the thread.",
+        completionCriteria: [],
+        schedule: { kind: "once", runAt: "2026-08-22T12:00:00-04:00" },
+        createdBy: "user",
+      });
+      assert.strictEqual(offsetTask.nextRunAt, "2026-08-22T16:00:00.000Z");
+
+      // An unparseable runAt schedules nothing rather than something wrong.
+      const invalidTask = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Broken schedule",
+        prompt: "Never runs.",
+        completionCriteria: [],
+        schedule: { kind: "once", runAt: "next tuesday at noon" },
+        createdBy: "user",
+      });
+      assert.strictEqual(invalidTask.nextRunAt, null);
+    }),
+  );
+
   it.effect("publishes complete snapshots after mutations", () =>
     Effect.gen(function* () {
       const workspace = yield* VmAgentWorkspace;
