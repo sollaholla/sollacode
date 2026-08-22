@@ -69,10 +69,16 @@ export function ComposerEmojiPicker(props: {
         // to hover it back — while `max-sm:opacity-100` did the opposite on a
         // phone, holding it fully opaque over exactly the layout with the least
         // room, so it covered the text it was trying to stay out of the way of.
-        // Recessed but legible with a mouse, and thinner on a phone where the
-        // collision is worst; any interaction brings it straight back.
+        // Recessed but legible with a mouse, and thinner at phone widths where
+        // the collision is worst; any interaction brings it straight back.
+        //
+        // Keyed on width alone, not width + portrait + coarse pointer. Width is
+        // the condition known to hold on the phone that reported this — it is
+        // what `max-sm:opacity-100` was matching — whereas the other two are
+        // assumptions about the device. A narrow desktop window fading too is
+        // the cheaper mistake: hover restores it there instantly.
         props.hasTextUnderlay && !fullPickerOpen
-          ? "opacity-45 hover:opacity-100 focus-within:opacity-100 active:opacity-100 phone-portrait:opacity-25"
+          ? "opacity-45 hover:opacity-100 focus-within:opacity-100 active:opacity-100 max-sm:opacity-25"
           : "opacity-100",
       )}
     >

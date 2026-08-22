@@ -3646,7 +3646,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         // the same text, so they have to recede together or the
                         // row reads as half-faded.
                         currentEditorHasText
-                          ? "opacity-45 hover:opacity-100 focus-visible:opacity-100 active:opacity-100 phone-portrait:opacity-25"
+                          ? "opacity-45 hover:opacity-100 focus-visible:opacity-100 active:opacity-100 max-sm:opacity-25"
                           : "opacity-100",
                       )}
                       disabled={isCuttingComposerContents}
