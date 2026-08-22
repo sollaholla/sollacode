@@ -31,7 +31,6 @@ import {
   describeThreadErrorAge,
   resolveDraftThreadCreateModelSelection,
   resolveVisibleServerThreadError,
-  shouldMountActiveTerminalDrawer,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
@@ -571,28 +570,6 @@ describe("session branch mismatch dismissal", () => {
     expect(isBranchMismatchDismissedForSession("t1:a:b")).toBe(true);
     expect(isBranchMismatchDismissedForSession("t1:a:c")).toBe(false);
     expect(isBranchMismatchDismissedForSession(null)).toBe(false);
-  });
-});
-
-describe("shouldMountActiveTerminalDrawer", () => {
-  const base = {
-    hasActiveThread: true,
-    embeddedSideChat: false,
-    terminalOpen: true,
-    terminalMainSurfaceActive: false,
-  };
-
-  it("mounts only the active thread's visible drawer", () => {
-    expect(shouldMountActiveTerminalDrawer(base)).toBe(true);
-    expect(shouldMountActiveTerminalDrawer({ ...base, terminalOpen: false })).toBe(false);
-    expect(shouldMountActiveTerminalDrawer({ ...base, hasActiveThread: false })).toBe(false);
-  });
-
-  it("does not double-mount terminal surfaces", () => {
-    expect(shouldMountActiveTerminalDrawer({ ...base, terminalMainSurfaceActive: true })).toBe(
-      false,
-    );
-    expect(shouldMountActiveTerminalDrawer({ ...base, embeddedSideChat: true })).toBe(false);
   });
 });
 

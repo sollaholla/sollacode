@@ -267,20 +267,6 @@ export function isThreadWorkInterruptible(input: {
   );
 }
 
-export function shouldMountActiveTerminalDrawer(input: {
-  readonly hasActiveThread: boolean;
-  readonly embeddedSideChat: boolean;
-  readonly terminalOpen: boolean;
-  readonly terminalMainSurfaceActive: boolean;
-}): boolean {
-  return (
-    input.hasActiveThread &&
-    !input.embeddedSideChat &&
-    input.terminalOpen &&
-    !input.terminalMainSurfaceActive
-  );
-}
-
 export function reconcileRetainedMountedThreadIds(input: {
   currentThreadIds: ReadonlyArray<string>;
   openThreadIds: ReadonlyArray<string>;

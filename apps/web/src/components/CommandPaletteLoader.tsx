@@ -92,7 +92,7 @@ export function CommandPaletteLoader({ children }: { children: ReactNode }) {
   const terminalOpen = useTerminalUiStateStore((storeState) =>
     routeThreadRef
       ? selectThreadTerminalUiState(storeState.terminalUiStateByThreadKey, routeThreadRef)
-          .terminalOpen
+          .mainSurface === "terminal"
       : false,
   );
   const previewOpen = useRightPanelStore((storeState) =>

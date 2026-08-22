@@ -390,7 +390,6 @@ import {
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   resolveVisibleServerThreadError,
-  shouldMountActiveTerminalDrawer,
   startNewThreadForProject,
   waitForStartedServerThread,
 } from "./ChatView.logic";
@@ -1200,10 +1199,9 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   if (!project || !cwd) {
     return null;
   }
-  // Terminal mode uses the main column; it must not depend on the drawer
-  // flag. Requiring terminalOpen here is what left a bottom drawer after
-  // leaving terminal mode (the main surface had to force the flag on).
-  if (!isMainSurface && !terminalUiState.terminalOpen) {
+  // The terminal is only ever the main surface; the drawer variant that used
+  // to render under the chat is gone.
+  if (!isMainSurface) {
     return null;
   }
 
@@ -2088,8 +2086,6 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const terminalMainSurfaceActive = terminalUiState.mainSurface === "terminal";
   const terminalFullscreen = terminalUiState.terminalFullscreen;
-  const storeSetTerminalOpen = useTerminalUiStateStore((s) => s.setTerminalOpen);
-  const storeEnsureTerminal = useTerminalUiStateStore((state) => state.ensureTerminal);
   const storeSplitTerminal = useTerminalUiStateStore((s) => s.splitTerminal);
   const storeSplitTerminalVertical = useTerminalUiStateStore((s) => s.splitTerminalVertical);
   const storeNewTerminal = useTerminalUiStateStore((s) => s.newTerminal);
@@ -2322,12 +2318,6 @@ function ChatViewContent(props: ChatViewProps) {
     startupResumePendingByThreadKey,
   ]);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
-  const mountActiveTerminalDrawer = shouldMountActiveTerminalDrawer({
-    hasActiveThread: activeThreadRef !== null,
-    embeddedSideChat,
-    terminalOpen: terminalUiState.terminalOpen,
-    terminalMainSurfaceActive,
-  });
   const activeRightPanelKind = useRightPanelStore((state) =>
     selectActiveRightPanel(state.byThreadKey, activeThreadRef),
   );
@@ -2607,10 +2597,10 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
   useEffect(() => {
-    if (terminalMainSurfaceActive || terminalUiState.terminalOpen) {
+    if (terminalMainSurfaceActive) {
       void persistLocalDraftThreadRef.current({ notify: false });
     }
-  }, [terminalMainSurfaceActive, terminalUiState.terminalOpen]);
+  }, [terminalMainSurfaceActive]);
   const activeEnvironmentShell = useEnvironmentQuery(
     activeThread ? environmentShell.stateAtom(activeThread.environmentId) : null,
   );
@@ -3920,10 +3910,10 @@ function ChatViewContent(props: ChatViewProps) {
     () => ({
       context: {
         terminalFocus: true,
-        terminalOpen: Boolean(terminalUiState.terminalOpen),
+        terminalOpen: terminalMainSurfaceActive,
       },
     }),
-    [terminalUiState.terminalOpen],
+    [terminalMainSurfaceActive],
   );
   const splitTerminalShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "terminal.split", terminalShortcutLabelOptions),
@@ -4078,57 +4068,20 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [composerRef],
   );
-  const setTerminalOpen = useCallback(
-    (open: boolean) => {
-      if (!activeThreadRef) return;
-      storeSetTerminalOpen(activeThreadRef, open);
-    },
-    [activeThreadRef, storeSetTerminalOpen],
-  );
-  const toggleTerminalVisibility = useCallback(() => {
-    if (!activeThreadRef) return;
-    const nextOpen = !terminalUiState.terminalOpen;
-    if (nextOpen) {
-      void persistLocalDraftThread();
-    }
-    if (nextOpen && terminalUiState.terminalIds.length === 0) {
-      if (!activeThreadId || !activeProject) {
-        return;
-      }
-      const cwdForOpen = gitCwd ?? activeProject.workspaceRoot;
-      if (!cwdForOpen) {
-        return;
-      }
-      const terminalId = nextTerminalId([...activeKnownTerminalIds, ...panelTerminalIds]);
-      storeEnsureTerminal(activeThreadRef, terminalId, { open: true });
-      void openTerminalWithRollback(activeThreadRef, terminalId, {
-        threadId: activeThreadId,
-        terminalId,
-        cwd: cwdForOpen,
-        ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
-        env: projectScriptRuntimeEnv({
-          project: { cwd: activeProject.workspaceRoot },
-          worktreePath: activeThreadWorktreePath,
-        }),
-      });
-      return;
-    }
-    setTerminalOpen(nextOpen);
-  }, [
-    activeKnownTerminalIds,
-    activeProject,
-    activeThreadId,
-    activeThreadRef,
-    activeThreadWorktreePath,
-    gitCwd,
-    openTerminalWithRollback,
-    panelTerminalIds,
-    persistLocalDraftThread,
-    setTerminalOpen,
-    storeEnsureTerminal,
-    terminalUiState.terminalIds.length,
-    terminalUiState.terminalOpen,
-  ]);
+  /**
+   * Bring the terminal into view.
+   *
+   * This used to open a drawer split under the chat. There is no drawer any
+   * more — the terminal is a main surface — so the actions that used to need
+   * a terminal on screen (split, new, focus) switch to it instead. Callers
+   * that already are in terminal mode get a no-op.
+   */
+  const showTerminalSurface = useCallback(() => {
+    // Through handleMainSurfaceChange rather than the store directly: it also
+    // launches the first terminal when the thread has none, without which
+    // "split" or "new" would switch to an empty workspace.
+    handleMainSurfaceChange("terminal");
+  }, [handleMainSurfaceChange]);
   const splitTerminal = useCallback(
     (direction: "horizontal" | "vertical" = "horizontal", sourceTerminalId?: string) => {
       if (!activeThreadRef || !activeThreadId || !activeProject) {
@@ -4283,7 +4236,7 @@ function ChatViewContent(props: ChatViewProps) {
         cwd: targetCwd,
         worktreePath: targetWorktreePath,
       });
-      setTerminalOpen(true);
+      showTerminalSurface();
       if (!activeThreadRef) {
         return;
       }
@@ -4361,7 +4314,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeThreadId,
       activeThreadRef,
       gitCwd,
-      setTerminalOpen,
+      showTerminalSurface,
       setThreadError,
       storeNewTerminal,
       storeSetActiveTerminal,
@@ -5561,14 +5514,14 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeThread?.id]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen || isPhonePortraitViewport) return;
+    if (!activeThread?.id || terminalMainSurfaceActive || isPhonePortraitViewport) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isPhonePortraitViewport, terminalUiState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, isPhonePortraitViewport, terminalMainSurfaceActive]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -6020,18 +5973,18 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeProjectCwd, activeThreadId, activeThreadWorktreePath]);
 
   useEffect(() => {
-    if (terminalUiState.terminalOpen) {
+    if (terminalMainSurfaceActive) {
       return;
     }
     setTerminalUiLaunchContext((current) =>
       current?.threadId === activeThreadId ? null : current,
     );
-  }, [activeThreadId, terminalUiState.terminalOpen]);
+  }, [activeThreadId, terminalMainSurfaceActive]);
 
   useEffect(() => {
     if (!activeThreadKey) return;
     const previous = terminalUiOpenByThreadRef.current[activeThreadKey] ?? false;
-    const current = Boolean(terminalUiState.terminalOpen);
+    const current = terminalMainSurfaceActive;
 
     if (!previous && current) {
       terminalUiOpenByThreadRef.current[activeThreadKey] = current;
@@ -6048,7 +6001,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     terminalUiOpenByThreadRef.current[activeThreadKey] = current;
-  }, [activeThreadKey, focusComposer, terminalUiState.terminalOpen]);
+  }, [activeThreadKey, focusComposer, terminalMainSurfaceActive]);
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -6067,7 +6020,7 @@ function ChatViewContent(props: ChatViewProps) {
       }
       const shortcutContext = {
         terminalFocus: terminalFocusOwner !== null,
-        terminalOpen: Boolean(terminalUiState.terminalOpen),
+        terminalOpen: terminalMainSurfaceActive,
         modelPickerOpen: composerRef.current?.isModelPickerOpen() ?? false,
       };
 
@@ -6091,9 +6044,7 @@ function ChatViewContent(props: ChatViewProps) {
       if (command === "terminal.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        if (!terminalMainSurfaceActive) {
-          toggleTerminalVisibility();
-        }
+        handleMainSurfaceChange(terminalMainSurfaceActive ? "chat" : "terminal");
         return;
       }
 
@@ -6113,9 +6064,7 @@ function ChatViewContent(props: ChatViewProps) {
           splitPanelTerminal();
           return;
         }
-        if (!terminalUiState.terminalOpen) {
-          setTerminalOpen(true);
-        }
+        showTerminalSurface();
         splitTerminal();
         return;
       }
@@ -6127,9 +6076,7 @@ function ChatViewContent(props: ChatViewProps) {
           splitPanelTerminal("vertical");
           return;
         }
-        if (!terminalUiState.terminalOpen) {
-          setTerminalOpen(true);
-        }
+        showTerminalSurface();
         splitTerminal("vertical");
         return;
       }
@@ -6141,7 +6088,7 @@ function ChatViewContent(props: ChatViewProps) {
           closePanelTerminal(activeRightPanelSurface.activeTerminalId);
           return;
         }
-        if (!terminalUiState.terminalOpen) return;
+        if (!terminalMainSurfaceActive) return;
         closeTerminal(terminalUiState.activeTerminalId);
         return;
       }
@@ -6153,9 +6100,7 @@ function ChatViewContent(props: ChatViewProps) {
           addTerminalSurface();
           return;
         }
-        if (!terminalUiState.terminalOpen) {
-          setTerminalOpen(true);
-        }
+        showTerminalSurface();
         createNewTerminal();
         return;
       }
@@ -6188,20 +6133,19 @@ function ChatViewContent(props: ChatViewProps) {
     activeProject,
     activeRightPanelSurface,
     addTerminalSurface,
-    terminalUiState.terminalOpen,
     terminalUiState.activeTerminalId,
     activeThreadId,
     closeTerminal,
     closePanelTerminal,
     createNewTerminal,
-    setTerminalOpen,
+    handleMainSurfaceChange,
+    showTerminalSurface,
     runProjectScript,
     splitTerminal,
     splitPanelTerminal,
     keybindings,
     onToggleDiff,
     toggleRightPanel,
-    toggleTerminalVisibility,
     terminalMainSurfaceActive,
     composerRef,
     embeddedSideChat,
@@ -8043,13 +7987,9 @@ function ChatViewContent(props: ChatViewProps) {
 
   const panelToggleControls = terminalMainSurfaceActive ? null : (
     <PanelLayoutControls
-      terminalAvailable={activeProject !== null}
-      terminalOpen={terminalUiState.terminalOpen}
-      terminalShortcutLabel={shortcutLabelForCommand(keybindings, "terminal.toggle")}
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
-      onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
     />
   );
@@ -8677,7 +8617,7 @@ function ChatViewContent(props: ChatViewProps) {
                             resolvedTheme={resolvedTheme}
                             settings={settings}
                             keybindings={keybindings}
-                            terminalOpen={Boolean(terminalUiState.terminalOpen)}
+                            terminalOpen={terminalMainSurfaceActive}
                             gitCwd={gitCwd}
                             promptRef={promptRef}
                             composerImagesRef={composerImagesRef}
@@ -8717,7 +8657,7 @@ function ChatViewContent(props: ChatViewProps) {
                       </div>
                       <div className="min-h-0">
                         <div
-                          data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
+                          data-terminal-open={terminalMainSurfaceActive ? "true" : undefined}
                           className="relative z-0"
                         >
                           {showComposerContextStrip && (
@@ -8893,26 +8833,6 @@ function ChatViewContent(props: ChatViewProps) {
           {/* end chat column */}
         </div>
         {/* end horizontal flex container */}
-
-        {mountActiveTerminalDrawer && activeThreadRef ? (
-          // PTYs live on the server, so inactive drawers do not need hidden
-          // xterm/WebGL instances. Reattach and replay only when this drawer
-          // becomes visible again.
-          <PersistentThreadTerminalDrawer
-            key={activeThreadKey ?? ""}
-            threadRef={activeThreadRef}
-            threadId={activeThreadRef.threadId}
-            visible
-            launchContext={activeTerminalLaunchContext ?? null}
-            focusRequestId={terminalFocusRequestId}
-            splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-            splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
-            newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-            closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-            keybindings={keybindings}
-            onAddTerminalContext={addTerminalContextToDraft}
-          />
-        ) : null}
       </div>
 
       {!shouldUsePlanSidebarSheet && visibleRightPanelOpen && activeThreadRef ? (

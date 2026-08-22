@@ -383,7 +383,8 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const terminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
-      ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen
+      ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef)
+          .mainSurface === "terminal"
       : false,
   );
   const previewOpen = useRightPanelStore((state) =>
