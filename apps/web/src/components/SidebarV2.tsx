@@ -134,6 +134,9 @@ import {
   snoozeWakeLabel,
   type SnoozePreset,
 } from "./Sidebar.snooze";
+import { describeSwipeAction, type SidebarSwipeAction } from "./sidebarRowSwipe";
+import { useSidebarRowSwipe, type SidebarRowSwipeState } from "./useSidebarRowSwipe";
+import { useOnScreenKeyboard } from "../hooks/useOnScreenKeyboard";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
@@ -364,6 +367,38 @@ function SidebarV2ThreadTooltip({
         </div>
       </div>
     </TooltipPopup>
+  );
+}
+
+/**
+ * The coloured plate a sliding row uncovers.
+ *
+ * Sits behind the row and is revealed by it rather than animating in on its
+ * own, so the label is legible exactly in proportion to how far the gesture
+ * has gone. It dims until the threshold is crossed and goes solid at it, which
+ * is the "let go now and this happens" signal.
+ */
+function SidebarRowSwipeAffordance(props: { state: SidebarRowSwipeState }) {
+  const { action, offset, progress, armed } = props.state;
+  if (action === null || offset === 0) return null;
+  const { label, tone } = describeSwipeAction(action);
+  const Icon = tone === "settle" ? CheckIcon : AlarmClockIcon;
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        "pointer-events-none absolute inset-y-0 flex items-center gap-1.5 rounded-md px-3 text-xs font-medium",
+        // Revealed on the side the row moved away from.
+        offset > 0 ? "left-0" : "right-0",
+        tone === "settle"
+          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+          : "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+      )}
+      style={{ width: `${Math.abs(offset)}px`, opacity: armed ? 1 : 0.45 + progress * 0.4 }}
+    >
+      <Icon className="size-3.5 shrink-0" />
+      <span className="truncate">{label}</span>
+    </div>
   );
 }
 
@@ -781,6 +816,67 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     [openPrLink, pr],
   );
 
+  // Slide-to-act replaces the hover-revealed row buttons where there is no
+  // hover to reveal them with. The buttons stay for pointer devices, where
+  // they are precise and already discoverable.
+  const swipeEnabled = useOnScreenKeyboard();
+  const swipeCapabilities = useMemo(
+    () => ({
+      variantAction,
+      settlementSupported: props.settlementSupported,
+      snoozeSupported: props.snoozeSupported,
+      canSnoozeNow: showSnoozeButton,
+    }),
+    [props.settlementSupported, props.snoozeSupported, showSnoozeButton, variantAction],
+  );
+  const handleSwipeCommit = useCallback(
+    (action: SidebarSwipeAction) => {
+      if (action === "settle") onSettle(threadRef);
+      else if (action === "unsettle") onUnsettle(threadRef);
+      else if (action === "unsnooze") onUnsnooze(threadRef);
+      // Snoozing needs a duration. Committing a fixed one would quietly drop
+      // the four presets, and on touch there is no other route to them now the
+      // button is gone, so the swipe opens the same menu the button did.
+      else setSnoozeMenuOpen(true);
+    },
+    [onSettle, onUnsettle, onUnsnooze, threadRef],
+  );
+  const swipe = useSidebarRowSwipe({
+    enabled: swipeEnabled,
+    capabilities: swipeCapabilities,
+    onCommit: handleSwipeCommit,
+  });
+  const { consumeSuppressedClick } = swipe;
+  const handleRowClick = useCallback(
+    (event: ReactMouseEvent) => {
+      // A row that slid must not also open the thread it slid.
+      if (consumeSuppressedClick()) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      handleClick(event);
+    },
+    [consumeSuppressedClick, handleClick],
+  );
+  const swipeStyle =
+    swipe.state.offset === 0
+      ? undefined
+      : {
+          transform: `translateX(${swipe.state.offset}px)`,
+        };
+  const swipeRowClassName = swipeEnabled
+    ? cn(
+        // Vertical scrolling stays the browser's; only the horizontal axis is
+        // ours to claim.
+        "touch-pan-y",
+        // Springs back when released, but follows the finger exactly while it
+        // is down — a transition mid-drag reads as lag.
+        !swipe.state.dragging && "transition-transform duration-200",
+      )
+    : undefined;
+  const swipeAffordance = <SidebarRowSwipeAffordance state={swipe.state} />;
+
   // All Sidebar V2 rows share one surface model. Live threads used to look
   // like elevated cards while settled threads were plain rows, leaving neither
   // a useful hierarchy nor a reliable hover cue. Status now lives in the row
@@ -866,8 +962,9 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     return (
       <li
         data-thread-item
-        className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_34px]"
+        className="relative list-none overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_34px]"
       >
+        {swipeAffordance}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -875,11 +972,17 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 role="button"
                 tabIndex={0}
                 data-testid="sidebar-v2-row-slim"
-                className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
-                onClick={handleClick}
+                className={cn(
+                  rowSurfaceClassName,
+                  "flex h-9 items-center gap-2.5 px-2.5",
+                  swipeRowClassName,
+                )}
+                style={swipeStyle}
+                onClick={handleRowClick}
                 onDoubleClick={handleDoubleClick}
                 onKeyDown={handleKeyDown}
                 onContextMenu={handleContextMenu}
+                {...swipe.handlers}
               />
             }
           >
@@ -931,7 +1034,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   </span>
                 )}
               </span>
-              {variantAction === "unsnooze" ? (
+              {swipeEnabled ? null : variantAction === "unsnooze" ? (
                 !props.snoozeSupported ? null : (
                   <button
                     type="button"
@@ -975,8 +1078,9 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   return (
     <li
       data-thread-item
-      className="list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
+      className="relative list-none overflow-hidden py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_96px]"
     >
+      {swipeAffordance}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -984,11 +1088,13 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               role="button"
               tabIndex={0}
               data-testid="sidebar-v2-row-card"
-              className={rowSurfaceClassName}
-              onClick={handleClick}
+              className={cn(rowSurfaceClassName, swipeRowClassName)}
+              style={swipeStyle}
+              onClick={handleRowClick}
               onDoubleClick={handleDoubleClick}
               onKeyDown={handleKeyDown}
               onContextMenu={handleContextMenu}
+              {...swipe.handlers}
             />
           }
         >
@@ -1057,7 +1163,20 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     threadTimeLabel(thread)
                   )}
                 </span>
-                {props.settlementSupported || showSnoozeButton ? (
+                {swipeEnabled ? (
+                  // Hidden but still mounted: it anchors the preset popover
+                  // that the swipe opens. Not a button any more — no hover to
+                  // reveal it and no pointer events to hit it with.
+                  showSnoozeButton ? (
+                    <span className="pointer-events-none absolute inset-y-0 right-0 opacity-0">
+                      <SnoozePopoverButton
+                        open={snoozeMenuOpen}
+                        onOpenChange={setSnoozeMenuOpen}
+                        onSnooze={handleSnoozePreset}
+                      />
+                    </span>
+                  ) : null
+                ) : props.settlementSupported || showSnoozeButton ? (
                   <span
                     className={cn(
                       "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity focus-within:static focus-within:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
