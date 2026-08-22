@@ -92,6 +92,11 @@ export function useSidebarRowSwipe(options: UseSidebarRowSwipeOptions): UseSideb
       // Mouse drags are not this gesture; the pointer devices that need it are
       // the ones with no hover to reveal the buttons instead.
       if (event.pointerType === "mouse") return;
+      // A gesture only ever suppresses its own click. On touch a drag often
+      // produces no click at all, so a flag left set by the previous swipe
+      // would swallow the next genuine tap and the row would need tapping
+      // twice.
+      suppressClickRef.current = false;
       pointerIdRef.current = event.pointerId;
       startRef.current = { x: event.clientX, y: event.clientY };
       activeRef.current = false;

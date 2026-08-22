@@ -1034,36 +1034,43 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   </span>
                 )}
               </span>
-              {swipeEnabled ? null : variantAction === "unsnooze" ? (
-                !props.snoozeSupported ? null : (
+              {/* Sliding is a gesture assistive tech cannot perform, so on
+                  touch these are undrawn rather than unmounted: still in the
+                  accessibility tree and the tab order, just not occupying the
+                  row. Unmounting them would leave a VoiceOver user no way to
+                  settle or snooze at all. */}
+              <span className={swipeEnabled ? "sr-only" : "contents"}>
+                {variantAction === "unsnooze" ? (
+                  !props.snoozeSupported ? null : (
+                    <button
+                      type="button"
+                      aria-label="Wake thread now"
+                      onClick={handleUnsnoozeClick}
+                      className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
+                    >
+                      <AlarmClockOffIcon className="size-3" />
+                    </button>
+                  )
+                ) : !props.settlementSupported ? null : variantAction === "unsettle" ? (
                   <button
                     type="button"
-                    aria-label="Wake thread now"
-                    onClick={handleUnsnoozeClick}
+                    aria-label="Un-settle thread"
+                    onClick={handleUnsettleClick}
+                    className="absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
+                  >
+                    <Undo2Icon className="mb-px size-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    aria-label="Settle thread"
+                    onClick={handleSettleClick}
                     className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
                   >
-                    <AlarmClockOffIcon className="size-3" />
+                    <CheckIcon className="size-3" />
                   </button>
-                )
-              ) : !props.settlementSupported ? null : variantAction === "unsettle" ? (
-                <button
-                  type="button"
-                  aria-label="Un-settle thread"
-                  onClick={handleUnsettleClick}
-                  className="absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
-                >
-                  <Undo2Icon className="mb-px size-3.5" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  aria-label="Settle thread"
-                  onClick={handleSettleClick}
-                  className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
-                >
-                  <CheckIcon className="size-3" />
-                </button>
-              )}
+                )}
+              </span>
             </span>
             {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
           </TooltipTrigger>
@@ -1164,18 +1171,45 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   )}
                 </span>
                 {swipeEnabled ? (
-                  // Hidden but still mounted: it anchors the preset popover
-                  // that the swipe opens. Not a button any more — no hover to
-                  // reveal it and no pointer events to hit it with.
-                  showSnoozeButton ? (
-                    <span className="pointer-events-none absolute inset-y-0 right-0 opacity-0">
-                      <SnoozePopoverButton
-                        open={snoozeMenuOpen}
-                        onOpenChange={setSnoozeMenuOpen}
-                        onSnooze={handleSnoozePreset}
-                      />
-                    </span>
-                  ) : null
+                  <>
+                    {/* Undrawn, and `inert` so it is neither focusable nor
+                        announced: it exists only to give the preset popover
+                        that the swipe opens something to anchor to. The
+                        control assistive tech uses is the one below. */}
+                    {showSnoozeButton ? (
+                      <span
+                        inert
+                        className="pointer-events-none absolute inset-y-0 right-0 opacity-0"
+                      >
+                        <SnoozePopoverButton
+                          open={snoozeMenuOpen}
+                          onOpenChange={setSnoozeMenuOpen}
+                          onSnooze={handleSnoozePreset}
+                        />
+                      </span>
+                    ) : null}
+                    {/* Sliding is a gesture assistive tech cannot perform, so
+                        the actions stay reachable as controls even though the
+                        row is driven by the gesture. */}
+                    {props.settlementSupported ? (
+                      <button type="button" className="sr-only" onClick={handleSettleClick}>
+                        Settle thread
+                      </button>
+                    ) : null}
+                    {showSnoozeButton ? (
+                      <button
+                        type="button"
+                        className="sr-only"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setSnoozeMenuOpen(true);
+                        }}
+                      >
+                        Snooze thread
+                      </button>
+                    ) : null}
+                  </>
                 ) : props.settlementSupported || showSnoozeButton ? (
                   <span
                     className={cn(
