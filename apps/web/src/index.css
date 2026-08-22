@@ -4,6 +4,16 @@
 /* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
 @custom-variant wco (&:is(.wco, .wco *));
 
+/* A phone held upright: narrow, portrait, and touch-driven.
+   All three matter. Width alone also catches a narrow desktop window, which
+   has a hover cursor and so does not need a touch affordance; orientation
+   alone catches a tablet with room to spare. */
+@custom-variant phone-portrait {
+  @media (max-width: 639px) and (orientation: portrait) and (pointer: coarse) {
+    @slot;
+  }
+}
+
 /* On mobile, morph the expanded hero composer into the compact docked
    composer while it moves; the rest of the app remains visually stationary. */
 html[data-mobile-composer-route-transition="true"]::view-transition-old(root),
@@ -418,32 +428,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     height: var(--workspace-topbar-height);
     align-items: center;
     -webkit-app-region: no-drag;
-  }
-
-  /* The emoji picker and the Cut button float over the top-right of the
-     composer's text area. On a desktop width the text never reaches them, and
-     the picker already fades to near-nothing when it would — but that fade is
-     cancelled on small screens (`max-sm:opacity-100`), because touch has no
-     hover to bring a 12%-opacity control back.
-
-     So on a phone in portrait, thin the PLATE rather than fading the control:
-     the icon stays findable and tappable while the text underneath reads
-     through it. Interacting restores the full plate. */
-  @media (max-width: 639px) and (orientation: portrait) and (pointer: coarse) {
-    [data-chat-composer-emoji-underlay="true"],
-    [data-chat-composer-cut="true"] {
-      background-color: color-mix(in srgb, var(--background) 32%, transparent);
-      box-shadow: none;
-      --tw-ring-color: color-mix(in srgb, var(--border) 25%, transparent);
-    }
-
-    [data-chat-composer-emoji-underlay="true"]:focus-within,
-    [data-chat-composer-emoji-underlay="true"]:active,
-    [data-chat-composer-cut="true"]:focus-visible,
-    [data-chat-composer-cut="true"]:active {
-      background-color: var(--background);
-      --tw-ring-color: color-mix(in srgb, var(--border) 50%, transparent);
-    }
   }
 
   .surface-subheader {

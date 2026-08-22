@@ -64,8 +64,15 @@ export function ComposerEmojiPicker(props: {
       data-chat-composer-emoji-underlay={props.hasTextUnderlay ? "true" : "false"}
       className={cn(
         "flex h-7 items-center rounded-md bg-background/90 px-0.5 shadow-sm ring-1 ring-border/50 transition-opacity duration-150",
+        // Fades only while draft text runs underneath it. 12% was effectively
+        // invisible on a pointer device — you had to already know it was there
+        // to hover it back — while `max-sm:opacity-100` did the opposite on a
+        // phone, holding it fully opaque over exactly the layout with the least
+        // room, so it covered the text it was trying to stay out of the way of.
+        // Recessed but legible with a mouse, and thinner on a phone where the
+        // collision is worst; any interaction brings it straight back.
         props.hasTextUnderlay && !fullPickerOpen
-          ? "opacity-[0.12] hover:opacity-100 focus-within:opacity-100 max-sm:opacity-100"
+          ? "opacity-45 hover:opacity-100 focus-within:opacity-100 active:opacity-100 phone-portrait:opacity-25"
           : "opacity-100",
       )}
     >

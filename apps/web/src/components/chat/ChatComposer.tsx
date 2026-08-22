@@ -3640,7 +3640,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       size="xs"
                       variant="ghost"
                       data-chat-composer-cut="true"
-                      className="h-7 shrink-0 gap-1 rounded-md bg-background/90 px-2 text-xs text-muted-foreground shadow-sm ring-1 ring-border/50 hover:text-foreground"
+                      className={cn(
+                        "h-7 shrink-0 gap-1 rounded-md bg-background/90 px-2 text-xs text-muted-foreground shadow-sm ring-1 ring-border/50 transition-opacity duration-150 hover:text-foreground",
+                        // Matches the emoji picker beside it: both float over
+                        // the same text, so they have to recede together or the
+                        // row reads as half-faded.
+                        currentEditorHasText
+                          ? "opacity-45 hover:opacity-100 focus-visible:opacity-100 active:opacity-100 phone-portrait:opacity-25"
+                          : "opacity-100",
+                      )}
                       disabled={isCuttingComposerContents}
                       aria-label="Cut draft text and attachments"
                       onPointerDown={(event) => event.preventDefault()}

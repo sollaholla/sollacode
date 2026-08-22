@@ -7,6 +7,11 @@ import * as Effect from "effect/Effect";
 
 import { issueArtifactAssetUrl } from "../../../assets/AssetAccess.ts";
 import { ThreadArtifactService } from "../../../artifacts/ThreadArtifactService.ts";
+import {
+  describeMissingAssetReferences,
+  findMissingAssetReferences,
+  normalizeArtifactPath,
+} from "./assetReferences.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadArtifactToolkit } from "./tools.ts";
 import type { ThreadArtifactToolInput } from "./types.ts";
@@ -98,6 +103,27 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
               reason: "is not valid base64",
             });
       });
+      // A revision is served from exactly these files, so a path pointing
+      // outside them is a broken page rather than a partial one. Better to
+      // refuse here, while whoever is publishing still has the asset, than to
+      // hand back a URL that renders empty frames.
+      const missing = findMissingAssetReferences(decodedFiles);
+      if (missing.length > 0) {
+        return yield* new ThreadArtifactInvalidInputError({
+          field: "files",
+          reason: describeMissingAssetReferences(missing),
+        });
+      }
+      if (
+        !decodedFiles.some(
+          (file) => normalizeArtifactPath(file.path) === normalizeArtifactPath(entryPath),
+        )
+      ) {
+        return yield* new ThreadArtifactInvalidInputError({
+          field: "entryPath",
+          reason: `'${entryPath}' is not among the published files`,
+        });
+      }
       const detail = yield* service.publish({
         threadId: invocation.threadId,
         ...(input.artifactId === undefined ? {} : { artifactId: input.artifactId }),
