@@ -863,7 +863,11 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
   return (
     <>
       {active ? (
-        <div className="fixed left-1/2 top-3 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-full border border-success/35 bg-background/95 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
+        // Bottom-right, not top-center: parked over the titlebar it sat on top
+        // of every header's actions. The corners are spoken for elsewhere —
+        // toasts top-right, sidebar bottom-left, composer bottom-center — so
+        // this is the one spot with nothing interactive underneath.
+        <div className="fixed bottom-3 right-3 z-[70] flex items-center gap-2 rounded-full border border-success/35 bg-background/95 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
           <span className="size-2 rounded-full bg-success" aria-hidden />
           <span className="font-medium">
             {active.session.grantedCapabilities.some(

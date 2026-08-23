@@ -22,3 +22,14 @@ export function unreadAgentNotificationCount(
 export function agentNotificationPreview(body: string): string {
   return body.replace(/\s+/g, " ").trim();
 }
+
+/** Mail-style select-all: clear when every visible message is selected, otherwise select all of them. */
+export function toggleSelectAll(
+  visible: ReadonlyArray<VmAgentNotification>,
+  selected: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const allSelected =
+    visible.length > 0 &&
+    visible.every((notification) => selected.has(notification.notificationId));
+  return new Set(allSelected ? [] : visible.map((notification) => notification.notificationId));
+}

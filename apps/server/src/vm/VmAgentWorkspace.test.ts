@@ -229,6 +229,50 @@ workspaceLayer("VmAgentWorkspace", (it) => {
     }),
   );
 
+  it.effect("expires archived mail past its retention window on the next read", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const store = yield* VmAgentWorkspaceStore;
+      const agent = yield* insertAgent("expiry");
+      const expiredId = VmAgentNotificationId.make("expired-mail");
+      const freshId = VmAgentNotificationId.make("fresh-mail");
+      yield* workspace.notify({
+        vmAgentId: agent.vmAgentId,
+        notificationId: expiredId,
+        kind: "agent-message",
+        title: "Old",
+        body: "Archived long ago.",
+      });
+      yield* workspace.notify({
+        vmAgentId: agent.vmAgentId,
+        notificationId: freshId,
+        kind: "agent-message",
+        title: "New",
+        body: "Archived just now.",
+      });
+
+      // One archived now (inside the window), one backdated as if two days
+      // had passed since the user archived it. "Now" is the TestClock's epoch,
+      // so the backdated archive must predate 1970, not merely today.
+      yield* workspace.updateNotification({
+        vmAgentId: agent.vmAgentId,
+        notificationId: freshId,
+        archived: true,
+      });
+      yield* store.updateNotification({
+        vmAgentId: agent.vmAgentId,
+        notificationId: expiredId,
+        archivedAt: "1969-12-01T00:00:00.000Z",
+      });
+
+      const snapshot = yield* workspace.snapshot(agent.vmAgentId);
+      assert.deepStrictEqual(
+        snapshot.notifications.map((notification) => notification.notificationId),
+        [freshId],
+      );
+    }),
+  );
+
   it.effect(
     "streams lightweight unread and waiting-on-you counts across reversible inbox state",
     () =>

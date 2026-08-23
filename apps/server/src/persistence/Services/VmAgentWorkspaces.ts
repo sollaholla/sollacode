@@ -195,6 +195,11 @@ export interface VmAgentWorkspaceStoreShape {
     readonly readAt?: IsoDateTime | null;
     readonly archivedAt?: IsoDateTime | null;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
+  /** Delete archived notifications whose archivedAt predates the cutoff. */
+  readonly purgeExpiredArchivedNotifications: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly cutoff: IsoDateTime;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly updateNotificationPreferences: (
     preferences: VmAgentNotificationPreferences,
   ) => Effect.Effect<VmAgentNotificationPreferences, ProjectionRepositoryError>;

@@ -9,7 +9,7 @@ Open an agent and use the tabs in its header:
 - **Chat** is the agent's single persistent conversation. A follow-up waits behind active work; it does not create a parallel session.
 - **Tasks** contains durable prompts. A task can be manual, run once at a specific time, or repeat at a minute interval. **Build with AI** turns a plain-language request into a title, self-contained prompt, schedule, completion criteria, and notification policy using the agent thread's selected provider and model.
 - **Artifact** is one structured surface owned by the agent. The initial Schedule artifact follows task and run state automatically. An agent can replace it with metrics, a checklist, a table, a timeline, or cards.
-- **Inbox** contains durable notifications from task runs and the agent. Its message list shows subjects and previews beside a Markdown-rendered reading pane. Opening a message marks it read; it can be marked unread again, archived when finished, or restored to the inbox. With browser notification permission, new items also appear as desktop notifications while Solla Code is running.
+- **Inbox** contains durable notifications from task runs and the agent. Its message list shows subjects and previews beside a Markdown-rendered reading pane. Opening a message marks it read; it can be marked unread again, archived when finished (with confirmation, singly via each row's checkmark or in bulk through multi-select), or restored to the inbox. Archived messages are deleted 48 hours after they were archived. With browser notification permission, new items also appear as desktop notifications while Solla Code is running.
 
 Tasks, notifications, and collaboration state are stored by the environment. Web, desktop, and
 mobile group agents by their connected host, so a phone connected over LAN, relay, or Tailscale can
@@ -55,7 +55,7 @@ Inbox preferences independently control completions, failures, and direct agent 
 
 Browser/desktop notifications require permission from the operating system or browser. The Inbox remains the durable source of truth when permission is denied or no client is open.
 
-The Agents list shows a numbered notification bubble for each agent's unread, unarchived inbox items. A raised-hand icon means that agent has at least one unresolved **Waiting on you** request. These indicators are scoped to their owning environment and update without downloading every agent's message body.
+The Agents list shows a numbered notification bubble for each agent's unread, unarchived inbox items. A raised-hand icon means that agent has at least one unresolved **Waiting on you** request. A spinning dashed circle means the agent's chat is mid-turn right now. These indicators are scoped to their owning environment and update without downloading every agent's message body.
 
 ## Artifact safety
 
