@@ -2391,6 +2391,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     }) {
       let lastShellFingerprint = "";
       let lastShellChangeAtMs = Number.NaN;
+      // Whether this wait has handed its provider slot back while a person
+      // answers. Released on every exit below, so a turn that ends while the
+      // prompt is still up cannot leak the parked state.
+      let admissionParked = false;
       while (true) {
         const shell = yield* projectionSnapshotQuery
           .getThreadShellById(input.threadId)
@@ -2483,6 +2487,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           latestTurn?.state ?? "",
         ].join("|");
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        // A question on the screen is not a dead feed. While a turn waits on
+        // a person, the provider emits nothing by design: Claude's
+        // `canUseTool` promise is parked inside the SDK, so no messages, no
+        // heartbeats, and a frozen shell. The watchdog read that as death and
+        // stopped the session out from under the prompt — which threw away
+        // the in-memory callback, so the answer came back "Stale pending
+        // user-input request", the card vanished mid-read, and the resumed
+        // turn eventually died as "Request timed out".
+        //
+        // Parking also hands the concurrency slot back: the obligation stays
+        // `executing` for however long the person takes (the durable
+        // waiting-user-input state needs a callback the Claude adapter cannot
+        // rebuild), and holding the per-provider budget that whole time
+        // starved every other thread on that provider.
+        const awaitingHuman = shell.hasPendingUserInput || shell.hasPendingApprovals;
+        if (awaitingHuman !== admissionParked) {
+          admissionParked = awaitingHuman;
+          yield* threadWorkScheduler.setAdmissionParked({
+            threadId: input.threadId,
+            parked: awaitingHuman,
+          });
+        }
+        if (awaitingHuman) {
+          // Keep the silence clock from accruing across the wait, so an
+          // answer at minute 30 does not land on an already-doomed turn.
+          lastShellChangeAtMs = nowMs;
+          yield* Effect.sleep(Duration.millis(100));
+          continue;
+        }
         const midTurn =
           shell.session?.status === "running" && shell.session.activeTurnId === input.turnId;
         const silenceRestartMs = midTurn

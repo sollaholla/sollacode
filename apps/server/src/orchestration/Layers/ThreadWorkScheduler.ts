@@ -75,6 +75,21 @@ interface AdmissionState {
   readonly activeByProvider: ReadonlyMap<string, number>;
   readonly activeRecoveryByProvider: ReadonlyMap<string, number>;
   readonly activeThreads: ReadonlySet<ThreadId>;
+  /**
+   * Threads whose obligation is still executing but is blocked on a human —
+   * an unanswered question or approval. Their concurrency counts are given
+   * back while they wait; they stay in {@link activeThreads} so a second
+   * obligation for the same thread still cannot start behind their back.
+   */
+  readonly parkedThreads: ReadonlyMap<string, ParkedAdmission>;
+  /** Provider/recovery shape of each admitted thread, so parking can give
+   *  back exactly what was taken without the caller restating it. */
+  readonly activeAdmissions: ReadonlyMap<string, ParkedAdmission>;
+}
+
+interface ParkedAdmission {
+  readonly providerKey: string;
+  readonly recovery: boolean;
 }
 
 interface Admission {
@@ -101,6 +116,8 @@ const emptyAdmissionState = (): AdmissionState => ({
   activeByProvider: new Map(),
   activeRecoveryByProvider: new Map(),
   activeThreads: new Set(),
+  parkedThreads: new Map(),
+  activeAdmissions: new Map(),
 });
 
 // The recovery throttle exists to keep autonomous boot/auth resume storms
@@ -300,6 +317,8 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
         }
         const activeThreads = new Set(current.activeThreads);
         activeThreads.add(obligation.threadId);
+        const activeAdmissions = new Map(current.activeAdmissions);
+        activeAdmissions.set(String(obligation.threadId), { providerKey, recovery });
         return [
           Option.some({
             threadId: obligation.threadId,
@@ -311,6 +330,8 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
             activeByProvider,
             activeRecoveryByProvider,
             activeThreads,
+            parkedThreads: current.parkedThreads,
+            activeAdmissions,
           },
         ] as const;
       });
@@ -318,6 +339,17 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
     const releaseAdmission = (admission: Admission) =>
       Ref.update(admissions, (current) => {
         const providerKey = String(admission.providerInstanceId);
+        // A parked admission already gave its counts back. Decrementing again
+        // here would drift them below the real number of running obligations
+        // and silently raise the effective concurrency cap.
+        const parkedThreads = new Map(current.parkedThreads);
+        const activeAdmissions = new Map(current.activeAdmissions);
+        activeAdmissions.delete(String(admission.threadId));
+        if (parkedThreads.delete(String(admission.threadId))) {
+          const activeThreads = new Set(current.activeThreads);
+          activeThreads.delete(admission.threadId);
+          return { ...current, activeThreads, parkedThreads, activeAdmissions };
+        }
         const activeByProvider = new Map(current.activeByProvider);
         const nextProviderCount = Math.max(0, (activeByProvider.get(providerKey) ?? 1) - 1);
         if (nextProviderCount === 0) activeByProvider.delete(providerKey);
@@ -340,8 +372,71 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
           activeByProvider,
           activeRecoveryByProvider,
           activeThreads,
+          parkedThreads,
+          activeAdmissions,
         };
       });
+
+    /**
+     * Give a thread's concurrency slot back while it waits on a human, and
+     * take it again when the answer lands.
+     *
+     * A turn blocked on an unanswered question is not using a provider — but
+     * its obligation stays `executing` for as long as the person takes to
+     * answer, because the durable `waiting-user-input` state is only
+     * available to adapters that can rehydrate the callback (Claude cannot:
+     * its `canUseTool` promise dies with the process). Holding the slot meant
+     * a handful of unanswered questions consumed the whole per-provider
+     * budget and every other thread on that provider starved in `pending`
+     * with no error anywhere — reported as "the app is broken, new messages
+     * time out too, but other threads are fine".
+     *
+     * Unparking does NOT re-check the caps: this is work that is already
+     * running and must keep being supervised. The overshoot is bounded by the
+     * number of questions actually on screen.
+     */
+    const setAdmissionParked: ThreadWorkSchedulerShape["setAdmissionParked"] = (input) =>
+      Ref.update(admissions, (current) => {
+        const threadKey = String(input.threadId);
+        const parked = current.parkedThreads.get(threadKey);
+        if (input.parked === (parked !== undefined)) return current;
+        // Only a thread the scheduler currently owns has a slot to give back.
+        const admission = parked ?? current.activeAdmissions.get(threadKey);
+        if (admission === undefined) return current;
+
+        const { providerKey, recovery } = admission;
+        const delta = input.parked ? -1 : 1;
+
+        const activeByProvider = new Map(current.activeByProvider);
+        const nextProviderCount = Math.max(0, (activeByProvider.get(providerKey) ?? 0) + delta);
+        if (nextProviderCount === 0) activeByProvider.delete(providerKey);
+        else activeByProvider.set(providerKey, nextProviderCount);
+
+        const activeRecoveryByProvider = new Map(current.activeRecoveryByProvider);
+        if (recovery) {
+          const nextRecovery = Math.max(
+            0,
+            (activeRecoveryByProvider.get(providerKey) ?? 0) + delta,
+          );
+          if (nextRecovery === 0) activeRecoveryByProvider.delete(providerKey);
+          else activeRecoveryByProvider.set(providerKey, nextRecovery);
+        }
+
+        const parkedThreads = new Map(current.parkedThreads);
+        if (input.parked) parkedThreads.set(threadKey, admission);
+        else parkedThreads.delete(threadKey);
+
+        return {
+          ...current,
+          activeGlobal: Math.max(0, current.activeGlobal + delta),
+          activeByProvider,
+          activeRecoveryByProvider,
+          parkedThreads,
+        };
+      }).pipe(
+        // Freeing a slot is only useful if someone tries to claim it.
+        Effect.andThen(input.parked ? wake() : Effect.void),
+      );
 
     const runClaimed = (
       claimed: ThreadWorkObligation,
@@ -1008,6 +1103,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
         }).pipe(Effect.andThen(releaseRetainedRetryLeases)),
       observeRuntime,
       runtimeLivenessAt,
+      setAdmissionParked,
       snapshot,
     } satisfies ThreadWorkSchedulerShape;
   });

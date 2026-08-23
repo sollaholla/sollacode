@@ -24,6 +24,36 @@ export function isRetryableUpstreamStatus(status: unknown): boolean {
   return typeof status === "number" && RETRYABLE_UPSTREAM_STATUSES.has(status);
 }
 
+/**
+ * Transient network failures, read from the structured `code`/`errno` Node
+ * puts on DNS and socket errors.
+ *
+ * A DNS blip is not a broken thread. With MagicDNS in front of the resolver a
+ * brief outage makes every provider call fail with ENOTFOUND at once — the
+ * same failure a raw CLI shows as "Can't reach the API server". Unclassified,
+ * each of those became a hard session error that never retried, so threads
+ * stayed dead after connectivity came back and the only cure was restarting
+ * the app. They are retryable for exactly the same reason a 503 is: nothing
+ * about the conversation is wrong.
+ */
+const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+export function isRetryableNetworkCode(code: unknown): boolean {
+  return typeof code === "string" && RETRYABLE_NETWORK_CODES.has(code.toUpperCase());
+}
+
 function hasStructuredStatus(value: unknown, matches: (status: unknown) => boolean): boolean {
   const seen = new Set<unknown>();
   const queue: Array<unknown> = [value];
@@ -36,7 +66,16 @@ function hasStructuredStatus(value: unknown, matches: (status: unknown) => boole
     seen.add(node);
 
     const record = node as Record<string, unknown>;
-    for (const key of ["status", "statusCode", "httpStatusCode", "error_status"] as const) {
+    for (const key of [
+      "status",
+      "statusCode",
+      "httpStatusCode",
+      "error_status",
+      // Node stamps DNS/socket failures here. Structured, so prose that
+      // merely mentions a code still cannot move turn lifecycle.
+      "code",
+      "errno",
+    ] as const) {
       if (matches(record[key])) return true;
     }
 
@@ -61,7 +100,10 @@ function hasStructuredStatus(value: unknown, matches: (status: unknown) => boole
  * lifecycle decisions because provider/model prose is never inspected.
  */
 export function hasRetryableUpstreamStatus(value: unknown): boolean {
-  return hasStructuredStatus(value, isRetryableUpstreamStatus);
+  return hasStructuredStatus(
+    value,
+    (candidate) => isRetryableUpstreamStatus(candidate) || isRetryableNetworkCode(candidate),
+  );
 }
 
 export const PROVIDER_OVERLOAD_RETRY_REASON_PREFIX = "provider_overloaded:retrying";
