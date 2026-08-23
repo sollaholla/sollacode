@@ -25,7 +25,6 @@ import { DeleteAgentDialog } from "./DeleteAgentDialog";
 
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";

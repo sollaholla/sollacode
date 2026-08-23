@@ -3,22 +3,19 @@ import type {
   VmAgent,
   VmAgentArtifactDefinition,
   VmAgentTask,
-  VmAgentTaskNotificationPolicy,
   VmAgentWorkspaceSnapshot,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { BellIcon, CalendarClockIcon, PlayIcon, SparklesIcon, Trash2Icon } from "lucide-react";
+import { BellIcon, CalendarClockIcon, PlayIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
 import { Switch } from "~/components/ui/switch";
-import { Textarea } from "~/components/ui/textarea";
 
-type ScheduleKind = "none" | "once" | "interval";
+import { CreateTaskDialog } from "./CreateTaskDialog";
 
 const commandError = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
@@ -45,104 +42,11 @@ export function AgentTasksPanel(props: {
   readonly agent: VmAgent;
   readonly workspace: VmAgentWorkspaceSnapshot | null;
 }) {
-  const [request, setRequest] = useState("");
-  const [title, setTitle] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [criteria, setCriteria] = useState("");
-  const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("none");
-  const [runAt, setRunAt] = useState("");
-  const [everyMinutes, setEveryMinutes] = useState("1440");
-  const [notificationPolicy, setNotificationPolicy] =
-    useState<VmAgentTaskNotificationPolicy>("always");
-  const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const createTask = useAtomCommand(vmAgentEnvironment.createTask, { reportFailure: false });
   const updateTask = useAtomCommand(vmAgentEnvironment.updateTask, { reportFailure: false });
   const deleteTask = useAtomCommand(vmAgentEnvironment.deleteTask, { reportFailure: false });
   const runTaskNow = useAtomCommand(vmAgentEnvironment.runTaskNow, { reportFailure: false });
-  const generateTaskPrompt = useAtomCommand(vmAgentEnvironment.generateTaskPrompt, {
-    reportFailure: false,
-  });
-
-  const schedule = () => {
-    if (scheduleKind === "none") return null;
-    if (scheduleKind === "once") {
-      if (!runAt) throw new Error("Choose when this task should run.");
-      return { kind: "once" as const, runAt: new Date(runAt).toISOString() };
-    }
-    const parsed = Math.floor(Number(everyMinutes));
-    if (!Number.isFinite(parsed) || parsed < 1 || parsed > 525_600) {
-      throw new Error("The repeat interval must be between one minute and one year.");
-    }
-    return { kind: "interval" as const, everyMinutes: parsed };
-  };
-
-  const generate = async () => {
-    if (!request.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    const result = await generateTaskPrompt({
-      environmentId: props.environmentId,
-      input: { vmAgentId: props.agent.vmAgentId, request: request.trim() },
-    });
-    if (result._tag === "Success") {
-      setTitle(result.value.title);
-      setPrompt(result.value.prompt);
-      setCriteria(result.value.completionCriteria.join("\n"));
-      setNotificationPolicy(result.value.notificationPolicy);
-      if (result.value.schedule?.kind === "once") {
-        setScheduleKind("once");
-        const date = new Date(result.value.schedule.runAt);
-        setRunAt(
-          new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16),
-        );
-      } else if (result.value.schedule?.kind === "interval") {
-        setScheduleKind("interval");
-        setEveryMinutes(String(result.value.schedule.everyMinutes));
-      } else {
-        setScheduleKind("none");
-      }
-    } else {
-      setError(commandError(result.cause, "Could not generate the task prompt."));
-    }
-    setBusy(false);
-  };
-
-  const create = async () => {
-    if (!title.trim() || !prompt.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await createTask({
-        environmentId: props.environmentId,
-        input: {
-          vmAgentId: props.agent.vmAgentId,
-          title: title.trim(),
-          prompt: prompt.trim(),
-          completionCriteria: criteria
-            .split("\n")
-            .map((value) => value.trim())
-            .filter(Boolean),
-          status: "active",
-          schedule: schedule(),
-          notificationPolicy,
-        },
-      });
-      if (result._tag === "Failure") {
-        setError(commandError(result.cause, "Could not create the task."));
-      } else {
-        setRequest("");
-        setTitle("");
-        setPrompt("");
-        setCriteria("");
-        setScheduleKind("none");
-        setNotificationPolicy("always");
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the task.");
-    }
-    setBusy(false);
-  };
 
   const mutate = async (
     operation: "approve" | "pause" | "resume" | "run" | "delete",
@@ -176,99 +80,18 @@ export function AgentTasksPanel(props: {
     <WorkspacePanel
       title="Tasks"
       description="Durable work runs in this agent's own computer and conversation."
-    >
-      <section className="rounded-xl border bg-muted/20 p-3">
-        <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-          <SparklesIcon className="size-3.5" /> Build with AI
-        </div>
-        <div className="flex flex-col gap-2 min-[420px]:flex-row">
-          <Input
-            value={request}
-            placeholder="Every morning, check the dashboard and summarize changes…"
-            onChange={(event) => setRequest(event.target.value)}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!request.trim() || busy}
-            onClick={() => void generate()}
-          >
-            {busy ? "Working…" : "Generate"}
-          </Button>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-2 rounded-xl border p-3">
-        <Input
-          value={title}
-          maxLength={200}
-          placeholder="Task title"
-          onChange={(event) => setTitle(event.target.value)}
-        />
-        <Textarea
-          value={prompt}
-          rows={5}
-          maxLength={50_000}
-          placeholder="The complete prompt this agent will receive"
-          onChange={(event) => setPrompt(event.target.value)}
-        />
-        <Textarea
-          value={criteria}
-          rows={2}
-          placeholder="Completion criteria, one per line"
-          onChange={(event) => setCriteria(event.target.value)}
-        />
-        <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-          <select
-            className="h-9 rounded-md border bg-background px-3 text-sm"
-            value={scheduleKind}
-            onChange={(event) => setScheduleKind(event.target.value as ScheduleKind)}
-          >
-            <option value="none">No schedule</option>
-            <option value="once">Run once</option>
-            <option value="interval">Repeat</option>
-          </select>
-          {scheduleKind === "once" ? (
-            <Input
-              type="datetime-local"
-              value={runAt}
-              onChange={(event) => setRunAt(event.target.value)}
-            />
-          ) : scheduleKind === "interval" ? (
-            <Input
-              type="number"
-              min={1}
-              max={525_600}
-              value={everyMinutes}
-              aria-label="Repeat interval in minutes"
-              onChange={(event) => setEveryMinutes(event.target.value)}
-            />
-          ) : (
-            <div className="flex items-center px-2 text-xs text-muted-foreground">
-              Save it now and run manually later.
-            </div>
-          )}
-        </div>
-        <select
-          className="h-9 rounded-md border bg-background px-3 text-sm"
-          value={notificationPolicy}
-          aria-label="Task notification policy"
-          onChange={(event) =>
-            setNotificationPolicy(event.target.value as VmAgentTaskNotificationPolicy)
-          }
-        >
-          <option value="always">Notify on completion or failure</option>
-          <option value="failure">Notify only on failure</option>
-          <option value="never">Do not notify</option>
-        </select>
-        <Button
-          type="button"
-          disabled={!title.trim() || !prompt.trim() || busy}
-          onClick={() => void create()}
-        >
-          Create task
+      action={
+        <Button type="button" size="sm" onClick={() => setCreating(true)}>
+          <PlusIcon /> New task
         </Button>
-      </section>
+      }
+    >
+      <CreateTaskDialog
+        open={creating}
+        onOpenChange={setCreating}
+        environmentId={props.environmentId}
+        agent={props.agent}
+      />
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
@@ -341,7 +164,7 @@ export function AgentTasksPanel(props: {
           );
         })}
         {props.workspace?.tasks.length === 0 ? (
-          <Empty text="No tasks yet. Describe one above or ask the agent to create it." />
+          <Empty text="No tasks yet. Create one, or ask the agent to schedule its own." />
         ) : null}
       </div>
     </WorkspacePanel>
@@ -671,14 +494,18 @@ export function useAgentSystemNotifications(
 function WorkspacePanel(props: {
   readonly title: string;
   readonly description: string;
+  readonly action?: ReactNode;
   readonly children: ReactNode;
 }) {
   return (
     <div className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
       <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4">
-        <div>
-          <h2 className="text-base font-semibold">{props.title}</h2>
-          <p className="text-xs text-muted-foreground">{props.description}</p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold">{props.title}</h2>
+            <p className="text-xs text-muted-foreground">{props.description}</p>
+          </div>
+          {props.action ? <div className="shrink-0">{props.action}</div> : null}
         </div>
         {props.children}
       </div>
