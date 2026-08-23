@@ -6,10 +6,10 @@ import type {
   VmAgentCollaborationAgentSummary,
   VmAgentStatus,
 } from "@t3tools/contracts";
-import { BotIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
 import { useUiStateStore } from "../../uiStateStore";
@@ -18,7 +18,11 @@ import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { SidebarMenuButton } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useOnScreenKeyboard } from "../../hooks/useOnScreenKeyboard";
+import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
+import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
 import { CreateAgentDialog } from "./CreateAgentDialog";
+import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
   agentRegistryNoticeCopy,
   environmentIdFromUnknown,
@@ -126,6 +130,125 @@ export function AgentStackSidebarEntry() {
   );
 }
 
+/**
+ * One agent in the sidebar, with the two ways to delete it.
+ *
+ * A pointer device gets an X beside the name, revealed on hover like every
+ * other row action. Touch gets a slide to the right, because there is no hover
+ * to reveal anything and a permanent X next to a navigation target is a
+ * mis-tap waiting to happen. Both only *open* the confirmation — neither
+ * deletes on its own.
+ */
+function AgentSidebarRow(props: {
+  readonly agent: VmAgent;
+  readonly activeWork: number;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly isActive: boolean;
+  readonly onOpen: () => void;
+  readonly onRequestDelete: () => void;
+}) {
+  const { agent, onRequestDelete } = props;
+  const usesTouch = useOnScreenKeyboard();
+  const resolveAction = useCallback(
+    (direction: SidebarSwipeDirection) => (direction === "right" ? "delete" : null),
+    [],
+  );
+  const swipe = useSidebarRowSwipe<"delete">({
+    enabled: usesTouch,
+    resolveAction,
+    onCommit: onRequestDelete,
+  });
+  const { consumeSuppressedClick } = swipe;
+  const handleOpen = useCallback(() => {
+    // A row that slid must not also open the agent it slid.
+    if (consumeSuppressedClick()) return;
+    props.onOpen();
+  }, [consumeSuppressedClick, props]);
+
+  return (
+    <div className="relative overflow-hidden">
+      {swipe.state.offset !== 0 ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-1.5 rounded-md bg-destructive/15 px-3 text-xs font-medium text-destructive"
+          style={{
+            width: `${Math.abs(swipe.state.offset)}px`,
+            opacity: swipe.state.armed ? 1 : 0.45 + swipe.state.progress * 0.4,
+          }}
+        >
+          <Trash2Icon className="size-3.5 shrink-0" />
+          <span className="truncate">Delete</span>
+        </div>
+      ) : null}
+      <SidebarMenuButton
+        type="button"
+        isActive={props.isActive}
+        onClick={handleOpen}
+        aria-label={`Open ${agent.name} on ${props.environmentLabel}`}
+        data-testid="agent-sidebar-entry"
+        className={cn(
+          "group/agent-row",
+          usesTouch && "touch-pan-y",
+          !swipe.state.dragging && swipe.state.offset === 0 && "transition-transform duration-200",
+        )}
+        style={
+          swipe.state.offset === 0
+            ? undefined
+            : { transform: `translateX(${swipe.state.offset}px)` }
+        }
+        {...swipe.handlers}
+      >
+        <BotIcon />
+        <span className="flex-1 truncate text-left">{agent.name}</span>
+        {props.activeWork > 0 ? (
+          <span
+            className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-primary/12 px-1.5 text-[10px] font-medium tabular-nums text-primary"
+            aria-label={`${props.activeWork} active ${props.activeWork === 1 ? "delegation" : "delegations"}`}
+            title={`${props.activeWork} active ${props.activeWork === 1 ? "delegation" : "delegations"}`}
+          >
+            {props.activeWork}
+          </span>
+        ) : null}
+        <span
+          aria-hidden="true"
+          title={agent.status}
+          className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[agent.status])}
+        />
+        {/* Undrawn on touch rather than unmounted: sliding is a gesture
+            assistive tech cannot perform, so the control has to stay
+            reachable even where it is not painted. */}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={`Delete ${agent.name}`}
+          title={`Delete ${agent.name}`}
+          className={cn(
+            "-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 transition-opacity hover:bg-destructive/10 hover:text-destructive",
+            usesTouch
+              ? "sr-only"
+              : "opacity-0 focus-visible:opacity-100 group-hover/agent-row:opacity-100",
+          )}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRequestDelete();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            event.stopPropagation();
+            onRequestDelete();
+          }}
+        >
+          <XIcon className="size-3.5" />
+        </span>
+      </SidebarMenuButton>
+    </div>
+  );
+}
+
 function NewAgentButton(props: { readonly onClick: () => void }) {
   return (
     <Tooltip>
@@ -166,6 +289,9 @@ function AgentEnvironmentSection(props: {
     () => vmAgentEnvironment.collaboration({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
   );
+  // Held as the agent rather than an id so the dialog can name it even if the
+  // row disappears from the list mid-confirmation.
+  const [pendingDelete, setPendingDelete] = useState<VmAgent | null>(null);
   const activeAgentId = useParams({
     strict: false,
     select: (params) => (params as { agentId?: string }).agentId ?? null,
@@ -219,13 +345,16 @@ function AgentEnvironmentSection(props: {
             agent.vmAgentId,
           );
           return (
-            <SidebarMenuButton
+            <AgentSidebarRow
               key={agent.vmAgentId}
-              type="button"
+              agent={agent}
+              activeWork={activeWork}
+              environmentId={props.environmentId}
+              environmentLabel={props.environmentLabel}
               isActive={
                 agent.vmAgentId === activeAgentId && props.environmentId === activeEnvironmentId
               }
-              onClick={() =>
+              onOpen={() =>
                 void router.navigate({
                   to: "/agents/$environmentId/$agentId",
                   params: {
@@ -234,26 +363,8 @@ function AgentEnvironmentSection(props: {
                   },
                 })
               }
-              aria-label={`Open ${agent.name} on ${props.environmentLabel}`}
-              data-testid="agent-sidebar-entry"
-            >
-              <BotIcon />
-              <span className="flex-1 truncate text-left">{agent.name}</span>
-              {activeWork > 0 ? (
-                <span
-                  className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-primary/12 px-1.5 text-[10px] font-medium tabular-nums text-primary"
-                  aria-label={`${activeWork} active ${activeWork === 1 ? "delegation" : "delegations"}`}
-                  title={`${activeWork} active ${activeWork === 1 ? "delegation" : "delegations"}`}
-                >
-                  {activeWork}
-                </span>
-              ) : null}
-              <span
-                aria-hidden="true"
-                title={agent.status}
-                className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[agent.status])}
-              />
-            </SidebarMenuButton>
+              onRequestDelete={() => setPendingDelete(agent)}
+            />
           );
         })
       )}
@@ -269,6 +380,18 @@ function AgentEnvironmentSection(props: {
         onOpenChange={props.onCreateOpenChange}
         environmentId={props.environmentId}
       />
+
+      {pendingDelete ? (
+        <DeleteAgentDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setPendingDelete(null);
+          }}
+          environmentId={props.environmentId}
+          agentId={pendingDelete.vmAgentId}
+          agentName={pendingDelete.name}
+        />
+      ) : null}
     </div>
   );
 }
