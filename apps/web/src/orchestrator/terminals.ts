@@ -110,7 +110,10 @@ export function resolveTerminalReference(
 
   const running = candidates.filter((terminal) => terminal.status === "running");
   if (running.length === 1) {
-    return { ok: true, terminal: running[0]!, confident: true };
+    // A guess, not a match: several panes exist and this picks the busy one.
+    // Right often enough to be the default, wrong often enough that anything
+    // destructive gated on confidence should ask first.
+    return { ok: true, terminal: running[0]!, confident: false };
   }
   if (candidates.length === 0) {
     return { ok: false, kind: "none", heard: query, candidates: [] };

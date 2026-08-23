@@ -274,8 +274,14 @@ export interface VoiceSessionOptions {
 export interface VoiceSession {
   start(): Promise<void>;
   stop(): void;
-  /** Makes the orchestrator speak up unprompted. No-op unless connected. */
-  announce(text: string): void;
+  /**
+   * Makes the orchestrator speak up unprompted.
+   *
+   * Returns whether the text was accepted — false while not connected, so a
+   * caller with something the user must hear can queue it for the next
+   * session instead of treating a silent drop as delivery.
+   */
+  announce(text: string): boolean;
   /**
    * Closes the session once the reply in flight has been spoken.
    *
@@ -2136,6 +2142,14 @@ export function createVoiceSession(
       audioContext = null;
     }
     callbacks.onLevels?.({ mic: 0, assistant: 0 });
+    // The "working" report is stateful on the consumer side: stopping mid tool
+    // call left the last report as true, and the next session's closure starts
+    // its own dedupe at false — so nobody would ever say false again, and the
+    // orb went on telling the user they could not speak.
+    if (lastWorkingReported) {
+      lastWorkingReported = false;
+      callbacks.onWorkingChange?.(false);
+    }
 
     if (audioElement) {
       audioElement.srcObject = null;
@@ -2179,11 +2193,15 @@ export function createVoiceSession(
       if (isHalfDuplex() && configured) setMicrophoneEnabled(true);
       if (state !== "error") setState("listening");
     },
-    announce: (text: string) => {
-      if (state !== "listening" && state !== "speaking") return;
+    // Returns whether the text was actually accepted. Callers used to treat
+    // this as fire-and-forget, then mark the announcement delivered — and the
+    // silent no-op below meant "delivered" while the user heard nothing.
+    announce: (text: string): boolean => {
+      if (state !== "listening" && state !== "speaking") return false;
       // Through the same gate as tool replies: announcing over an in-flight
       // response is the other way duplicate speech got queued up.
       requestAnnouncement(text);
+      return true;
     },
     get state() {
       return state;

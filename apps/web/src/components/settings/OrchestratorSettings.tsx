@@ -112,16 +112,10 @@ const SPOKEN_EVENT_ROWS = [
     title: "Thread failed",
     description: "Speak up when a turn ends in an error.",
   },
-  {
-    key: "taskCompleted",
-    title: "Background task completed",
-    description: "Speak up when a long-running background task finishes. Noisier than the rest.",
-  },
-  {
-    key: "autoResumeStuck",
-    title: "Auto-resume stuck",
-    description: "Speak up when an agent auto-resume has been pending unusually long.",
-  },
+  // `taskCompleted` and `autoResumeStuck` exist in the event contract but
+  // nothing produces them yet — diffWorlds emits only the four kinds above. A
+  // switch for a sound that can never play reads as the orchestrator missing
+  // events, so they stay out of the UI until a producer exists.
 ] as const;
 
 /**

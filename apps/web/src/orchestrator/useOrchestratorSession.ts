@@ -464,6 +464,20 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   // just below, once settings are in scope.
   const wakeOnAwaitedResultRef = useRef(true);
   const orchestratorEnabledRef = useRef(false);
+  /**
+   * The pending reconnect, so turning voice off can actually turn it off.
+   *
+   * During the backoff `sessionRef.current` is null — that is what the backoff
+   * means — so every "is a session running" check answers no while a new one is
+   * seconds from being created. The handle is the only way to reach in and
+   * stop it.
+   */
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current === null) return;
+    clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = null;
+  }, []);
   // `start` is declared below that effect and depends on far more than it does;
   // going through a ref keeps the diff from re-running on every render of it.
   const startRef = useRef<(() => void) | null>(null);
@@ -672,6 +686,15 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
        * instead of the work.
        */
       interactionMode?: string;
+      /**
+       * False for turns the orchestrator sends for its own bookkeeping — a
+       * settings marker, not work the user dispatched. Those must not become
+       * promises to report back, or the microphone reopens later to narrate a
+       * machine prompt as the user's own request.
+       */
+      awaited?: boolean;
+      /** What to say the user asked for, when the message itself is machine text. */
+      requestLabel?: string;
     }) => {
       // Read through the ref, not the closed-over render value: this callback
       // outlives the render it was created in, and a send is often the last
@@ -712,13 +735,21 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
 
       // The orchestrator has just handed work off, which is exactly when it
       // tells the user it will report back. Record the promise so a completion
-      // that lands after the silence timeout can still be delivered.
-      awaitedRef.current = rememberAwaitedWork(awaitedRef.current, {
-        threadKey: `${input.environmentId}:${input.threadId}`,
-        threadTitle: shell.title,
-        request: input.message,
-        askedAt: Date.now(),
-      });
+      // that lands after the silence timeout can still be delivered — unless
+      // the caller said this turn is bookkeeping. Recording those too meant
+      // the microphone could reopen later to narrate a settings marker as
+      // "the user asked you to: [machine prompt]".
+      if (input.awaited !== false) {
+        awaitedRef.current = rememberAwaitedWork(awaitedRef.current, {
+          threadKey: `${input.environmentId}:${input.threadId}`,
+          threadTitle: shell.title,
+          // The label, not the raw message: for a plan approval the message is
+          // an entire plan markdown document, and the wake line quotes this
+          // back as what the user asked for.
+          request: input.requestLabel ?? input.message,
+          askedAt: Date.now(),
+        });
+      }
     },
     [startThreadTurn],
   );
@@ -950,6 +981,9 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
               environmentId: input.thread.environmentId,
               threadId: input.thread.threadId,
               message: buildSettingsUpdatePrompt(description),
+              // A marker turn adopting the settings, not work anyone asked
+              // for; finishing it is not worth reopening the microphone.
+              awaited: false,
               // Explicitly, not from the shell. `updateThreadMetadata` above is an
               // RPC, and the shell only catches up when the server broadcasts back
               // — so at this instant it still names the old model. Sending that
@@ -1637,9 +1671,15 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     // Deliberate stop: a later drop must not be chased.
     sessionWantedRef.current = false;
     reconnectAttemptsRef.current = 0;
+    clearReconnectTimer();
     startGenerationRef.current += 1;
     sessionRef.current?.stop();
     sessionRef.current = null;
+    // Stopping mid tool call would otherwise leave "working" latched: the
+    // session that was going to report false is gone, and the next session's
+    // report dedupe starts at false, so nobody ever says it again.
+    bubbleWorkingRef.current = false;
+    setWorking(false);
     // Stopping by hand is a decision, not a lull. Anything the orchestrator was
     // waiting on stays recorded, but nothing may reopen the microphone until
     // the user starts it again themselves.
@@ -1648,7 +1688,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     setState("idle");
     setActiveSession(null);
     publishBubbleStatus("idle");
-  }, [publishBubbleStatus]);
+  }, [clearReconnectTimer, publishBubbleStatus]);
 
   /**
    * The spoken "that's all" / "be quiet". Hands-free is the whole point of the
@@ -1849,8 +1889,13 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             // A dropped WebRTC session cannot be resumed — the token is spent
             // and the transport is gone — so this mints a new one and carries
             // on, which is nearly invisible for a brief drop.
-            setTimeout(() => {
-              if (!sessionWantedRef.current || sessionRef.current !== null) return;
+            reconnectTimerRef.current = setTimeout(() => {
+              reconnectTimerRef.current = null;
+              // Enabled is checked here and not only at the stop() chokepoint
+              // because disabling during the backoff sees no session to stop:
+              // this timer IS the session at that moment.
+              if (!sessionWantedRef.current || !orchestratorEnabledRef.current) return;
+              if (sessionRef.current !== null) return;
               startRef.current?.();
             }, decision.delayMs);
           },
@@ -1996,27 +2041,51 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     const session = sessionRef.current;
     for (const event of diffWorlds(previous, world, orchestrator.spokenEvents)) {
       if (session !== null) {
-        // Every event becomes speech, so every event is worth a log line. Without
-        // this an unexpected utterance could not be traced back to what caused
-        // it — the tool log showed the calls the orchestrator made and nothing
-        // about the events that made it talk on its own.
-        recordToolCall({
-          name: `event:${event.kind}`,
-          reason: event.title,
-          outcome: "ok",
-          detail: `${event.title} — announced`,
-          durationMs: 0,
-          at: new Date().toISOString(),
-        });
         // A thread ending is the event worth real detail; the rest are one-liners
         // whose whole content is already in the transition itself.
         if (event.kind === "thread-finished" || event.kind === "thread-failed") {
-          void announceCompletion(event, (text) => session.announce(text));
+          const threadKey = event.threadKey;
+          recordToolCall({
+            name: `event:${event.kind}`,
+            reason: event.title,
+            outcome: "ok",
+            detail: `${event.title} — summarizing to announce`,
+            durationMs: 0,
+            at: new Date().toISOString(),
+          });
+          void announceCompletion(event, (text) => {
+            // The summary fetch takes seconds, and the session can die inside
+            // them — at which point announce() refuses the text. Marking it
+            // delivered anyway was how "I'll let you know when it's done"
+            // ended in silence. Hand it to whichever session next reaches
+            // listening instead; a deliberate stop clears that queue, so
+            // stopped-by-hand still means quiet until they start again.
+            const delivered = sessionRef.current === session && session.announce(text);
+            if (!delivered) pendingWakeLinesRef.current.push(text);
+          });
+          // The result is on its way to the user one way or the other, so the
+          // promise is kept.
+          awaitedRef.current = forgetAwaitedWork(awaitedRef.current, threadKey);
         } else {
-          session.announce(describeEventFallback(event));
+          const delivered = session.announce(describeEventFallback(event));
+          // Every event becomes speech, so every event is worth a log line —
+          // an honest one. "Announced" for a session still connecting was a
+          // lie the log told about exactly the deliveries that failed.
+          recordToolCall({
+            name: `event:${event.kind}`,
+            reason: event.title,
+            outcome: delivered ? "ok" : "error",
+            detail: delivered
+              ? `${event.title} — announced`
+              : `${event.title} — dropped, session not connected`,
+            durationMs: 0,
+            at: new Date().toISOString(),
+          });
+          // Deliberately NOT forgetting awaited work here: approval-needed and
+          // input-needed are progress on the work, not its result. Forgetting
+          // on them meant a thread that paused for approval could never wake
+          // the session when it actually finished.
         }
-        // Delivered live, so nothing is owed on it any more.
-        awaitedRef.current = forgetAwaitedWork(awaitedRef.current, event.threadKey);
         continue;
       }
 
@@ -2060,7 +2129,14 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
       // with nothing queued would sit there silently, which looks identical to
       // the bug this replaces.
       void announceCompletion(event, (completion) => {
-        pendingWakeLinesRef.current.push(buildWakeAnnouncement({ work, completion }));
+        const line = buildWakeAnnouncement({ work, completion });
+        // The user may have started voice themselves during the summary fetch.
+        // A line queued behind an already-listening session waits for a
+        // "listening" transition that never comes, then replays out of context
+        // on some later reconnect — so deliver into the live session first.
+        const live = sessionRef.current;
+        if (live !== null && live.announce(line)) return;
+        pendingWakeLinesRef.current.push(line);
         startRef.current?.();
       });
     }
@@ -2069,12 +2145,25 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   // Tear the session down when the feature is switched off or the component
   // unmounts, so the microphone never outlives its owner.
   useEffect(() => {
-    if (!orchestrator.enabled && sessionRef.current !== null) stop();
+    // `sessionWantedRef` too: during a reconnect backoff there is no session,
+    // but there is an intent to make one, and switching the feature off must
+    // cancel that intent — not watch a timer reopen the microphone in a few
+    // seconds with the setting already off.
+    if (!orchestrator.enabled && (sessionRef.current !== null || sessionWantedRef.current)) {
+      stop();
+    }
   }, [orchestrator.enabled, stop]);
 
   useEffect(
     () => () => {
       startGenerationRef.current += 1;
+      // Intent dies with the owner: a reconnect timer surviving unmount would
+      // open a session no UI can see or stop.
+      sessionWantedRef.current = false;
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       sessionRef.current?.stop();
     },
     [],

@@ -695,6 +695,40 @@ describe("terminals", () => {
     });
   });
 
+  it("asks before typing into a terminal reached through an unconfident thread match", async () => {
+    // "Type yes into Rovler" — nothing is titled Rovler, so the thread
+    // resolves through the fuzzy tier, which is deliberately not confident.
+    // The terminal inside that guessed thread resolves cleanly, and its
+    // confidence used to be the only one the gate ever saw: the keystrokes
+    // went into whichever thread fuzzy-matched first, and on a live shell a
+    // submitted line executes.
+    const context = makeContext({
+      listTerminals: vi.fn(async () => [claude]),
+    });
+    const result = (await executeOrchestratorTool(context, {
+      name: "write_to_terminal",
+      args: { thread: "Rovler", terminal: "claude", text: "yes" },
+    })) as { written: boolean; confirmationRequired?: boolean };
+    expect(result.written).toBe(false);
+    expect(result.confirmationRequired).toBe(true);
+    expect(context.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("rejects a write with no text instead of pressing Enter in a live shell", async () => {
+    // The old "" default plus submit-by-default encoded a bare newline — which
+    // runs whatever command is sitting at the prompt.
+    const context = makeContext({
+      listTerminals: vi.fn(async () => [claude]),
+    });
+    await expect(
+      executeOrchestratorTool(context, {
+        name: "write_to_terminal",
+        args: { terminal: "claude" },
+      }),
+    ).rejects.toThrow(/text/i);
+    expect(context.writeTerminal).not.toHaveBeenCalled();
+  });
+
   it("types into a terminal and submits by default", async () => {
     const context = makeContext({
       listTerminals: vi.fn(async () => [claude]),
@@ -1824,9 +1858,13 @@ describe("an immediate-only change never stops a turn", () => {
     const result = (await executeOrchestratorTool(context, {
       name: "update_thread_settings",
       args: { thread: "Rover", accessMode: "approval-required" },
-    })) as { applied: boolean; activeNow: boolean };
+    })) as { applied: boolean; activeNow: boolean; say: string };
     expect(result.applied).toBe(true);
-    expect(result.activeNow).toBe(false);
+    // No turn is forced — but the change is still live, because access mode
+    // dispatches straight to the session. Reporting activeNow: false here made
+    // the orchestrator tell the user their lockdown had not landed when it had.
+    expect(result.activeNow).toBe(true);
+    expect(result.say).toContain("applied");
     expect(context.applyThreadSettings).toHaveBeenCalledWith(
       expect.objectContaining({ applyNow: false }),
     );
