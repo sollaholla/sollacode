@@ -312,6 +312,10 @@ export interface OrchestratorToolContext {
     message: string;
     /** Overrides the thread's own mode for this turn; see plan approval. */
     interactionMode?: string;
+    /** False for bookkeeping turns that must not promise a spoken report. */
+    awaited?: boolean;
+    /** Spoken stand-in for the message when the message is machine text. */
+    requestLabel?: string;
   }) => Promise<void>;
   readonly interruptThread: (input: { environmentId: string; threadId: string }) => Promise<void>;
   readonly renameThread: (input: {
@@ -721,10 +725,13 @@ async function resolveTerminalTarget(
     typeof args.threadId === "string" ||
     typeof args.title === "string";
   let thread: ThreadSnapshot | undefined;
+  // Starts true because an unnamed thread is not a guess about the thread.
+  let threadConfident = true;
   if (namedThread) {
     const target = resolveTarget(context, args, action);
     if (!target.ok) return target;
     thread = target.thread;
+    threadConfident = target.confident;
   }
 
   const terminals = await context.listTerminals();
@@ -736,7 +743,12 @@ async function resolveTerminalTarget(
   });
 
   if (resolution.ok) {
-    return resolution;
+    // Both resolutions were guesses or neither was. Dropping the thread's
+    // confidence here was how "type yes into Vera" could execute in whichever
+    // "Vera …" thread fuzzy-matched first, with the confirm gate never asked:
+    // the terminal within the (wrong) thread resolved unambiguously, and that
+    // was the only confidence the caller ever saw.
+    return { ...resolution, confident: resolution.confident && threadConfident };
   }
 
   if (resolution.kind === "ambiguous") {
@@ -1325,6 +1337,9 @@ async function runTool(
         environmentId: thread.environmentId,
         threadId: thread.threadId,
         message: buildPlanImplementationPrompt(actionable.planMarkdown),
+        // The wake announcement quotes the request back as what the user asked
+        // for; the raw message here is an entire plan document.
+        requestLabel: "implement the approved plan",
         interactionMode: "default",
       });
 
@@ -1447,7 +1462,15 @@ async function runTool(
       const target = await resolveTerminalTarget(context, call.args, "type into");
       if (!target.ok) return target.result;
       const terminal = target.terminal;
-      const text = typeof call.args.text === "string" ? call.args.text : "";
+      // Missing text is a malformed call, not a request to press Enter — the
+      // old "" default plus submit-by-default sent a bare newline to a live
+      // shell, which runs whatever is sitting at the prompt. An explicit empty
+      // string with submit on stays allowed: that is the model deliberately
+      // pressing Enter.
+      if (typeof call.args.text !== "string") {
+        throw new OrchestratorToolError("What should be typed? Give the text.");
+      }
+      const text = call.args.text;
       const submit = call.args.submit !== false;
       const payload = encodeTerminalWrite(text, submit);
       if (payload.length === 0) {
@@ -1887,6 +1910,14 @@ async function runTool(
       // progress to deliver something that had already arrived.
       const needsTurnToApply = plan.changes.some((change) => change.effectiveOn === "next-turn");
       const applyNow = needsTurnToApply && call.args.applyNow !== false;
+      // An access-mode-only change dispatches straight to the live session, so
+      // it is active the moment applyThreadSettings returns even though no
+      // turn was forced. Reporting it as "takes effect next turn" told the
+      // user their lockdown had not landed when it already had.
+      const activeNow =
+        applyNow ||
+        (plan.changes.length > 0 &&
+          plan.changes.every((change) => change.effectiveOn === "immediately"));
 
       // The user asking for the change *is* the authorisation to make it. The
       // only thing left worth a question is a consequence they did not ask for:
@@ -1949,14 +1980,14 @@ async function runTool(
           thread: thread.title,
           changes: plan.changes,
           warnings: plan.warnings,
-          // False would mean the model is merely queued against the thread.
-          activeNow: applyNow,
-          say: applyNow
+          // False would mean the change is merely queued against the thread.
+          activeNow,
+          say: activeNow
             ? `Say briefly what changed on "${thread.title}" and that it is applied.`
             : `Say briefly what changed on "${thread.title}", and that it takes effect when the thread next runs.`,
         },
         outcome: "ok",
-        detail: `${thread.title}: ${describeChanges(plan.changes)}${applyNow ? " (applied now)" : ""}`,
+        detail: `${thread.title}: ${describeChanges(plan.changes)}${activeNow ? " (applied now)" : ""}`,
       };
     }
 
