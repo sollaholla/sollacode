@@ -294,13 +294,25 @@ export function DesktopPermissionsView({
     <div className={cn("w-full", onboarding && "mx-auto max-w-3xl")}>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <div className="mb-3 flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <ShieldCheckIcon className="size-5" />
-          </div>
-          <h1 className="text-2xl font-semibold tracking-[-0.035em] text-foreground">
-            {onboarding ? "Set permissions before agents get to work" : "macOS permissions"}
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          {/* The hero badge and title are onboarding chrome. In settings the
+              SettingsSection header already shows a shield and "Permissions",
+              so repeating them here stacked two badges and two titles. */}
+          {onboarding ? (
+            <>
+              <div className="mb-3 flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <ShieldCheckIcon className="size-5" />
+              </div>
+              <h1 className="text-2xl font-semibold tracking-[-0.035em] text-foreground">
+                Set permissions before agents get to work
+              </h1>
+            </>
+          ) : null}
+          <p
+            className={cn(
+              "max-w-2xl text-sm leading-relaxed text-muted-foreground",
+              onboarding && "mt-2",
+            )}
+          >
             Solla Code checks status without prompting. macOS consent appears only when you choose
             Enable, and you can revisit every grant here later.
           </p>
