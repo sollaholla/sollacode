@@ -210,39 +210,57 @@ function AgentSidebarRow(props: {
             {props.activeWork}
           </span>
         ) : null}
+        {/* One slot for both: the dot rests at the row's edge, and hovering or
+            focusing the row swaps the delete X into the same spot — the same
+            trade the right-panel tabs make. Keeping the X's box reserved but
+            transparent left the dot sitting beside a hole. */}
         <span
-          aria-hidden="true"
-          title={agent.status}
-          className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[agent.status])}
-        />
-        {/* Undrawn on touch rather than unmounted: sliding is a gesture
-            assistive tech cannot perform, so the control has to stay
-            reachable even where it is not painted. */}
-        <span
-          role="button"
-          tabIndex={0}
-          aria-label={`Delete ${agent.name}`}
-          title={`Delete ${agent.name}`}
           className={cn(
-            "-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 transition-opacity hover:bg-destructive/10 hover:text-destructive",
-            usesTouch
-              ? "sr-only"
-              : "opacity-0 focus-visible:opacity-100 group-hover/agent-row:opacity-100",
+            "relative flex shrink-0 items-center justify-center",
+            !usesTouch && "-mr-1 size-5",
           )}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onRequestDelete();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            event.stopPropagation();
-            onRequestDelete();
-          }}
         >
-          <XIcon className="size-3.5" />
+          <span
+            aria-hidden="true"
+            title={agent.status}
+            className={cn(
+              "size-1.5 rounded-full",
+              STATUS_DOT[agent.status],
+              !usesTouch && "group-hover/agent-row:hidden group-focus-within/agent-row:hidden",
+            )}
+          />
+          {/* Undrawn on touch rather than unmounted: sliding is a gesture
+              assistive tech cannot perform, so the control has to stay
+              reachable even where it is not painted. On pointer devices,
+              focus-within reveals it because a hidden element cannot be
+              tabbed to — focusing the row is what materialises the X, and the
+              next tab stop is the X itself. */}
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label={`Delete ${agent.name}`}
+            title={`Delete ${agent.name}`}
+            className={cn(
+              "cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive",
+              usesTouch
+                ? "sr-only"
+                : "absolute inset-0 hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
+            )}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRequestDelete();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              onRequestDelete();
+            }}
+          >
+            <XIcon className="size-3.5" />
+          </span>
         </span>
       </SidebarMenuButton>
     </div>

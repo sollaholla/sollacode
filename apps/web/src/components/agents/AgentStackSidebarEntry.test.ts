@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import { VmAgentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -13,5 +17,22 @@ describe("activeDelegationsForAgent", () => {
     expect(activeDelegationsForAgent(agents, "scout")).toBe(2);
     expect(activeDelegationsForAgent(agents, "builder")).toBe(1);
     expect(activeDelegationsForAgent(agents, "missing")).toBe(0);
+  });
+});
+
+describe("agent row delete affordance", () => {
+  it("collapses the X out of layout instead of reserving a transparent slot", () => {
+    // Reserved-but-invisible left the status dot sitting beside a hole at the
+    // row's edge. The X and the dot share one slot: hidden swaps for hover
+    // and for focus-within, which is also what makes the X tabbable at all.
+    const source = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "AgentStackSidebarEntry.tsx"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
+    );
+    expect(source).toContain("group-hover/agent-row:hidden group-focus-within/agent-row:hidden");
+    expect(source).not.toContain("group-hover/agent-row:opacity-100");
   });
 });
