@@ -1426,7 +1426,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-stop-loading", sync);
         wc.on("did-fail-load", failed as never);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
-        wc.setWindowOpenHandler(({ url }) => {
+        wc.setWindowOpenHandler(({ url, disposition }) => {
+          // Scripted popups — OAuth windows like "Continue with Google" — must
+          // become real child windows: they share the guest's session (the
+          // thread's partition), complete sign-in, then message the opener and
+          // close themselves. Navigating the tab to the popup URL instead
+          // destroyed the opener and with it the whole sign-in flow.
+          if (disposition === "new-window") {
+            return {
+              action: "allow",
+              overrideBrowserWindowOptions: { autoHideMenuBar: true },
+            };
+          }
+          // Plain target=_blank links stay in the tab: the preview browser is
+          // a single-surface tab, not a window manager.
           runFork(
             attemptPromise({ operation: "openPreviewWindow", tabId, webContentsId: wc.id }, () =>
               wc.loadURL(url),
