@@ -6,12 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
-import {
-  UpdateVmAgentControlModeInput,
-  UpdateVmAgentRuntimeInput,
-  VmAgentStore,
-  type VmAgentStoreShape,
-} from "../Services/VmAgents.ts";
+import { VmAgentStore, type VmAgentStoreShape } from "../Services/VmAgents.ts";
 
 const ByIdRequest = Schema.Struct({ vmAgentId: VmAgentId });
 const ByHandleRequest = Schema.Struct({ handle: Schema.String });
@@ -166,28 +161,6 @@ const makeVmAgentStore = Effect.gen(function* () {
     `,
   });
 
-  const updateRuntimeRow = SqlSchema.void({
-    Request: UpdateVmAgentRuntimeInput,
-    execute: (input) => sql`
-      UPDATE vm_agents
-      SET status = ${input.status},
-          guest_ip = ${input.guestIp},
-          last_error = ${input.lastError},
-          updated_at = ${input.updatedAt}
-      WHERE vm_agent_id = ${input.vmAgentId}
-    `,
-  });
-
-  const updateControlModeRow = SqlSchema.void({
-    Request: UpdateVmAgentControlModeInput,
-    execute: (input) => sql`
-      UPDATE vm_agents
-      SET control_mode = ${input.controlMode},
-          updated_at = ${input.updatedAt}
-      WHERE vm_agent_id = ${input.vmAgentId}
-    `,
-  });
-
   const deleteRow = SqlSchema.void({
     Request: ByIdRequest,
     execute: ({ vmAgentId }) => sql`DELETE FROM vm_agents WHERE vm_agent_id = ${vmAgentId}`,
@@ -219,16 +192,6 @@ const makeVmAgentStore = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("VmAgentStore.getByThreadId:query")),
     );
 
-  const updateRuntime: VmAgentStoreShape["updateRuntime"] = (input) =>
-    updateRuntimeRow(input).pipe(
-      Effect.mapError(toPersistenceSqlError("VmAgentStore.updateRuntime:query")),
-    );
-
-  const updateControlMode: VmAgentStoreShape["updateControlMode"] = (input) =>
-    updateControlModeRow(input).pipe(
-      Effect.mapError(toPersistenceSqlError("VmAgentStore.updateControlMode:query")),
-    );
-
   const deleteById: VmAgentStoreShape["deleteById"] = (vmAgentId) =>
     deleteRow({ vmAgentId }).pipe(
       Effect.mapError(toPersistenceSqlError("VmAgentStore.deleteById:query")),
@@ -241,8 +204,6 @@ const makeVmAgentStore = Effect.gen(function* () {
     getByHandle,
     getByNameLower,
     getByThreadId,
-    updateRuntime,
-    updateControlMode,
     deleteById,
   } satisfies VmAgentStoreShape;
 });

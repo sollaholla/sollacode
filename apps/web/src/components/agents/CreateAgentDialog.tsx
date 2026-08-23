@@ -18,7 +18,8 @@ import { Input } from "~/components/ui/input";
 import { Textarea } from "~/components/ui/textarea";
 
 /**
- * Create a named agent. Each agent gets its own persistent local VM; the name
+ * Create a named agent. Each agent gets its own chat whose browser keeps
+ * persistent logins; the name
  * doubles as its `@mention` handle, so it must be unique.
  */
 export function CreateAgentDialog(props: {
@@ -76,8 +77,8 @@ export function CreateAgentDialog(props: {
         <DialogHeader>
           <DialogTitle>New agent</DialogTitle>
           <DialogDescription>
-            A named autonomous agent with its own persistent local VM. The name is also its @mention
-            handle.
+            A named autonomous agent with its own chat and persistent browser logins. The name is
+            also its @mention handle.
           </DialogDescription>
         </DialogHeader>
 

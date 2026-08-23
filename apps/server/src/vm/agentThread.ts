@@ -84,7 +84,7 @@ export const createAgentThread = (name: string) =>
  * standing instructions; the agent_builder tool description carries the rest.
  */
 export const AGENT_BUILDER_WELCOME = [
-  "This is the Agent Builder — describe an agent in one message and it gets designed and created end to end: a named worker with its own computer, dedicated chat, scheduled tasks, notification preferences, and a structured artifact when it needs a dashboard.",
+  "This is the Agent Builder — describe an agent in one message and it gets designed and created end to end: a named worker with a dedicated chat (whose browser keeps its own persistent logins), scheduled tasks, notification preferences, and a structured artifact when it needs a dashboard.",
   "",
   "Pick the model for the build with the model picker below, then say what the agent should do. Sensible defaults fill any gaps, everything created is live immediately and verified with get_agent, and this chat stays open for adjustments — renaming, rescheduling, or deleting agents included.",
 ].join("\n");

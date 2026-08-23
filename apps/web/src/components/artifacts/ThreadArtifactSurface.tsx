@@ -15,8 +15,10 @@ import {
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+
+import ChatMarkdown from "~/components/ChatMarkdown";
 
 import { useAssetUrl, useAssetUrlState } from "~/assets/assetUrls";
 import type { RightPanelSurface } from "~/rightPanelStore";
@@ -136,6 +138,9 @@ function ResolvedArtifactPreview(props: {
       </div>
     );
   }
+  if (props.kind === "markdown") {
+    return <MarkdownArtifactPreview key={props.revisionKey} url={content.url} />;
+  }
   return (
     <iframe
       key={props.revisionKey}
@@ -145,6 +150,64 @@ function ResolvedArtifactPreview(props: {
       referrerPolicy="no-referrer"
       className="min-h-0 min-w-0 flex-1 border-0 bg-background"
     />
+  );
+}
+
+type MarkdownArtifactState =
+  | { readonly _tag: "loading" }
+  | { readonly _tag: "ready"; readonly text: string }
+  | { readonly _tag: "failed" };
+
+/**
+ * Markdown artifacts render as actual markdown — the same renderer chat
+ * messages use — instead of an iframe showing the raw source. The bytes are
+ * decoded as UTF-8 explicitly (artifact publishes are declared UTF-8), so a
+ * stale response without a charset can't mojibake em dashes.
+ */
+function MarkdownArtifactPreview(props: { readonly url: string }) {
+  const [state, setState] = useState<MarkdownArtifactState>({ _tag: "loading" });
+
+  useEffect(() => {
+    let disposed = false;
+    const controller = new AbortController();
+    setState({ _tag: "loading" });
+    void fetch(props.url, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Artifact fetch failed with HTTP ${response.status}.`);
+        return new TextDecoder("utf-8").decode(await response.arrayBuffer());
+      })
+      .then((text) => {
+        if (!disposed) setState({ _tag: "ready", text });
+      })
+      .catch(() => {
+        if (!disposed) setState({ _tag: "failed" });
+      });
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
+  }, [props.url]);
+
+  if (state._tag === "loading") {
+    return (
+      <div className="m-3 rounded-lg border p-3 text-sm text-muted-foreground">
+        Loading artifact…
+      </div>
+    );
+  }
+  if (state._tag === "failed") {
+    return (
+      <div className="m-3 rounded-lg border p-3 text-sm text-muted-foreground">
+        The artifact content could not be loaded. Refresh the connection and try again.
+      </div>
+    );
+  }
+  return (
+    <div className="min-h-0 min-w-0 flex-1 overflow-auto">
+      <div className="mx-auto w-full max-w-3xl px-4 py-4">
+        <ChatMarkdown text={state.text} cwd={undefined} />
+      </div>
+    </div>
   );
 }
 

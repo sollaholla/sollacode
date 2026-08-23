@@ -125,11 +125,11 @@ A point-in-time view of state. The word is used in multiple layers, including or
 
 #### Custom agent
 
-A named Agent Stack identity with one persistent computer and one dedicated chat thread. It is not a generic provider agent or an ordinary project thread. See [the user guide](../user/custom-agents.md).
+A named Agent Stack identity with one dedicated chat thread whose browser keeps persistent logins. It is not a generic provider agent or an ordinary project thread. See [the user guide](../user/custom-agents.md).
 
 #### Agent task
 
-A durable prompt owned by one custom agent. Tasks may be manual, one-time, or recurring. The server scheduler waits for that agent's dedicated conversation and VM rather than creating a parallel session.
+A durable prompt owned by one custom agent. Tasks may be manual, one-time, or recurring. The server scheduler waits for that agent's dedicated conversation rather than creating a parallel session.
 
 #### Agent artifact
 
@@ -145,7 +145,7 @@ completed result without turning the worker into another persistent root.
 #### Ephemeral sub-agent
 
 A short-lived delegation target created for one bounded task. It is distinct from a named custom
-agent, which retains a dedicated VM and chat after the delegation ends.
+agent, which retains a dedicated chat after the delegation ends.
 
 ### Thread artifacts
 

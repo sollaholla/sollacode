@@ -51,7 +51,6 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import { VmAgentTaskSchedulerLive } from "./vm/VmAgentTaskScheduler.ts";
-import { VmProviderBrowserLive } from "./vm/BrowserVmProvider.ts";
 import { VmAgentStoreLive } from "./persistence/Layers/VmAgents.ts";
 import { VmAgentWorkspaceStoreLive } from "./persistence/Layers/VmAgentWorkspaces.ts";
 import { VmAgentCollaborationStoreLive } from "./persistence/Layers/VmAgentCollaborations.ts";
@@ -318,9 +317,9 @@ const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PortScannerLayerLive),
 );
 
-// Agent Stack: the manager needs a VM backend and the agent registry store.
-// The browser provider gives each agent a real, persistent Chromium to operate
-// in; the mock backend is kept for tests. Store depends on the shared SQLite
+// Agent Stack: the registry manager and the agent stores. Agents work in
+// their chat thread's collaborative preview browser (per-thread profile), so
+// there is no VM backend to wire. Store depends on the shared SQLite
 // persistence layer.
 const VmAgentPersistenceLayerLive = Layer.mergeAll(
   VmAgentStoreLive,
@@ -328,7 +327,7 @@ const VmAgentPersistenceLayerLive = Layer.mergeAll(
   VmAgentCollaborationStoreLive,
 ).pipe(Layer.provideMerge(PersistenceLayerLive));
 
-const VmManagerLayerLive = VmManager.VmManagerLive.pipe(Layer.provide(VmProviderBrowserLive));
+const VmManagerLayerLive = VmManager.VmManagerLive;
 
 const VmAgentWorkspaceLayerLive = VmAgentWorkspace.VmAgentWorkspaceLive;
 

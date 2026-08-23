@@ -33,16 +33,12 @@ import { WorkspaceConsultToolkitHandlersLive } from "./toolkits/consult/handlers
 import { WorkspaceConsultToolkit } from "./toolkits/consult/tools.ts";
 import { WorkspaceOrchestrationToolkitHandlersLive } from "./toolkits/workspace/handlers.ts";
 import { WorkspaceOrchestrationToolkit } from "./toolkits/workspace/tools.ts";
-import { VmComputerToolkitHandlersLive } from "./toolkits/vm/handlers.ts";
-import { VmComputerTool, VmComputerToolkit } from "./toolkits/vm/tools.ts";
 import { AgentBuilderToolkitHandlersLive } from "./toolkits/agentBuilder/handlers.ts";
 import { AgentBuilderToolkit } from "./toolkits/agentBuilder/tools.ts";
 import { AgentWorkspaceToolkitHandlersLive } from "./toolkits/agentWorkspace/handlers.ts";
 import { AgentWorkspaceToolkit } from "./toolkits/agentWorkspace/tools.ts";
 import { AgentCollaborationToolkitHandlersLive } from "./toolkits/agentCollaboration/handlers.ts";
 import { AgentCollaborationToolkit } from "./toolkits/agentCollaboration/tools.ts";
-import { VmManager } from "../vm/VmManager.ts";
-import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -353,112 +349,6 @@ export const ThreadArtifactToolkitRegistrationLive = McpServer.toolkit(ThreadArt
   Layer.provide(ThreadArtifactToolkitHandlersLive),
 );
 
-const vmComputerFailure = <E>(cause: Cause.Cause<E>) => {
-  if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
-    return Effect.failCause(cause).pipe(Effect.orDie);
-  }
-  const firstFailure = cause.reasons.find(Cause.isFailReason)?.error as
-    | { readonly _tag?: string; readonly message?: string }
-    | undefined;
-  const errorTag =
-    typeof firstFailure?._tag === "string" ? firstFailure._tag : "VmComputerFailedError";
-  const message =
-    typeof firstFailure?.message === "string" && firstFailure.message
-      ? firstFailure.message
-      : "vm_computer failed.";
-  const result = new McpSchema.CallToolResult({
-    isError: true,
-    structuredContent: { error: { _tag: errorTag } },
-    content: [{ type: "text", text: message }],
-  });
-  return Effect.logWarning("vm_computer failed", { errorTag }).pipe(Effect.as(result));
-};
-
-// vm_computer is registered by hand (like preview_snapshot) so its `screenshot`
-// result can be returned as a real MCP image content block — the agent's only
-// way to actually see its own screen.
-const registerVmComputer = Effect.fn("McpHttpServer.registerVmComputer")(function* () {
-  const server = yield* McpServer.McpServer;
-  const built = yield* VmComputerToolkit;
-  const manager = yield* VmManager;
-  const store = yield* VmAgentStore;
-  const tool = VmComputerTool;
-  yield* server.addTool({
-    tool: new McpSchema.Tool({
-      name: tool.name,
-      description: Tool.getDescription(tool),
-      inputSchema: Tool.getJsonSchema(tool),
-      annotations: {
-        ...Context.getOption(tool.annotations, Tool.Title).pipe(
-          Option.map((title) => ({ title })),
-          Option.getOrUndefined,
-        ),
-        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
-        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
-      },
-    }),
-    annotations: tool.annotations,
-    handle: (payload) =>
-      Effect.withFiber((fiber) => {
-        const invocation = Context.getUnsafe(
-          fiber.context,
-          McpInvocationContext.McpInvocationContext,
-        );
-        return built.handle("vm_computer", payload).pipe(
-          Stream.unwrap,
-          Stream.run(Sink.last()),
-          Effect.flatMap(Effect.fromOption),
-          Effect.provideService(VmManager, manager),
-          Effect.provideService(VmAgentStore, store),
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.matchCauseEffect({
-            onFailure: vmComputerFailure,
-            onSuccess: ({ encodedResult }) => {
-              const output = encodedResult as {
-                readonly screenshot: {
-                  readonly mimeType: "image/png";
-                  readonly data: string;
-                  readonly width: number;
-                  readonly height: number;
-                };
-                readonly [key: string]: unknown;
-              };
-              const { screenshot, ...rest } = output;
-              const metadata = {
-                ...rest,
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
-              };
-              return Effect.succeed(
-                new McpSchema.CallToolResult({
-                  isError: false,
-                  structuredContent: metadata,
-                  content: [
-                    { type: "text", text: JSON.stringify(metadata) },
-                    {
-                      type: "image",
-                      data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                      mimeType: screenshot.mimeType,
-                    },
-                  ],
-                }),
-              );
-            },
-          }),
-        );
-      }),
-  });
-});
-
-const VmComputerRegistrationLive = Layer.effectDiscard(registerVmComputer()).pipe(
-  Layer.provide(VmComputerToolkitHandlersLive),
-);
-
 const McpTransportLive = McpServer.layerHttp({
   name: "Solla Code",
   version: packageJson.version,
@@ -478,5 +368,4 @@ export const layer = Layer.mergeAll(
   AgentBuilderToolkitRegistrationLive,
   AgentCollaborationToolkitRegistrationLive,
   ThreadArtifactToolkitRegistrationLive,
-  VmComputerRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

@@ -59,7 +59,6 @@ import {
   VmAgentWorkspaceOperationError,
   type VmAgentWorkspaceStreamItem,
   type VmAgentCollaborationStreamItem,
-  type VmScreenStreamItem,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -499,7 +498,6 @@ function toAuthAccessStreamEvent(
 
 const VM_AGENT_STREAM_MAX_BYTES = 512 * 1024;
 const VM_WORKSPACE_STREAM_MAX_BYTES = 2 * 1024 * 1024;
-const VM_SCREEN_STREAM_MAX_BYTES = 16 * 1024 * 1024;
 const VM_STREAM_MAX_ITEMS = 64;
 
 const vmResyncRequired = {
@@ -518,10 +516,6 @@ function vmAgentStreamItemByteSize(item: VmAgentStreamItem): number {
     return item.agent.name.length + item.agent.purpose.length + 512;
   }
   return 256;
-}
-
-function vmScreenStreamItemByteSize(item: VmScreenStreamItem): number {
-  return item.type === "frame" ? item.data.length + 256 : 256;
 }
 
 function vmWorkspaceStreamItemByteSize(item: VmAgentWorkspaceStreamItem): number {
@@ -2606,24 +2600,6 @@ const makeWsRpcLayer = (
               ),
             { "rpc.aggregate": "vm" },
           ),
-        [WS_METHODS.vmAgentStart]: (input) =>
-          observeRpcEffect(WS_METHODS.vmAgentStart, vmManager.start(input.vmAgentId), {
-            "rpc.aggregate": "vm",
-          }),
-        [WS_METHODS.vmAgentStop]: (input) =>
-          observeRpcEffect(WS_METHODS.vmAgentStop, vmManager.stop(input.vmAgentId), {
-            "rpc.aggregate": "vm",
-          }),
-        [WS_METHODS.vmAgentSetControlMode]: (input) =>
-          observeRpcEffect(WS_METHODS.vmAgentSetControlMode, vmManager.setControlMode(input), {
-            "rpc.aggregate": "vm",
-          }),
-        [WS_METHODS.vmAgentSendInput]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.vmAgentSendInput,
-            vmManager.sendInput({ vmAgentId: input.vmAgentId, input: input.input }),
-            { "rpc.aggregate": "vm" },
-          ),
         [WS_METHODS.vmAgentSubscribe]: (_input) =>
           observeRpcStream(
             WS_METHODS.vmAgentSubscribe,
@@ -2637,28 +2613,6 @@ const makeWsRpcLayer = (
                 });
                 yield* Effect.acquireRelease(
                   vmManager.subscribeAgents((event) => buffer.offer(event).pipe(Effect.asVoid)),
-                  (unsubscribe) => Effect.sync(unsubscribe),
-                );
-                return buffer.stream;
-              }),
-            ),
-            { "rpc.aggregate": "vm" },
-          ),
-        [WS_METHODS.vmAgentSubscribeScreen]: (input) =>
-          observeRpcStream(
-            WS_METHODS.vmAgentSubscribeScreen,
-            Stream.unwrap(
-              Effect.gen(function* () {
-                const buffer = yield* ByteBoundedResyncBuffer.make<VmScreenStreamItem>({
-                  maxBytes: VM_SCREEN_STREAM_MAX_BYTES,
-                  maxItems: VM_STREAM_MAX_ITEMS,
-                  resyncItem: vmResyncRequired,
-                  sizeOf: vmScreenStreamItemByteSize,
-                });
-                yield* Effect.acquireRelease(
-                  vmManager.subscribeScreen(input.vmAgentId, (event) =>
-                    buffer.offer(event).pipe(Effect.asVoid),
-                  ),
                   (unsubscribe) => Effect.sync(unsubscribe),
                 );
                 return buffer.stream;

@@ -22,8 +22,6 @@ export const AgentBuilderInput = Schema.Struct({
     "get_agent",
     "create_agent",
     "configure_agent_chat",
-    "start_agent",
-    "stop_agent",
     "create_task",
     "update_task",
     "delete_task",
@@ -84,7 +82,7 @@ export const AgentBuilderInput = Schema.Struct({
   }),
   confirmName: Schema.optional(Schema.String).annotate({
     description:
-      "delete_agent: must equal the agent's name exactly. Deleting destroys its computer, tasks, and chat history.",
+      "delete_agent: must equal the agent's name exactly. Deleting destroys its tasks, workspace, and chat history.",
   }),
 });
 export type AgentBuilderInput = typeof AgentBuilderInput.Type;

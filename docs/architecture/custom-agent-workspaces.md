@@ -1,6 +1,6 @@
 # Custom-agent workspace architecture
 
-Custom-agent workspaces extend the existing VM-backed Agent Stack. They do not introduce a generic agent class or a second conversation model.
+Custom-agent workspaces extend the existing Agent Stack (agents work in their thread's collaborative preview browser). They do not introduce a generic agent class or a second conversation model.
 
 ## Data and contracts
 
@@ -20,7 +20,7 @@ Foreign keys cascade from `vm_agents`. A partial unique index permits only one q
 
 `VmAgentTaskScheduler` is one scoped server worker with a coalesced wake queue and a one-second due-work scan. There is no timer or process per task. The scheduler uses deterministic command and message identifiers derived from the run id, so recovery can safely redispatch a command after a crash.
 
-Before dispatch it checks the projected dedicated thread and defers when a turn or pending work exists. This preserves the custom agent's one-conversation invariant and makes queue state visible instead of superseding an undelivered instruction. It also defers while the user holds VM control. `VmManager.ensureRunning` joins a real boot and returns only when the VM is usable.
+Before dispatch it checks the projected dedicated thread and defers when a turn or pending work exists. This preserves the custom agent's one-conversation invariant and makes queue state visible instead of superseding an undelivered instruction.
 
 Running task completion is observed through the existing `projection_turns.pending_message_id` relationship. Terminal projection state finalizes the run, updates one-time task state after success, and emits a deduplicated notification.
 

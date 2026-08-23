@@ -7,7 +7,6 @@ import { ThreadCollaborationToolkit } from "./collaboration/tools.ts";
 import { ThreadHistoryToolkit } from "./history/tools.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./preview/tools.ts";
 import { ThreadTerminalsToolkit } from "./terminals/tools.ts";
-import { VmComputerToolkit } from "./vm/tools.ts";
 import { WorkspaceConsultToolkit } from "./consult/tools.ts";
 import { WorkspaceOrchestrationToolkit } from "./workspace/tools.ts";
 
@@ -27,7 +26,6 @@ const ALL_TOOLKITS = {
   PreviewSnapshotToolkit,
   WorkspaceOrchestrationToolkit,
   WorkspaceConsultToolkit,
-  VmComputerToolkit,
   ThreadTerminalsToolkit,
 } as const;
 

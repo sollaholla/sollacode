@@ -83,8 +83,8 @@ export function activeDelegationsForAgent(
 
 /**
  * The Agent Stack's sidebar section, rendered directly below the orchestrator
- * entry. Lists the user's named VM agents; clicking one opens its dedicated
- * chat (with its VM as a floating window). Hidden when `agentStackEnabled` is off.
+ * entry. Lists the user's named agents; clicking one opens its dedicated
+ * chat and workspace. Hidden when `agentStackEnabled` is off.
  */
 export function AgentStackSidebarEntry() {
   const enabled = useClientSettings((settings) => settings.agentStackEnabled);

@@ -716,8 +716,8 @@ const buildAppUnderTest = (options?: {
             Layer.mock(VmAgentWorkspace.VmAgentWorkspace)({}),
             Layer.mock(VmAgentCollaboration.VmAgentCollaboration)({}),
             Layer.mock(TextGeneration.TextGeneration)({}),
-            // No test thread is a VM agent, so getByThreadId resolves to none;
-            // this satisfies the vm_computer toolkit + capability-grant lookups.
+            // No test thread is a custom agent, so getByThreadId resolves to
+            // none; this satisfies the capability-grant lookups.
             Layer.mock(VmAgentStore)({
               getByThreadId: () => Effect.succeed(Option.none()),
             }),

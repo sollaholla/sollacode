@@ -1,6 +1,6 @@
 # Custom agents
 
-Custom agents are the named agents in the **Agents** section. Each one owns a persistent computer and one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
+Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation whose collaborative browser keeps its own persistent logins. They are separate from ordinary coding threads and from the orchestrator.
 
 ## Workspace views
 
@@ -43,10 +43,9 @@ A user-created task is approved immediately. A custom agent can use its `agent_w
 The server scheduler is independent of an open page. When work becomes due it:
 
 1. claims one task for that agent;
-2. waits if the dedicated conversation is already running or the user controls the VM;
-3. boots the agent's computer if necessary;
-4. sends the saved prompt to the dedicated conversation;
-5. records the result and notification.
+2. waits if the dedicated conversation is already running;
+3. sends the saved prompt to the dedicated conversation;
+4. records the result and notification.
 
 Claims and run identifiers survive a server restart. A missed repeating interval advances to the next interval rather than launching a burst of catch-up runs. At most one scheduled run is active per agent.
 

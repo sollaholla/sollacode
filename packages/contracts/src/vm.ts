@@ -98,9 +98,8 @@ export const VmAgentStatus = Schema.Literals([
 export type VmAgentStatus = typeof VmAgentStatus.Type;
 
 /**
- * Who currently drives the VM. In `user` mode the human has taken over: the
- * agent's perception (screenshots) is suspended so secrets typed by the user
- * never enter model context.
+ * Historical takeover flag from the VM era, retained for row compatibility.
+ * Always "agent" for new rows; nothing flips it any more.
  */
 export const VmControlMode = Schema.Literals(["agent", "user"]);
 export type VmControlMode = typeof VmControlMode.Type;
@@ -138,12 +137,6 @@ export const VmAgentRef = Schema.Struct({
   vmAgentId: VmAgentId,
 });
 export type VmAgentRef = Schema.Codec.Encoded<typeof VmAgentRef>;
-
-export const VmAgentSetControlModeInput = Schema.Struct({
-  vmAgentId: VmAgentId,
-  controlMode: VmControlMode,
-});
-export type VmAgentSetControlModeInput = Schema.Codec.Encoded<typeof VmAgentSetControlModeInput>;
 
 export const VmAgentListResult = Schema.Struct({
   agents: Schema.Array(VmAgent),
@@ -184,128 +177,6 @@ export type VmAgentStreamEvent = typeof VmAgentStreamEvent.Type;
 
 export const VmAgentStreamItem = Schema.Union([VmAgentStreamEvent, VmAgentResyncRequiredEvent]);
 export type VmAgentStreamItem = typeof VmAgentStreamItem.Type;
-
-// ---------------------------------------------------------------------------
-// Live screen stream
-// ---------------------------------------------------------------------------
-
-/** Cap mirrors RemoteControl's frame ceiling: a base64 JPEG of a desktop. */
-export const VM_SCREEN_FRAME_MAX_BASE64_LENGTH = 1_500_000;
-
-export const VmScreenImageFormat = Schema.Literals(["jpeg", "png"]);
-export type VmScreenImageFormat = typeof VmScreenImageFormat.Type;
-
-export const VmScreenFrame = Schema.Struct({
-  type: Schema.Literal("frame"),
-  /** Monotonic per-stream counter so consumers can drop out-of-order frames. */
-  sequence: NonNegativeInt,
-  width: Schema.Int.check(Schema.isGreaterThan(0)),
-  height: Schema.Int.check(Schema.isGreaterThan(0)),
-  /** Image encoding of {@link data}; picks the `data:` URL MIME type. */
-  format: VmScreenImageFormat,
-  /** Base64-encoded image bytes. */
-  data: Schema.String.check(Schema.isMaxLength(VM_SCREEN_FRAME_MAX_BASE64_LENGTH)),
-  capturedAt: IsoDateTime,
-  /**
-   * The agent's pointer position in frame pixel coordinates, when the backend
-   * can report it. Lets the viewer overlay a live cursor so the user can see
-   * exactly where the agent is about to click. Absent when unknown.
-   */
-  cursor: Schema.optional(
-    Schema.Struct({
-      x: Schema.Int,
-      y: Schema.Int,
-    }),
-  ),
-});
-export type VmScreenFrame = typeof VmScreenFrame.Type;
-
-/**
- * Sent when control flips to `user` (takeover): the agent view goes read-only
- * and frames keep flowing, but consumers should surface the takeover banner.
- */
-export const VmScreenControlEvent = Schema.Struct({
-  type: Schema.Literal("control"),
-  controlMode: VmControlMode,
-});
-export type VmScreenControlEvent = typeof VmScreenControlEvent.Type;
-
-export const VmScreenStreamEvent = Schema.Union([VmScreenFrame, VmScreenControlEvent]);
-export type VmScreenStreamEvent = typeof VmScreenStreamEvent.Type;
-
-export const VmScreenStreamItem = Schema.Union([VmScreenStreamEvent, VmAgentResyncRequiredEvent]);
-export type VmScreenStreamItem = typeof VmScreenStreamItem.Type;
-
-export const VmScreenSubscribeInput = Schema.Struct({
-  vmAgentId: VmAgentId,
-});
-export type VmScreenSubscribeInput = Schema.Codec.Encoded<typeof VmScreenSubscribeInput>;
-
-// ---------------------------------------------------------------------------
-// Input injection (user takeover)
-// ---------------------------------------------------------------------------
-
-/** Pointer buttons the guest desktop understands. */
-export const VmPointerButton = Schema.Literals(["left", "right", "middle"]);
-export type VmPointerButton = typeof VmPointerButton.Type;
-
-/**
- * Pointer/keyboard/scroll events the user forwards to the guest while they hold
- * control (takeover). Coordinates are normalized 0..1 across the frame so the
- * backend maps them to its own resolution; the server clamps out-of-range
- * values defensively.
- */
-const VmPointerInput = Schema.Struct({
-  type: Schema.Literal("pointer"),
-  action: Schema.Literals(["move", "down", "up"]),
-  x: Schema.Number,
-  y: Schema.Number,
-  button: VmPointerButton,
-});
-
-const VmScrollInput = Schema.Struct({
-  type: Schema.Literal("scroll"),
-  x: Schema.Number,
-  y: Schema.Number,
-  deltaX: Schema.Number,
-  deltaY: Schema.Number,
-});
-
-const VmKeyInput = Schema.Struct({
-  type: Schema.Literal("key"),
-  action: Schema.Literals(["down", "up"]),
-  key: Schema.String.check(Schema.isMaxLength(64)),
-  code: Schema.String.check(Schema.isMaxLength(64)),
-});
-
-/** Type a literal string (higher-level than per-key events; used by the agent). */
-const VmTextInput = Schema.Struct({
-  type: Schema.Literal("text"),
-  text: Schema.String.check(Schema.isMaxLength(10_000)),
-});
-
-/** Press a key chord in Playwright syntax, e.g. "Enter", "Control+a", "Meta+c". */
-const VmPressInput = Schema.Struct({
-  type: Schema.Literal("press"),
-  keys: Schema.String.check(Schema.isMaxLength(200)),
-});
-
-export const VmAgentInput = Schema.Union([
-  VmPointerInput,
-  VmScrollInput,
-  VmKeyInput,
-  VmTextInput,
-  VmPressInput,
-]);
-export type VmAgentInput = typeof VmAgentInput.Type;
-
-export const VmAgentSendInputInput = Schema.Struct({
-  vmAgentId: VmAgentId,
-  /** Monotonic per-client counter so the server can drop stale, out-of-order input. */
-  sequence: NonNegativeInt,
-  input: VmAgentInput,
-});
-export type VmAgentSendInputInput = Schema.Codec.Encoded<typeof VmAgentSendInputInput>;
 
 // ---------------------------------------------------------------------------
 // Durable agent workspaces
@@ -960,46 +831,7 @@ export class VmAgentNotFoundError extends Schema.TaggedErrorClass<VmAgentNotFoun
   }
 }
 
-export class VmHypervisorUnavailableError extends Schema.TaggedErrorClass<VmHypervisorUnavailableError>()(
-  "VmHypervisorUnavailableError",
-  {
-    detail: Schema.String,
-  },
-) {
-  override get message() {
-    return `Virtualization backend is unavailable: ${this.detail}`;
-  }
-}
-
-export class VmProviderError extends Schema.TaggedErrorClass<VmProviderError>()("VmProviderError", {
-  operation: Schema.Literals(["create", "start", "stop", "delete", "capture", "status", "input"]),
-  vmId: Schema.String,
-  detail: Schema.String,
-  cause: Schema.optional(Schema.Defect()),
-}) {
-  override get message() {
-    return `VM ${this.operation} failed for ${this.vmId}: ${this.detail}`;
-  }
-}
-
-export class VmUserControlActiveError extends Schema.TaggedErrorClass<VmUserControlActiveError>()(
-  "VmUserControlActiveError",
-  {
-    vmAgentId: Schema.String,
-  },
-) {
-  override get message() {
-    return `The user has taken control of agent ${this.vmAgentId}; agent actions are suspended`;
-  }
-}
-
-export const VmAgentError = Schema.Union([
-  VmAgentNameConflictError,
-  VmAgentNotFoundError,
-  VmHypervisorUnavailableError,
-  VmProviderError,
-  VmUserControlActiveError,
-]);
+export const VmAgentError = Schema.Union([VmAgentNameConflictError, VmAgentNotFoundError]);
 export type VmAgentError = typeof VmAgentError.Type;
 
 export const VmAgentWorkspaceError = Schema.Union([

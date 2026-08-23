@@ -195,7 +195,7 @@ export function CreateTaskDialog(props: {
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>
-            Durable work {props.agent.name} runs in its own computer and conversation.
+            Durable work {props.agent.name} runs in its own conversation and browser.
           </DialogDescription>
         </DialogHeader>
 

@@ -50,7 +50,7 @@ export function HostedBrowserWebview(props: {
   readonly zoomFactor: number;
 }) {
   const { threadRef, tabId, runtimeTabId, initialUrl, viewport, zoomFactor } = props;
-  const config = usePreviewWebviewConfig(threadRef.environmentId);
+  const config = usePreviewWebviewConfig(threadRef.environmentId, threadRef.threadId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);

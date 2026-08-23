@@ -36,7 +36,6 @@ import {
   VmAgentWorkspaceStore,
 } from "../persistence/Services/VmAgentWorkspaces.ts";
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
-import { VmManager } from "./VmManager.ts";
 
 const POLL_INTERVAL_MS = 1_000;
 const MAX_CLAIMS_PER_DRAIN = 8;
@@ -152,7 +151,7 @@ export const taskPrompt = (
     criteria,
     ...blockerSection,
     "",
-    "This is durable scheduled work for your custom-agent workspace. Use your VM when needed. When finished, summarize what changed, any evidence, and anything still blocked.",
+    "This is durable scheduled work for your custom-agent workspace. Use your browser tabs (the preview tools) when needed. When finished, summarize what changed, any evidence, and anything still blocked.",
   ].join("\n");
 };
 
@@ -179,7 +178,6 @@ export const make = Effect.gen(function* () {
   const store = yield* VmAgentWorkspaceStore;
   const collaboration = yield* VmAgentCollaborationStore;
   const workspace = yield* VmAgentWorkspace;
-  const vmManager = yield* VmManager;
   const wakeQueue = yield* Queue.sliding<void>(1);
   const started = yield* Ref.make(false);
   const activeRuns = new Map<string, Fiber.Fiber<void, never>>();
@@ -326,11 +324,7 @@ export const make = Effect.gen(function* () {
     const delegated = yield* collaboration.getByTaskId(run.taskId);
     if (Option.isSome(delegated) && delegated.value.target.kind === "ephemeral") return true;
     const agent = yield* agents.getById(run.vmAgentId);
-    if (
-      Option.isNone(agent) ||
-      agent.value.threadId === null ||
-      agent.value.controlMode === "user"
-    ) {
+    if (Option.isNone(agent) || agent.value.threadId === null) {
       return false;
     }
     const thread = yield* projections.getThreadShellById(agent.value.threadId);
@@ -491,11 +485,6 @@ export const make = Effect.gen(function* () {
         }
         runtimeMode = sourceThread.value.runtimeMode;
         interactionMode = "agent";
-      }
-      yield* store.setRunBooting(run.runId, startedAt);
-      yield* workspace.refresh(run.vmAgentId);
-      if (Option.isNone(delegated) || delegated.value.target.kind === "agent") {
-        yield* vmManager.ensureRunning(run.vmAgentId);
       }
       yield* store.setRunRunning({ runId: run.runId, messageId, startedAt });
       if (Option.isSome(delegated)) {

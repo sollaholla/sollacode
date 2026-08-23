@@ -133,8 +133,6 @@ import {
   VmAgentDelegationSendMessageInput,
   VmAgentError,
   VmAgentRef,
-  VmAgentSendInputInput,
-  VmAgentSetControlModeInput,
   VmAgentStreamItem,
   VmAgentTask,
   VmAgentTaskCreateInput,
@@ -144,8 +142,6 @@ import {
   VmAgentTaskUpdateInput,
   VmAgentWorkspaceError,
   VmAgentWorkspaceStreamItem,
-  VmScreenStreamItem,
-  VmScreenSubscribeInput,
 } from "./vm.ts";
 import {
   DiscoveredLocalServerList,
@@ -308,12 +304,7 @@ export const WS_METHODS = {
   vmAgentCreate: "vmAgent.create",
   vmAgentBuilderOpen: "vmAgent.builder.open",
   vmAgentDelete: "vmAgent.delete",
-  vmAgentStart: "vmAgent.start",
-  vmAgentStop: "vmAgent.stop",
-  vmAgentSetControlMode: "vmAgent.setControlMode",
-  vmAgentSendInput: "vmAgent.sendInput",
   vmAgentSubscribe: "vmAgent.subscribe",
-  vmAgentSubscribeScreen: "vmAgent.subscribeScreen",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
   vmAgentTaskCreate: "vmAgent.task.create",
   vmAgentTaskUpdate: "vmAgent.task.update",
@@ -905,39 +896,9 @@ export const WsVmAgentDeleteRpc = Rpc.make(WS_METHODS.vmAgentDelete, {
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
 });
 
-export const WsVmAgentStartRpc = Rpc.make(WS_METHODS.vmAgentStart, {
-  payload: VmAgentRef,
-  success: VmAgent,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
-});
-
-export const WsVmAgentStopRpc = Rpc.make(WS_METHODS.vmAgentStop, {
-  payload: VmAgentRef,
-  success: VmAgent,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
-});
-
-export const WsVmAgentSetControlModeRpc = Rpc.make(WS_METHODS.vmAgentSetControlMode, {
-  payload: VmAgentSetControlModeInput,
-  success: VmAgent,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
-});
-
-export const WsVmAgentSendInputRpc = Rpc.make(WS_METHODS.vmAgentSendInput, {
-  payload: VmAgentSendInputInput,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
-});
-
 export const WsVmAgentSubscribeRpc = Rpc.make(WS_METHODS.vmAgentSubscribe, {
   payload: Schema.Struct({}),
   success: VmAgentStreamItem,
-  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
-  stream: true,
-});
-
-export const WsVmAgentSubscribeScreenRpc = Rpc.make(WS_METHODS.vmAgentSubscribeScreen, {
-  payload: VmScreenSubscribeInput,
-  success: VmScreenStreamItem,
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
   stream: true,
 });
@@ -1316,12 +1277,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentCreateRpc,
   WsVmAgentBuilderOpenRpc,
   WsVmAgentDeleteRpc,
-  WsVmAgentStartRpc,
-  WsVmAgentStopRpc,
-  WsVmAgentSetControlModeRpc,
-  WsVmAgentSendInputRpc,
   WsVmAgentSubscribeRpc,
-  WsVmAgentSubscribeScreenRpc,
   WsVmAgentWorkspaceSubscribeRpc,
   WsVmAgentTaskCreateRpc,
   WsVmAgentTaskUpdateRpc,

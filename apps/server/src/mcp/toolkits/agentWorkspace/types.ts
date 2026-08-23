@@ -42,7 +42,7 @@ export const AgentWorkspaceInput = Schema.Struct({
   }),
   blockerDetail: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))).annotate({
     description:
-      "report_blocker: what is blocked and exactly what the user must do to unblock it. Shown on the standing request card.",
+      "report_blocker: what is blocked and the one thing the user must do to unblock it, in a sentence or two. Shown on the standing request card — put the page in blockerUrl (the card's Open button), not in this text, and raise separate blockers for separate actions instead of a numbered list here.",
   }),
   blockerUrl: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(500)))).annotate(
     {
