@@ -183,6 +183,8 @@ import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
+import { PreviewSessionHydrator } from "./preview/PreviewSessionHydrator";
+import { reconcileHydratedBrowserSurfaces } from "./preview/reconcileHydratedBrowserSurfaces";
 import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
@@ -2364,10 +2366,11 @@ function ChatViewContent(props: ChatViewProps) {
 
   useEffect(() => {
     if (!activeThreadRef) return;
-    useRightPanelStore
-      .getState()
-      .reconcileBrowserSurfaces(activeThreadRef, Object.keys(activePreviewState.sessions));
-  }, [activePreviewState.sessions, activeThreadRef]);
+    reconcileHydratedBrowserSurfaces(activeThreadRef, {
+      serverEpoch: activePreviewState.serverEpoch,
+      sessions: activePreviewState.sessions,
+    });
+  }, [activePreviewState.serverEpoch, activePreviewState.sessions, activeThreadRef]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
@@ -8947,6 +8950,9 @@ function ChatViewContent(props: ChatViewProps) {
       fullScreenMobile={isPhonePortraitViewport}
       onOpen={onExpandTimelineImage}
     >
+      {activeThreadRef && isPreviewSupportedInRuntime() ? (
+        <PreviewSessionHydrator threadRef={activeThreadRef} />
+      ) : null}
       {chatLayout}
     </ExpandedImagePreviewProvider>
   );
