@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
 export type McpCapability =
+  | "agent-builder"
   | "app-update"
   | "artifacts"
   | "collaboration"

@@ -64,6 +64,11 @@ export function createThreadArtifactEnvironmentAtoms<R, E>(
       tag: WS_METHODS.threadArtifactsRestore,
       scheduler: mutationScheduler,
     }),
+    delete: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread-artifacts:delete",
+      tag: WS_METHODS.threadArtifactsDelete,
+      scheduler: mutationScheduler,
+    }),
   };
 }
 

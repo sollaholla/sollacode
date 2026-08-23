@@ -1,12 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useParams, useRouter } from "@tanstack/react-router";
-import type {
-  EnvironmentId,
-  VmAgent,
-  VmAgentCollaborationAgentSummary,
-  VmAgentStatus,
+import {
+  isAgentBuilderThreadId,
+  type EnvironmentId,
+  type VmAgent,
+  type VmAgentCollaborationAgentSummary,
+  type VmAgentStatus,
 } from "@t3tools/contracts";
-import { BotIcon, ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, PlusIcon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useMemo, useState } from "react";
@@ -14,6 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useUiStateStore } from "../../uiStateStore";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
+import { environmentThreadShells } from "../../state/threads";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { SidebarMenuButton } from "../ui/sidebar";
@@ -21,6 +23,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useOnScreenKeyboard } from "../../hooks/useOnScreenKeyboard";
 import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
+import { AgentBuilderDialog } from "./AgentBuilderDialog";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
@@ -60,6 +63,9 @@ export function AgentStackSidebarEntry() {
   const expanded = useUiStateStore((state) => state.agentsSectionExpanded);
   const setExpanded = useUiStateStore((state) => state.setAgentsSectionExpanded);
   const [createForEnvironmentId, setCreateForEnvironmentId] = useState<EnvironmentId | null>(null);
+  const [builderForEnvironmentId, setBuilderForEnvironmentId] = useState<EnvironmentId | null>(
+    null,
+  );
   const orderedEnvironments = useMemo(() => {
     const entries = environments.map((environment) => ({
       environmentId: environment.environmentId,
@@ -104,7 +110,10 @@ export function AgentStackSidebarEntry() {
           />
         </button>
         {singleEnvironmentId ? (
-          <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
+          <>
+            <BuildAgentButton onClick={() => setBuilderForEnvironmentId(singleEnvironmentId)} />
+            <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
+          </>
         ) : null}
       </div>
       {/* Collapsed drops the sections entirely rather than hiding them: each one
@@ -121,6 +130,10 @@ export function AgentStackSidebarEntry() {
               createOpen={createForEnvironmentId === environment.environmentId}
               onCreateOpenChange={(open) =>
                 setCreateForEnvironmentId(open ? environment.environmentId : null)
+              }
+              builderOpen={builderForEnvironmentId === environment.environmentId}
+              onBuilderOpenChange={(open) =>
+                setBuilderForEnvironmentId(open ? environment.environmentId : null)
               }
             />
           ))}
@@ -210,11 +223,20 @@ function AgentSidebarRow(props: {
             {props.activeWork}
           </span>
         ) : null}
+        {/* In a fixed slot, not bare: a 6px dot right-aligned at the padding
+            edge sits visibly right of the section's + buttons, which centre
+            their glyphs inside a hit-target. The slot gives the dot the same
+            centred geometry, so the two line up in the gutter. */}
         <span
           aria-hidden="true"
           title={agent.status}
-          className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[agent.status])}
-        />
+          className={cn(
+            "flex shrink-0 items-center justify-center",
+            !usesTouch && "-mr-0.5 size-5",
+          )}
+        >
+          <span className={cn("size-1.5 rounded-full", STATUS_DOT[agent.status])} />
+        </span>
         {/* Collapsed out of layout while hidden, not made transparent: a
             reserved-but-invisible box left the status dot sitting beside a
             hole at the row's edge. When the X appears the dot simply yields
@@ -230,7 +252,7 @@ function AgentSidebarRow(props: {
           aria-label={`Delete ${agent.name}`}
           title={`Delete ${agent.name}`}
           className={cn(
-            "-mr-1 size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive",
+            "-mr-0.5 size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive",
             usesTouch
               ? "sr-only"
               : "hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
@@ -278,12 +300,35 @@ function NewAgentButton(props: { readonly onClick: () => void }) {
   );
 }
 
+function BuildAgentButton(props: { readonly onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Build an agent with AI"
+            data-testid="agents-build"
+            className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
+            onClick={props.onClick}
+          />
+        }
+      >
+        <SparklesIcon className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipPopup side="right">Build an agent with AI</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function AgentEnvironmentSection(props: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly showEnvironmentLabel: boolean;
   readonly createOpen: boolean;
   readonly onCreateOpenChange: (open: boolean) => void;
+  readonly builderOpen: boolean;
+  readonly onBuilderOpenChange: (open: boolean) => void;
 }) {
   const router = useRouter();
   const environment = useEnvironment(props.environmentId);
@@ -309,6 +354,22 @@ function AgentEnvironmentSection(props: {
   });
   const result = useAtomValue(agentsAtom);
   const collaborationResult = useAtomValue(collaborationAtom);
+  // Builder chats live under the reserved agents project, which the normal
+  // thread list excludes — this section is the only place they surface.
+  const environmentThreads = useAtomValue(
+    environmentThreadShells.environmentThreadsAtom(props.environmentId),
+  );
+  const builderThreads = useMemo(
+    () =>
+      environmentThreads
+        .filter((thread) => isAgentBuilderThreadId(thread.id) && thread.archivedAt === null)
+        .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    [environmentThreads],
+  );
+  const activeThreadId = useParams({
+    strict: false,
+    select: (params) => (params as { threadId?: string }).threadId ?? null,
+  });
   const failureCause = AsyncResult.isFailure(result) ? result.cause : null;
   const latest = Option.getOrNull(AsyncResult.value(result));
   const snapshot = latest && latest.type === "snapshot" ? latest : null;
@@ -336,7 +397,10 @@ function AgentEnvironmentSection(props: {
           >
             {props.environmentLabel}
           </span>
-          <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
+          <div className="flex shrink-0 items-center">
+            <BuildAgentButton onClick={() => props.onBuilderOpenChange(true)} />
+            <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
+          </div>
         </div>
       ) : null}
 
@@ -381,9 +445,35 @@ function AgentEnvironmentSection(props: {
         </p>
       ) : null}
 
+      {builderThreads.map((thread) => (
+        <SidebarMenuButton
+          key={thread.id}
+          type="button"
+          isActive={thread.id === activeThreadId && props.environmentId === activeEnvironmentId}
+          onClick={() =>
+            void router.navigate({
+              to: "/$environmentId/$threadId",
+              params: { environmentId: props.environmentId, threadId: thread.id },
+            })
+          }
+          aria-label={`Open Agent Builder chat: ${thread.title}`}
+          title={`Agent Builder chat · ${thread.title}`}
+          data-testid="agent-builder-sidebar-entry"
+        >
+          <SparklesIcon />
+          <span className="flex-1 truncate text-left">{thread.title}</span>
+        </SidebarMenuButton>
+      ))}
+
       <CreateAgentDialog
         open={props.createOpen}
         onOpenChange={props.onCreateOpenChange}
+        environmentId={props.environmentId}
+      />
+
+      <AgentBuilderDialog
+        open={props.builderOpen}
+        onOpenChange={props.onBuilderOpenChange}
         environmentId={props.environmentId}
       />
 

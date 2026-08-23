@@ -102,7 +102,11 @@ import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
 import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
-import { createAgentThread, deleteAgentThread } from "./vm/agentThread.ts";
+import {
+  createAgentBuilderThread,
+  createAgentThread,
+  deleteAgentThread,
+} from "./vm/agentThread.ts";
 import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -2158,6 +2162,14 @@ const makeWsRpcLayer = (
             threadArtifacts.setArchived({ ...input, archived: false }),
             { "rpc.aggregate": "artifacts" },
           ),
+        [WS_METHODS.threadArtifactsDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.threadArtifactsDelete,
+            threadArtifacts.deleteArtifact(input),
+            {
+              "rpc.aggregate": "artifacts",
+            },
+          ),
         [WS_METHODS.threadArtifactsSubscribe]: (input) =>
           observeRpcStream(WS_METHODS.threadArtifactsSubscribe, threadArtifacts.subscribe(input), {
             "rpc.aggregate": "artifacts",
@@ -2545,6 +2557,17 @@ const makeWsRpcLayer = (
                 .pipe(Effect.ignoreCause({ log: true }));
               return agent;
             }),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentBuilderCreate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentBuilderCreate,
+            createAgentBuilderThread(input).pipe(
+              Effect.map((threadId) => ({ threadId })),
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "The Agent Builder chat could not be started."),
+              ),
+            ),
             { "rpc.aggregate": "vm" },
           ),
         [WS_METHODS.vmAgentDelete]: (input) =>

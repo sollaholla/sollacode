@@ -91,6 +91,12 @@ export type ThreadArtifactGetInput = typeof ThreadArtifactGetInput.Type;
 export const ThreadArtifactArchiveInput = ThreadArtifactGetInput;
 export type ThreadArtifactArchiveInput = typeof ThreadArtifactArchiveInput.Type;
 
+export const ThreadArtifactDeleteResult = Schema.Struct({
+  threadId: ThreadId,
+  artifactId: ThreadArtifactId,
+});
+export type ThreadArtifactDeleteResult = typeof ThreadArtifactDeleteResult.Type;
+
 export const ThreadArtifactDetail = Schema.Struct({
   artifact: ThreadArtifact,
   revision: ThreadArtifactRevision,

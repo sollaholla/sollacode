@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { resolveOsFilePath } from "../../lib/terminalFileDrop";
 import { isActionApprovalQuestion } from "@t3tools/shared/actionApproval";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -37,6 +38,7 @@ import { createPortal } from "react-dom";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
+  classifyComposerFileIntake,
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
@@ -2702,34 +2704,37 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       });
       return;
     }
-    const nextImages: ComposerImageAttachment[] = [];
-    let nextImageCount = composerImagesRef.current.length;
-    let error: string | null = null;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
-      }
-      if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-        break;
-      }
-      const previewUrl = URL.createObjectURL(file);
-      nextImages.push({
-        type: "image",
-        id: randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
-        sizeBytes: file.size,
-        previewUrl,
-        file,
-      });
-      nextImageCount += 1;
-    }
+    const intake = classifyComposerFileIntake(files, {
+      resolvePath: (file) => resolveOsFilePath(file, window.desktopBridge?.getPathForFile),
+      imageSlotsUsed: composerImagesRef.current.length,
+      maxImages: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+    });
+    let error = intake.error;
+    const nextImages: ComposerImageAttachment[] = intake.imageFiles.map((file) => ({
+      type: "image",
+      id: randomUUID(),
+      name: file.name || "image",
+      mimeType: file.type,
+      sizeBytes: file.size,
+      previewUrl: URL.createObjectURL(file),
+      file,
+    }));
     if (nextImages.length === 1 && nextImages[0]) {
       addComposerImage(nextImages[0]);
     } else if (nextImages.length > 1) {
       addComposerImagesToDraft(nextImages);
+    }
+    if (intake.referencedPaths.length > 0) {
+      // Trailing space matters: a file link is chipped once a boundary closes
+      // it, and every other insertion site writes `link + " "` for the same
+      // reason.
+      const inserted = insertComposerTextAtEnd(
+        intake.referencedPaths.map((path) => `${serializeComposerFileLink(path)} `).join(""),
+        { ensureLeadingBoundary: true },
+      );
+      if (!inserted) {
+        error = "The composer is busy; drop the file again once it is ready.";
+      }
     }
     setThreadError(activeThreadId, error);
   };

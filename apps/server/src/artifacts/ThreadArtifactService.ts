@@ -2,6 +2,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   type ThreadArtifact,
+  type ThreadArtifactDeleteResult,
   type ThreadArtifactDetail,
   type ThreadArtifactError,
   ThreadArtifactId,
@@ -248,6 +249,11 @@ export interface ThreadArtifactServiceShape {
   readonly setArchived: (
     input: ThreadArtifactArchiveInput,
   ) => Effect.Effect<ThreadArtifactDetail, ThreadArtifactError>;
+  /** Irreversibly removes one artifact: every revision's bytes and rows. */
+  readonly deleteArtifact: (input: {
+    readonly threadId: ThreadId;
+    readonly artifactId: ThreadArtifactId;
+  }) => Effect.Effect<ThreadArtifactDeleteResult, ThreadArtifactError>;
   readonly subscribe: (
     input: ThreadArtifactListInput,
   ) => Stream.Stream<ThreadArtifactStreamItem, ThreadArtifactError>;
@@ -857,6 +863,50 @@ const makeThreadArtifactService = Effect.gen(function* () {
     };
   });
 
+  const deleteArtifact = Effect.fn("ThreadArtifactService.deleteArtifact")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly artifactId: ThreadArtifactId;
+  }) {
+    yield* requireLiveThread(input.threadId);
+    const artifactRow = yield* getArtifactRow(input).pipe(
+      Effect.mapError(mapStorage("reading metadata")),
+    );
+    if (Option.isNone(artifactRow)) {
+      return yield* new ThreadArtifactNotFoundError(input);
+    }
+    // Bytes before rows, like cleanupDeletedThread: a crash in between leaves
+    // metadata pointing at nothing — which reads loudly as an error — rather
+    // than orphaned bytes nothing would ever reclaim.
+    const safeDirectoryName =
+      input.artifactId === pathService.basename(input.artifactId) &&
+      input.artifactId !== "." &&
+      input.artifactId !== ".." &&
+      !input.artifactId.startsWith(".");
+    if (safeDirectoryName) {
+      yield* fileSystem
+        .remove(pathService.join(config.artifactsDir, input.artifactId), {
+          recursive: true,
+          force: true,
+        })
+        .pipe(Effect.mapError(mapStorage("removing artifact bytes")));
+    } else {
+      yield* Effect.logWarning("skipping unsafe artifact storage directory during delete", input);
+    }
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`DELETE FROM thread_artifact_revisions WHERE artifact_id = ${input.artifactId}`;
+          yield* sql`
+            DELETE FROM thread_artifacts
+            WHERE artifact_id = ${input.artifactId} AND thread_id = ${input.threadId}
+          `;
+        }),
+      )
+      .pipe(Effect.mapError(mapStorage("removing artifact metadata")));
+    yield* PubSub.publish(changes, input.threadId);
+    return { threadId: input.threadId, artifactId: input.artifactId };
+  });
+
   const cleanupDeletedThread = Effect.fn("ThreadArtifactService.cleanupDeletedThread")(function* (
     threadId: ThreadId,
   ) {
@@ -943,6 +993,7 @@ const makeThreadArtifactService = Effect.gen(function* () {
     get,
     publish,
     setArchived,
+    deleteArtifact,
     subscribe,
     cleanupDeletedThread,
   } satisfies ThreadArtifactServiceShape;

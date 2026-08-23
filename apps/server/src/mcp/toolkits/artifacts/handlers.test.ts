@@ -120,6 +120,7 @@ const makeHarness = () => {
         return detail;
       }),
     setArchived: () => Effect.die("unused"),
+    deleteArtifact: () => Effect.die("unused"),
     subscribe: () => Stream.die("unused"),
     cleanupDeletedThread: () => Effect.die("unused"),
   });

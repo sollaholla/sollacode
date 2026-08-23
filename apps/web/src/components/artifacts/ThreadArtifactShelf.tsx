@@ -86,7 +86,7 @@ export function ThreadArtifactShelf(props: ThreadArtifactShelfProps) {
   if (artifacts.length === 0 && result._tag === "Success") return null;
 
   return (
-    <details className="group shrink-0 border-b border-border/70" open>
+    <details className="group shrink-0 border-t border-border/70" open>
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-muted-foreground marker:content-none">
         <ChevronDownIcon className="size-3.5 shrink-0 -rotate-90 transition-transform group-open:rotate-0 motion-reduce:transition-none" />
         <span className="min-w-0 flex-1 truncate">Artifacts</span>
