@@ -134,6 +134,23 @@ export const createAgentBuilderThread = (input: {
 
     const threadId = ThreadId.make(`${AGENT_BUILDER_THREAD_PREFIX}${NodeCrypto.randomUUID()}`);
     const title = agentBuilderThreadTitle(input.prompt);
+    // `bootstrap.createThread` is honored by the ws dispatch layer, not the
+    // engine — the decider only sees a bare thread.turn.start and rejects it
+    // for a thread that does not exist. Dispatching at the engine level means
+    // doing the decomposition ourselves: create the thread, then start the turn.
+    yield* engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(NodeCrypto.randomUUID()),
+      threadId,
+      projectId: AGENTS_PROJECT_ID,
+      title,
+      modelSelection: input.modelSelection,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
     yield* engine.dispatch({
       type: "thread.turn.start",
       commandId: CommandId.make(NodeCrypto.randomUUID()),
@@ -148,18 +165,6 @@ export const createAgentBuilderThread = (input: {
       titleSeed: title,
       runtimeMode: "full-access",
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      bootstrap: {
-        createThread: {
-          projectId: AGENTS_PROJECT_ID,
-          title,
-          modelSelection: input.modelSelection,
-          runtimeMode: "full-access",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          branch: null,
-          worktreePath: null,
-          createdAt,
-        },
-      },
       createdAt,
     });
     return threadId;
