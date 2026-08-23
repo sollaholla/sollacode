@@ -134,7 +134,12 @@ import {
   snoozeWakeLabel,
   type SnoozePreset,
 } from "./Sidebar.snooze";
-import { describeSwipeAction, type SidebarSwipeAction } from "./sidebarRowSwipe";
+import {
+  describeSwipeAction,
+  swipeActionForDirection,
+  type SidebarSwipeAction,
+  type SidebarSwipeDirection,
+} from "./sidebarRowSwipe";
 import { useSidebarRowSwipe, type SidebarRowSwipeState } from "./useSidebarRowSwipe";
 import { useOnScreenKeyboard } from "../hooks/useOnScreenKeyboard";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -379,7 +384,7 @@ function SidebarV2ThreadTooltip({
  * is the "let go now and this happens" signal.
  */
 function SidebarRowSwipeAffordance(props: {
-  state: SidebarRowSwipeState;
+  state: SidebarRowSwipeState<SidebarSwipeAction>;
   /** Vertical inset, to match a row whose list item carries padding. */
   insetClassName?: string;
 }) {
@@ -846,9 +851,13 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     },
     [onSettle, onUnsettle, onUnsnooze, threadRef],
   );
-  const swipe = useSidebarRowSwipe({
+  const resolveSwipeAction = useCallback(
+    (direction: SidebarSwipeDirection) => swipeActionForDirection(direction, swipeCapabilities),
+    [swipeCapabilities],
+  );
+  const swipe = useSidebarRowSwipe<SidebarSwipeAction>({
     enabled: swipeEnabled,
-    capabilities: swipeCapabilities,
+    resolveAction: resolveSwipeAction,
     onCommit: handleSwipeCommit,
   });
   const { consumeSuppressedClick } = swipe;

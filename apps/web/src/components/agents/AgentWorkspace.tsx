@@ -21,6 +21,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { DeleteAgentDialog } from "./DeleteAgentDialog";
 
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -78,7 +79,6 @@ function AgentWorkspaceResolved(props: {
   const [chatFraction, setChatFraction] = useState(0.5);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
-  const deleteAgent = useAtomCommand(vmAgentEnvironment.delete, { reportFailure: false });
 
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
@@ -212,25 +212,30 @@ function AgentWorkspaceResolved(props: {
               {computerVisible ? "Hide computer" : "Show computer"}
             </span>
           </Button>
+          {/* Was a click-twice confirm that reset on blur. The second click
+              landed in the same place as the first, so the slip that started
+              the delete also finished it; and it disagreed with the sidebar,
+              which now asks for the name. One dialog for both. */}
           <Button
             type="button"
             size="sm"
             variant="destructive-outline"
-            onClick={() => {
-              if (!confirmDelete) {
-                setConfirmDelete(true);
-                return;
-              }
-              void deleteAgent({ environmentId, input: { vmAgentId: agent.vmAgentId } });
-              void router.navigate({ to: "/" });
-            }}
-            onBlur={() => setConfirmDelete(false)}
+            onClick={() => setConfirmDelete(true)}
           >
             <Trash2Icon className="size-3.5" />
-            <span className="hidden lg:inline">{confirmDelete ? "Confirm delete" : "Delete"}</span>
+            <span className="hidden lg:inline">Delete</span>
           </Button>
         </div>
       </header>
+
+      <DeleteAgentDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        environmentId={environmentId}
+        agentId={agent.vmAgentId}
+        agentName={agent.name}
+        onDeleted={() => void router.navigate({ to: "/" })}
+      />
 
       <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {agent.threadId ? (

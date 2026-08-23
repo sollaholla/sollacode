@@ -5,18 +5,16 @@ import {
   isHorizontalSwipe,
   resolveSwipeOffset,
   shouldCommitSwipe,
-  swipeActionForDirection,
   swipeDirection,
   swipeProgress,
-  type SidebarSwipeAction,
-  type SidebarSwipeCapabilities,
+  type SidebarSwipeDirection,
 } from "./sidebarRowSwipe";
 
-export interface SidebarRowSwipeState {
+export interface SidebarRowSwipeState<TAction = string> {
   /** Pixels to translate the row by. 0 when idle. */
   readonly offset: number;
   /** The action a release would commit, or null. */
-  readonly action: SidebarSwipeAction | null;
+  readonly action: TAction | null;
   /** 0…1 through the gesture, for fading the panel in. */
   readonly progress: number;
   /** True once the threshold is passed, for the panel's armed state. */
@@ -25,7 +23,7 @@ export interface SidebarRowSwipeState {
   readonly dragging: boolean;
 }
 
-const IDLE: SidebarRowSwipeState = {
+const IDLE: SidebarRowSwipeState<never> = {
   offset: 0,
   action: null,
   progress: 0,
@@ -33,14 +31,22 @@ const IDLE: SidebarRowSwipeState = {
   dragging: false,
 };
 
-export interface UseSidebarRowSwipeOptions {
+export interface UseSidebarRowSwipeOptions<TAction> {
   readonly enabled: boolean;
-  readonly capabilities: SidebarSwipeCapabilities;
-  readonly onCommit: (action: SidebarSwipeAction) => void;
+  /**
+   * What a swipe in this direction would do, or null for "nothing here".
+   *
+   * The geometry is shared across every swipeable row; the meaning of a
+   * direction is not, so it is the caller's to decide. Returning null leaves
+   * the row inert that way, which is how an unavailable action reads as
+   * unavailable before the finger lifts.
+   */
+  readonly resolveAction: (direction: SidebarSwipeDirection) => TAction | null;
+  readonly onCommit: (action: TAction) => void;
 }
 
-export interface UseSidebarRowSwipeResult {
-  readonly state: SidebarRowSwipeState;
+export interface UseSidebarRowSwipeResult<TAction> {
+  readonly state: SidebarRowSwipeState<TAction>;
   readonly handlers: {
     readonly onPointerDown: (event: ReactPointerEvent) => void;
     readonly onPointerMove: (event: ReactPointerEvent) => void;
@@ -64,16 +70,18 @@ export interface UseSidebarRowSwipeResult {
  * vertical scroll these rows live in keeps working; pair with `touch-action:
  * pan-y` so the browser still drives that scroll itself.
  */
-export function useSidebarRowSwipe(options: UseSidebarRowSwipeOptions): UseSidebarRowSwipeResult {
-  const { enabled, capabilities, onCommit } = options;
-  const [state, setState] = useState<SidebarRowSwipeState>(IDLE);
+export function useSidebarRowSwipe<TAction>(
+  options: UseSidebarRowSwipeOptions<TAction>,
+): UseSidebarRowSwipeResult<TAction> {
+  const { enabled, resolveAction, onCommit } = options;
+  const [state, setState] = useState<SidebarRowSwipeState<TAction>>(IDLE);
   const pointerIdRef = useRef<number | null>(null);
   const startRef = useRef<{ x: number; y: number } | null>(null);
   const activeRef = useRef(false);
   const suppressClickRef = useRef(false);
   // Read in the pointerup handler, which must not depend on a state update
   // having been flushed first.
-  const latestRef = useRef<{ dx: number; action: SidebarSwipeAction | null }>({
+  const latestRef = useRef<{ dx: number; action: TAction | null }>({
     dx: 0,
     action: null,
   });
@@ -120,7 +128,7 @@ export function useSidebarRowSwipe(options: UseSidebarRowSwipeOptions): UseSideb
       }
 
       const direction = swipeDirection(dx);
-      const action = direction === null ? null : swipeActionForDirection(direction, capabilities);
+      const action = direction === null ? null : resolveAction(direction);
       latestRef.current = { dx, action };
       const hasAction = action !== null;
       setState({
@@ -131,7 +139,7 @@ export function useSidebarRowSwipe(options: UseSidebarRowSwipeOptions): UseSideb
         dragging: true,
       });
     },
-    [capabilities],
+    [resolveAction],
   );
 
   const finish = useCallback(
