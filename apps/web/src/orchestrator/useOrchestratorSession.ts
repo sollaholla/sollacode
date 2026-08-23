@@ -24,6 +24,9 @@ import {
 import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
+import { vmAgentEnvironment } from "../state/vmAgents";
+import * as Option from "effect/Option";
+import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { readPreparedConnection } from "../state/session";
 import { primaryServerProvidersAtom } from "../state/server";
 import { inferProjectTitleFromPath } from "../lib/projectPaths";
@@ -41,6 +44,7 @@ import { deriveProviderInstanceEntries } from "../providerInstances";
 import {
   buildWorld,
   diffWorlds,
+  shouldAnnounceEvent,
   type OrchestratorEvent,
   type OrchestratorWorld,
   workspaceBasename,
@@ -211,6 +215,11 @@ const BUBBLE_LEVEL_PUBLISH_INTERVAL_MS = 80;
 /** Search and listing results are read aloud, so they stay small. */
 const PROJECT_TOOL_RESULT_LIMIT = 25;
 const PROJECT_LISTING_LIMIT = 60;
+
+/** Stands in for the agent registry until an environment is connected. */
+const EMPTY_AGENT_REGISTRY_ATOM = Atom.make(null).pipe(
+  Atom.withLabel("orchestrator-agent-registry:empty"),
+);
 
 /**
  * Folds a flat project file index into something answerable out loud.
@@ -453,6 +462,8 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   // counter cancels a stale start when stop() lands before the session exists.
   const startGenerationRef = useRef(0);
   const worldRef = useRef<OrchestratorWorld>(new Map());
+  // When each thread+kind was last spoken, for the flap rate limit.
+  const announcedEventsRef = useRef(new Map<string, number>());
   // What the orchestrator owes the user an answer on, and whether the last
   // session closed in a way that permits reopening the microphone.
   const awaitedRef = useRef<AwaitedWorkState>(initialAwaitedWorkState);
@@ -511,9 +522,32 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
     }
     return lookup;
   }, [projects]);
+  // Named background agents' chat threads, so the world can tell Scout the
+  // agent apart from a chat that merely runs in agent mode. Primary host only —
+  // that is where named agents live.
+  const agentsRegistryAtom = useMemo(
+    () =>
+      primaryEnvironmentId === null
+        ? EMPTY_AGENT_REGISTRY_ATOM
+        : vmAgentEnvironment.agents({ environmentId: primaryEnvironmentId, input: {} }),
+    [primaryEnvironmentId],
+  );
+  const agentsRegistryResult = useAtomValue(agentsRegistryAtom);
+  const backgroundAgentNames = useMemo(() => {
+    const names = new Map<string, string>();
+    if (agentsRegistryResult === null || primaryEnvironmentId === null) return names;
+    const latest = Option.getOrNull(AsyncResult.value(agentsRegistryResult));
+    if (latest === null || latest.type !== "snapshot") return names;
+    for (const agent of latest.agents) {
+      if (agent.threadId !== null) {
+        names.set(`${primaryEnvironmentId}:${agent.threadId}`, agent.name);
+      }
+    }
+    return names;
+  }, [agentsRegistryResult, primaryEnvironmentId]);
   const rawWorld = useMemo(
-    () => buildWorld(shells, undefined, projectLookup),
-    [projectLookup, shells],
+    () => buildWorld(shells, undefined, projectLookup, backgroundAgentNames),
+    [backgroundAgentNames, projectLookup, shells],
   );
   const pendingThreadTitlesRef = useRef<PendingThreadTitles>(new Map());
   /** Settings marker messages recently sent, keyed by target and final values. */
@@ -2040,6 +2074,22 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
 
     const session = sessionRef.current;
     for (const event of diffWorlds(previous, world, orchestrator.spokenEvents)) {
+      // A provider at its usage cap fails and retries in a tight loop, so one
+      // thread can produce the same transition several times a minute. Speaking
+      // each one buried the user under near-identical sentences (2026-08-23:
+      // four back-to-back replies for one side-chat creation). One per minute
+      // per thread and kind, live session or wake path alike.
+      if (!shouldAnnounceEvent(announcedEventsRef.current, event, Date.now())) {
+        recordToolCall({
+          name: `event:${event.kind}`,
+          reason: event.title,
+          outcome: "error",
+          detail: `${event.title} — suppressed, same event announced under a minute ago`,
+          durationMs: 0,
+          at: new Date().toISOString(),
+        });
+        continue;
+      }
       if (session !== null) {
         // A thread ending is the event worth real detail; the rest are one-liners
         // whose whole content is already in the transition itself.

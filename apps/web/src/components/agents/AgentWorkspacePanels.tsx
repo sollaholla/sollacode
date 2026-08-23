@@ -539,7 +539,15 @@ export function AgentNotificationsPanel(props: {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  // Open state and payload are separate on purpose: closing must not empty the
+  // payload, or the title recomputes to "Archive 0 messages?" mid exit
+  // animation.
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [pendingArchiveIds, setPendingArchiveIds] = useState<ReadonlyArray<string>>([]);
+  const promptArchive = (ids: ReadonlyArray<string>) => {
+    setPendingArchiveIds(ids);
+    setArchiveConfirmOpen(true);
+  };
   const [error, setError] = useState<string | null>(null);
   const visible = useMemo(
     () => notificationsInFolder(notifications, folder),
@@ -797,7 +805,7 @@ export function AgentNotificationsPanel(props: {
                     onClick={() =>
                       folder === "archive"
                         ? void setArchivedMany(selectedVisible, false)
-                        : setPendingArchiveIds(
+                        : promptArchive(
                             selectedVisible.map((notification) => notification.notificationId),
                           )
                     }
@@ -881,7 +889,7 @@ export function AgentNotificationsPanel(props: {
                   onClick={() =>
                     folder === "archive"
                       ? void mutateNotification(notification, { archived: false })
-                      : setPendingArchiveIds([notification.notificationId])
+                      : promptArchive([notification.notificationId])
                   }
                 >
                   {folder === "archive" ? <ArchiveRestoreIcon /> : <CheckIcon />}
@@ -955,7 +963,7 @@ export function AgentNotificationsPanel(props: {
                       onClick={() =>
                         folder === "archive"
                           ? void mutateNotification(selected, { archived: false })
-                          : setPendingArchiveIds([selected.notificationId])
+                          : promptArchive([selected.notificationId])
                       }
                     >
                       {folder === "archive" ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
@@ -986,18 +994,13 @@ export function AgentNotificationsPanel(props: {
         </section>
       </div>
 
-      <AlertDialog
-        open={pendingArchive.length > 0}
-        onOpenChange={(open) => {
-          if (!open) setPendingArchiveIds([]);
-        }}
-      >
+      <AlertDialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {pendingArchive.length === 1
+              {pendingArchiveIds.length === 1
                 ? "Archive this message?"
-                : `Archive ${pendingArchive.length} messages?`}
+                : `Archive ${pendingArchiveIds.length} messages?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               Archived messages move to the Archive folder and are deleted after 48 hours.
@@ -1007,9 +1010,8 @@ export function AgentNotificationsPanel(props: {
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
             <Button
               onClick={() => {
-                const targets = pendingArchive;
-                setPendingArchiveIds([]);
-                void setArchivedMany(targets, true);
+                setArchiveConfirmOpen(false);
+                void setArchivedMany(pendingArchive, true);
               }}
             >
               Archive

@@ -649,7 +649,7 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineIsAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(false);
     expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
     expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
-    expect(resolveTimelineDrawDistance(false)).toBe(2_000);
+    expect(resolveTimelineDrawDistance(false)).toBe(4_000);
     expect(resolveTimelineDrawDistance(true)).toBe(6_000);
 
     expect(resolveTimelineMinimapHeightStyle(5)).toBe("min(32px, calc(100vh - 18rem))");
@@ -740,7 +740,7 @@ describe("MessagesTimeline", () => {
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position="object"');
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position-data="true"');
     expect(optedOutMarkup).toContain('data-maintain-visible-content-position-size="true"');
-    expect(followingMarkup).toContain('data-draw-distance="2000"');
+    expect(followingMarkup).toContain('data-draw-distance="4000"');
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
     expect(followingMarkup).toContain('data-manual-pointer-handler="false"');

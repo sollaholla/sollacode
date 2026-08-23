@@ -134,6 +134,10 @@ export function buildInstructions(input: {
     // It used to have no model field at all and would invent reasons the model
     // was unavailable rather than saying it could not see one.
     'Each thread reports the model and provider it runs on. Answer questions about which model a thread uses from that field, and if it reads "unknown", say so plainly instead of explaining why it might be missing.',
+    // Interaction mode looked like the answer but is not: an agent's chat can
+    // run in default mode, so the orchestrator called the user's named agents
+    // ordinary threads and vice versa.
+    'A thread with a backgroundAgent field is one of the user\'s named background agents — call it that agent ("Scout"), not a chat thread. A thread without the field is an ordinary conversation, even when its interactionMode is "agent".',
     // The tools are a general interface, not a fixed script. Without this it
     // treated them as four canned lookups and answered from memory instead.
     "Your tools are a general interface, not a fixed script: use them freely and as often as you need, chain several within one turn, and re-check state after you change something rather than assuming it took.",

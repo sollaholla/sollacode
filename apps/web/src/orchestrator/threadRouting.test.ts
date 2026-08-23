@@ -16,6 +16,7 @@ const thread = (overrides: Partial<ThreadSnapshot> = {}): ThreadSnapshot => {
     waitingOn: "nothing",
     isSideChat: false,
     sideChatParentThreadId: null,
+    backgroundAgentName: null,
     hasError: false,
     environmentUnreachable: false,
     lastError: null,
