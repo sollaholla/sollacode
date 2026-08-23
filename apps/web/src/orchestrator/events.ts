@@ -89,6 +89,14 @@ export interface ThreadSnapshot {
   readonly isSideChat: boolean;
   /** The conversation this side chat was forked from; null for a normal thread. */
   readonly sideChatParentThreadId: string | null;
+  /**
+   * Name of the named background agent whose chat this thread is — "Scout",
+   * "Pawstalgia" — or null for an ordinary conversation. Interaction mode
+   * cannot answer this: a background agent's chat often runs in default mode
+   * while a throwaway chat runs in agent mode, and the orchestrator kept
+   * describing the user's actual agents as plain threads.
+   */
+  readonly backgroundAgentName: string | null;
   readonly projectId: string;
   /**
    * Project title. Titles alone are not enough to route by — several threads
@@ -157,6 +165,12 @@ export type OrchestratorWorld = ReadonlyMap<string, ThreadSnapshot>;
 // | running. Only `running` means work is actually in flight.
 const WORKING_TURN_STATES = new Set(["running"]);
 const ERROR_TURN_STATES = new Set(["error"]);
+// A thread only *finished* if a turn actually settled. A freshly forked side
+// chat projects `stopped → starting → ready → running` inside one second, and
+// the turnless `ready` gap read as working→idle — announcing "finished" for a
+// thread created moments ago (observed 2026-08-23: the voice orchestrator
+// re-narrated one side-chat creation four times back to back).
+const SETTLED_TURN_STATES = new Set(["completed", "incomplete", "interrupted", "error"]);
 
 export function threadSnapshotKey(shell: {
   readonly environmentId: string;
@@ -217,6 +231,8 @@ export function buildWorld(
   shells: ReadonlyArray<EnvironmentThreadShell>,
   unreachableEnvironmentIds: ReadonlySet<string> = new Set(),
   projects: ReadonlyMap<string, ProjectLookupEntry> = new Map(),
+  /** Named background agents' chat threads, keyed `environmentId:threadId`. */
+  backgroundAgentNames: ReadonlyMap<string, string> = new Map(),
 ): OrchestratorWorld {
   const world = new Map<string, ThreadSnapshot>();
 
@@ -272,6 +288,7 @@ export function buildWorld(
       latestTurnState: turnState,
       isSideChat: shell.isSideChat === true,
       sideChatParentThreadId: shell.sideChatParentThreadId ?? null,
+      backgroundAgentName: backgroundAgentNames.get(threadSnapshotKey(shell)) ?? null,
       projectId: shell.projectId,
       projectName: project?.title ?? "",
       workspaceName: project === undefined ? "" : workspaceBasename(project.workspaceRoot),
@@ -330,7 +347,12 @@ export function diffWorlds(
 
     if (!before.hasError && current.hasError) {
       events.push({ ...base, kind: "thread-failed", outcome: "failed" });
-    } else if (before.isWorking && !current.isWorking) {
+    } else if (
+      before.isWorking &&
+      !current.isWorking &&
+      current.latestTurnState !== undefined &&
+      SETTLED_TURN_STATES.has(current.latestTurnState)
+    ) {
       events.push({ ...base, kind: "thread-finished" });
     }
 
@@ -344,4 +366,35 @@ export function diffWorlds(
   }
 
   return events.filter((event) => isEventEnabled(event.kind, spokenEvents));
+}
+
+/**
+ * How long a repeat of the same event on the same thread stays unspeakable.
+ *
+ * A provider at its usage cap fails a turn in seconds and the thread retries,
+ * so the same finished/failed transition can recur several times a minute.
+ * Announcing each one had the orchestrator saying the same sentence in
+ * different words until the user could not get a word in. One announcement a
+ * minute per thread and kind still reports every real state change — a genuine
+ * re-run that finishes again later is past the window.
+ */
+export const EVENT_REANNOUNCE_WINDOW_MS = 60_000;
+
+/**
+ * Rate limit for spoken announcements, keyed on thread and event kind.
+ *
+ * Pure decision over a caller-owned map so the flap scenarios are testable:
+ * call {@link shouldAnnounceEvent}, and on a true result the map has already
+ * recorded the announcement time.
+ */
+export function shouldAnnounceEvent(
+  announcedAt: Map<string, number>,
+  event: Pick<OrchestratorEvent, "threadKey" | "kind">,
+  now: number,
+): boolean {
+  const key = `${event.threadKey}:${event.kind}`;
+  const last = announcedAt.get(key);
+  if (last !== undefined && now - last < EVENT_REANNOUNCE_WINDOW_MS) return false;
+  announcedAt.set(key, now);
+  return true;
 }

@@ -505,6 +505,13 @@ export interface SpokenThreadSummary {
   readonly isSideChat: boolean;
   readonly sideChatOf?: string;
   /**
+   * Name of the named background agent whose chat this is — "Scout",
+   * "Pawstalgia". Present only on actual agents: interaction mode cannot
+   * answer this (an agent's chat often runs in default mode), and without the
+   * field the orchestrator described the user's agents as ordinary threads.
+   */
+  readonly backgroundAgent?: string;
+  /**
    * Why the thread failed, in the provider's own words. Present only when
    * something actually failed — "it failed" without this was the entire
    * complaint about failure reporting.
@@ -608,6 +615,9 @@ function summarize(
     // Only when the parent is actually in the world: naming a thread the user
     // cannot open is worse than saying nothing about it.
     ...(parent === undefined ? {} : { sideChatOf: parent.title }),
+    ...(snapshot.backgroundAgentName === null
+      ? {}
+      : { backgroundAgent: snapshot.backgroundAgentName }),
     ...describeFailureAge(snapshot.errorAt, now),
     terminals: compactTerminals(terminalsForThread(terminals, snapshot)),
   };

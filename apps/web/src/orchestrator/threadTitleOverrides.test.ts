@@ -27,6 +27,7 @@ const thread = (title: string): ThreadSnapshot => ({
   effort: "high",
   isSideChat: false,
   sideChatParentThreadId: null,
+  backgroundAgentName: null,
   projectId: "project-1",
   projectName: "Sample Project",
   workspaceName: "Sample Project",

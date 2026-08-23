@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 
-import { buildWorld, diffWorlds } from "./events";
+import { buildWorld, diffWorlds, EVENT_REANNOUNCE_WINDOW_MS, shouldAnnounceEvent } from "./events";
 import { describeEventFallback } from "./completionSummary";
 
 const createdAt = "2026-08-16T12:00:00.000Z" as IsoDateTime;
@@ -125,6 +125,19 @@ describe("buildWorld", () => {
   it("excludes archived threads", () => {
     const world = buildWorld([makeShell("thread-a", { archivedAt: createdAt })]);
     expect(world.size).toBe(0);
+  });
+
+  it("names the background agent a thread belongs to", () => {
+    // Interaction mode cannot answer this: Scout's chat runs in default mode,
+    // and an ordinary chat can run in agent mode.
+    const world = buildWorld(
+      [makeShell("scout-thread"), makeShell("plain-thread", { interactionMode: "agent" })],
+      new Set(),
+      new Map(),
+      new Map([[`${environmentId}:scout-thread`, "Scout"]]),
+    );
+    expect(world.get(`${environmentId}:scout-thread`)?.backgroundAgentName).toBe("Scout");
+    expect(world.get(`${environmentId}:plain-thread`)?.backgroundAgentName).toBeNull();
   });
 
   it("derives what a thread is blocked on", () => {
@@ -241,6 +254,24 @@ describe("diffWorlds", () => {
     expect(events[0]?.threadId).toBe("thread-a");
   });
 
+  it("does not call a turnless spawn gap a finish", () => {
+    // A fresh side chat projects `starting → ready → running` inside a second,
+    // and the turnless `ready` reads as not-working. Nothing settled, so
+    // nothing finished — announcing it re-narrated one side-chat creation
+    // four times back to back.
+    const spawning = buildWorld([
+      makeShell("side-chat", {
+        session: { status: "starting" } as EnvironmentThreadShell["session"],
+      }),
+    ]);
+    const readyBeforeTurn = buildWorld([
+      makeShell("side-chat", {
+        session: { status: "ready" } as EnvironmentThreadShell["session"],
+      }),
+    ]);
+    expect(diffWorlds(spawning, readyBeforeTurn, ALL_ON)).toEqual([]);
+  });
+
   it("emits thread-failed instead of thread-finished when the turn errored", () => {
     const before = buildWorld([working("thread-a")]);
     const after = buildWorld([
@@ -317,5 +348,28 @@ describe("describeEventFallback", () => {
       "Rover needs your approval.",
     );
     expect(describeEventFallback({ kind: "thread-failed", ...base })).toBe("Rover hit an error.");
+  });
+});
+
+describe("shouldAnnounceEvent", () => {
+  const finished = { threadKey: "env:thread-a", kind: "thread-finished" } as const;
+
+  it("speaks the first occurrence and suppresses repeats inside the window", () => {
+    const announced = new Map<string, number>();
+    expect(shouldAnnounceEvent(announced, finished, 1_000)).toBe(true);
+    // A capped provider retries and fails again seconds later.
+    expect(shouldAnnounceEvent(announced, finished, 9_000)).toBe(false);
+    expect(shouldAnnounceEvent(announced, finished, 1_000 + EVENT_REANNOUNCE_WINDOW_MS)).toBe(true);
+  });
+
+  it("limits per thread and kind, not globally", () => {
+    const announced = new Map<string, number>();
+    expect(shouldAnnounceEvent(announced, finished, 1_000)).toBe(true);
+    expect(
+      shouldAnnounceEvent(announced, { threadKey: "env:thread-a", kind: "thread-failed" }, 2_000),
+    ).toBe(true);
+    expect(
+      shouldAnnounceEvent(announced, { threadKey: "env:thread-b", kind: "thread-finished" }, 2_000),
+    ).toBe(true);
   });
 });

@@ -22,7 +22,14 @@ export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
 export const TIMELINE_CONTENT_MAX_WIDTH = 768;
 export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 export const LOCAL_TIMELINE_DRAW_DISTANCE = 6_000;
-export const REMOTE_TIMELINE_DRAW_DISTANCE = 2_000;
+// Wider than the 2 000 it shipped at: iOS Safari has no native scroll
+// anchoring and ignores programmatic corrections mid-momentum, so every row
+// that enters the viewport still unmeasured (estimated at 90px, often really
+// hundreds) reads as the view "jumping" while scrolling up. A wider measured
+// band trades a few more early image mounts for far fewer in-view
+// measurements; still under the desktop distance for the original reason —
+// remote threads fetch history over the network.
+export const REMOTE_TIMELINE_DRAW_DISTANCE = 4_000;
 
 export function resolveTimelineDrawDistance(hasDesktopBridge: boolean): number {
   return hasDesktopBridge ? LOCAL_TIMELINE_DRAW_DISTANCE : REMOTE_TIMELINE_DRAW_DISTANCE;
