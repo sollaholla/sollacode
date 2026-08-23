@@ -339,6 +339,7 @@ import {
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { ProjectFolderMissingBanner } from "./chat/ProjectFolderMissingBanner";
 import { ThreadSyncOverlay } from "./chat/ThreadSyncStatusPill";
 import {
   deriveProviderUsageReports,
@@ -8542,6 +8543,12 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
+                  {activeProject ? (
+                    <ProjectFolderMissingBanner
+                      environmentId={activeProject.environmentId}
+                      project={activeProject}
+                    />
+                  ) : null}
                   <div
                     className="relative"
                     style={

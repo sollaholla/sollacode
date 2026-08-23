@@ -92,6 +92,9 @@ import {
   ProjectWriteFileError,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
+  ProjectCheckWorkspaceRootError,
+  ProjectCheckWorkspaceRootInput,
+  ProjectCheckWorkspaceRootResult,
 } from "./project.ts";
 import {
   TerminalAttachInput,
@@ -228,6 +231,7 @@ export const WS_METHODS = {
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
+  projectsCheckWorkspaceRoot: "projects.checkWorkspaceRoot",
   projectsListEntries: "projects.listEntries",
   projectsReadFile: "projects.readFile",
   projectsSearchContents: "projects.searchContents",
@@ -587,6 +591,12 @@ export const WsProjectsSearchContentsRpc = Rpc.make(WS_METHODS.projectsSearchCon
   payload: ProjectSearchContentsInput,
   success: ProjectSearchContentsResult,
   error: Schema.Union([ProjectSearchContentsError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsCheckWorkspaceRootRpc = Rpc.make(WS_METHODS.projectsCheckWorkspaceRoot, {
+  payload: ProjectCheckWorkspaceRootInput,
+  success: ProjectCheckWorkspaceRootResult,
+  error: Schema.Union([ProjectCheckWorkspaceRootError, EnvironmentAuthorizationError]),
 });
 
 export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
@@ -1241,6 +1251,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
+  WsProjectsCheckWorkspaceRootRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,

@@ -37,6 +37,7 @@ import {
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
+  ProjectCheckWorkspaceRootError,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchContentsError,
@@ -1936,6 +1937,33 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsCheckWorkspaceRoot]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsCheckWorkspaceRoot,
+            Effect.gen(function* () {
+              const project = yield* projectionSnapshotQuery
+                .getProjectShellById(input.projectId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ProjectCheckWorkspaceRootError({ detail: cause.message }),
+                  ),
+                );
+              if (Option.isNone(project)) {
+                return yield* new ProjectCheckWorkspaceRootError({
+                  detail: `Unknown project: ${input.projectId}`,
+                });
+              }
+              const exists = yield* workspaceEntries
+                .rootExists(project.value.workspaceRoot)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ProjectCheckWorkspaceRootError({ detail: cause.message }),
+                  ),
+                );
+              return { workspaceRoot: project.value.workspaceRoot, exists };
+            }),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.projectsListEntries]: (input) =>
