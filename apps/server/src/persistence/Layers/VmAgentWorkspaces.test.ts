@@ -1,4 +1,5 @@
 import {
+  MessageId,
   ThreadId,
   type VmAgent,
   VmAgentArtifactId,
@@ -276,6 +277,51 @@ const runOnceAt = (runSuffix: string, at: string, status: "completed" | "failed"
       completedAt: at,
     });
   });
+
+it.layer(stores())("VmAgentWorkspaceStore: a stalled dispatch retry", (it) => {
+  it.effect("moves the stall clock, and a finished run stays finished", () =>
+    Effect.gen(function* () {
+      const store = yield* VmAgentWorkspaceStore;
+      yield* givenTask({ kind: "interval", everyMinutes: 60 }, createdAt);
+      const run = yield* claim("stall", createdAt);
+      const messageId = MessageId.make(`vm-task:${run.runId}`);
+      yield* store.setRunBooting(run.runId, createdAt);
+      yield* store.setRunRunning({ runId: run.runId, messageId, startedAt: createdAt });
+
+      // The stall detector retries a run whose turn never started. Each retry
+      // must move started_at, or the very next drain tick still sees the
+      // original stale clock and the whole retry budget burns in seconds.
+      const retryAt = "2026-08-21T20:02:11.000Z";
+      yield* store.setRunRunning({ runId: run.runId, messageId, startedAt: retryAt });
+      const retried = (yield* store.snapshot(vmAgentId)).runs.find(
+        (entry) => entry.runId === run.runId,
+      );
+      assert.strictEqual(retried?.status, "running");
+      assert.strictEqual(retried?.startedAt, retryAt);
+
+      // Terminal states stay excluded: a late retry of a disposed run must
+      // not resurrect it.
+      yield* store.completeRun({
+        runId: run.runId,
+        status: "failed",
+        turnId: null,
+        resultSummary: null,
+        error: "The scheduled turn never started.",
+        completedAt: retryAt,
+      });
+      yield* store.setRunRunning({
+        runId: run.runId,
+        messageId,
+        startedAt: "2026-08-21T20:05:00.000Z",
+      });
+      const afterDisposal = (yield* store.snapshot(vmAgentId)).runs.find(
+        (entry) => entry.runId === run.runId,
+      );
+      assert.strictEqual(afterDisposal?.status, "failed");
+      assert.strictEqual(afterDisposal?.startedAt, retryAt);
+    }),
+  );
+});
 
 it.layer(stores())("VmAgentWorkspaceStore: run history retention", (it) => {
   it.effect("drops finished runs that are both past the cutoff and long superseded", () =>

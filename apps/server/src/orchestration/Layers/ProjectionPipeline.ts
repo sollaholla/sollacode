@@ -70,6 +70,7 @@ import {
 } from "../../attachmentStore.ts";
 import {
   activeTurnWorkSourceId,
+  isAgentAutoResumeMessageId,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   startupResumeSourceTurnId,
   STARTUP_RESUME_SIGNED_OFF_REASON,
@@ -2162,7 +2163,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         if (
           Option.isSome(sourceMessage) &&
           sourceMessage.value.role === "user" &&
-          sourceMessage.value.inputOrigin !== "agent-loop"
+          // Only continuation auto-resume prompts own their launch elsewhere.
+          // Other agent-loop messages — scheduled VM-agent task prompts — need
+          // this obligation or nothing ever starts their turn.
+          !isAgentAutoResumeMessageId(event.payload.messageId)
         ) {
           const startupSourceTurnId = startupResumeSourceTurnId({
             threadId: event.payload.threadId,
@@ -2661,7 +2665,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         if (pendingRows.length === 0) break;
 
         for (const row of pendingRows) {
-          if (row.providerInstanceId === null || row.inputOrigin === "agent-loop") continue;
+          // Same rule as the live path above: only auto-resume prompts are
+          // owned by the continuation; scheduled task prompts must be swept.
+          if (row.providerInstanceId === null || isAgentAutoResumeMessageId(row.messageId)) {
+            continue;
+          }
           const threadId = ThreadId.make(row.threadId);
           const messageId = MessageId.make(row.messageId);
           const startupSourceTurnId = startupResumeSourceTurnId({ threadId, messageId });

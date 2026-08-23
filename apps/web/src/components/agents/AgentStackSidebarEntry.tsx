@@ -10,7 +10,7 @@ import {
 import { BotIcon, ChevronDownIcon, PlusIcon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
 import { useUiStateStore } from "../../uiStateStore";
@@ -374,6 +374,18 @@ function AgentEnvironmentSection(props: {
   const latest = Option.getOrNull(AsyncResult.value(result));
   const snapshot = latest && latest.type === "snapshot" ? latest : null;
   const agents: ReadonlyArray<VmAgent> = snapshot?.agents ?? [];
+  // Close the confirmation as soon as its agent stops existing. The registry
+  // stream is the truth about deletion; waiting only on the delete RPC's reply
+  // left the dialog spinning on "Deleting…" after the agent was provably gone
+  // (observed live: the row vanished, the server span succeeded in ~9s, and
+  // the dialog never learned). This also covers another client deleting the
+  // same agent while the dialog is open.
+  const pendingDeleteId = pendingDelete?.vmAgentId ?? null;
+  useEffect(() => {
+    if (pendingDeleteId === null || snapshot === null) return;
+    if (snapshot.agents.some((entry) => entry.vmAgentId === pendingDeleteId)) return;
+    setPendingDelete(null);
+  }, [pendingDeleteId, snapshot]);
   const collaborationItem = Option.getOrNull(AsyncResult.value(collaborationResult));
   const collaborationSnapshot = collaborationItem?.type === "snapshot" ? collaborationItem : null;
   const notice = resolveAgentRegistryNotice({

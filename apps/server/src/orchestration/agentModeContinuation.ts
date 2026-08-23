@@ -330,6 +330,8 @@ export function threadLostBackgroundTaskAtRestart(input: {
 }
 
 /** Stable IDs make repeated finalization events and reconnect races idempotent. */
+const AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX = "agent-auto-resume-message:";
+
 export function agentAutoResumeIds(input: {
   readonly threadId: string;
   readonly completedTurnId: string;
@@ -337,8 +339,21 @@ export function agentAutoResumeIds(input: {
   const key = `${input.threadId}:${input.completedTurnId}`;
   return {
     commandId: CommandId.make(`agent-auto-resume-command:${key}`),
-    messageId: MessageId.make(`agent-auto-resume-message:${key}`),
+    messageId: MessageId.make(`${AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX}${key}`),
   };
+}
+
+/**
+ * True for the synthetic continuation prompts minted by
+ * {@link agentAutoResumeIds}. These are the ONLY messages whose turn launch the
+ * Durable Agent continuation owns end to end, so they are the only ones the
+ * projection pipeline may skip when parking turn-start obligations. Excluding
+ * everything with `inputOrigin: "agent-loop"` instead — as this check once did
+ * — also swallowed scheduled VM-agent task prompts (`vm-task:*`), whose turns
+ * then had no owner at all and never started.
+ */
+export function isAgentAutoResumeMessageId(messageId: string): boolean {
+  return messageId.startsWith(AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX);
 }
 
 const ACTIVE_TURN_WORK_SOURCE_PREFIX = "turn-start:";

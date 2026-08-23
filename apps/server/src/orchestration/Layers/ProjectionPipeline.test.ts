@@ -4015,12 +4015,22 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         text: "Please resume your current task using the context provided and pick up exactly where you left off.",
         createdAt: "2026-01-01T00:00:03.000Z",
       });
+      // Only the continuation's own auto-resume prompts skip the obligation.
       yield* dispatchTurn({
         commandId: "cmd-thread-work-agent-loop",
-        messageId: "message-thread-work-agent-loop",
+        messageId: "agent-auto-resume-message:thread-work:turn-prior",
         text: "Internal Agent continuation",
         inputOrigin: "agent-loop",
         createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      // A scheduled VM-agent task prompt is also agent-loop, but nothing else
+      // owns its launch — excluding it here meant its turn never started.
+      yield* dispatchTurn({
+        commandId: "cmd-thread-work-scheduled-task",
+        messageId: "vm-task:run-thread-work",
+        text: "Scheduled task prompt",
+        inputOrigin: "agent-loop",
+        createdAt: "2026-01-01T00:00:05.000Z",
       });
 
       const obligations = yield* sql<{
@@ -4056,8 +4066,16 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           blockedReason: null,
         },
         {
+          // The scheduled-task send is a real parked delivery, so it
+          // supersedes the synthetic resume exactly as a typed message would.
           sourceTurnId: "turn-incomplete-thread-work",
           kind: "startup-resume",
+          state: "cancelled",
+          blockedReason: "superseded by user turn",
+        },
+        {
+          sourceTurnId: "turn-start:vm-task:run-thread-work",
+          kind: "active-turn-recovery",
           state: "pending",
           blockedReason: null,
         },
@@ -4070,7 +4088,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         commandId: CommandId.make("cmd-thread-work-interrupt"),
         threadId,
         turnId: incompleteTurnId,
-        createdAt: "2026-01-01T00:00:05.000Z",
+        createdAt: "2026-01-01T00:00:06.000Z",
       });
 
       const afterInterrupt = yield* sql<{
@@ -4101,6 +4119,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           sourceTurnId: "turn-incomplete-thread-work",
           kind: "startup-resume",
           state: "cancelled",
+        },
+        {
+          sourceTurnId: "turn-start:vm-task:run-thread-work",
+          kind: "active-turn-recovery",
+          state: "pending",
         },
       ]);
     }),
