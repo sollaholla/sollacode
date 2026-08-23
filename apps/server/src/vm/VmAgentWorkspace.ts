@@ -2,6 +2,7 @@ import {
   type VmAgentArtifact,
   type VmAgentArtifactDefinition,
   VmAgentArtifactId,
+  type VmAgentAttentionSnapshot,
   type VmAgentBlocker,
   VmAgentBlockerId,
   type VmAgentId,
@@ -31,6 +32,7 @@ import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
 
 type WorkspaceListener = (snapshot: VmAgentWorkspaceSnapshot) => Effect.Effect<void>;
+type AttentionListener = (snapshot: VmAgentAttentionSnapshot) => Effect.Effect<void>;
 
 export interface CreateWorkspaceTaskInput {
   readonly vmAgentId: VmAgentId;
@@ -66,6 +68,9 @@ export interface VmAgentWorkspaceShape {
     vmAgentId: VmAgentId,
     listener: WorkspaceListener,
   ) => Effect.Effect<() => void, VmAgentWorkspaceError>;
+  readonly subscribeAttention: (
+    listener: AttentionListener,
+  ) => Effect.Effect<() => void, VmAgentWorkspaceError>;
   readonly createTask: (
     input: CreateWorkspaceTaskInput,
   ) => Effect.Effect<VmAgentTask, VmAgentWorkspaceError>;
@@ -94,6 +99,12 @@ export interface VmAgentWorkspaceShape {
     vmAgentId: VmAgentId,
     notificationId: VmAgentNotificationId,
   ) => Effect.Effect<void, VmAgentWorkspaceError>;
+  readonly updateNotification: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly notificationId: VmAgentNotificationId;
+    readonly read?: boolean | undefined;
+    readonly archived?: boolean | undefined;
+  }) => Effect.Effect<void, VmAgentWorkspaceError>;
   readonly updateNotificationPreferences: (
     input: Omit<VmAgentNotificationPreferences, "updatedAt">,
   ) => Effect.Effect<VmAgentNotificationPreferences, VmAgentWorkspaceError>;
@@ -162,6 +173,7 @@ export const make = Effect.gen(function* () {
   const agents = yield* VmAgentStore;
   const store = yield* VmAgentWorkspaceStore;
   const listeners = new Map<string, Set<WorkspaceListener>>();
+  const attentionListeners = new Set<AttentionListener>();
 
   const requireAgent = Effect.fn("VmAgentWorkspace.requireAgent")(function* (vmAgentId: VmAgentId) {
     const agent = yield* agents
@@ -209,6 +221,15 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const publishAttention = Effect.fn("VmAgentWorkspace.publishAttention")(function* () {
+    if (attentionListeners.size === 0) return;
+    const next = yield* store.attentionSnapshot().pipe(Effect.orElseSucceed(() => null));
+    if (next === null) return;
+    for (const listener of attentionListeners) {
+      yield* listener(next).pipe(Effect.ignoreCause({ log: true }));
+    }
+  });
+
   const refresh: VmAgentWorkspaceShape["refresh"] = (vmAgentId) =>
     publish(vmAgentId).pipe(Effect.ignoreCause({ log: true }));
 
@@ -232,6 +253,28 @@ export const make = Effect.gen(function* () {
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.sync(() => unsubscribe?.()).pipe(Effect.flatMap(() => Effect.failCause(cause))),
+      ),
+    );
+  };
+
+  const subscribeAttention: VmAgentWorkspaceShape["subscribeAttention"] = (listener) => {
+    let subscribed = false;
+    return Effect.gen(function* () {
+      attentionListeners.add(listener);
+      subscribed = true;
+      yield* listener(
+        yield* store
+          .attentionSnapshot()
+          .pipe(Effect.mapError(operationError("reading agent attention"))),
+      );
+      return () => {
+        attentionListeners.delete(listener);
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          if (subscribed) attentionListeners.delete(listener);
+        }).pipe(Effect.flatMap(() => Effect.failCause(cause))),
       ),
     );
   };
@@ -387,6 +430,7 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(operationError("creating agent notification")));
       yield* publish(input.vmAgentId);
+      yield* publishAttention();
       return true;
     },
   );
@@ -399,6 +443,24 @@ export const make = Effect.gen(function* () {
       .markNotificationRead({ vmAgentId, notificationId, readAt: yield* nowIso })
       .pipe(Effect.mapError(operationError("marking agent notification read")));
     yield* publish(vmAgentId);
+    yield* publishAttention();
+  });
+
+  const updateNotification: VmAgentWorkspaceShape["updateNotification"] = Effect.fn(
+    "VmAgentWorkspace.updateNotification",
+  )(function* (input) {
+    yield* ensure(input.vmAgentId);
+    const now = yield* nowIso;
+    yield* store
+      .updateNotification({
+        vmAgentId: input.vmAgentId,
+        notificationId: input.notificationId,
+        ...(input.read === undefined ? {} : { readAt: input.read ? now : null }),
+        ...(input.archived === undefined ? {} : { archivedAt: input.archived ? now : null }),
+      })
+      .pipe(Effect.mapError(operationError("updating agent notification")));
+    yield* publish(input.vmAgentId);
+    yield* publishAttention();
   });
 
   const updateNotificationPreferences: VmAgentWorkspaceShape["updateNotificationPreferences"] =
@@ -454,6 +516,7 @@ export const make = Effect.gen(function* () {
       dedupeKey: `blocker:${blocker.blockerId}`,
     }).pipe(Effect.orElseSucceed(() => false));
     yield* publish(input.vmAgentId);
+    yield* publishAttention();
     return blocker;
   });
 
@@ -470,6 +533,7 @@ export const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(operationError("resolving a blocker")));
     yield* publish(input.vmAgentId);
+    yield* publishAttention();
     return resolved;
   });
 
@@ -477,12 +541,14 @@ export const make = Effect.gen(function* () {
     ensure,
     snapshot,
     subscribe,
+    subscribeAttention,
     createTask,
     updateTask,
     deleteTask,
     runTaskNow,
     notify,
     markNotificationRead,
+    updateNotification,
     updateNotificationPreferences,
     upsertArtifact,
     raiseBlocker,

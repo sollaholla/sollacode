@@ -186,11 +186,6 @@ export function FileMarkdownPreview(props: {
       setIsPullRefreshing(false);
     }
   }, [props.onRefresh]);
-  const styles = useMarkdownPreviewStyles();
-  const onLinkPress = useCallback((href: string) => {
-    void tryOpenExternalUrl(href, "markdown-link");
-  }, []);
-
   return (
     <ScrollView
       className="flex-1 bg-sheet"
@@ -205,23 +200,32 @@ export function FileMarkdownPreview(props: {
       }
     >
       <View className="mx-auto w-full max-w-[760px]">
-        {hasNativeSelectableMarkdownText() ? (
-          <SelectableMarkdownText
-            markdown={props.markdown}
-            onLinkPress={onLinkPress}
-            textStyle={styles.nativeTextStyle}
-          />
-        ) : (
-          <Markdown
-            options={{ gfm: true }}
-            renderers={styles.renderers}
-            styles={styles.styles}
-            theme={styles.theme}
-          >
-            {props.markdown}
-          </Markdown>
-        )}
+        <MarkdownDocument markdown={props.markdown} />
       </View>
     </ScrollView>
+  );
+}
+
+export function MarkdownDocument(props: { readonly markdown: string }) {
+  const styles = useMarkdownPreviewStyles();
+  const onLinkPress = useCallback((href: string) => {
+    void tryOpenExternalUrl(href, "markdown-link");
+  }, []);
+
+  return hasNativeSelectableMarkdownText() ? (
+    <SelectableMarkdownText
+      markdown={props.markdown}
+      onLinkPress={onLinkPress}
+      textStyle={styles.nativeTextStyle}
+    />
+  ) : (
+    <Markdown
+      options={{ gfm: true }}
+      renderers={styles.renderers}
+      styles={styles.styles}
+      theme={styles.theme}
+    >
+      {props.markdown}
+    </Markdown>
   );
 }

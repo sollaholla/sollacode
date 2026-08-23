@@ -4,21 +4,29 @@ import type {
   VmAgent,
   VmAgentArtifactDefinition,
   VmAgentBlocker,
+  VmAgentNotification,
   VmAgentTask,
   VmAgentWorkspaceSnapshot,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
   BellIcon,
   CalendarClockIcon,
+  ChevronLeftIcon,
   ExternalLinkIcon,
   HandIcon,
+  InboxIcon,
+  MailIcon,
+  MailOpenIcon,
   PlayIcon,
   PlusIcon,
+  Settings2Icon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -27,8 +35,15 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Switch } from "~/components/ui/switch";
 import { openUrlInThreadPreview } from "~/components/preview/openUrlInThreadPreview";
+import ChatMarkdown from "~/components/ChatMarkdown";
+import { cn } from "~/lib/utils";
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
+import {
+  agentNotificationPreview,
+  type AgentInboxFolder,
+  notificationsInFolder,
+} from "./agentInbox";
 
 const commandError = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
@@ -497,13 +512,26 @@ export function AgentNotificationsPanel(props: {
   readonly agent: VmAgent;
   readonly workspace: VmAgentWorkspaceSnapshot | null;
 }) {
-  const markRead = useAtomCommand(vmAgentEnvironment.markNotificationRead, {
+  const updateNotification = useAtomCommand(vmAgentEnvironment.updateNotification, {
     reportFailure: false,
   });
   const updatePreferences = useAtomCommand(vmAgentEnvironment.updateNotificationPreferences, {
     reportFailure: false,
   });
   const preferences = props.workspace?.notificationPreferences;
+  const notifications = props.workspace?.notifications ?? [];
+  const [folder, setFolder] = useState<AgentInboxFolder>("inbox");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const visible = useMemo(
+    () => notificationsInFolder(notifications, folder),
+    [folder, notifications],
+  );
+  const selected =
+    visible.find((notification) => notification.notificationId === selectedId) ?? null;
   const [systemPermission, setSystemPermission] = useState<NotificationPermission | "unsupported">(
     () => (typeof Notification === "undefined" ? "unsupported" : Notification.permission),
   );
@@ -533,81 +561,297 @@ export function AgentNotificationsPanel(props: {
       },
     });
   };
+
+  const mutateNotification = async (
+    notification: VmAgentNotification,
+    patch: { readonly read?: boolean; readonly archived?: boolean },
+  ) => {
+    setBusyId(notification.notificationId);
+    setError(null);
+    const result = await updateNotification({
+      environmentId: props.environmentId,
+      input: {
+        vmAgentId: props.agent.vmAgentId,
+        notificationId: notification.notificationId,
+        ...patch,
+      },
+    });
+    setBusyId(null);
+    if (result._tag === "Failure") {
+      setError(commandError(result.cause, "The inbox item could not be updated."));
+      return;
+    }
+    if (patch.archived !== undefined) {
+      setSelectedId(null);
+      setMobileDetailOpen(false);
+    }
+  };
+
+  const openNotification = (notification: VmAgentNotification) => {
+    setSelectedId(notification.notificationId);
+    setMobileDetailOpen(true);
+    if (notification.readAt === null) {
+      void mutateNotification(notification, { read: true });
+    }
+  };
+
+  const chooseFolder = (next: AgentInboxFolder) => {
+    setFolder(next);
+    setSelectedId(null);
+    setMobileDetailOpen(false);
+  };
+
+  const inboxCount = notifications.filter(
+    (notification) => notification.archivedAt === null,
+  ).length;
+  const archiveCount = notifications.length - inboxCount;
   return (
     <WorkspacePanel
-      title="Notifications"
+      title="Inbox"
       description="A durable inbox plus desktop notifications while Solla Code is running."
+      wide
+      action={
+        <Button
+          type="button"
+          size="sm"
+          variant={preferencesOpen ? "secondary" : "outline"}
+          aria-expanded={preferencesOpen}
+          onClick={() => setPreferencesOpen((open) => !open)}
+        >
+          <Settings2Icon /> Preferences
+        </Button>
+      }
     >
-      {preferences ? (
-        <section className="flex flex-col gap-3 rounded-xl border p-3">
-          <Preference
-            label="Notifications"
-            checked={preferences.enabled}
-            onChange={(checked) => void setPreference({ enabled: checked })}
-          />
-          <Preference
-            label="Task completions"
-            checked={preferences.taskCompletions}
-            onChange={(checked) => void setPreference({ taskCompletions: checked })}
-          />
-          <Preference
-            label="Task failures"
-            checked={preferences.taskFailures}
-            onChange={(checked) => void setPreference({ taskFailures: checked })}
-          />
-          <Preference
-            label="Agent messages"
-            checked={preferences.agentMessages}
-            onChange={(checked) => void setPreference({ agentMessages: checked })}
-          />
+      {preferencesOpen ? (
+        <section className="grid gap-3 rounded-xl border p-3 sm:grid-cols-2">
+          {preferences ? (
+            <>
+              <Preference
+                label="Notifications"
+                checked={preferences.enabled}
+                onChange={(checked) => void setPreference({ enabled: checked })}
+              />
+              <Preference
+                label="Task completions"
+                checked={preferences.taskCompletions}
+                onChange={(checked) => void setPreference({ taskCompletions: checked })}
+              />
+              <Preference
+                label="Task failures"
+                checked={preferences.taskFailures}
+                onChange={(checked) => void setPreference({ taskFailures: checked })}
+              />
+              <Preference
+                label="Agent messages"
+                checked={preferences.agentMessages}
+                onChange={(checked) => void setPreference({ agentMessages: checked })}
+              />
+            </>
+          ) : null}
+          <div className="sm:col-span-2">
+            {systemPermission === "default" ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void requestSystemPermission()}
+              >
+                Enable desktop alerts
+              </Button>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {systemPermission === "granted"
+                  ? "Desktop alerts are enabled."
+                  : systemPermission === "denied"
+                    ? "Desktop alerts are blocked by browser or system settings; the Inbox still works."
+                    : "Desktop alerts are unavailable in this client; the Inbox still works."}
+              </p>
+            )}
+          </div>
         </section>
       ) : null}
-      {systemPermission === "default" ? (
-        <Button type="button" variant="outline" onClick={() => void requestSystemPermission()}>
-          Enable desktop alerts
-        </Button>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          {systemPermission === "granted"
-            ? "Desktop alerts are enabled."
-            : systemPermission === "denied"
-              ? "Desktop alerts are blocked by browser or system settings; the Inbox still works."
-              : "Desktop alerts are unavailable in this client; the Inbox still works."}
-        </p>
-      )}
-      <div className="flex flex-col gap-2">
-        {(props.workspace?.notifications ?? []).map((notification) => (
-          <button
-            key={notification.notificationId}
-            type="button"
-            className="rounded-xl border p-3 text-left hover:bg-muted/40"
-            onClick={() =>
-              void markRead({
-                environmentId: props.environmentId,
-                input: {
-                  vmAgentId: props.agent.vmAgentId,
-                  notificationId: notification.notificationId,
-                },
-              })
-            }
-          >
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-medium">{notification.title}</p>
-              {notification.readAt ? null : <span className="size-2 rounded-full bg-primary" />}
+
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+      <div className="grid h-[min(42rem,calc(100vh-12rem))] min-h-[28rem] min-w-0 overflow-hidden rounded-xl border md:grid-cols-[minmax(15rem,22rem)_minmax(0,1fr)]">
+        <section
+          className={cn(
+            "min-h-0 min-w-0 flex-col bg-muted/15 md:flex md:border-r",
+            mobileDetailOpen ? "hidden" : "flex",
+          )}
+        >
+          <div className="flex shrink-0 items-center gap-1 border-b p-2">
+            <InboxFolderButton
+              active={folder === "inbox"}
+              label="Inbox"
+              count={inboxCount}
+              icon={<InboxIcon />}
+              onClick={() => chooseFolder("inbox")}
+            />
+            <InboxFolderButton
+              active={folder === "archive"}
+              label="Archive"
+              count={archiveCount}
+              icon={<ArchiveIcon />}
+              onClick={() => chooseFolder("archive")}
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {visible.map((notification) => (
+              <button
+                key={notification.notificationId}
+                type="button"
+                className={cn(
+                  "flex w-full min-w-0 flex-col gap-1 border-b px-3 py-3 text-left transition-colors hover:bg-muted/50",
+                  selected?.notificationId === notification.notificationId &&
+                    "bg-muted/60 md:bg-muted/40",
+                  notification.readAt === null && "bg-primary/[0.04]",
+                )}
+                onClick={() => openNotification(notification)}
+              >
+                <span className="flex w-full min-w-0 items-center gap-2">
+                  {notification.readAt === null ? (
+                    <span className="size-2 shrink-0 rounded-full bg-primary" aria-label="Unread" />
+                  ) : null}
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-sm",
+                      notification.readAt === null ? "font-semibold" : "font-medium",
+                    )}
+                  >
+                    {notification.title}
+                  </span>
+                </span>
+                <span className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {agentNotificationPreview(notification.body)}
+                </span>
+                <span className="text-[11px] text-muted-foreground/80">
+                  {formatTime(notification.createdAt)}
+                </span>
+              </button>
+            ))}
+            {visible.length === 0 ? (
+              <div className="p-3">
+                <Empty
+                  text={folder === "archive" ? "No archived messages." : "Your inbox is clear."}
+                  icon={
+                    folder === "archive" ? (
+                      <ArchiveIcon className="size-5" />
+                    ) : (
+                      <BellIcon className="size-5" />
+                    )
+                  }
+                />
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section
+          className={cn(
+            "min-h-0 min-w-0 flex-col bg-background md:flex",
+            mobileDetailOpen ? "flex" : "hidden",
+          )}
+        >
+          {selected ? (
+            <>
+              <header className="shrink-0 border-b px-3 py-3 sm:px-4">
+                <div className="flex min-w-0 items-start gap-2">
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    className="md:hidden"
+                    aria-label="Back to messages"
+                    onClick={() => setMobileDetailOpen(false)}
+                  >
+                    <ChevronLeftIcon />
+                  </Button>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-base font-semibold">{selected.title}</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {formatTime(selected.createdAt)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="outline"
+                      disabled={busyId === selected.notificationId}
+                      aria-label={selected.readAt === null ? "Mark as read" : "Mark as unread"}
+                      title={selected.readAt === null ? "Mark as read" : "Mark as unread"}
+                      onClick={() =>
+                        void mutateNotification(selected, { read: selected.readAt === null })
+                      }
+                    >
+                      {selected.readAt === null ? <MailOpenIcon /> : <MailIcon />}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="outline"
+                      disabled={busyId === selected.notificationId}
+                      aria-label={folder === "archive" ? "Restore to inbox" : "Archive message"}
+                      title={folder === "archive" ? "Restore to inbox" : "Archive message"}
+                      onClick={() =>
+                        void mutateNotification(selected, {
+                          archived: folder !== "archive",
+                          ...(folder === "archive" ? {} : { read: true }),
+                        })
+                      }
+                    >
+                      {folder === "archive" ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+                    </Button>
+                  </div>
+                </div>
+              </header>
+              <article className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
+                <div className="mx-auto min-w-0 max-w-3xl rounded-xl border bg-card p-4 shadow-sm sm:p-5">
+                  <ChatMarkdown
+                    text={selected.body}
+                    cwd={undefined}
+                    threadRef={
+                      props.agent.threadId
+                        ? { environmentId: props.environmentId, threadId: props.agent.threadId }
+                        : undefined
+                    }
+                    lineBreaks
+                  />
+                </div>
+              </article>
+            </>
+          ) : (
+            <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
+              Select a message to read it.
             </div>
-            <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-              {notification.body}
-            </p>
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              {formatTime(notification.createdAt)}
-            </p>
-          </button>
-        ))}
-        {props.workspace?.notifications.length === 0 ? (
-          <Empty text="No notifications yet." icon={<BellIcon className="size-5" />} />
-        ) : null}
+          )}
+        </section>
       </div>
     </WorkspacePanel>
+  );
+}
+
+function InboxFolderButton(props: {
+  readonly active: boolean;
+  readonly label: string;
+  readonly count: number;
+  readonly icon: ReactNode;
+  readonly onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant={props.active ? "secondary" : "ghost"}
+      className="min-w-0 flex-1 justify-start"
+      aria-pressed={props.active}
+      onClick={props.onClick}
+    >
+      {props.icon}
+      <span className="truncate">{props.label}</span>
+      <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{props.count}</span>
+    </Button>
   );
 }
 
@@ -674,11 +918,17 @@ function WorkspacePanel(props: {
   readonly title: string;
   readonly description: string;
   readonly action?: ReactNode;
+  readonly wide?: boolean;
   readonly children: ReactNode;
 }) {
   return (
     <div className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
-      <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4">
+      <div
+        className={cn(
+          "mx-auto flex min-w-0 flex-col gap-4 p-3 sm:p-4",
+          props.wide ? "max-w-6xl" : "max-w-3xl",
+        )}
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">{props.title}</h2>

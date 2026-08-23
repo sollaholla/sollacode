@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 import { VmAgentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { activeDelegationsForAgent } from "./AgentStackSidebarEntry";
+import { activeDelegationsForAgent, attentionForAgent } from "./AgentStackSidebarEntry";
 
 describe("activeDelegationsForAgent", () => {
   it("projects compact active-work counts without borrowing another agent's work", () => {
@@ -17,6 +17,24 @@ describe("activeDelegationsForAgent", () => {
     expect(activeDelegationsForAgent(agents, "scout")).toBe(2);
     expect(activeDelegationsForAgent(agents, "builder")).toBe(1);
     expect(activeDelegationsForAgent(agents, "missing")).toBe(0);
+  });
+});
+
+describe("attentionForAgent", () => {
+  it("keeps unread and waiting signals scoped to their agent", () => {
+    const agents = [
+      { vmAgentId: "scout", unreadNotificationCount: 3, openBlockerCount: 1 },
+      { vmAgentId: "builder", unreadNotificationCount: 0, openBlockerCount: 2 },
+    ];
+
+    expect(attentionForAgent(agents, "scout")).toMatchObject({
+      unreadNotificationCount: 3,
+      openBlockerCount: 1,
+    });
+    expect(attentionForAgent(agents, "missing")).toMatchObject({
+      unreadNotificationCount: 0,
+      openBlockerCount: 0,
+    });
   });
 });
 

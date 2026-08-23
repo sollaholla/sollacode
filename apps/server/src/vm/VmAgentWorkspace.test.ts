@@ -1,6 +1,8 @@
 import {
   ThreadId,
+  type VmAgentAttentionSnapshot,
   VmAgentId,
+  VmAgentNotificationId,
   VmAgentTaskRunId,
   VmId,
   type VmAgent,
@@ -225,5 +227,73 @@ workspaceLayer("VmAgentWorkspace", (it) => {
       );
       assert.strictEqual(error._tag, "VmAgentWorkspaceOperationError");
     }),
+  );
+
+  it.effect(
+    "streams lightweight unread and waiting-on-you counts across reversible inbox state",
+    () =>
+      Effect.gen(function* () {
+        const workspace = yield* VmAgentWorkspace;
+        const agent = yield* insertAgent("attention");
+        const notificationId = VmAgentNotificationId.make("attention-notification");
+        const snapshots: VmAgentAttentionSnapshot[] = [];
+        const unsubscribe = yield* workspace.subscribeAttention((snapshot) =>
+          Effect.sync(() => snapshots.push(snapshot)),
+        );
+        const latest = () =>
+          snapshots.at(-1)?.agents.find((entry) => entry.vmAgentId === agent.vmAgentId);
+
+        yield* workspace.notify({
+          vmAgentId: agent.vmAgentId,
+          notificationId,
+          kind: "agent-message",
+          title: "Launch report",
+          body: "**Ready** for review.",
+        });
+        assert.strictEqual(latest()?.unreadNotificationCount, 1);
+
+        yield* workspace.updateNotification({
+          vmAgentId: agent.vmAgentId,
+          notificationId,
+          read: true,
+        });
+        assert.strictEqual(latest()?.unreadNotificationCount, 0);
+
+        yield* workspace.updateNotification({
+          vmAgentId: agent.vmAgentId,
+          notificationId,
+          read: false,
+        });
+        assert.strictEqual(latest()?.unreadNotificationCount, 1);
+
+        yield* workspace.updateNotification({
+          vmAgentId: agent.vmAgentId,
+          notificationId,
+          archived: true,
+        });
+        assert.strictEqual(latest()?.unreadNotificationCount, 0);
+        assert.isNotNull((yield* workspace.snapshot(agent.vmAgentId)).notifications[0]?.archivedAt);
+
+        yield* workspace.updateNotification({
+          vmAgentId: agent.vmAgentId,
+          notificationId,
+          archived: false,
+        });
+        assert.strictEqual(latest()?.unreadNotificationCount, 1);
+
+        const blocker = yield* workspace.raiseBlocker({
+          vmAgentId: agent.vmAgentId,
+          title: "Sign-in required",
+          detail: "The agent needs a human sign-in.",
+        });
+        assert.strictEqual(latest()?.openBlockerCount, 1);
+        yield* workspace.resolveBlocker({
+          vmAgentId: agent.vmAgentId,
+          blockerId: blocker.blockerId,
+          resolvedBy: "user",
+        });
+        assert.strictEqual(latest()?.openBlockerCount, 0);
+        unsubscribe();
+      }),
   );
 });
