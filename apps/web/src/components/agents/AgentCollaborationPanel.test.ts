@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { agentDelegationsFor, delegationRole } from "./AgentCollaborationPanel";
+import { agentDelegationsFor, capabilityChips, delegationRole } from "./AgentCollaborationPanel";
 
 const agent = (id: string) =>
   ({
@@ -114,5 +114,21 @@ describe("agentDelegationsFor", () => {
     expect(delegationRole(nested, "scout")).toBe("Root agent");
     expect(delegationRole(nested, "builder")).toBe("Source agent");
     expect(delegationRole(nested, "writer")).toBe("Target agent");
+  });
+});
+
+describe("capabilityChips", () => {
+  it("maps known capability ids to friendly labels and hides the rest", () => {
+    expect(
+      capabilityChips([
+        "workspace.tasks",
+        "workspace.consult",
+        "browser.preview",
+        "collaboration.receive",
+        "vm",
+      ]),
+    ).toEqual(["Tasks", "Consult", "Browser"]);
+    expect(capabilityChips(["collaboration.receive", "unknown.future"])).toEqual([]);
+    expect(capabilityChips(["workspace.tasks", "workspace.tasks"])).toEqual(["Tasks"]);
   });
 });

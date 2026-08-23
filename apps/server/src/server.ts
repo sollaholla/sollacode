@@ -52,6 +52,7 @@ import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import { VmAgentTaskSchedulerLive } from "./vm/VmAgentTaskScheduler.ts";
 import { VmAgentStoreLive } from "./persistence/Layers/VmAgents.ts";
+import { PreviewSessionStoreLive } from "./persistence/Layers/PreviewSessions.ts";
 import { VmAgentWorkspaceStoreLive } from "./persistence/Layers/VmAgentWorkspaces.ts";
 import { VmAgentCollaborationStoreLive } from "./persistence/Layers/VmAgentCollaborations.ts";
 import { VmAgentCollaborationLive } from "./vm/VmAgentCollaboration.ts";
@@ -313,7 +314,13 @@ const TerminalLayerLive = TerminalManager.layer.pipe(
 );
 
 const PreviewLayerLive = Layer.empty.pipe(
-  Layer.provideMerge(PreviewManager.layer),
+  Layer.provideMerge(
+    PreviewManager.layer.pipe(
+      // Tab durability: sessions are rehydrated from SQLite at boot so open
+      // tabs survive restarts.
+      Layer.provide(PreviewSessionStoreLive.pipe(Layer.provide(PersistenceLayerLive))),
+    ),
+  ),
   Layer.provideMerge(PortScannerLayerLive),
 );
 

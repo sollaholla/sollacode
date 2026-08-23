@@ -89,7 +89,7 @@ import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useThreadShells } from "../state/entities";
+import { useListedProjects, useThreadShells } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
@@ -1287,7 +1287,7 @@ function latestTurnDiff(
 }
 
 export default function SidebarV2() {
-  const projects = useProjects();
+  const projects = useListedProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const startupResumePendingByThreadKey = useStartupResumeStore(
@@ -2807,6 +2807,13 @@ export default function SidebarV2() {
                               className="size-4 shrink-0"
                             />
                             <span className="min-w-0 truncate text-sm">{project.displayName}</span>
+                            {primaryEnvironmentId !== null &&
+                            project.environmentId !== primaryEnvironmentId ? (
+                              <ServerIcon
+                                aria-hidden
+                                className="size-3.5 shrink-0 text-muted-foreground/70"
+                              />
+                            ) : null}
                             <button
                               type="button"
                               aria-label={`Project actions for ${project.displayName}`}

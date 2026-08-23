@@ -4,7 +4,15 @@ import { PreviewUrlNormalizationError } from "@t3tools/shared/preview";
 import { Effect, PubSub } from "effect";
 import { expect } from "vite-plus/test";
 
+import * as Layer from "effect/Layer";
+
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { PreviewSessionStoreLive } from "../persistence/Layers/PreviewSessions.ts";
 import * as PreviewManager from "./Manager.ts";
+
+const managerTestLayer = PreviewManager.layer.pipe(
+  Layer.provideMerge(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+);
 
 const DRAIN_LIMIT = 100;
 
@@ -35,7 +43,7 @@ const collectEvents = Effect.gen(function* () {
   return collector;
 }).pipe(Effect.withSpan("preview.test.collectEvents"));
 
-it.layer(PreviewManager.layer)("PreviewManager", (it) => {
+it.layer(managerTestLayer)("PreviewManager", (it) => {
   it.effect("opens a session and emits opened with normalized URL", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
@@ -385,3 +393,43 @@ it.layer(PreviewManager.layer)("PreviewManager", (it) => {
     }),
   );
 });
+
+// Durability: sessions must survive a manager (process) restart via the
+// persisted store, and a closed tab must not resurrect. Three managers are
+// built over ONE store layer inside a single provide, modeling three server
+// lifetimes over one database.
+it.effect("restores persisted tabs across a restart and forgets closed ones", () =>
+  Effect.gen(function* () {
+    const threadId = freshThreadId();
+    const first = yield* PreviewManager.make;
+    const opened = yield* first.open({ threadId, url: "https://studio.youtube.com/" });
+    yield* first.reportStatus({
+      threadId,
+      tabId: opened.tabId,
+      navStatus: {
+        _tag: "Success",
+        url: "https://studio.youtube.com/channel/x",
+        title: "Channel dashboard",
+      },
+      canGoBack: true,
+      canGoForward: false,
+    });
+
+    const second = yield* PreviewManager.make;
+    const restored = yield* second.list({ threadId });
+    expect(restored.sessions.map((session) => session.tabId)).toEqual([opened.tabId]);
+    const restoredSnapshot = restored.sessions[0];
+    expect(restoredSnapshot?.navStatus).toEqual({
+      _tag: "Success",
+      url: "https://studio.youtube.com/channel/x",
+      title: "Channel dashboard",
+    });
+
+    yield* second.close({ threadId, tabId: opened.tabId });
+    const third = yield* PreviewManager.make;
+    const afterClose = yield* third.list({ threadId });
+    expect(afterClose.sessions).toEqual([]);
+  }).pipe(
+    Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+  ),
+);
