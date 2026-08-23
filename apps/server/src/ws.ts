@@ -2776,7 +2776,7 @@ const makeWsRpcLayer = (
               .resolveBlocker({
                 vmAgentId: input.vmAgentId,
                 blockerId: input.blockerId,
-                resolvedBy: "user",
+                resolvedBy: input.dismissed === true ? "dismissed" : "user",
               })
               .pipe(Effect.asVoid),
             { "rpc.aggregate": "vm-workspace" },

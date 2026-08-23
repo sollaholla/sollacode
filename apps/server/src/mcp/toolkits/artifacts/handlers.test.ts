@@ -290,6 +290,9 @@ it.layer(testLayer)("thread artifact toolkit", (it) => {
         shells,
       );
       expect(harness.publishInputs.map((input) => input.threadId)).toEqual([otherThreadId]);
+      if (result.action !== "publish") {
+        return yield* Effect.die(`Unexpected artifact action: ${result.action}`);
+      }
       // Addresses point at the artifact's owner thread, not the side chat.
       expect(result.openPath).toBe(
         "/environment-artifact-test/thread-artifact-other?artifact=artifact-release-notes",

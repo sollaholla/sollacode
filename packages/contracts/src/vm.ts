@@ -398,7 +398,7 @@ export const VmAgentBlocker = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   resolvedAt: Schema.NullOr(IsoDateTime),
-  resolvedBy: Schema.NullOr(Schema.Literals(["user", "agent"])),
+  resolvedBy: Schema.NullOr(Schema.Literals(["user", "agent", "dismissed"])),
 });
 export type VmAgentBlocker = typeof VmAgentBlocker.Type;
 
@@ -762,6 +762,18 @@ export const VmAgentBlockerRef = Schema.Struct({
   blockerId: VmAgentBlockerId,
 });
 export type VmAgentBlockerRef = Schema.Codec.Encoded<typeof VmAgentBlockerRef>;
+
+export const VmAgentBlockerResolveInput = Schema.Struct({
+  vmAgentId: VmAgentId,
+  blockerId: VmAgentBlockerId,
+  /**
+   * Dismissal is the user waving the request away without asserting the
+   * underlying thing happened: the card disappears and the agent sees
+   * resolvedBy "dismissed" rather than a completed hand-off.
+   */
+  dismissed: Schema.optional(Schema.Boolean),
+});
+export type VmAgentBlockerResolveInput = Schema.Codec.Encoded<typeof VmAgentBlockerResolveInput>;
 
 export const VmAgentNotificationPreferencesInput = Schema.Struct({
   vmAgentId: VmAgentId,

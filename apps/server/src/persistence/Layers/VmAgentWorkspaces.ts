@@ -391,7 +391,7 @@ const make = Effect.gen(function* () {
     Request: Schema.Struct({
       vmAgentId: VmAgentBlocker.fields.vmAgentId,
       blockerId: VmAgentBlocker.fields.blockerId,
-      resolvedBy: Schema.Literals(["user", "agent"]),
+      resolvedBy: Schema.Literals(["user", "agent", "dismissed"]),
       now: VmAgentBlocker.fields.createdAt,
     }),
     Result: VmAgentBlocker,

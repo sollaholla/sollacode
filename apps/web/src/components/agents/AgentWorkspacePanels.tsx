@@ -16,6 +16,7 @@ import {
   PlayIcon,
   PlusIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -71,8 +72,9 @@ export function AgentBlockerBanner(props: {
   readonly onRevealChat?: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const [resolvingId, setResolvingId] = useState<string | null>(null);
-  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState<{ blockerId: string; action: "resolve" | "dismiss" } | null>(
+    null,
+  );
   const resolveBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
     reportFailure: false,
   });
@@ -80,13 +82,6 @@ export function AgentBlockerBanner(props: {
   const { threadRef, onRevealChat } = props;
   const blockers = openAgentBlockers(props.workspace);
   if (blockers.length === 0) return null;
-
-  const toggleExpanded = (blockerId: string) =>
-    setExpandedIds((current) => {
-      const next = new Set(current);
-      if (!next.delete(blockerId)) next.add(blockerId);
-      return next;
-    });
 
   // Show the blocker's page in the agent's own preview browser: focus the tab
   // the agent already staged at that exact URL, or open a new one there. Only
@@ -102,16 +97,27 @@ export function AgentBlockerBanner(props: {
     void openUrlInThreadPreview({ threadRef, url, openPreview, openExternally });
   };
 
-  const resolve = async (blocker: VmAgentBlocker) => {
+  const resolve = async (blocker: VmAgentBlocker, action: "resolve" | "dismiss") => {
     setError(null);
-    setResolvingId(blocker.blockerId);
+    setBusy({ blockerId: blocker.blockerId, action });
     const result = await resolveBlocker({
       environmentId: props.environmentId,
-      input: { vmAgentId: blocker.vmAgentId, blockerId: blocker.blockerId },
+      input: {
+        vmAgentId: blocker.vmAgentId,
+        blockerId: blocker.blockerId,
+        ...(action === "dismiss" ? { dismissed: true } : {}),
+      },
     });
-    setResolvingId(null);
+    setBusy(null);
     if (result._tag === "Failure") {
-      setError(commandError(result.cause, "The blocker could not be resolved."));
+      setError(
+        commandError(
+          result.cause,
+          action === "dismiss"
+            ? "The request could not be dismissed."
+            : "The blocker could not be resolved.",
+        ),
+      );
     }
   };
 
@@ -122,53 +128,90 @@ export function AgentBlockerBanner(props: {
         Waiting on you
       </div>
       <div className="mt-1.5 flex min-w-0 flex-col gap-1.5">
-        {blockers.map((blocker) => {
-          const blockerUrl = blocker.url;
-          const expanded = expandedIds.has(blocker.blockerId);
-          // Clamp only what plausibly overflows the three visible lines, so
-          // short blockers don't carry a dead "Show more" toggle.
-          const clampable = blocker.detail.length > 160 || blocker.detail.includes("\n");
-          return (
-            <div key={blocker.blockerId} className="flex min-w-0 items-start gap-2">
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium">{blocker.title}</p>
-                <p
-                  className={
-                    expanded
-                      ? "whitespace-pre-line break-words text-[11px] text-muted-foreground"
-                      : "line-clamp-3 text-[11px] text-muted-foreground"
-                  }
-                >
-                  {blocker.detail}
-                </p>
-                {clampable ? (
-                  <button
-                    type="button"
-                    className="text-[11px] font-medium text-amber-600 hover:underline dark:text-amber-400"
-                    onClick={() => toggleExpanded(blocker.blockerId)}
-                  >
-                    {expanded ? "Show less" : "Show more"}
-                  </button>
-                ) : null}
-              </div>
-              {blockerUrl ? (
-                <Button size="xs" variant="outline" onClick={() => openBlockerUrl(blockerUrl)}>
-                  <ExternalLinkIcon /> Open
-                </Button>
-              ) : null}
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={resolvingId === blocker.blockerId}
-                onClick={() => void resolve(blocker)}
-              >
-                {resolvingId === blocker.blockerId ? "Resolving…" : "Mark resolved"}
-              </Button>
-            </div>
-          );
-        })}
+        {blockers.map((blocker) => (
+          <BlockerItem
+            key={blocker.blockerId}
+            blocker={blocker}
+            busyAction={busy?.blockerId === blocker.blockerId ? busy.action : null}
+            onOpenUrl={openBlockerUrl}
+            onResolve={() => void resolve(blocker, "resolve")}
+            onDismiss={() => void resolve(blocker, "dismiss")}
+          />
+        ))}
       </div>
       {error ? <p className="mt-1.5 break-words text-[11px] text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function BlockerItem(props: {
+  readonly blocker: VmAgentBlocker;
+  readonly busyAction: "resolve" | "dismiss" | null;
+  readonly onOpenUrl: (url: string) => void;
+  readonly onResolve: () => void;
+  readonly onDismiss: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  // Whether the collapsed three-line clamp actually cuts anything off depends
+  // on the panel's current width, so measure the rendered element instead of
+  // guessing from character count.
+  const [clamped, setClamped] = useState(false);
+  const detailRef = useRef<HTMLParagraphElement | null>(null);
+  const { blocker, busyAction } = props;
+
+  useEffect(() => {
+    const element = detailRef.current;
+    if (!element || expanded) return;
+    const measure = () => setClamped(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [expanded, blocker.detail]);
+
+  const blockerUrl = blocker.url;
+  return (
+    <div className="flex min-w-0 items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium">{blocker.title}</p>
+        <p
+          ref={detailRef}
+          className={
+            expanded
+              ? "whitespace-pre-line break-words text-[11px] text-muted-foreground"
+              : "line-clamp-3 whitespace-pre-line break-words text-[11px] text-muted-foreground"
+          }
+        >
+          {blocker.detail}
+        </p>
+        {expanded || clamped ? (
+          <button
+            type="button"
+            className="text-[11px] font-medium text-amber-600 hover:underline dark:text-amber-400"
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        ) : null}
+      </div>
+      {blockerUrl ? (
+        <Button size="xs" variant="outline" onClick={() => props.onOpenUrl(blockerUrl)}>
+          <ExternalLinkIcon /> Open
+        </Button>
+      ) : null}
+      <Button size="xs" variant="outline" disabled={busyAction !== null} onClick={props.onResolve}>
+        {busyAction === "resolve" ? "Resolving…" : "Mark resolved"}
+      </Button>
+      <Button
+        size="xs"
+        variant="ghost"
+        aria-label="Dismiss"
+        title="Dismiss without marking it done"
+        disabled={busyAction !== null}
+        onClick={props.onDismiss}
+      >
+        <XIcon />
+      </Button>
     </div>
   );
 }
