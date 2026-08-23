@@ -2185,7 +2185,28 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           // Reapplying the same event must not cancel work that it already
           // created. The deterministic row is the projector's replay receipt.
-          if (Option.isSome(existing)) return;
+          if (Option.isSome(existing)) {
+            // …but a *cancelled* row is no receipt of work done. A fresh
+            // turn-start for the same message is a retry — the task scheduler
+            // re-dispatches under new command ids with the message id reused —
+            // and skipping it here left nothing at all to drive the turn.
+            // Revive the row instead; delivery re-checks supersession on
+            // claim, so a genuinely overtaken turn is still cancelled there.
+            if (existing.value.state === "cancelled") {
+              yield* threadWorkObligationRepository.transition({
+                obligationId: existing.value.obligationId,
+                expectedState: "cancelled",
+                expectedAttempt: existing.value.attempt,
+                state: "pending",
+                nextAttemptAt: null,
+                claimedAt: null,
+                leaseExpiresAt: null,
+                blockedReason: null,
+                updatedAt: event.occurredAt,
+              });
+            }
+            return;
+          }
 
           // A newer user message supersedes queued *synthetic* work — agent
           // continuations, startup resumes, retries — but never earlier user
@@ -2678,6 +2699,32 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             startupSourceTurnId === null
               ? ("active-turn-recovery" as const)
               : ("startup-resume" as const);
+          const existing = yield* threadWorkObligationRepository.getByKey({
+            threadId,
+            sourceTurnId,
+            kind,
+          });
+          if (Option.isSome(existing)) {
+            // Same rule as the live path: a cancelled row is not a receipt of
+            // launched work. The turn row this sweep just matched is still
+            // pending, so the obligation was killed by a transient verdict
+            // before the restart — revive it or the thread stays stuck across
+            // every reboot. Delivery re-validates supersession on claim.
+            if (existing.value.state === "cancelled") {
+              yield* threadWorkObligationRepository.transition({
+                obligationId: existing.value.obligationId,
+                expectedState: "cancelled",
+                expectedAttempt: existing.value.attempt,
+                state: "pending",
+                nextAttemptAt: null,
+                claimedAt: null,
+                leaseExpiresAt: null,
+                blockedReason: null,
+                updatedAt: DateTime.formatIso(yield* DateTime.now),
+              });
+            }
+            continue;
+          }
           yield* threadWorkObligationRepository.insert({
             obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
             threadId,

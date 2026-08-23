@@ -64,6 +64,7 @@ import {
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   classifyTurnStartRecovery,
+  countContinuationsSinceUserIntent,
   makeProviderCommandReactorLive,
   providerTurnProducedOutput,
 } from "./ProviderCommandReactor.ts";
@@ -158,10 +159,15 @@ describe("ProviderCommandReactor", () => {
   // that key exists, killing the row left nothing to drive the resume.
   describe("classifyTurnStartRecovery", () => {
     const userMessage = { role: "user", inputOrigin: null };
+    const messageId = "message-1";
 
     it("waits rather than giving up when the source message has not projected yet", () => {
       expect(
-        classifyTurnStartRecovery({ sourceMessage: undefined, hasLaterRealUserTurn: false }),
+        classifyTurnStartRecovery({
+          sourceMessage: undefined,
+          messageId,
+          hasLaterRealUserTurn: false,
+        }),
       ).toBe("awaiting-projection");
     });
 
@@ -169,19 +175,31 @@ describe("ProviderCommandReactor", () => {
     // we cannot judge a message we cannot see, and the retry re-reads.
     it("does not score an unseen message as superseded", () => {
       expect(
-        classifyTurnStartRecovery({ sourceMessage: undefined, hasLaterRealUserTurn: true }),
+        classifyTurnStartRecovery({
+          sourceMessage: undefined,
+          messageId,
+          hasLaterRealUserTurn: true,
+        }),
       ).toBe("awaiting-projection");
     });
 
     it("proceeds for a real user send with nothing behind it", () => {
       expect(
-        classifyTurnStartRecovery({ sourceMessage: userMessage, hasLaterRealUserTurn: false }),
+        classifyTurnStartRecovery({
+          sourceMessage: userMessage,
+          messageId,
+          hasLaterRealUserTurn: false,
+        }),
       ).toBe("proceed");
     });
 
     it("gives up once a genuinely later user turn exists", () => {
       expect(
-        classifyTurnStartRecovery({ sourceMessage: userMessage, hasLaterRealUserTurn: true }),
+        classifyTurnStartRecovery({
+          sourceMessage: userMessage,
+          messageId,
+          hasLaterRealUserTurn: true,
+        }),
       ).toBe("superseded");
     });
 
@@ -189,15 +207,80 @@ describe("ProviderCommandReactor", () => {
       expect(
         classifyTurnStartRecovery({
           sourceMessage: { role: "assistant", inputOrigin: null },
+          messageId,
           hasLaterRealUserTurn: false,
         }),
       ).toBe("superseded");
       expect(
         classifyTurnStartRecovery({
           sourceMessage: { role: "user", inputOrigin: "agent-loop" },
+          messageId: "agent-auto-resume-message:thread-1:turn-1",
           hasLaterRealUserTurn: false,
         }),
       ).toBe("superseded");
+    });
+
+    // The regression that shipped as "Queued for Codex" forever: scheduled
+    // VM-agent task prompts carry inputOrigin "agent-loop" too, but their
+    // turn-start obligation is the only thing that ever launches them.
+    // Judging by origin instead of the auto-resume message id cancelled the
+    // obligation ~50ms after the scheduler requested the turn.
+    it("proceeds for a scheduled task prompt despite its agent-loop origin", () => {
+      expect(
+        classifyTurnStartRecovery({
+          sourceMessage: { role: "user", inputOrigin: "agent-loop" },
+          messageId: "vm-task:run-1",
+          hasLaterRealUserTurn: false,
+        }),
+      ).toBe("proceed");
+    });
+  });
+
+  describe("countContinuationsSinceUserIntent", () => {
+    const typed = (id: string) => ({ id, role: "user", inputOrigin: null });
+    const resume = (id: string) => ({
+      id: `agent-auto-resume-message:${id}`,
+      role: "user",
+      inputOrigin: "agent-loop",
+    });
+    const scheduled = (id: string) => ({
+      id: `vm-task:${id}`,
+      role: "user",
+      inputOrigin: "agent-loop",
+    });
+    const assistant = (id: string) => ({ id, role: "assistant", inputOrigin: null });
+
+    it("counts resumes since the last typed message", () => {
+      expect(
+        countContinuationsSinceUserIntent([
+          typed("m1"),
+          assistant("a1"),
+          resume("r1"),
+          resume("r2"),
+        ]),
+      ).toBe(2);
+    });
+
+    it("resets on a typed message", () => {
+      expect(countContinuationsSinceUserIntent([resume("r1"), typed("m1"), resume("r2")])).toBe(1);
+    });
+
+    // A purely scheduled agent thread never sees a typed message. Each run's
+    // prompt is the user's schedule firing — fresh intent — so it must reset
+    // the budget rather than accumulate toward it, or the cap eventually
+    // shuts continuation off for good on exactly the threads that depend on it.
+    it("treats a scheduled task prompt as user intent, not a continuation", () => {
+      expect(
+        countContinuationsSinceUserIntent([
+          scheduled("run-1"),
+          assistant("a1"),
+          resume("r1"),
+          scheduled("run-2"),
+          assistant("a2"),
+          resume("r2"),
+          resume("r3"),
+        ]),
+      ).toBe(2);
     });
   });
 

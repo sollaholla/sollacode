@@ -90,6 +90,7 @@ import {
   agentContinuationShouldAwaitBackgroundTask,
   isAgentAutoResumeMessageId,
   isControlOnlyAgentTurn,
+  isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
   startupAutoResumeIds,
   STARTUP_RESUME_SIGNED_OFF_REASON,
@@ -314,14 +315,49 @@ export const classifyTurnStartRecovery = (input: {
   readonly sourceMessage:
     | { readonly role: string; readonly inputOrigin?: string | null | undefined }
     | undefined;
+  readonly messageId: string;
   readonly hasLaterRealUserTurn: boolean;
 }): TurnStartRecoveryVerdict => {
   if (input.sourceMessage === undefined) return "awaiting-projection";
   // A delivery whose message turned out not to be a real user send has been
   // overtaken for good; so has one with an actual later user turn behind it.
   if (input.sourceMessage.role !== "user") return "superseded";
-  if (input.sourceMessage.inputOrigin === "agent-loop") return "superseded";
+  // Only continuation auto-resume prompts own their launch elsewhere. Judging
+  // by the raw `inputOrigin === "agent-loop"` tag instead swept up scheduled
+  // VM-agent task prompts, whose obligation is their *only* launcher — every
+  // scheduled turn was cancelled as superseded ~50ms after being requested,
+  // and the prompt sat at "Queued" forever. Same narrowing as the projection
+  // pipeline applies when it creates the obligation.
+  if (isAgentAutoResumeMessageId(input.messageId)) return "superseded";
   return input.hasLaterRealUserTurn ? "superseded" : "proceed";
+};
+
+/**
+ * Consecutive synthetic continuations since the last message carrying real
+ * user intent — the input to the runaway budget.
+ *
+ * Scheduled VM-agent task prompts arrive tagged `inputOrigin: "agent-loop"`
+ * (no human typed them), but each one is the user's own schedule firing:
+ * fresh intent that resets the budget exactly as a typed message would.
+ * Counting them as continuations instead starved purely scheduled agent
+ * threads — with no human message ever present, every run's prompt
+ * accumulated toward the cap until continuation shut off for good.
+ */
+export const countContinuationsSinceUserIntent = (
+  messages: ReadonlyArray<{
+    readonly id: string;
+    readonly role: string;
+    readonly inputOrigin?: string | null | undefined;
+  }>,
+): number => {
+  const lastUserIntentIndex = messages.findLastIndex(
+    (message) =>
+      message.role === "user" &&
+      (message.inputOrigin !== "agent-loop" || isVmAgentTaskPromptMessageId(message.id)),
+  );
+  return messages
+    .slice(lastUserIntentIndex + 1)
+    .filter((message) => message.role === "user" && message.inputOrigin === "agent-loop").length;
 };
 
 /**
@@ -2600,6 +2636,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const sourceMessage = thread.messages.find((message) => message.id === messageId);
         const recoveryVerdict = classifyTurnStartRecovery({
           sourceMessage,
+          messageId,
           hasLaterRealUserTurn: context.hasLaterRealUserTurn,
         });
         if (recoveryVerdict === "superseded") {
@@ -2957,14 +2994,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // loop moved server-side: a consecutive-continuation budget and an
         // identical-reply stop. Without them the server loop has strictly
         // fewer runaway defenses than the client loop it replaced.
-        const lastRealUserIndex = thread.messages.findLastIndex(
-          (message) => message.role === "user" && message.inputOrigin !== "agent-loop",
-        );
-        const continuationsSinceUser = thread.messages
-          .slice(lastRealUserIndex + 1)
-          .filter(
-            (message) => message.role === "user" && message.inputOrigin === "agent-loop",
-          ).length;
+        const continuationsSinceUser = countContinuationsSinceUserIntent(thread.messages);
         if (continuationsSinceUser >= AGENT_LOOP_MAX_CONSECUTIVE_CONTINUATIONS) {
           return {
             state: "cancelled" as const,

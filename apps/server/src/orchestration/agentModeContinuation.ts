@@ -356,6 +356,20 @@ export function isAgentAutoResumeMessageId(messageId: string): boolean {
   return messageId.startsWith(AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX);
 }
 
+/** Message-id prefix the VM-agent task scheduler mints for its run prompts. */
+export const VM_AGENT_TASK_MESSAGE_ID_PREFIX = "vm-task:";
+
+/**
+ * True for scheduled VM-agent task prompts. They arrive tagged
+ * `inputOrigin: "agent-loop"` because no human typed them into the thread —
+ * but each one is the user's own schedule firing, so anywhere behaviour hinges
+ * on "was this real user intent?" (the continuation runaway budget, most
+ * importantly) they count as user intent, not as synthetic continuation.
+ */
+export function isVmAgentTaskPromptMessageId(messageId: string): boolean {
+  return messageId.startsWith(VM_AGENT_TASK_MESSAGE_ID_PREFIX);
+}
+
 const ACTIVE_TURN_WORK_SOURCE_PREFIX = "turn-start:";
 
 /**

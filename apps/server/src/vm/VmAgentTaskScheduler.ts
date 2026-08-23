@@ -25,6 +25,7 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 
+import { VM_AGENT_TASK_MESSAGE_ID_PREFIX } from "../orchestration/agentModeContinuation.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
@@ -92,7 +93,11 @@ export class VmAgentTaskScheduler extends Context.Service<
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-const runMessageId = (runId: VmAgentTaskRunId) => MessageId.make(`vm-task:${runId}`);
+// Built from the shared prefix: the continuation budget and the turn-start
+// launch path both recognize scheduled prompts by it, so drift here would
+// silently reclassify every run prompt as a synthetic continuation.
+const runMessageId = (runId: VmAgentTaskRunId) =>
+  MessageId.make(`${VM_AGENT_TASK_MESSAGE_ID_PREFIX}${runId}`);
 const runFailureMessageId = (runId: VmAgentTaskRunId) => MessageId.make(`vm-task-failed:${runId}`);
 const runCommandId = (runId: VmAgentTaskRunId, attempt = 0) =>
   CommandId.make(attempt === 0 ? `vm-task:${runId}` : `vm-task:${runId}:retry:${attempt}`);
