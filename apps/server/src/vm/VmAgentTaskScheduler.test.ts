@@ -30,6 +30,7 @@ import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
 import {
   MAX_RUN_START_RETRIES,
+  RUN_DISPATCH_DEADLINE_MS,
   VmAgentTaskScheduler,
   VmAgentTaskSchedulerLive,
 } from "./VmAgentTaskScheduler.ts";
@@ -846,6 +847,150 @@ it.effect("says in the thread when a run gives up, rather than leaving it readin
       assert.isDefined(
         commands.find((command) => command.type === "thread.message.assistant.complete"),
       );
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
+);
+
+it.effect("gives up on a run that waited out the dispatch deadline without ever starting", () =>
+  Effect.gen(function* () {
+    const failed = yield* Deferred.make<void>();
+    let completed: { status: string; error: string | null; turnId: string | null } | null = null;
+    // Queued and never dispatched: the agent's conversation stayed busy, or it
+    // was under manual control. A unique index allows one live run per agent,
+    // so until this one settles every later occurrence is blocked behind it.
+    const waitingRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-waiting"),
+      status: "queued",
+      createdAt: "1970-01-01T00:00:00.000Z",
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          { run: waitingRun, projectionState: null, projectionTurnId: null, assistantText: null },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      setRunBooting: () => Effect.void,
+      setRunRunning: () => Effect.void,
+      completeRun: (input) =>
+        Effect.sync(() => {
+          completed = { status: input.status, error: input.error, turnId: input.turnId };
+        }).pipe(Effect.andThen(Deferred.succeed(failed, undefined)), Effect.asVoid),
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.succeed(
+          Option.some({ latestTurn: { state: "running" }, pendingWork: null } as never),
+        ),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({
+      refresh: () => Effect.void,
+      snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+    });
+    const waitingCollaborationLayer = Layer.mock(VmAgentCollaborationStore)({
+      getByRunId: () => Effect.succeed(Option.none()),
+      getByTaskId: () => Effect.succeed(Option.none()),
+      listExpired: () => Effect.succeed([]),
+      complete: () => Effect.void,
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      Layer.mock(VmManager)({}),
+      workspaceLayer,
+      Layer.mock(OrchestrationEngineService)({
+        dispatch: () => Effect.succeed({ sequence: 1 } as never),
+      }),
+      waitingCollaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      yield* TestClock.adjust(Duration.millis(RUN_DISPATCH_DEADLINE_MS));
+      yield* scheduler.wake();
+      yield* Deferred.await(failed);
+      assert.strictEqual(completed?.status, "failed");
+      // Null turn id is what tells the store the work never happened, so a
+      // one-time occurrence goes back on the clock rather than being dropped.
+      assert.strictEqual(completed?.turnId, null);
+      assert.include(completed?.error ?? "", "never became free");
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
+);
+
+it.effect("leaves a run that is merely waiting alone until the deadline", () =>
+  Effect.gen(function* () {
+    const drained = yield* Deferred.make<void>();
+    let completions = 0;
+    let armed = false;
+    const waitingRun: VmAgentTaskRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-patient"),
+      status: "queued",
+      createdAt: "1970-01-01T00:00:00.000Z",
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    };
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          { run: waitingRun, projectionState: null, projectionTurnId: null, assistantText: null },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      // Resolved only by a drain the test armed, which it does after moving
+      // the clock. The poll loop drains once a second, so waiting on any
+      // earlier drain would assert against one that saw almost no elapsed
+      // time — and pass however early the deadline fired.
+      claimNextDue: () =>
+        Effect.sync(() => Option.none()).pipe(
+          Effect.tap(() => (armed ? Deferred.succeed(drained, undefined) : Effect.void)),
+        ),
+      setRunBooting: () => Effect.void,
+      setRunRunning: () => Effect.void,
+      completeRun: () => Effect.sync(() => void (completions += 1)),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(agent)) }),
+      Layer.mock(ProjectionSnapshotQuery)({
+        getThreadShellById: () =>
+          Effect.succeed(
+            Option.some({ latestTurn: { state: "running" }, pendingWork: null } as never),
+          ),
+      }),
+      Layer.mock(VmManager)({}),
+      Layer.mock(VmAgentWorkspace)({
+        refresh: () => Effect.void,
+        // Provided so that a deadline firing early would reach completeRun and
+        // be counted, rather than dying in the notification path unnoticed.
+        snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+      }),
+      Layer.mock(OrchestrationEngineService)({
+        dispatch: () => Effect.succeed({ sequence: 1 } as never),
+      }),
+      collaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      // A busy conversation is an ordinary reason to wait. Turning that into a
+      // failure would replace one long wait with a column of false alarms.
+      yield* TestClock.adjust(Duration.millis(RUN_DISPATCH_DEADLINE_MS - 1_000));
+      armed = true;
+      yield* scheduler.wake();
+      yield* Deferred.await(drained);
+      assert.strictEqual(completions, 0);
     }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
   }),
 );

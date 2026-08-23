@@ -32,6 +32,31 @@ import {
   type VmAgentWorkspaceStoreShape,
 } from "../Services/VmAgentWorkspaces.ts";
 
+/**
+ * How many times a one-time occurrence that never reached the agent is retried.
+ *
+ * The failure this guards against is transient — a dispatch that raced an
+ * already-running turn, an agent whose conversation was busy the whole time —
+ * so the work never happened and trying again is what the user wanted. But a
+ * retry that never gives up writes a failed run every backoff interval for as
+ * long as the app runs, which turns one dropped occurrence into an endless
+ * column of failures. Three attempts is enough to outlast a busy conversation
+ * and few enough to stay readable.
+ */
+export const MISSED_OCCURRENCE_ATTEMPTS = 3;
+
+/** How long after a missed occurrence the retry is scheduled. */
+export const MISSED_OCCURRENCE_BACKOFF_MINUTES = 5;
+
+/** How long finished runs are kept before they can be pruned. */
+export const RUN_HISTORY_RETENTION_DAYS = 14;
+
+/** How many finished runs survive the cutoff regardless of age. */
+export const RUN_HISTORY_KEEP_RECENT = 20;
+
+/** The same, for the notifications those runs raised. */
+export const NOTIFICATION_KEEP_RECENT = 50;
+
 const VmAgentTaskDb = VmAgentTask.mapFields(
   Struct.assign({
     completionCriteria: Schema.fromJsonString(Schema.Array(Schema.String)),
@@ -419,6 +444,120 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  /**
+   * Failed attempts at an occurrence that never reached the agent at all.
+   *
+   * A run with no turn id never got a turn started, so the work did not
+   * happen — as opposed to a run whose turn ran and errored, which did.
+   */
+  const countUnrunAttempts = SqlSchema.findOne({
+    Request: Schema.Struct({ runId: VmAgentTaskRunId }),
+    Result: Schema.Struct({ attempts: Schema.Int }),
+    execute: ({ runId }) => sql`
+      SELECT COUNT(*) AS attempts
+      FROM vm_agent_task_runs
+      WHERE task_id = (SELECT task_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+        AND status = 'failed'
+        AND turn_id IS NULL
+    `,
+  });
+
+  /**
+   * Puts a one-time task back on the schedule after an occurrence never ran.
+   *
+   * Claiming clears `next_run_at`, because a one-time task has no later
+   * occurrence to point at. If the claimed run then dies without starting, the
+   * task is left active with nothing to run at — unclaimable by `findNextDue`
+   * and un-terminal, so it sits in the list forever announcing work that will
+   * never happen. Re-arming is what makes the occurrence survive a transient
+   * scheduler fault rather than being silently dropped.
+   *
+   * Only for `once`: an interval task already had its next occurrence written
+   * at claim time, and a task with no schedule is waiting on the user, not on
+   * a clock.
+   */
+  const rearmOnceTask = SqlSchema.void({
+    Request: Schema.Struct({
+      runId: VmAgentTaskRunId,
+      retryAt: VmAgentTask.fields.updatedAt,
+      updatedAt: VmAgentTask.fields.updatedAt,
+    }),
+    execute: ({ runId, retryAt, updatedAt }) => sql`
+      UPDATE vm_agent_tasks
+      SET next_run_at = ${retryAt}, updated_at = ${updatedAt}
+      WHERE task_id = (SELECT task_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+        AND status = 'active'
+        AND json_extract(schedule_json, '$.kind') = 'once'
+    `,
+  });
+
+  /**
+   * Retires a one-time task that will not be attempted again.
+   *
+   * Narrower than `completeOneTimeTask`, which also matches a task with no
+   * schedule: an unscheduled task is run by hand and stays active between
+   * runs, so a failure must not retire it.
+   */
+  const retireOnceTask = SqlSchema.void({
+    Request: Schema.Struct({ runId: VmAgentTaskRunId, updatedAt: VmAgentTask.fields.updatedAt }),
+    execute: ({ runId, updatedAt }) => sql`
+      UPDATE vm_agent_tasks
+      SET status = 'completed', next_run_at = NULL, updated_at = ${updatedAt}
+      WHERE task_id = (SELECT task_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+        AND json_extract(schedule_json, '$.kind') = 'once'
+    `,
+  });
+
+  /**
+   * Drops run history that is both old and long superseded.
+   *
+   * Runs are written forever and read back with a limit, so a failure that
+   * nobody can act on any more still occupies the store and, for an agent that
+   * runs rarely, still occupies the list. Age alone is the wrong test — an
+   * agent that runs monthly would lose everything it has — so a run has to be
+   * both past the cutoff and outside the most recent few before it goes.
+   */
+  const pruneRunHistory = SqlSchema.void({
+    Request: Schema.Struct({
+      runId: VmAgentTaskRunId,
+      cutoff: VmAgentTaskRun.fields.createdAt,
+      keep: Schema.Int,
+    }),
+    execute: ({ runId, cutoff, keep }) => sql`
+      DELETE FROM vm_agent_task_runs
+      WHERE vm_agent_id = (SELECT vm_agent_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+        AND status IN ('completed', 'failed', 'cancelled')
+        AND created_at < ${cutoff}
+        AND run_id NOT IN (
+          SELECT run_id FROM vm_agent_task_runs
+          WHERE vm_agent_id = (SELECT vm_agent_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+            AND status IN ('completed', 'failed', 'cancelled')
+          ORDER BY created_at DESC
+          LIMIT ${keep}
+        )
+    `,
+  });
+
+  /** The same retention rule for the alerts those runs raised. */
+  const pruneNotifications = SqlSchema.void({
+    Request: Schema.Struct({
+      runId: VmAgentTaskRunId,
+      cutoff: VmAgentNotification.fields.createdAt,
+      keep: Schema.Int,
+    }),
+    execute: ({ runId, cutoff, keep }) => sql`
+      DELETE FROM vm_agent_notifications
+      WHERE vm_agent_id = (SELECT vm_agent_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+        AND created_at < ${cutoff}
+        AND notification_id NOT IN (
+          SELECT notification_id FROM vm_agent_notifications
+          WHERE vm_agent_id = (SELECT vm_agent_id FROM vm_agent_task_runs WHERE run_id = ${runId})
+          ORDER BY created_at DESC
+          LIMIT ${keep}
+        )
+    `,
+  });
+
   const mapError = (operation: string) =>
     Effect.mapError(toPersistenceSqlError(`VmAgentWorkspaceStore.${operation}:query`));
 
@@ -598,18 +737,67 @@ const make = Effect.gen(function* () {
     input: SetVmAgentTaskRunRunningInput,
   ) => setRunRunningRow(input).pipe(mapError("setRunRunning"));
 
+  /**
+   * Decides what an unsuccessful run means for a one-time task.
+   *
+   * Claiming already cleared the task's `next_run_at`, so doing nothing here
+   * strands it: active, unclaimable, and permanently advertising work that
+   * will never happen. Either it goes back on the clock or it retires.
+   */
+  const settleOnceTaskAfterUnsuccessfulRun = (input: CompleteVmAgentTaskRunInput) =>
+    Effect.gen(function* () {
+      // A turn id means a turn ran and ended badly, and `cancelled` means the
+      // user stopped it. Both are occurrences that happened; repeating them
+      // would repeat whatever they already did out in the world.
+      if (input.status !== "failed" || input.turnId !== null) {
+        return yield* retireOnceTask({ runId: input.runId, updatedAt: input.completedAt });
+      }
+      // This run is already written as failed, so it counts as an attempt.
+      const { attempts } = yield* countUnrunAttempts({ runId: input.runId });
+      if (attempts >= MISSED_OCCURRENCE_ATTEMPTS) {
+        return yield* retireOnceTask({ runId: input.runId, updatedAt: input.completedAt });
+      }
+      yield* rearmOnceTask({
+        runId: input.runId,
+        retryAt: DateTime.formatIso(
+          DateTime.add(DateTime.makeUnsafe(input.completedAt), {
+            minutes: MISSED_OCCURRENCE_BACKOFF_MINUTES,
+          }),
+        ),
+        updatedAt: input.completedAt,
+      });
+    });
+
   const completeRun: VmAgentWorkspaceStoreShape["completeRun"] = (
     input: CompleteVmAgentTaskRunInput,
   ) =>
     sql
       .withTransaction(
-        completeRunRow(input).pipe(
-          Effect.flatMap(() =>
-            input.status === "completed"
-              ? completeOneTimeTask({ runId: input.runId, updatedAt: input.completedAt })
-              : Effect.void,
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* completeRunRow(input);
+          if (input.status === "completed") {
+            yield* completeOneTimeTask({ runId: input.runId, updatedAt: input.completedAt });
+          } else {
+            yield* settleOnceTaskAfterUnsuccessfulRun(input);
+          }
+          // Pruning rides on run completion rather than a timer: it is the only
+          // moment new history appears, and it bounds the work to one agent.
+          const cutoff = DateTime.formatIso(
+            DateTime.subtract(DateTime.makeUnsafe(input.completedAt), {
+              days: RUN_HISTORY_RETENTION_DAYS,
+            }),
+          );
+          yield* pruneRunHistory({
+            runId: input.runId,
+            cutoff,
+            keep: RUN_HISTORY_KEEP_RECENT,
+          });
+          yield* pruneNotifications({
+            runId: input.runId,
+            cutoff,
+            keep: NOTIFICATION_KEEP_RECENT,
+          });
+        }),
       )
       .pipe(mapError("completeRun"));
 
