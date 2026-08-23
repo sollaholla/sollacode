@@ -321,6 +321,7 @@ import {
 } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
+import { SideChatSessionIcon } from "./chat/SideChatSessionIcon";
 import { deriveWorkingTerminalActivity } from "../terminalActivity";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import {
@@ -8478,7 +8479,7 @@ function ChatViewContent(props: ChatViewProps) {
                             title="Open a working side chat"
                             type="button"
                           >
-                            <CircleDashedIcon aria-hidden className="size-3" />
+                            <SideChatSessionIcon className="size-3" working />
                             <span aria-hidden className="tabular-nums">
                               {activeSideChatActivity.count}
                             </span>

@@ -10,6 +10,8 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
+import { CloseMobileSidebarOnNavigate } from "./sidebar/CloseMobileSidebarOnNavigate";
+
 import { isElectron } from "../env";
 import { shouldShowVoiceOverlay } from "../orchestrator/mobilePresentation";
 import { describeVoiceIssue, shouldAnnounceVoiceIssue } from "../orchestrator/voiceErrorNotice";
@@ -328,6 +330,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={sidebarProviderStyle}>
+      {/* Navigating anywhere new dismisses the mobile sheet, so entries do
+          not each have to remember to. */}
+      <CloseMobileSidebarOnNavigate />
       <OrchestratorSidebarAutoCollapse />
       <OrchestratorVoiceIssueAnnouncer />
       <Sidebar

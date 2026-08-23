@@ -64,7 +64,7 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
-const SOL_DEFAULT_REASONING_EFFORT = "medium";
+const SOL_DEFAULT_REASONING_EFFORT = "high";
 const SOL_MODEL_SLUG = "gpt-5.6-sol";
 
 function reasoningEffortLabel(reasoningEffort: string): string {
