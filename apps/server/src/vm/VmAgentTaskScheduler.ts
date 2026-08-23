@@ -63,6 +63,23 @@ const RUN_START_STALL_MS = 120_000;
  */
 export const MAX_RUN_START_RETRIES = 2;
 
+/**
+ * How long a run may wait to be dispatched at all before it is given up on.
+ *
+ * A queued run is usually waiting for a good reason: the agent's conversation
+ * is busy, so starting a turn now would collide with one already in flight.
+ * But some reasons never clear on their own — the user took manual control of
+ * the agent, or its thread projection is missing — and because a unique index
+ * allows one live run per agent, a run waiting on one of those freezes every
+ * later occurrence too. An hour is far longer than any real turn, so a run
+ * still queued after it is waiting on something that is not going to change.
+ *
+ * Giving up is not the same as dropping the work: a one-time task goes back on
+ * the clock a few minutes later, and a recurring one already has its next
+ * occurrence booked.
+ */
+export const RUN_DISPATCH_DEADLINE_MS = 3_600_000;
+
 export interface VmAgentTaskSchedulerShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   readonly wake: () => Effect.Effect<void>;
@@ -113,6 +130,19 @@ const taskPrompt = (
     "",
     "This is durable scheduled work for your custom-agent workspace. Use your VM when needed. When finished, summarize what changed, any evidence, and anything still blocked.",
   ].join("\n");
+};
+
+/** Milliseconds between two stored timestamps, or null if either is unusable. */
+const elapsedMs = (from: string | null, to: string): number | null => {
+  if (from === null) return null;
+  try {
+    return (
+      DateTime.toEpochMillis(DateTime.makeUnsafe(to)) -
+      DateTime.toEpochMillis(DateTime.makeUnsafe(from))
+    );
+  } catch {
+    return null;
+  }
 };
 
 const errorText = (error: unknown): string =>
@@ -552,17 +582,7 @@ export const make = Effect.gen(function* () {
       // against an idle `ready` session whose previous turn had completed 20
       // minutes earlier, so this is not only the already-running race below.
       if (observation.run.status === "running" && observation.projectionTurnId === null) {
-        const startedAt = observation.run.startedAt;
-        const startedAtMs = (() => {
-          if (startedAt === null) return null;
-          try {
-            return DateTime.toEpochMillis(DateTime.makeUnsafe(startedAt));
-          } catch {
-            return null;
-          }
-        })();
-        const nowMs = DateTime.toEpochMillis(DateTime.makeUnsafe(yield* nowIso));
-        const stalledForMs = startedAtMs === null ? null : nowMs - startedAtMs;
+        const stalledForMs = elapsedMs(observation.run.startedAt, yield* nowIso);
         if (stalledForMs !== null && stalledForMs >= RUN_START_STALL_MS) {
           const attempt = (runStartAttempts.get(observation.run.runId) ?? 0) + 1;
           if (attempt <= MAX_RUN_START_RETRIES) {
@@ -580,6 +600,22 @@ export const make = Effect.gen(function* () {
             observation.run,
             new Error(
               `The scheduled turn never started, and ${MAX_RUN_START_RETRIES} retries did not get it moving. Run the task again or wait for its next occurrence.`,
+            ),
+          ).pipe(Effect.ignoreCause({ log: true }));
+          continue;
+        }
+      }
+      if (observation.run.status === "queued" || observation.run.status === "booting") {
+        // Measured from creation, not `startedAt`: nothing has started, which
+        // is the whole problem, so `startedAt` is still null here.
+        const waitingMs = elapsedMs(observation.run.createdAt, yield* nowIso);
+        if (waitingMs !== null && waitingMs >= RUN_DISPATCH_DEADLINE_MS) {
+          const task = yield* getTask(observation.run);
+          yield* failRun(
+            task,
+            observation.run,
+            new Error(
+              "The agent never became free to run this, so the occurrence was skipped. Its conversation was busy, or the agent was under manual control, for the whole hour it waited.",
             ),
           ).pipe(Effect.ignoreCause({ log: true }));
           continue;
