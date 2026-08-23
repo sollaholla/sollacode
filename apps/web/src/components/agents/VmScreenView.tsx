@@ -19,6 +19,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -29,6 +30,11 @@ import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vmAgentEnvironment } from "~/state/vmAgents";
+import {
+  shouldForwardKeyToVm,
+  shouldReclaimVmScreenFocus,
+  VM_SCREEN_OUTSIDE_POINTER_GRACE_MS,
+} from "./vmScreenFocus";
 
 /**
  * The agent's live computer: a docked, full-screen-capable pane that renders the
@@ -106,7 +112,10 @@ export function VmScreenView(props: {
   const running = agent.status === "running";
   const busy = agent.status === "starting" || agent.status === "provisioning";
 
-  const toggleControl = () =>
+  const toggleControl = () => {
+    // Flush releases while the server still honors this user's input — the
+    // effect cleanup's release can race the mode flip and get dropped.
+    if (userInControl) releaseHeldKeys();
     void setControlMode({
       environmentId,
       input: {
@@ -114,6 +123,7 @@ export function VmScreenView(props: {
         controlMode: userInControl ? "agent" : "user",
       },
     });
+  };
 
   // ── Input forwarding (only while the user holds control) ──────────────────
   const sequenceRef = useRef(0);
@@ -121,6 +131,31 @@ export function VmScreenView(props: {
   const pendingMoveRef = useRef<VmAgentInput | null>(null);
   const rafRef = useRef<number | null>(null);
   const [focused, setFocused] = useState(false);
+  /** When a pointer last went down outside the surface (deliberate departure tell). */
+  const lastOutsidePointerDownAtRef = useRef(0);
+  const canDriveRef = useRef(false);
+
+  /**
+   * Take DOM focus back when it was stolen rather than given away. Without a
+   * recent outside pointer press, a blur means some autofocus effect (the chat
+   * composer's, usually) yanked the keyboard out from under the user's hands.
+   */
+  const onSurfaceBlur = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    const hadRecentOutsidePointerDown =
+      performance.now() - lastOutsidePointerDownAtRef.current < VM_SCREEN_OUTSIDE_POINTER_GRACE_MS;
+    if (
+      shouldReclaimVmScreenFocus({
+        canDrive: canDriveRef.current,
+        hadRecentOutsidePointerDown,
+        blurredTo: event.relatedTarget instanceof Element ? event.relatedTarget : null,
+      })
+    ) {
+      const surface = event.currentTarget;
+      window.requestAnimationFrame(() => surface.focus({ preventScroll: true }));
+      return;
+    }
+    setFocused(false);
+  }, []);
 
   const dispatch = useCallback(
     (event: VmAgentInput) => {
@@ -186,6 +221,8 @@ export function VmScreenView(props: {
   );
 
   const canDrive = running && userInControl;
+  // Read from the blur handler, which is created before this is computed.
+  canDriveRef.current = canDrive;
 
   /**
    * Taking control has to hand the keyboard over too. Without this the surface
@@ -251,43 +288,84 @@ export function VmScreenView(props: {
     });
   };
 
-  // Keyboard is forwarded while the surface is focused and the user has control.
+  // Keys this surface has forwarded `down` without a matching `up` yet. Any
+  // gap in the claim — focus yielding to an editor, control released, the
+  // window blurring — must synthesize releases for these, or the guest keeps
+  // the key held forever (observed live: Shift stuck active after a focus
+  // steal ate the keyup that should have followed a forwarded keydown).
+  const heldKeysRef = useRef(new Map<string, string>());
+  const releaseHeldKeys = useCallback(() => {
+    for (const [code, key] of heldKeysRef.current) {
+      dispatch({ type: "key", action: "up", key, code });
+    }
+    heldKeysRef.current.clear();
+  }, [dispatch]);
+
+  // Keyboard is forwarded while the user has control. Deliberately NOT gated
+  // on the surface holding DOM focus: streaming chat updates and settle-time
+  // autofocus effects kept pulling focus to the composer mid-session, so the
+  // user's typing landed in the chat box instead of the agent's screen. The
+  // claim yields only to an editable element — the one signal of "I chose to
+  // type somewhere else" (see vmScreenFocus.ts).
   useEffect(() => {
-    if (!canDrive || !focused) return;
+    if (!canDrive) return;
     // Claim the key outright: this listener is on window's capture phase, so
     // stopping propagation here keeps the keystroke from also reaching the
     // chat composer's shortcuts (or React) while the VM has the keyboard.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target === mobileKeyboardRef.current) return;
+      if (!shouldForwardKeyToVm({ canDrive, activeElement: document.activeElement })) {
+        releaseHeldKeys();
+        return;
+      }
       if (!event.code) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      dispatch({
-        type: "key",
-        action: "down",
-        key: event.key.slice(0, 64),
-        code: event.code.slice(0, 64),
-      });
+      const key = event.key.slice(0, 64);
+      const code = event.code.slice(0, 64);
+      heldKeysRef.current.set(code, key);
+      dispatch({ type: "key", action: "down", key, code });
     };
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.target === mobileKeyboardRef.current) return;
+      if (!shouldForwardKeyToVm({ canDrive, activeElement: document.activeElement })) {
+        releaseHeldKeys();
+        return;
+      }
       if (!event.code) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      dispatch({
-        type: "key",
-        action: "up",
-        key: event.key.slice(0, 64),
-        code: event.code.slice(0, 64),
-      });
+      const key = event.key.slice(0, 64);
+      const code = event.code.slice(0, 64);
+      heldKeysRef.current.delete(code);
+      dispatch({ type: "key", action: "up", key, code });
+    };
+    // A pointer press outside the surface is the tell that the next blur is
+    // deliberate. Captured on window so toolbar buttons, the composer, and
+    // other panes all count.
+    const onWindowPointerDown = (event: PointerEvent) => {
+      const surface = surfaceRef.current;
+      const target = event.target instanceof Node ? event.target : null;
+      if (surface && target && surface.contains(target)) return;
+      lastOutsidePointerDownAtRef.current = performance.now();
+    };
+    // Cmd-tabbing away mid-hold sends the matching keyup to another app.
+    const onWindowBlur = () => {
+      releaseHeldKeys();
     };
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("pointerdown", onWindowPointerDown, true);
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("pointerdown", onWindowPointerDown, true);
+      window.removeEventListener("blur", onWindowBlur);
+      // Control released or the surface unmounted: leave no key held behind.
+      releaseHeldKeys();
     };
-  }, [canDrive, focused, dispatch]);
+  }, [canDrive, dispatch, releaseHeldKeys]);
 
   // Map the agent cursor (frame-pixel space) into the rendered, letterboxed image.
   const cursorPoint =
@@ -437,7 +515,7 @@ export function VmScreenView(props: {
             canDrive ? "cursor-crosshair touch-none select-none" : "cursor-default",
           )}
           onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onBlur={onSurfaceBlur}
           onContextMenu={(event) => event.preventDefault()}
           onPointerDown={onSurfacePointerDown}
           onPointerMove={onSurfacePointerMove}
