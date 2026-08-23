@@ -64,6 +64,31 @@ describe("DesktopPermissionsView", () => {
     expect(markup).toContain('aria-label="Manage Screen Recording"');
   });
 
+  it("reserves the hero badge and title for onboarding — settings already headers itself", () => {
+    const render = (onboarding: boolean) =>
+      renderToStaticMarkup(
+        <DesktopPermissionsView
+          snapshot={snapshot}
+          busyId={null}
+          error={null}
+          onboarding={onboarding}
+          onAct={() => undefined}
+          onManage={() => undefined}
+          onRefresh={() => undefined}
+          onComplete={() => undefined}
+          onRelaunch={() => undefined}
+        />,
+      );
+
+    expect(render(true)).toContain("Set permissions before agents get to work");
+    const settingsMarkup = render(false);
+    // Rendered inside SettingsSection ("Permissions" + shield), so the view
+    // must not add a second shield or a second title of its own.
+    expect(settingsMarkup).not.toContain("lucide-shield-check");
+    expect(settingsMarkup).not.toContain("Set permissions before agents get to work");
+    expect(settingsMarkup).not.toContain("macOS permissions");
+  });
+
   it("explains a stale macOS grant without claiming the running app is enabled", () => {
     const staleAccessibility: DesktopPermissionsSnapshot = {
       ...snapshot,
