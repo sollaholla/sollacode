@@ -145,7 +145,13 @@ export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unkn
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
-export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
+/**
+ * Providers accept far more images per request than this (Anthropic 100,
+ * OpenAI ~50); the ceiling only bounds upload volume. 8 was low enough that a
+ * screenshot-heavy turn — e.g. the post-update auto-resume aggregating several
+ * queued messages' images — failed sendTurn validation outright.
+ */
+export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 20;
 /** Maximum accepted upload bytes. One byte below 2 MiB keeps the ceiling exclusive. */
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 2 * 1024 * 1024 - 1;
 /** Historical persisted attachments may predate the stricter send-time ceiling. */

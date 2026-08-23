@@ -13,6 +13,7 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
@@ -24,6 +25,7 @@ import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as WorkspacePaths from "../../../workspace/WorkspacePaths.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { handleThreadArtifact } from "./handlers.ts";
 import type { ThreadArtifactToolInput } from "./types.ts";
 
@@ -127,18 +129,41 @@ const makeHarness = () => {
   return { service, listInputs, publishInputs };
 };
 
+/**
+ * Thread shells the projection mock serves. Empty by default: the caller is an
+ * ordinary thread and artifact operations stay on it. Side-chat tests install
+ * a shell claiming a parent.
+ */
+const projectionsWith = (
+  shellsById: ReadonlyMap<string, { isSideChat?: boolean; sideChatParentThreadId?: string }>,
+) =>
+  Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+    getThreadShellById: (threadId: string) =>
+      Effect.succeed(
+        shellsById.has(threadId) ? Option.some(shellsById.get(threadId) as never) : Option.none(),
+      ),
+  });
+
 const runAs = <A, E, R>(
   effect: Effect.Effect<
     A,
     E,
-    R | ThreadArtifactService | McpInvocationContext.McpInvocationContext
+    | R
+    | ThreadArtifactService
+    | McpInvocationContext.McpInvocationContext
+    | ProjectionSnapshotQuery.ProjectionSnapshotQuery
   >,
   service: ThreadArtifactService["Service"],
   capabilities?: Set<McpInvocationContext.McpCapability>,
+  shellsById: ReadonlyMap<
+    string,
+    { isSideChat?: boolean; sideChatParentThreadId?: string }
+  > = new Map(),
 ) =>
   effect.pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
     Effect.provideService(ThreadArtifactService, service),
+    Effect.provide(projectionsWith(shellsById)),
   );
 
 it.layer(testLayer)("thread artifact toolkit", (it) => {
@@ -236,6 +261,51 @@ it.layer(testLayer)("thread artifact toolkit", (it) => {
         "t3-artifact://environment-artifact-test/thread-artifact-caller/artifact-release-notes/revisions/1/site/index.html",
       );
       expect(result.expiresAt).toBeGreaterThan(0);
+    }),
+  );
+
+  it.effect("a connected side chat manages its parent thread's artifacts", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const shells = new Map([
+        [callerThreadId as string, { isSideChat: true, sideChatParentThreadId: otherThreadId }],
+        [otherThreadId as string, {}],
+      ]);
+      yield* runAs(handleThreadArtifact({ action: "list" }), harness.service, undefined, shells);
+      expect(harness.listInputs.map((input) => input.threadId)).toEqual([otherThreadId]);
+
+      const result = yield* runAs(
+        handleThreadArtifact({
+          action: "publish",
+          key: artifactKey,
+          title: "Release notes",
+          kind: "web",
+          entryPath: "site/index.html",
+          files: [
+            { path: "site/index.html", contentType: "text/html", text: "<html>hello</html>" },
+          ],
+        }),
+        harness.service,
+        undefined,
+        shells,
+      );
+      expect(harness.publishInputs.map((input) => input.threadId)).toEqual([otherThreadId]);
+      // Addresses point at the artifact's owner thread, not the side chat.
+      expect(result.openPath).toBe(
+        "/environment-artifact-test/thread-artifact-other?artifact=artifact-release-notes",
+      );
+    }),
+  );
+
+  it.effect("a side chat whose parent is gone falls back to its own artifacts", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      // The shell claims a parent, but no parent shell exists any more.
+      const shells = new Map([
+        [callerThreadId as string, { isSideChat: true, sideChatParentThreadId: otherThreadId }],
+      ]);
+      yield* runAs(handleThreadArtifact({ action: "list" }), harness.service, undefined, shells);
+      expect(harness.listInputs.map((input) => input.threadId)).toEqual([callerThreadId]);
     }),
   );
 });

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -182,7 +186,11 @@ describe("mobile composer drafts", () => {
       previewUri: "data:image/png;base64,YWJj",
     });
     const existingImage = image("existing");
-    const sharedImages = Array.from({ length: 8 }, (_, index) => image(`shared-${index}`));
+    // One more shared image than the cap allows alongside the existing one, so
+    // exactly one must be dropped from the tail regardless of the cap's value.
+    const sharedImages = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, index) =>
+      image(`shared-${index}`),
+    );
 
     const merged = mergeComposerDraftContentState(
       { [draftKey]: { text: "", attachments: [existingImage] } },
@@ -190,9 +198,11 @@ describe("mobile composer drafts", () => {
       { text: "", attachments: sharedImages },
     );
 
-    expect(merged[draftKey]?.attachments).toHaveLength(8);
+    expect(merged[draftKey]?.attachments).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
     expect(merged[draftKey]?.attachments[0]).toEqual(existingImage);
-    expect(merged[draftKey]?.attachments.at(-1)?.id).toBe("shared-6");
+    expect(merged[draftKey]?.attachments.at(-1)?.id).toBe(
+      `shared-${PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 2}`,
+    );
   });
 
   it("restores the exact draft captured before an interrupted share import", () => {

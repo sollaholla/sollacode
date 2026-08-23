@@ -2,10 +2,12 @@ import {
   ThreadArtifactId,
   ThreadArtifactInvalidInputError,
   ThreadArtifactStorageError,
+  type ThreadId,
 } from "@t3tools/contracts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { issueArtifactAssetUrl } from "../../../assets/AssetAccess.ts";
 import { ThreadArtifactService } from "../../../artifacts/ThreadArtifactService.ts";
@@ -21,6 +23,7 @@ import {
   normalizeArtifactPath,
 } from "./assetReferences.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadArtifactToolkit } from "./tools.ts";
 import type { ThreadArtifactToolInput } from "./types.ts";
 
@@ -53,6 +56,31 @@ function decodeBase64(value: string): Uint8Array | null {
   return canonical === normalized.replaceAll("=", "") ? bytes : null;
 }
 
+/**
+ * The thread whose artifacts this invocation manages. A connected side chat
+ * works on its PARENT's artifacts — it was forked from that chat to help with
+ * that chat's work, and publishing under the side chat's own id would strand
+ * the artifact in a surface nobody revisits. The parent must still exist and
+ * still claim the side chat; a promoted (disconnected) side chat or an
+ * orphaned one falls back to itself.
+ */
+const resolveArtifactThreadId = Effect.fn("ThreadArtifact.resolveArtifactThreadId")(function* (
+  invocationThreadId: ThreadId,
+) {
+  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const shell = yield* projections
+    .getThreadShellById(invocationThreadId)
+    .pipe(Effect.orElseSucceed(() => Option.none()));
+  if (Option.isNone(shell)) return invocationThreadId;
+  const parentThreadId =
+    shell.value.isSideChat === true ? (shell.value.sideChatParentThreadId ?? null) : null;
+  if (parentThreadId === null) return invocationThreadId;
+  const parent = yield* projections
+    .getThreadShellById(parentThreadId)
+    .pipe(Effect.orElseSucceed(() => Option.none()));
+  return Option.isSome(parent) ? parentThreadId : invocationThreadId;
+});
+
 export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function* (
   input: ThreadArtifactToolInput,
 ) {
@@ -64,19 +92,20 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
     });
   }
   const service = yield* ThreadArtifactService;
+  const artifactThreadId = yield* resolveArtifactThreadId(invocation.threadId);
 
   switch (input.action) {
     case "list": {
       const list = yield* service.list({
-        threadId: invocation.threadId,
+        threadId: artifactThreadId,
         includeArchived: input.includeArchived,
       });
       return { action: input.action, status: "Artifacts loaded.", list };
     }
     case "get": {
       const artifactId = yield* requireField(input, "artifactId");
-      const detail = yield* service.get({ threadId: invocation.threadId, artifactId });
-      const urls = yield* issueDetailUrls(invocation, detail);
+      const detail = yield* service.get({ threadId: artifactThreadId, artifactId });
+      const urls = yield* issueDetailUrls(invocation, artifactThreadId, detail);
       return { action: input.action, status: "Artifact loaded.", detail, ...urls };
     }
     case "publish": {
@@ -143,7 +172,7 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
         });
       }
       const detail = yield* service.publish({
-        threadId: invocation.threadId,
+        threadId: artifactThreadId,
         ...(input.artifactId === undefined ? {} : { artifactId: input.artifactId }),
         key,
         title,
@@ -153,7 +182,7 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
         files: decodedFiles,
         ...(input.iconSvg === undefined ? {} : { iconSvg: input.iconSvg }),
       });
-      const urls = yield* issueDetailUrls(invocation, detail);
+      const urls = yield* issueDetailUrls(invocation, artifactThreadId, detail);
       return {
         action: input.action,
         status: `Artifact revision ${detail.revision.revision} published.`,
@@ -165,11 +194,11 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
     case "restore": {
       const artifactId = ThreadArtifactId.make(yield* requireField(input, "artifactId"));
       const detail = yield* service.setArchived({
-        threadId: invocation.threadId,
+        threadId: artifactThreadId,
         artifactId,
         archived: input.action === "archive",
       });
-      const urls = yield* issueDetailUrls(invocation, detail);
+      const urls = yield* issueDetailUrls(invocation, artifactThreadId, detail);
       return {
         action: input.action,
         status: input.action === "archive" ? "Artifact archived." : "Artifact restored.",
@@ -182,13 +211,15 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
 
 const issueDetailUrls = Effect.fn("ThreadArtifact.issueDetailUrls")(function* (
   invocation: McpInvocationContext.McpInvocationScope,
+  // The thread the artifact belongs to — the parent for connected side chats.
+  artifactThreadId: ThreadId,
   detail: {
     readonly artifact: { readonly artifactId: ThreadArtifactId };
     readonly revision: { readonly revision: number; readonly entryPath: string };
   },
 ) {
   const resource = {
-    threadId: invocation.threadId,
+    threadId: artifactThreadId,
     artifactId: detail.artifact.artifactId,
     revision: detail.revision.revision,
   } as const;
@@ -208,7 +239,7 @@ const issueDetailUrls = Effect.fn("ThreadArtifact.issueDetailUrls")(function* (
         }),
     ),
   );
-  const openPath = `/${encodeURIComponent(invocation.environmentId)}/${encodeURIComponent(invocation.threadId)}?artifact=${encodeURIComponent(detail.artifact.artifactId)}`;
+  const openPath = `/${encodeURIComponent(invocation.environmentId)}/${encodeURIComponent(artifactThreadId)}?artifact=${encodeURIComponent(detail.artifact.artifactId)}`;
   const resourcePath = detail.revision.entryPath
     .split("/")
     .map((segment) => encodeURIComponent(segment))
@@ -218,7 +249,7 @@ const issueDetailUrls = Effect.fn("ThreadArtifact.issueDetailUrls")(function* (
     iconUrl: icon.relativeUrl,
     openPath,
     deepLink: openPath,
-    resourceUri: `t3-artifact://${encodeURIComponent(invocation.environmentId)}/${encodeURIComponent(invocation.threadId)}/${encodeURIComponent(detail.artifact.artifactId)}/revisions/${detail.revision.revision}/${resourcePath}`,
+    resourceUri: `t3-artifact://${encodeURIComponent(invocation.environmentId)}/${encodeURIComponent(artifactThreadId)}/${encodeURIComponent(detail.artifact.artifactId)}/revisions/${detail.revision.revision}/${resourcePath}`,
     expiresAt: Math.min(content.expiresAt, icon.expiresAt),
   };
 });
