@@ -5,6 +5,7 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  classifyComposerFileIntake,
   isComposerSubmitBlocked,
   isEnabledComposerSubmitButton,
   isCollapsedCursorAdjacentToInlineToken,
@@ -402,5 +403,42 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("classifyComposerFileIntake", () => {
+  const image = (name: string) => new File(["x"], name, { type: "image/png" });
+  const video = (name: string) => new File(["x"], name, { type: "video/mp4" });
+
+  it("uploads images and attaches everything else as a path reference", () => {
+    const intake = classifyComposerFileIntake([image("shot.png"), video("clip.mp4")], {
+      resolvePath: (file) => `/movies/${file.name}`,
+      imageSlotsUsed: 0,
+      maxImages: 10,
+    });
+    expect(intake.imageFiles.map((file) => file.name)).toEqual(["shot.png"]);
+    expect(intake.referencedPaths).toEqual(["/movies/clip.mp4"]);
+    expect(intake.error).toBeNull();
+  });
+
+  it("errors on non-images only where no OS path is resolvable", () => {
+    const intake = classifyComposerFileIntake([video("clip.mp4")], {
+      resolvePath: () => null,
+      imageSlotsUsed: 0,
+      maxImages: 10,
+    });
+    expect(intake.referencedPaths).toEqual([]);
+    expect(intake.error).toContain("clip.mp4");
+    expect(intake.error).toContain("desktop app");
+  });
+
+  it("still enforces the image cap, counting already-attached images", () => {
+    const intake = classifyComposerFileIntake([image("a.png"), image("b.png")], {
+      resolvePath: () => null,
+      imageSlotsUsed: 9,
+      maxImages: 10,
+    });
+    expect(intake.imageFiles.map((file) => file.name)).toEqual(["a.png"]);
+    expect(intake.error).toContain("up to 10 images");
   });
 });

@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useRouter } from "@tanstack/react-router";
 import { type EnvironmentId, type VmAgent, VmAgentId } from "@t3tools/contracts";
 import {
   BellIcon,
@@ -9,7 +8,6 @@ import {
   MessageSquareIcon,
   MonitorIcon,
   PanelRightCloseIcon,
-  Trash2Icon,
 } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -21,7 +19,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { DeleteAgentDialog } from "./DeleteAgentDialog";
 
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -68,12 +65,10 @@ function AgentWorkspaceResolved(props: {
   readonly environmentId: EnvironmentId;
 }) {
   const { environmentId } = props;
-  const router = useRouter();
   const isCompact = useMediaQuery("max-md");
   const [screenOpen, setScreenOpen] = useState(true);
   const [compactPane, setCompactPane] = useState<CompactWorkspacePane>("workspace");
   const [view, setView] = useState<AgentWorkspaceView>("chat");
-  const [confirmDelete, setConfirmDelete] = useState(false);
   // Fraction of the width given to the chat pane; the computer takes the rest.
   const [chatFraction, setChatFraction] = useState(0.5);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -211,30 +206,8 @@ function AgentWorkspaceResolved(props: {
               {computerVisible ? "Hide computer" : "Show computer"}
             </span>
           </Button>
-          {/* Was a click-twice confirm that reset on blur. The second click
-              landed in the same place as the first, so the slip that started
-              the delete also finished it; and it disagreed with the sidebar,
-              which now asks for the name. One dialog for both. */}
-          <Button
-            type="button"
-            size="sm"
-            variant="destructive-outline"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2Icon className="size-3.5" />
-            <span className="hidden lg:inline">Delete</span>
-          </Button>
         </div>
       </header>
-
-      <DeleteAgentDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        environmentId={environmentId}
-        agentId={agent.vmAgentId}
-        agentName={agent.name}
-        onDeleted={() => void router.navigate({ to: "/" })}
-      />
 
       <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {agent.threadId ? (

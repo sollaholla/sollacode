@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  isAgentBuilderThreadId,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -268,14 +269,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             Effect.orElseSucceed(() => false),
           ),
       });
+      // Agent Builder chats are identified by their thread-id prefix; only they
+      // get the agent-builder capability, so the tool that creates and deletes
+      // whole agents is unreachable from every other chat.
+      const extraCapabilities = [
+        ...(isVmAgent ? ["vm" as const] : []),
+        ...(isAgentBuilderThreadId(threadId) ? ["agent-builder" as const] : []),
+      ];
       const credential = yield* McpSessionRegistry.issueActiveMcpCredential({
         threadId,
         providerInstanceId,
-        ...(isVmAgent
+        ...(extraCapabilities.length > 0
           ? {
               capabilities: new Set([
                 ...McpSessionRegistry.DEFAULT_MCP_CAPABILITIES,
-                "vm" as const,
+                ...extraCapabilities,
               ]),
             }
           : {}),

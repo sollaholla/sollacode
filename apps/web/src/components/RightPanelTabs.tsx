@@ -1035,7 +1035,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         </ScrollArea>
         {props.layoutControls}
       </div>
-      {shouldShowArtifactShelf(props.surfaces, props.activeSurfaceId) ? props.artifactShelf : null}
       <div className="flex min-h-0 flex-1 flex-col">
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
@@ -1053,6 +1052,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           props.children
         )}
       </div>
+      {shouldShowArtifactShelf(props.surfaces, props.activeSurfaceId) ? props.artifactShelf : null}
       {props.footer}
     </PreviewPanelShell>
   );

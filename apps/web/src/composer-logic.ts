@@ -313,3 +313,50 @@ export function replaceTextRange(
   const nextText = `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`;
   return { text: nextText, cursor: safeStart + replacement.length };
 }
+
+export interface ComposerFileIntake {
+  readonly imageFiles: File[];
+  readonly referencedPaths: string[];
+  readonly error: string | null;
+}
+
+/**
+ * Splits dropped or picked files into what uploads and what attaches by
+ * reference.
+ *
+ * Only images upload as attachments — providers accept nothing else. Any other
+ * file attaches by reference instead: its OS path goes into the prompt as a
+ * file link the agent opens from disk. That needs a resolvable path, which
+ * browsers never expose — only the desktop app can.
+ */
+export function classifyComposerFileIntake(
+  files: readonly File[],
+  options: {
+    readonly resolvePath: (file: File) => string | null;
+    readonly imageSlotsUsed: number;
+    readonly maxImages: number;
+  },
+): ComposerFileIntake {
+  const imageFiles: File[] = [];
+  const referencedPaths: string[] = [];
+  let error: string | null = null;
+  let slots = options.imageSlotsUsed;
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) {
+      const path = options.resolvePath(file);
+      if (path !== null) {
+        referencedPaths.push(path);
+      } else {
+        error = `'${file.name}' can't be uploaded — only images can. Other files attach as path references, which needs the desktop app.`;
+      }
+      continue;
+    }
+    if (slots >= options.maxImages) {
+      error = `You can attach up to ${options.maxImages} images per message.`;
+      break;
+    }
+    imageFiles.push(file);
+    slots += 1;
+  }
+  return { imageFiles, referencedPaths, error };
+}

@@ -35,6 +35,8 @@ import { WorkspaceOrchestrationToolkitHandlersLive } from "./toolkits/workspace/
 import { WorkspaceOrchestrationToolkit } from "./toolkits/workspace/tools.ts";
 import { VmComputerToolkitHandlersLive } from "./toolkits/vm/handlers.ts";
 import { VmComputerTool, VmComputerToolkit } from "./toolkits/vm/tools.ts";
+import { AgentBuilderToolkitHandlersLive } from "./toolkits/agentBuilder/handlers.ts";
+import { AgentBuilderToolkit } from "./toolkits/agentBuilder/tools.ts";
 import { AgentWorkspaceToolkitHandlersLive } from "./toolkits/agentWorkspace/handlers.ts";
 import { AgentWorkspaceToolkit } from "./toolkits/agentWorkspace/tools.ts";
 import { AgentCollaborationToolkitHandlersLive } from "./toolkits/agentCollaboration/handlers.ts";
@@ -339,6 +341,10 @@ export const AgentWorkspaceToolkitRegistrationLive = McpServer.toolkit(AgentWork
   Layer.provide(AgentWorkspaceToolkitHandlersLive),
 );
 
+export const AgentBuilderToolkitRegistrationLive = McpServer.toolkit(AgentBuilderToolkit).pipe(
+  Layer.provide(AgentBuilderToolkitHandlersLive),
+);
+
 export const AgentCollaborationToolkitRegistrationLive = McpServer.toolkit(
   AgentCollaborationToolkit,
 ).pipe(Layer.provide(AgentCollaborationToolkitHandlersLive));
@@ -469,6 +475,7 @@ export const layer = Layer.mergeAll(
   ThreadTerminalsToolkitRegistrationLive,
   WorkspaceConsultToolkitRegistrationLive,
   AgentWorkspaceToolkitRegistrationLive,
+  AgentBuilderToolkitRegistrationLive,
   AgentCollaborationToolkitRegistrationLive,
   ThreadArtifactToolkitRegistrationLive,
   VmComputerRegistrationLive,

@@ -200,6 +200,71 @@ layer("ThreadArtifactService", (it) => {
     }),
   );
 
+  it.effect(
+    "deletes one artifact irreversibly — rows and bytes — without touching its neighbours",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ThreadArtifactService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        const threadId = ThreadId.make("thread-artifact-delete");
+        yield* insertThread(threadId);
+
+        const publish = (artifactKey: string, body: string) =>
+          service.publish({
+            threadId,
+            key: key(artifactKey),
+            title: `Artifact ${artifactKey}`,
+            kind: "markdown",
+            entryPath: "notes.md",
+            files: [
+              { path: "notes.md", contentType: "text/markdown", bytes: encoder.encode(body) },
+            ],
+          });
+        const doomed = yield* publish("doomed", "first revision");
+        yield* publish("doomed", "second revision");
+        const survivor = yield* publish("survivor", "still here");
+
+        const doomedDirectory = path.join(config.artifactsDir, doomed.artifact.artifactId);
+        assert.isTrue(yield* fileSystem.exists(doomedDirectory));
+
+        const deleted = yield* service.deleteArtifact({
+          threadId,
+          artifactId: doomed.artifact.artifactId,
+        });
+        assert.strictEqual(deleted.artifactId, doomed.artifact.artifactId);
+        assert.isFalse(yield* fileSystem.exists(doomedDirectory));
+
+        // Gone from every view — including the archived one — and a second
+        // delete reports not-found instead of pretending it worked.
+        const remaining = yield* service.list({ threadId, includeArchived: true });
+        assert.deepStrictEqual(
+          remaining.artifacts.map((entry) => entry.artifact.artifactId),
+          [survivor.artifact.artifactId],
+        );
+        const refetch = yield* service
+          .get({ threadId, artifactId: doomed.artifact.artifactId })
+          .pipe(Effect.flip);
+        assert.strictEqual(refetch._tag, "ThreadArtifactNotFoundError");
+        const again = yield* service
+          .deleteArtifact({ threadId, artifactId: doomed.artifact.artifactId })
+          .pipe(Effect.flip);
+        assert.strictEqual(again._tag, "ThreadArtifactNotFoundError");
+
+        const survivorBytes = yield* fileSystem.readFileString(
+          path.join(
+            config.artifactsDir,
+            survivor.artifact.artifactId,
+            "revisions",
+            "1",
+            "notes.md",
+          ),
+        );
+        assert.strictEqual(survivorBytes, "still here");
+      }),
+  );
+
   it.effect("rejects traversal, forged MIME types, module bundles, and deleted owners", () =>
     Effect.gen(function* () {
       const service = yield* ThreadArtifactService;

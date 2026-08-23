@@ -3,7 +3,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadId as ThreadIdSchema, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
@@ -21,6 +21,7 @@ import {
 } from "./filesystem.ts";
 import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
+  ThreadArtifactDeleteResult,
   ThreadArtifactDetail,
   ThreadArtifactError,
   ThreadArtifactGetInput,
@@ -63,6 +64,7 @@ import {
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
+  ModelSelection,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
@@ -242,6 +244,7 @@ export const WS_METHODS = {
   threadArtifactsGet: "threadArtifacts.get",
   threadArtifactsArchive: "threadArtifacts.archive",
   threadArtifactsRestore: "threadArtifacts.restore",
+  threadArtifactsDelete: "threadArtifacts.delete",
   threadArtifactsSubscribe: "threadArtifacts.subscribe",
 
   // VCS methods
@@ -299,6 +302,7 @@ export const WS_METHODS = {
 
   // Agent Stack (named VM agents)
   vmAgentCreate: "vmAgent.create",
+  vmAgentBuilderCreate: "vmAgent.builder.create",
   vmAgentDelete: "vmAgent.delete",
   vmAgentStart: "vmAgent.start",
   vmAgentStop: "vmAgent.stop",
@@ -643,6 +647,12 @@ export const WsThreadArtifactsRestoreRpc = Rpc.make(WS_METHODS.threadArtifactsRe
   error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
 });
 
+export const WsThreadArtifactsDeleteRpc = Rpc.make(WS_METHODS.threadArtifactsDelete, {
+  payload: ThreadArtifactGetInput,
+  success: ThreadArtifactDeleteResult,
+  error: Schema.Union([ThreadArtifactError, EnvironmentAuthorizationError]),
+});
+
 export const WsThreadArtifactsSubscribeRpc = Rpc.make(WS_METHODS.threadArtifactsSubscribe, {
   payload: ThreadArtifactListInput,
   success: ThreadArtifactStreamItem,
@@ -857,6 +867,29 @@ export const WsVmAgentCreateRpc = Rpc.make(WS_METHODS.vmAgentCreate, {
   payload: VmAgentCreateInput,
   success: VmAgent,
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+/**
+ * Starts an Agent Builder chat: a thread in the hidden agents project whose
+ * prefixed id grants it the agent_builder tool, created already running on the
+ * user's single prompt. Lives here rather than vm.ts because ModelSelection is
+ * defined in orchestration.ts, which itself imports vm.ts.
+ */
+export const VmAgentBuilderCreateInput = Schema.Struct({
+  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  modelSelection: ModelSelection,
+});
+export type VmAgentBuilderCreateInput = Schema.Codec.Encoded<typeof VmAgentBuilderCreateInput>;
+
+export const VmAgentBuilderCreateResult = Schema.Struct({
+  threadId: ThreadIdSchema,
+});
+export type VmAgentBuilderCreateResult = typeof VmAgentBuilderCreateResult.Type;
+
+export const WsVmAgentBuilderCreateRpc = Rpc.make(WS_METHODS.vmAgentBuilderCreate, {
+  payload: VmAgentBuilderCreateInput,
+  success: VmAgentBuilderCreateResult,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
 export const WsVmAgentDeleteRpc = Rpc.make(WS_METHODS.vmAgentDelete, {
@@ -1217,6 +1250,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsThreadArtifactsGetRpc,
   WsThreadArtifactsArchiveRpc,
   WsThreadArtifactsRestoreRpc,
+  WsThreadArtifactsDeleteRpc,
   WsThreadArtifactsSubscribeRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
@@ -1266,6 +1300,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlSendInputRpc,
   WsRemoteControlCancelRpc,
   WsVmAgentCreateRpc,
+  WsVmAgentBuilderCreateRpc,
   WsVmAgentDeleteRpc,
   WsVmAgentStartRpc,
   WsVmAgentStopRpc,

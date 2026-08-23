@@ -176,6 +176,11 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vmAgentCreate,
       scheduler: lifecycleScheduler,
     }),
+    builderCreate: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:builder-create",
+      tag: WS_METHODS.vmAgentBuilderCreate,
+      scheduler: lifecycleScheduler,
+    }),
     delete: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:delete",
       tag: WS_METHODS.vmAgentDelete,

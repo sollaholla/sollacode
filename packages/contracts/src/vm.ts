@@ -21,6 +21,18 @@ export const AGENTS_PROJECT_NAME = "Agents";
 export const isAgentsProjectId = (projectId: string): boolean => projectId === AGENTS_PROJECT_ID;
 
 /**
+ * Reserved id prefix for Agent Builder chats.
+ *
+ * A builder chat is an ordinary thread in the hidden agents project whose id
+ * carries this prefix. The prefix is what grants the thread the agent_builder
+ * tool — identity in the id, like delegation-worker threads — so no schema or
+ * table changes are needed to mark one.
+ */
+export const AGENT_BUILDER_THREAD_PREFIX = "agent-builder:";
+export const isAgentBuilderThreadId = (threadId: string): boolean =>
+  threadId.startsWith(AGENT_BUILDER_THREAD_PREFIX);
+
+/**
  * The Agent Stack: named autonomous agents that each own a persistent local
  * virtual machine (full desktop + browser) they control with full permissions.
  *

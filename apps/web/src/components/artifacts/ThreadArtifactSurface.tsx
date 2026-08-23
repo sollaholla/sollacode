@@ -8,7 +8,13 @@ import {
   type ThreadArtifactSummary,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { ArchiveIcon, ArchiveRestoreIcon, PackageIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  PackageIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -20,6 +26,14 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { useEnvironmentQuery } from "~/state/query";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "~/components/ui/dialog";
 import { buildThreadRouteParams } from "~/threadRoutes";
 
 type ArtifactSurface = Extract<RightPanelSurface, { kind: "artifact" }>;
@@ -195,6 +209,10 @@ export function ThreadArtifactSurface(props: {
   );
   const archive = useAtomCommand(threadArtifactEnvironment.archive, { reportFailure: false });
   const restore = useAtomCommand(threadArtifactEnvironment.restore, { reportFailure: false });
+  const deleteArtifact = useAtomCommand(threadArtifactEnvironment.delete, {
+    reportFailure: false,
+  });
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const latestRevision = artifact?.currentRevision ?? props.surface.revision;
   const updateAvailable = latestRevision > props.surface.revision;
 
@@ -220,6 +238,24 @@ export function ThreadArtifactSurface(props: {
       return;
     }
     detailQuery.refresh();
+  };
+
+  const performDelete = async () => {
+    if (mutating) return;
+    setMutating(true);
+    setMutationError(null);
+    const result = await deleteArtifact({
+      environmentId: props.threadRef.environmentId,
+      input: { threadId: props.threadRef.threadId, artifactId },
+    });
+    setMutating(false);
+    setConfirmingDelete(false);
+    if (result._tag === "Failure") {
+      setMutationError(errorMessage(result.cause, "The artifact could not be deleted."));
+      return;
+    }
+    // The artifact no longer exists, so the tab showing it goes with it.
+    useRightPanelStore.getState().closeSurface(props.threadRef, props.surface.id);
   };
 
   return (
@@ -294,8 +330,51 @@ export function ThreadArtifactSurface(props: {
               {mutating ? "Saving…" : artifact.archivedAt === null ? "Archive" : "Restore"}
             </Button>
           ) : null}
+          {artifact ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="min-h-11 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              disabled={mutating}
+              onClick={() => setConfirmingDelete(true)}
+            >
+              <Trash2Icon />
+              Delete
+            </Button>
+          ) : null}
         </div>
       </header>
+
+      <Dialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
+        <DialogPopup className="w-full max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete artifact</DialogTitle>
+            <DialogDescription>
+              “{artifact?.title ?? props.surface.title}” and every revision of it will be removed
+              from this computer. Unlike archiving, this cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={mutating}
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={mutating}
+              onClick={() => void performDelete()}
+            >
+              {mutating ? "Deleting…" : "Delete artifact"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
 
       {mutationError ? (
         <p
