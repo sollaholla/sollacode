@@ -9,7 +9,11 @@ import * as ServerConfig from "../config.ts";
 import {
   applyInput,
   browserExecutableAvailable,
+  clearStaleProfileLock,
+  condenseLaunchFailure,
   enqueue,
+  parseSingletonLockTarget,
+  shouldClearSingletonLock,
   VmProviderBrowserLive,
   type BrowserVm,
 } from "./BrowserVmProvider.ts";
@@ -158,3 +162,119 @@ if (!browserExecutableAvailable()) {
     );
   });
 }
+
+// ── Stale profile-lock recovery ─────────────────────────────────────────────
+//
+// The desktop updater force-kills the server and every agent's child browser,
+// so Chromium's SingletonLock can survive pointing at a dead pid. The next
+// launch then aborted with "profile is already in use" although nothing was
+// using it, and the agent's VM stayed unstartable until the file was deleted
+// by hand — observed on this machine immediately after an app update.
+
+it.effect("reads hostname and pid out of a singleton lock target", () =>
+  Effect.sync(() => {
+    assert.deepStrictEqual(parseSingletonLockTarget("mac-studio-19963"), {
+      host: "mac-studio",
+      pid: 19_963,
+    });
+    assert.isNull(parseSingletonLockTarget("no-trailing-pid-"));
+    assert.isNull(parseSingletonLockTarget("nodash"));
+    assert.isNull(parseSingletonLockTarget("-123"));
+    assert.isNull(parseSingletonLockTarget("host-notapid"));
+  }),
+);
+
+it.effect("clears only locks whose owner is provably dead", () =>
+  Effect.sync(() => {
+    const alive = (pid: number) => pid === 4_242;
+    // Dead pid on this host: stale.
+    assert.isTrue(
+      shouldClearSingletonLock({
+        target: "this-host-999999",
+        hostname: "this-host",
+        pidAlive: alive,
+      }),
+    );
+    // Live pid: a genuinely concurrent Chromium keeps its lock.
+    assert.isFalse(
+      shouldClearSingletonLock({
+        target: "this-host-4242",
+        hostname: "this-host",
+        pidAlive: alive,
+      }),
+    );
+    // Another machine's lock cannot be judged from here.
+    assert.isFalse(
+      shouldClearSingletonLock({
+        target: "other-host-999999",
+        hostname: "this-host",
+        pidAlive: alive,
+      }),
+    );
+    // Something Chromium never wrote is not a live owner's lock.
+    assert.isTrue(
+      shouldClearSingletonLock({ target: "garbage", hostname: "this-host", pidAlive: alive }),
+    );
+  }),
+);
+
+it.effect("removes a dead owner's lock trio from a real profile directory", () =>
+  Effect.promise(async () => {
+    const NodeFSP = await import("node:fs/promises");
+    const NodeOS = await import("node:os");
+    const NodePath = await import("node:path");
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "vm-profile-"));
+    try {
+      // A dangling symlink, exactly as Chromium leaves it. Pid 2^30 is far
+      // above any real pid table.
+      await NodeFSP.symlink(`${NodeOS.hostname()}-1073741824`, NodePath.join(dir, "SingletonLock"));
+      await NodeFSP.symlink("also-dangling", NodePath.join(dir, "SingletonCookie"));
+
+      assert.isTrue(await clearStaleProfileLock(dir));
+      const remaining = await NodeFSP.readdir(dir);
+      assert.deepStrictEqual(remaining, []);
+      // Idempotent: nothing left to clear.
+      assert.isFalse(await clearStaleProfileLock(dir));
+    } finally {
+      await NodeFSP.rm(dir, { recursive: true, force: true });
+    }
+  }),
+);
+
+it.effect("leaves a live owner's lock in place", () =>
+  Effect.promise(async () => {
+    const NodeFSP = await import("node:fs/promises");
+    const NodeOS = await import("node:os");
+    const NodePath = await import("node:path");
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "vm-profile-"));
+    try {
+      // This test's own pid is as alive as a pid gets.
+      await NodeFSP.symlink(
+        `${NodeOS.hostname()}-${process.pid}`,
+        NodePath.join(dir, "SingletonLock"),
+      );
+      assert.isFalse(await clearStaleProfileLock(dir));
+      assert.deepStrictEqual(await NodeFSP.readdir(dir), ["SingletonLock"]);
+    } finally {
+      await NodeFSP.rm(dir, { recursive: true, force: true });
+    }
+  }),
+);
+
+it.effect("condenses a launch failure to its first line, with a plain-words singleton case", () =>
+  Effect.sync(() => {
+    const singleton = condenseLaunchFailure(
+      "browserType.launchPersistentContext: Failed to create a ProcessSingleton for your profile directory. Call log:\n  - <launching> /Applications/Google Chrome.app ...",
+    );
+    assert.include(singleton, "Another Chromium instance");
+    assert.notInclude(singleton, "Call log");
+
+    const other = condenseLaunchFailure(
+      "browserType.launchPersistentContext: Executable doesn't exist at /nope\nCall log:\n  - <launching> ...",
+    );
+    assert.strictEqual(
+      other,
+      "browserType.launchPersistentContext: Executable doesn't exist at /nope",
+    );
+  }),
+);
