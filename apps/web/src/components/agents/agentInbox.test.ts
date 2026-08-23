@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   agentNotificationPreview,
   notificationsInFolder,
+  toggleSelectAll,
   unreadAgentNotificationCount,
 } from "./agentInbox";
 
@@ -46,5 +47,13 @@ describe("agent inbox folders", () => {
     expect(agentNotificationPreview("First line\n\n- second   item")).toBe(
       "First line - second item",
     );
+  });
+
+  it("select-all fills a partial selection and clears a complete one", () => {
+    const messages = [notification("a"), notification("b")];
+    expect([...toggleSelectAll(messages, new Set())].sort()).toEqual(["a", "b"]);
+    expect([...toggleSelectAll(messages, new Set(["a"]))].sort()).toEqual(["a", "b"]);
+    expect(toggleSelectAll(messages, new Set(["a", "b"])).size).toBe(0);
+    expect(toggleSelectAll([], new Set()).size).toBe(0);
   });
 });

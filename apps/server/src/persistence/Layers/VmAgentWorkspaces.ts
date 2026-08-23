@@ -61,6 +61,9 @@ export const RUN_HISTORY_KEEP_RECENT = 20;
 /** The same, for the notifications those runs raised. */
 export const NOTIFICATION_KEEP_RECENT = 50;
 
+/** How long archived inbox mail survives before it is deleted outright. */
+export const ARCHIVED_NOTIFICATION_RETENTION_HOURS = 48;
+
 const VmAgentTaskDb = VmAgentTask.mapFields(
   Struct.assign({
     completionCriteria: Schema.fromJsonString(Schema.Array(Schema.String)),
@@ -680,6 +683,25 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  /**
+   * Archived mail is short-lived by design: unlike run-count pruning above,
+   * expiry is purely age-based, keyed on when the user archived — not when the
+   * alert was created — so a freshly archived old alert still gets its full
+   * grace period.
+   */
+  const purgeExpiredArchivedNotificationsRow = SqlSchema.void({
+    Request: Schema.Struct({
+      vmAgentId: VmAgentNotification.fields.vmAgentId,
+      cutoff: VmAgentNotification.fields.createdAt,
+    }),
+    execute: ({ vmAgentId, cutoff }) => sql`
+      DELETE FROM vm_agent_notifications
+      WHERE vm_agent_id = ${vmAgentId}
+        AND archived_at IS NOT NULL
+        AND archived_at < ${cutoff}
+    `,
+  });
+
   const mapError = (operation: string) =>
     Effect.mapError(toPersistenceSqlError(`VmAgentWorkspaceStore.${operation}:query`));
 
@@ -966,6 +988,12 @@ const make = Effect.gen(function* () {
       archivedAt: input.archivedAt ?? null,
     }).pipe(mapError("updateNotification"));
 
+  const purgeExpiredArchivedNotifications: VmAgentWorkspaceStoreShape["purgeExpiredArchivedNotifications"] =
+    (input) =>
+      purgeExpiredArchivedNotificationsRow(input).pipe(
+        mapError("purgeExpiredArchivedNotifications"),
+      );
+
   const updateNotificationPreferences: VmAgentWorkspaceStoreShape["updateNotificationPreferences"] =
     (preferences) =>
       upsertPreferences({
@@ -1032,6 +1060,7 @@ const make = Effect.gen(function* () {
     createNotification,
     markNotificationRead,
     updateNotification,
+    purgeExpiredArchivedNotifications,
     updateNotificationPreferences,
     upsertArtifact,
     raiseBlocker,

@@ -131,6 +131,11 @@ function AgentWorkspaceResolved(props: {
         className={cn(
           "@container/header-actions flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3",
           COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          // This header spans the window even when the browser panel is open,
+          // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
+          // Windows the native window controls overlay this row's right edge,
+          // and with them the parked panel toggle.
+          "pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
         <div className="min-w-0 md:flex-1">

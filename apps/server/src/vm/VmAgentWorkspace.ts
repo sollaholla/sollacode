@@ -30,6 +30,7 @@ import * as Option from "effect/Option";
 
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
+import { ARCHIVED_NOTIFICATION_RETENTION_HOURS } from "../persistence/Layers/VmAgentWorkspaces.ts";
 
 type WorkspaceListener = (snapshot: VmAgentWorkspaceSnapshot) => Effect.Effect<void>;
 type AttentionListener = (snapshot: VmAgentAttentionSnapshot) => Effect.Effect<void>;
@@ -205,6 +206,18 @@ export const make = Effect.gen(function* () {
   const snapshot: VmAgentWorkspaceShape["snapshot"] = Effect.fn("VmAgentWorkspace.snapshot")(
     function* (vmAgentId) {
       yield* ensure(vmAgentId);
+      // Expiry is age-based, so unlike run-count pruning it cannot ride on run
+      // completion alone: an idle agent's archive must still drain. Reading the
+      // workspace is the only moment the archive is observable, so the sweep
+      // rides on it, the same way ensure() does.
+      const cutoff = DateTime.formatIso(
+        DateTime.subtract(yield* DateTime.now, {
+          hours: ARCHIVED_NOTIFICATION_RETENTION_HOURS,
+        }),
+      );
+      yield* store
+        .purgeExpiredArchivedNotifications({ vmAgentId, cutoff })
+        .pipe(Effect.mapError(operationError("expiring archived notifications")));
       return yield* store
         .snapshot(vmAgentId)
         .pipe(Effect.mapError(operationError("reading agent workspace")));

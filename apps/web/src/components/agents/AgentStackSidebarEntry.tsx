@@ -10,6 +10,7 @@ import {
   BellIcon,
   BotIcon,
   ChevronDownIcon,
+  CircleDashedIcon,
   HandIcon,
   PlusIcon,
   SparklesIcon,
@@ -25,6 +26,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useUiStateStore } from "../../uiStateStore";
 import { toastManager } from "../ui/toast";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
+import { useThreadShell } from "../../state/entities";
+import { resolveSidebarV2Status } from "../Sidebar.logic";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { SidebarMenuButton } from "../ui/sidebar";
@@ -216,6 +219,18 @@ function AgentSidebarRow(props: {
 }) {
   const { agent, onRequestDelete } = props;
   const usesTouch = useOnScreenKeyboard();
+  // The agent's chat thread is the truth about whether it is mid-turn; the
+  // status dot only says its VM is up. Icon-only on purpose — these rows have
+  // no room for the thread list's "Working 2m" pill.
+  const threadShell = useThreadShell(
+    agent.threadId ? { environmentId: props.environmentId, threadId: agent.threadId } : null,
+  );
+  const rowEnvironment = useEnvironment(props.environmentId);
+  const environmentUnreachable =
+    rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
+  const working =
+    threadShell !== null &&
+    resolveSidebarV2Status({ ...threadShell, environmentUnreachable }) === "working";
   const resolveAction = useCallback(
     (direction: SidebarSwipeDirection) => (direction === "right" ? "delete" : null),
     [],
@@ -267,6 +282,14 @@ function AgentSidebarRow(props: {
       >
         <BotIcon />
         <span className="flex-1 truncate text-left">{agent.name}</span>
+        {working ? (
+          <span title="Working" className="flex shrink-0 items-center">
+            <CircleDashedIcon
+              className="size-3.5 animate-spin text-primary [animation-duration:3s]"
+              aria-label="Working"
+            />
+          </span>
+        ) : null}
         {props.openBlockers > 0 ? (
           <HandIcon
             className="size-3.5 shrink-0 text-amber-500"
