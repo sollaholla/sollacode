@@ -1,4 +1,5 @@
 import {
+  AGENT_BUILDER_THREAD_ID,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -125,6 +126,36 @@ it.layer(NodeServices.layer)("orchestrator thread is permanent", (it) => {
         }),
       );
       expect(error.message).toContain("cannot be deleted");
+    }),
+  );
+
+  it.effect("refuses to delete or archive the singleton Agent Builder thread", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel;
+      // Same burn hazard as the orchestrator: a soft-deleted row would make
+      // the reserved id unrecreatable forever.
+      const deleteError = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.delete",
+            commandId: asCommandId("cmd-delete-agent-builder"),
+            threadId: AGENT_BUILDER_THREAD_ID,
+          },
+          readModel,
+        }),
+      );
+      expect(deleteError.message).toContain("Agent Builder thread cannot be deleted");
+      const archiveError = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.archive",
+            commandId: asCommandId("cmd-archive-agent-builder"),
+            threadId: AGENT_BUILDER_THREAD_ID,
+          },
+          readModel,
+        }),
+      );
+      expect(archiveError.message).toContain("Agent Builder thread cannot be archived");
     }),
   );
 

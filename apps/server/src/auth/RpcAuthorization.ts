@@ -117,7 +117,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.remoteControlSendInput]: AuthOrchestrationOperateScope,
   [WS_METHODS.remoteControlCancel]: AuthOrchestrationOperateScope,
   [WS_METHODS.vmAgentCreate]: AuthVmOperateScope,
-  [WS_METHODS.vmAgentBuilderCreate]: AuthVmOperateScope,
+  [WS_METHODS.vmAgentBuilderOpen]: AuthVmOperateScope,
   [WS_METHODS.vmAgentDelete]: AuthVmOperateScope,
   [WS_METHODS.vmAgentStart]: AuthVmOperateScope,
   [WS_METHODS.vmAgentStop]: AuthVmOperateScope,

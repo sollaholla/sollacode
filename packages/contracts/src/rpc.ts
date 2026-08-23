@@ -64,7 +64,6 @@ import {
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
-  ModelSelection,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
@@ -302,7 +301,7 @@ export const WS_METHODS = {
 
   // Agent Stack (named VM agents)
   vmAgentCreate: "vmAgent.create",
-  vmAgentBuilderCreate: "vmAgent.builder.create",
+  vmAgentBuilderOpen: "vmAgent.builder.open",
   vmAgentDelete: "vmAgent.delete",
   vmAgentStart: "vmAgent.start",
   vmAgentStop: "vmAgent.stop",
@@ -870,25 +869,22 @@ export const WsVmAgentCreateRpc = Rpc.make(WS_METHODS.vmAgentCreate, {
 });
 
 /**
- * Starts an Agent Builder chat: a thread in the hidden agents project whose
- * prefixed id grants it the agent_builder tool, created already running on the
- * user's single prompt. Lives here rather than vm.ts because ModelSelection is
- * defined in orchestration.ts, which itself imports vm.ts.
+ * Opens the singleton Agent Builder chat: ensures the one persistent thread in
+ * the hidden agents project exists (its prefixed id grants it the
+ * agent_builder tool) and returns its id for navigation. Idempotent — a second
+ * open finds the thread already there.
  */
-export const VmAgentBuilderCreateInput = Schema.Struct({
-  prompt: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
-  modelSelection: ModelSelection,
-});
-export type VmAgentBuilderCreateInput = Schema.Codec.Encoded<typeof VmAgentBuilderCreateInput>;
+export const VmAgentBuilderOpenInput = Schema.Struct({});
+export type VmAgentBuilderOpenInput = typeof VmAgentBuilderOpenInput.Type;
 
-export const VmAgentBuilderCreateResult = Schema.Struct({
+export const VmAgentBuilderOpenResult = Schema.Struct({
   threadId: ThreadIdSchema,
 });
-export type VmAgentBuilderCreateResult = typeof VmAgentBuilderCreateResult.Type;
+export type VmAgentBuilderOpenResult = typeof VmAgentBuilderOpenResult.Type;
 
-export const WsVmAgentBuilderCreateRpc = Rpc.make(WS_METHODS.vmAgentBuilderCreate, {
-  payload: VmAgentBuilderCreateInput,
-  success: VmAgentBuilderCreateResult,
+export const WsVmAgentBuilderOpenRpc = Rpc.make(WS_METHODS.vmAgentBuilderOpen, {
+  payload: VmAgentBuilderOpenInput,
+  success: VmAgentBuilderOpenResult,
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
@@ -1300,7 +1296,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRemoteControlSendInputRpc,
   WsRemoteControlCancelRpc,
   WsVmAgentCreateRpc,
-  WsVmAgentBuilderCreateRpc,
+  WsVmAgentBuilderOpenRpc,
   WsVmAgentDeleteRpc,
   WsVmAgentStartRpc,
   WsVmAgentStopRpc,
