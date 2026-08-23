@@ -1,4 +1,4 @@
-import { VmAgentTaskId } from "@t3tools/contracts";
+import { VmAgentBlockerId, VmAgentTaskId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -17,7 +17,7 @@ import {
 
 const requireString = (
   input: AgentWorkspaceInput,
-  field: "taskId" | "title" | "prompt" | "notificationBody",
+  field: "taskId" | "title" | "prompt" | "notificationBody" | "blockerDetail" | "blockerId",
 ) => {
   const value = input[field];
   return typeof value === "string" && value.trim().length > 0
@@ -136,6 +136,32 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
           ? "Notification sent."
           : "Notification preferences are disabled; no notification was delivered.",
       };
+    }
+    case "report_blocker": {
+      const title = yield* requireString(input, "title");
+      const detail = yield* requireString(input, "blockerDetail");
+      const blocker = yield* workspace
+        .raiseBlocker({ vmAgentId, title, detail, url: input.blockerUrl ?? null })
+        .pipe(Effect.mapError(mapFailure("reporting a blocker")));
+      return {
+        action: input.action,
+        status:
+          "Blocker recorded as a standing request the user sees until it is resolved. Re-reporting the same title refreshes it; call resolve_blocker when it no longer blocks you.",
+        blocker,
+      };
+    }
+    case "resolve_blocker": {
+      const blockerId = VmAgentBlockerId.make(yield* requireString(input, "blockerId"));
+      const resolved = yield* workspace
+        .resolveBlocker({ vmAgentId, blockerId, resolvedBy: "agent" })
+        .pipe(Effect.mapError(mapFailure("resolving a blocker")));
+      if (Option.isNone(resolved)) {
+        return {
+          action: input.action,
+          status: "No open blocker with that id — it may already be resolved.",
+        };
+      }
+      return { action: input.action, status: "Blocker resolved.", blocker: resolved.value };
     }
     case "define_artifact":
     case "update_artifact": {

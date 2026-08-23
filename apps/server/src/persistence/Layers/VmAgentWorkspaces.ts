@@ -1,6 +1,7 @@
 import {
   VmAgentArtifact,
   VmAgentArtifactDefinition,
+  VmAgentBlocker,
   VmAgentNotification,
   VmAgentNotificationPreferences,
   VmAgentTask,
@@ -25,6 +26,8 @@ import {
   type CompleteVmAgentTaskRunInput,
   type CreateVmAgentNotificationInput,
   type CreateVmAgentTaskInput,
+  type RaiseVmAgentBlockerInput,
+  type ResolveVmAgentBlockerInput,
   type SetVmAgentTaskRunRunningInput,
   type UpdateVmAgentTaskInput,
   type UpsertVmAgentArtifactInput,
@@ -340,6 +343,68 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  // Open blockers first (each is a live "waiting on you" card), then the most
+  // recently resolved for context; ancient history is not worth streaming.
+  const listBlockers = SqlSchema.findAll({
+    Request: AgentRef,
+    Result: VmAgentBlocker,
+    execute: ({ vmAgentId }) => sql`
+      SELECT blocker_id AS "blockerId", vm_agent_id AS "vmAgentId", title, detail, url,
+             created_at AS "createdAt", updated_at AS "updatedAt",
+             resolved_at AS "resolvedAt", resolved_by AS "resolvedBy"
+      FROM vm_agent_blockers
+      WHERE vm_agent_id = ${vmAgentId}
+      ORDER BY (resolved_at IS NULL) DESC, created_at DESC
+      LIMIT 50
+    `,
+  });
+
+  const raiseBlockerRow = SqlSchema.findOne({
+    Request: Schema.Struct({
+      blockerId: VmAgentBlocker.fields.blockerId,
+      vmAgentId: VmAgentBlocker.fields.vmAgentId,
+      title: Schema.String,
+      detail: Schema.String,
+      url: Schema.NullOr(Schema.String),
+      now: VmAgentBlocker.fields.createdAt,
+    }),
+    Result: VmAgentBlocker,
+    execute: (input) => sql`
+      INSERT INTO vm_agent_blockers (
+        blocker_id, vm_agent_id, title, detail, url,
+        created_at, updated_at, resolved_at, resolved_by
+      ) VALUES (
+        ${input.blockerId}, ${input.vmAgentId}, ${input.title}, ${input.detail},
+        ${input.url}, ${input.now}, ${input.now}, NULL, NULL
+      )
+      ON CONFLICT (vm_agent_id, title) WHERE resolved_at IS NULL DO UPDATE SET
+        detail = excluded.detail,
+        url = excluded.url,
+        updated_at = excluded.updated_at
+      RETURNING blocker_id AS "blockerId", vm_agent_id AS "vmAgentId", title, detail, url,
+                created_at AS "createdAt", updated_at AS "updatedAt",
+                resolved_at AS "resolvedAt", resolved_by AS "resolvedBy"
+    `,
+  });
+
+  const resolveBlockerRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({
+      vmAgentId: VmAgentBlocker.fields.vmAgentId,
+      blockerId: VmAgentBlocker.fields.blockerId,
+      resolvedBy: Schema.Literals(["user", "agent"]),
+      now: VmAgentBlocker.fields.createdAt,
+    }),
+    Result: VmAgentBlocker,
+    execute: ({ vmAgentId, blockerId, resolvedBy, now }) => sql`
+      UPDATE vm_agent_blockers
+      SET resolved_at = ${now}, resolved_by = ${resolvedBy}, updated_at = ${now}
+      WHERE vm_agent_id = ${vmAgentId} AND blocker_id = ${blockerId} AND resolved_at IS NULL
+      RETURNING blocker_id AS "blockerId", vm_agent_id AS "vmAgentId", title, detail, url,
+                created_at AS "createdAt", updated_at AS "updatedAt",
+                resolved_at AS "resolvedAt", resolved_by AS "resolvedBy"
+    `,
+  });
+
   const getPreferences = SqlSchema.findOneOption({
     Request: AgentRef,
     Result: PreferencesDb,
@@ -613,9 +678,10 @@ const make = Effect.gen(function* () {
       artifact: listArtifacts({ vmAgentId }),
       notifications: listNotifications({ vmAgentId }),
       preferences: getPreferences({ vmAgentId }),
+      blockers: listBlockers({ vmAgentId }),
     }).pipe(
       mapError("snapshot"),
-      Effect.map(({ tasks, runs, artifact, notifications, preferences }) => {
+      Effect.map(({ tasks, runs, artifact, notifications, preferences, blockers }) => {
         const fallbackUpdatedAt = artifact.pipe(
           Option.map((value) => value.updatedAt),
           Option.getOrElse(() => "1970-01-01T00:00:00.000Z"),
@@ -627,6 +693,7 @@ const make = Effect.gen(function* () {
           runs,
           artifact: Option.getOrNull(artifact),
           notifications,
+          blockers,
           notificationPreferences: Option.match(preferences, {
             onNone: () => ({
               vmAgentId,
@@ -867,6 +934,14 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const raiseBlocker: VmAgentWorkspaceStoreShape["raiseBlocker"] = (
+    input: RaiseVmAgentBlockerInput,
+  ) => raiseBlockerRow(input).pipe(mapError("raiseBlocker"));
+
+  const resolveBlocker: VmAgentWorkspaceStoreShape["resolveBlocker"] = (
+    input: ResolveVmAgentBlockerInput,
+  ) => resolveBlockerRow(input).pipe(mapError("resolveBlocker"));
+
   return {
     ensureDefaults,
     snapshot,
@@ -884,6 +959,8 @@ const make = Effect.gen(function* () {
     markNotificationRead,
     updateNotificationPreferences,
     upsertArtifact,
+    raiseBlocker,
+    resolveBlocker,
   } satisfies VmAgentWorkspaceStoreShape;
 });
 

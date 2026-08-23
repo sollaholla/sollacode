@@ -2,6 +2,7 @@ import {
   ThreadId,
   VmAgentArtifact,
   VmAgentArtifactDefinition,
+  VmAgentBlocker,
   VmAgentTask,
   VmAgentTaskNotificationPolicy,
   VmAgentTaskSchedule,
@@ -17,11 +18,13 @@ export const AgentWorkspaceInput = Schema.Struct({
     "update_task",
     "complete_task",
     "notify_user",
+    "report_blocker",
+    "resolve_blocker",
     "define_artifact",
     "update_artifact",
   ]).annotate({
     description:
-      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them.",
+      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. resolve_blocker clears one you raised once it no longer blocks you.",
   }),
   taskId: Schema.optional(Schema.String).annotate({
     description: "Task id for update_task or complete_task.",
@@ -33,6 +36,19 @@ export const AgentWorkspaceInput = Schema.Struct({
   notificationPolicy: Schema.optional(VmAgentTaskNotificationPolicy),
   notificationBody: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
   artifactDefinition: Schema.optional(VmAgentArtifactDefinition),
+  blockerId: Schema.optional(Schema.String).annotate({
+    description:
+      "Blocker id for resolve_blocker (from report_blocker's result or the workspace snapshot).",
+  }),
+  blockerDetail: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))).annotate({
+    description:
+      "report_blocker: what is blocked and exactly what the user must do to unblock it. Shown on the standing request card.",
+  }),
+  blockerUrl: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(500)))).annotate(
+    {
+      description: "report_blocker: where the user should go to unblock, when there is one place.",
+    },
+  ),
 });
 export type AgentWorkspaceInput = typeof AgentWorkspaceInput.Type;
 
@@ -42,6 +58,7 @@ export const AgentWorkspaceResult = Schema.Struct({
   workspace: Schema.optional(VmAgentWorkspaceSnapshot),
   task: Schema.optional(VmAgentTask),
   artifact: Schema.optional(VmAgentArtifact),
+  blocker: Schema.optional(VmAgentBlocker),
 });
 
 export class AgentWorkspaceCapabilityUnavailableError extends Schema.TaggedErrorClass<AgentWorkspaceCapabilityUnavailableError>()(

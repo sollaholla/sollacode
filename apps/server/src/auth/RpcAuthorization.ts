@@ -132,6 +132,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.vmAgentTaskRunNow]: AuthVmOperateScope,
   [WS_METHODS.vmAgentTaskGeneratePrompt]: AuthVmOperateScope,
   [WS_METHODS.vmAgentNotificationMarkRead]: AuthVmOperateScope,
+  [WS_METHODS.vmAgentBlockerResolve]: AuthVmOperateScope,
   [WS_METHODS.vmAgentNotificationPreferencesUpdate]: AuthVmOperateScope,
   [WS_METHODS.vmAgentCollaborationSubscribe]: AuthVmOperateScope,
   [WS_METHODS.vmAgentCollaborationGet]: AuthVmOperateScope,

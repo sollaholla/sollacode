@@ -2,6 +2,8 @@ import {
   type VmAgentArtifact,
   type VmAgentArtifactDefinition,
   VmAgentArtifactId,
+  type VmAgentBlocker,
+  VmAgentBlockerId,
   type VmAgentId,
   type VmAgentNotification,
   VmAgentNotificationId,
@@ -100,6 +102,22 @@ export interface VmAgentWorkspaceShape {
     readonly title: string;
     readonly definition: VmAgentArtifactDefinition;
   }) => Effect.Effect<VmAgentArtifact, VmAgentWorkspaceError>;
+  /**
+   * Raise (or refresh, keyed on title) a standing "waiting on you" request —
+   * work blocked on something only the user can do. Persists until resolved.
+   */
+  readonly raiseBlocker: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly title: string;
+    readonly detail: string;
+    readonly url?: string | null;
+  }) => Effect.Effect<VmAgentBlocker, VmAgentWorkspaceError>;
+  /** None when the blocker is unknown or already resolved. */
+  readonly resolveBlocker: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly blockerId: VmAgentBlockerId;
+    readonly resolvedBy: "user" | "agent";
+  }) => Effect.Effect<Option.Option<VmAgentBlocker>, VmAgentWorkspaceError>;
   /** Publish a fresh snapshot after scheduler-owned persistence changes. */
   readonly refresh: (vmAgentId: VmAgentId) => Effect.Effect<void>;
 }
@@ -410,6 +428,51 @@ export const make = Effect.gen(function* () {
     return artifact;
   });
 
+  const raiseBlocker: VmAgentWorkspaceShape["raiseBlocker"] = Effect.fn(
+    "VmAgentWorkspace.raiseBlocker",
+  )(function* (input) {
+    yield* ensure(input.vmAgentId);
+    const now = yield* nowIso;
+    const blocker = yield* store
+      .raiseBlocker({
+        blockerId: VmAgentBlockerId.make(NodeCrypto.randomUUID()),
+        vmAgentId: input.vmAgentId,
+        title: input.title,
+        detail: input.detail,
+        url: input.url ?? null,
+        now,
+      })
+      .pipe(Effect.mapError(operationError("raising a blocker")));
+    // A blocker is a standing request for the user, so it also knocks: reuses
+    // the task-blocked notification kind (preference-gated like every other),
+    // deduped on the blocker id so re-reports refresh silently.
+    yield* notify({
+      vmAgentId: input.vmAgentId,
+      kind: "task-blocked",
+      title: `Waiting on you: ${input.title}`,
+      body: input.detail,
+      dedupeKey: `blocker:${blocker.blockerId}`,
+    }).pipe(Effect.orElseSucceed(() => false));
+    yield* publish(input.vmAgentId);
+    return blocker;
+  });
+
+  const resolveBlocker: VmAgentWorkspaceShape["resolveBlocker"] = Effect.fn(
+    "VmAgentWorkspace.resolveBlocker",
+  )(function* (input) {
+    yield* ensure(input.vmAgentId);
+    const resolved = yield* store
+      .resolveBlocker({
+        vmAgentId: input.vmAgentId,
+        blockerId: input.blockerId,
+        resolvedBy: input.resolvedBy,
+        now: yield* nowIso,
+      })
+      .pipe(Effect.mapError(operationError("resolving a blocker")));
+    yield* publish(input.vmAgentId);
+    return resolved;
+  });
+
   return {
     ensure,
     snapshot,
@@ -422,6 +485,8 @@ export const make = Effect.gen(function* () {
     markNotificationRead,
     updateNotificationPreferences,
     upsertArtifact,
+    raiseBlocker,
+    resolveBlocker,
     refresh,
   } satisfies VmAgentWorkspaceShape;
 });

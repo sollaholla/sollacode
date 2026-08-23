@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  VmAgentBlockerId,
   VmAgentDelegationId,
   VmAgentDelegationMessageId,
   VmAgentId,
@@ -31,6 +32,7 @@ import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
 import {
   MAX_RUN_START_RETRIES,
   RUN_DISPATCH_DEADLINE_MS,
+  taskPrompt,
   VmAgentTaskScheduler,
   VmAgentTaskSchedulerLive,
 } from "./VmAgentTaskScheduler.ts";
@@ -412,6 +414,7 @@ it.effect("persists a deduplicated notification before terminalizing a completed
           runs: [runningRun],
           artifact: null,
           notifications: [],
+          blockers: [],
           notificationPreferences: {
             vmAgentId,
             enabled: true,
@@ -994,3 +997,24 @@ it.effect("leaves a run that is merely waiting alone until the deadline", () =>
     }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
   }),
 );
+
+it("injects open blockers into the scheduled prompt so every run starts knowing them", () => {
+  const blocker = {
+    blockerId: VmAgentBlockerId.make("blocker-signin"),
+    vmAgentId: task.vmAgentId,
+    title: "Google sign-in needs you",
+    detail: "Studio shows a reCAPTCHA only a human can pass.",
+    url: "https://studio.youtube.com/",
+    createdAt: "2026-08-23T06:00:00.000Z",
+    updatedAt: "2026-08-23T06:00:00.000Z",
+    resolvedAt: null,
+    resolvedBy: null,
+  };
+  const withBlocker = taskPrompt(task, null, undefined, [blocker]);
+  assert.include(withBlocker, "Open blockers you previously reported");
+  assert.include(withBlocker, "blocker-signin");
+  assert.include(withBlocker, "https://studio.youtube.com/");
+  assert.include(withBlocker, "resolve_blocker");
+  // A clean slate stays clean — no empty section teaching the model noise.
+  assert.notInclude(taskPrompt(task, null), "Open blockers");
+});

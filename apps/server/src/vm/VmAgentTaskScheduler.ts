@@ -5,6 +5,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   ThreadId,
+  type VmAgentBlocker,
   type VmAgentDelegation,
   VmAgentDelegationMessageId,
   VmAgentNotificationId,
@@ -102,10 +103,12 @@ const runFailureMessageId = (runId: VmAgentTaskRunId) => MessageId.make(`vm-task
 const runCommandId = (runId: VmAgentTaskRunId, attempt = 0) =>
   CommandId.make(attempt === 0 ? `vm-task:${runId}` : `vm-task:${runId}:retry:${attempt}`);
 
-const taskPrompt = (
+/** @internal Exported for tests: the blocker section is part of the contract with runs. */
+export const taskPrompt = (
   task: VmAgentTask,
   delegation: VmAgentDelegation | null,
   pendingMessage?: string,
+  openBlockers: ReadonlyArray<VmAgentBlocker> = [],
 ) => {
   const criteria =
     task.completionCriteria.length === 0
@@ -125,6 +128,21 @@ const taskPrompt = (
       "This is bounded delegated work. You may not create another agent or side chat. Use agent_collaboration to report notes or questions. Consequential external actions always require explicit human approval. Stay in this environment and use the inherited model; do not escalate to a paid model.",
     ].join("\n");
   }
+  // Standing requests the agent raised on earlier runs. Injected so every run
+  // starts knowing what it is waiting on — retest each, work around what you
+  // can, and resolve_blocker the ones that no longer block.
+  const blockerSection =
+    openBlockers.length === 0
+      ? []
+      : [
+          "",
+          "Open blockers you previously reported (standing requests the user can see):",
+          ...openBlockers.map(
+            (blocker) =>
+              `- [${blocker.blockerId}] ${blocker.title}: ${blocker.detail}${blocker.url ? ` (${blocker.url})` : ""}`,
+          ),
+          "Retest whether each still blocks you. Use agent_workspace resolve_blocker for any that are cleared, and report_blocker for new ones.",
+        ];
   return [
     `[Scheduled task: ${task.title}]`,
     "",
@@ -132,6 +150,7 @@ const taskPrompt = (
     "",
     "Completion criteria:",
     criteria,
+    ...blockerSection,
     "",
     "This is durable scheduled work for your custom-agent workspace. Use your VM when needed. When finished, summarize what changed, any evidence, and anything still blocked.",
   ].join("\n");
@@ -487,6 +506,14 @@ export const make = Effect.gen(function* () {
         ? yield* collaboration.listMessages(delegated.value.delegationId)
         : [];
       const pendingMessage = delegationMessages.find((message) => message.delivery === "pending");
+      // Standing blockers ride along in the prompt so the run starts knowing
+      // what it is waiting on. Best-effort — catchCause, not orElseSucceed:
+      // nothing about reading decoration may stop the run itself, defects
+      // included.
+      const openBlockers: ReadonlyArray<VmAgentBlocker> = yield* store.snapshot(run.vmAgentId).pipe(
+        Effect.map((current) => current.blockers.filter((blocker) => blocker.resolvedAt === null)),
+        Effect.catchCause(() => Effect.succeed([])),
+      );
       yield* engine.dispatch({
         type: "thread.turn.start",
         commandId: runCommandId(run.runId, attempt),
@@ -494,7 +521,7 @@ export const make = Effect.gen(function* () {
         message: {
           messageId,
           role: "user",
-          text: taskPrompt(task, Option.getOrNull(delegated), pendingMessage?.text),
+          text: taskPrompt(task, Option.getOrNull(delegated), pendingMessage?.text, openBlockers),
           inputOrigin: "agent-loop",
           ...(Option.isSome(delegated) ? { delegationId: delegated.value.delegationId } : {}),
           attachments: [],

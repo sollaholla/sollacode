@@ -2,11 +2,20 @@ import type {
   EnvironmentId,
   VmAgent,
   VmAgentArtifactDefinition,
+  VmAgentBlocker,
   VmAgentTask,
   VmAgentWorkspaceSnapshot,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { BellIcon, CalendarClockIcon, PlayIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  BellIcon,
+  CalendarClockIcon,
+  ExternalLinkIcon,
+  HandIcon,
+  PlayIcon,
+  PlusIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -36,6 +45,82 @@ const keyedByContent = <T,>(values: ReadonlyArray<T>) => {
     return { key: `${content}:${occurrence}`, value };
   });
 };
+
+/** Open blockers, newest first — the "waiting on you" work list. */
+export function openAgentBlockers(
+  workspace: VmAgentWorkspaceSnapshot | null,
+): ReadonlyArray<VmAgentBlocker> {
+  return (workspace?.blockers ?? []).filter((blocker) => blocker.resolvedAt === null);
+}
+
+/**
+ * Standing requests the agent raised because its work is blocked on the user
+ * — a login, a CAPTCHA, a permission. Pinned above the agent's chat (not a
+ * message in it) so the request survives every turn until someone resolves
+ * it, the same way plans and questions stay put until answered.
+ */
+export function AgentBlockerBanner(props: {
+  readonly environmentId: EnvironmentId;
+  readonly workspace: VmAgentWorkspaceSnapshot | null;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const resolveBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
+    reportFailure: false,
+  });
+  const blockers = openAgentBlockers(props.workspace);
+  if (blockers.length === 0) return null;
+
+  const resolve = async (blocker: VmAgentBlocker) => {
+    setError(null);
+    setResolvingId(blocker.blockerId);
+    const result = await resolveBlocker({
+      environmentId: props.environmentId,
+      input: { vmAgentId: blocker.vmAgentId, blockerId: blocker.blockerId },
+    });
+    setResolvingId(null);
+    if (result._tag === "Failure") {
+      setError(commandError(result.cause, "The blocker could not be resolved."));
+    }
+  };
+
+  return (
+    <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+        <HandIcon className="size-3.5 shrink-0" />
+        Waiting on you
+      </div>
+      <div className="mt-1.5 flex min-w-0 flex-col gap-1.5">
+        {blockers.map((blocker) => (
+          <div key={blocker.blockerId} className="flex min-w-0 items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium">{blocker.title}</p>
+              <p className="line-clamp-3 text-[11px] text-muted-foreground">{blocker.detail}</p>
+            </div>
+            {blocker.url ? (
+              <Button
+                size="xs"
+                variant="outline"
+                render={<a href={blocker.url} target="_blank" rel="noreferrer noopener" />}
+              >
+                <ExternalLinkIcon /> Open
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={resolvingId === blocker.blockerId}
+              onClick={() => void resolve(blocker)}
+            >
+              {resolvingId === blocker.blockerId ? "Resolving…" : "Mark resolved"}
+            </Button>
+          </div>
+        ))}
+      </div>
+      {error ? <p className="mt-1.5 break-words text-[11px] text-destructive">{error}</p> : null}
+    </div>
+  );
+}
 
 export function AgentTasksPanel(props: {
   readonly environmentId: EnvironmentId;
