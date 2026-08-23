@@ -4126,6 +4126,39 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           state: "pending",
         },
       ]);
+
+      // A scheduler retry must be able to resurrect a cancelled obligation.
+      // The task scheduler re-dispatches under a fresh command id but reuses
+      // the message id, so the retry maps to the same deterministic row —
+      // treating that row purely as a replay receipt meant one transient
+      // cancellation killed the run for good (observed live: "Queued for
+      // Codex" forever, run failed after its retries all no-opped).
+      yield* sql`
+        UPDATE thread_work_obligations
+        SET state = 'cancelled',
+            blocked_reason = 'turn-start was superseded',
+            updated_at = '2026-01-01T00:00:06.500Z'
+        WHERE thread_id = ${threadId}
+          AND source_turn_id = ${"turn-start:vm-task:run-thread-work"}
+      `;
+      yield* dispatchTurn({
+        commandId: "vm-task:run-thread-work:retry:1",
+        messageId: "vm-task:run-thread-work",
+        text: "Scheduled task prompt",
+        inputOrigin: "agent-loop",
+        createdAt: "2026-01-01T00:00:07.000Z",
+      });
+
+      const afterRetry = yield* sql<{
+        readonly state: string;
+        readonly blockedReason: string | null;
+      }>`
+        SELECT state, blocked_reason AS "blockedReason"
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+          AND source_turn_id = ${"turn-start:vm-task:run-thread-work"}
+      `;
+      assert.deepEqual(afterRetry, [{ state: "pending", blockedReason: null }]);
     }),
   );
 
