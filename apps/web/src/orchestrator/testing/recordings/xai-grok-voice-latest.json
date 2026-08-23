@@ -1,0 +1,454 @@
+{
+  "provider": "xai",
+  "model": "grok-voice-latest",
+  "recordedAt": "2026-08-23T01:11:06.998Z",
+  "prompt": "Say hello in one short sentence.",
+  "frames": [
+    {
+      "atMs": 314,
+      "frame": {
+        "type": "session.created",
+        "event_id": "fe7a90b4-9bed-41fc-a288-74650d8c2d8d",
+        "session": {
+          "id": "e4641890f62e455b8ac84803a8ab46b7",
+          "object": "realtime.session",
+          "instructions": "",
+          "voice": "xai_ara",
+          "modalities": ["audio"],
+          "turn_detection": {
+            "type": null
+          },
+          "tools": [],
+          "model": "grok-voice-think-fast-2.0"
+        }
+      }
+    },
+    {
+      "atMs": 314,
+      "frame": {
+        "type": "conversation.created",
+        "event_id": "da056300-b638-4dff-8df6-79fb0da76b76",
+        "conversation": {
+          "id": "acfd2f81-e5cb-48d9-ac9e-340a7ed6d793",
+          "object": "realtime.conversation"
+        },
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 314,
+      "frame": {
+        "type": "ping",
+        "event_id": "2c1a0984-0e60-4706-bfda-879861b7e9aa",
+        "timestamp": 1787447464259,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 440,
+      "frame": {
+        "session": {
+          "enable_noise_suppression": false,
+          "model": "grok-voice-think-fast-2.0",
+          "keep_context": false,
+          "enable_phonetic_spelling": false,
+          "modalities": ["audio"],
+          "input_audio_format": "not specified",
+          "output_audio_format": "not specified",
+          "tool_choice": "auto",
+          "temperature": -1,
+          "max_response_output_tokens": "inf",
+          "audio": {
+            "input": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "transport": "json"
+            },
+            "output": {
+              "format": {
+                "type": "audio/pcm",
+                "rate": 24000
+              },
+              "transport": "json",
+              "voice": "eve"
+            }
+          },
+          "input_audio_transcription": null
+        },
+        "type": "session.updated",
+        "event_id": "795025d7-55fe-4654-99ab-57c25c30fd18",
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 440,
+      "frame": {
+        "type": "conversation.item.added",
+        "event_id": "25ea4fa0-a353-4f4b-9f6f-bdbdf4427e1e",
+        "item": {
+          "id": "1ba6d91f-5d31-4bf8-bde2-dd5a99f5b592",
+          "object": "realtime.item",
+          "type": "message",
+          "status": "completed",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Say hello in one short sentence."
+            }
+          ],
+          "replayed": false
+        },
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 440,
+      "frame": {
+        "type": "response.created",
+        "event_id": "e70d0292-4e47-43c4-b9e3-3f6121d3eb48",
+        "response": {
+          "id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+          "object": "realtime.response",
+          "output": [],
+          "status": "in_progress",
+          "status_details": "unimplemented",
+          "usage": {}
+        },
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 710,
+      "frame": {
+        "type": "response.output_item.added",
+        "event_id": "c82e689b-abdd-4132-8f40-f1bf053e9808",
+        "item": {
+          "id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+          "object": "realtime.item",
+          "type": "message",
+          "status": "in_progress",
+          "role": "assistant",
+          "replayed": false
+        },
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "output_index": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 710,
+      "frame": {
+        "type": "conversation.item.added",
+        "event_id": "aa74c4b8-f633-45d6-9b15-37599ca8498b",
+        "item": {
+          "id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+          "object": "realtime.item",
+          "type": "message",
+          "status": "in_progress",
+          "role": "assistant",
+          "content": [],
+          "replayed": false
+        },
+        "previous_item_id": "1ba6d91f-5d31-4bf8-bde2-dd5a99f5b592"
+      }
+    },
+    {
+      "atMs": 711,
+      "frame": {
+        "type": "response.content_part.added",
+        "event_id": "5782bfa9-d760-4cb1-be66-cd8a11b42b44",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "previous_item_id": "0",
+        "part": {
+          "type": "audio",
+          "transcript": ""
+        },
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0
+      }
+    },
+    {
+      "atMs": 1092,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "6882e8a2-6ab5-4a64-bd2e-26b9cc628702",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "4a4f68fe-c1cb-4f89-9f51-ec78d1d1836f",
+        "latency": "0.57",
+        "audio_duration_ms": 245,
+        "ts": 1787447464962,
+        "previous_item_id": null
+      },
+      "audioBytes": 11745
+    },
+    {
+      "atMs": 1092,
+      "frame": {
+        "type": "response.output_audio_transcript.delta",
+        "event_id": "4a4f68fe-c1cb-4f89-9f51-ec78d1d1836f",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "delta": "Hello there!",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "4a4f68fe-c1cb-4f89-9f51-ec78d1d1836f",
+        "start_time": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 1168,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "fb48e97c-7c2c-4177-a330-436fd1d01236",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "4a4f68fe-c1cb-4f89-9f51-ec78d1d1836f",
+        "audio_duration_ms": 459,
+        "ts": 1787447465010,
+        "previous_item_id": null
+      },
+      "audioBytes": 22020
+    },
+    {
+      "atMs": 1169,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "beda91d4-d673-4143-b163-659b01e1b24d",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "4a4f68fe-c1cb-4f89-9f51-ec78d1d1836f",
+        "audio_duration_ms": 122,
+        "ts": 1787447465014,
+        "previous_item_id": null
+      },
+      "audioBytes": 5874
+    },
+    {
+      "atMs": 2027,
+      "frame": {
+        "type": "response.output_audio_transcript.delta",
+        "event_id": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "delta": " I'm Eve, and I'm here to chat with you.",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "start_time": 0.48,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 2489,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "1139e134-cd56-4d47-898f-9196dba7f1f6",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 367,
+        "ts": 1787447466361,
+        "previous_item_id": null
+      },
+      "audioBytes": 17616
+    },
+    {
+      "atMs": 2629,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "3a85d25f-dd0a-4ed6-bc76-5ab3d29b30a4",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 612,
+        "ts": 1787447466502,
+        "previous_item_id": null
+      },
+      "audioBytes": 29361
+    },
+    {
+      "atMs": 2743,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "1245722f-0f31-41d1-ad67-0ecb7885cfd0",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 489,
+        "ts": 1787447466682,
+        "previous_item_id": null
+      },
+      "audioBytes": 23490
+    },
+    {
+      "atMs": 2938,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "69f80aac-f022-429f-9eaa-672a098df447",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 979,
+        "ts": 1787447466878,
+        "previous_item_id": null
+      },
+      "audioBytes": 46977
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "7389fe77-21ae-463f-9600-0232e71b0eb6",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 275,
+        "ts": 1787447466882,
+        "previous_item_id": null
+      },
+      "audioBytes": 13212
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.output_audio.delta",
+        "event_id": "e9f9141e-2f0c-49b0-b7d2-5bf52f2ca574",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "rid": "76f4271c-5a85-4573-8324-e0498a237c83",
+        "audio_duration_ms": 112,
+        "ts": 1787447466884,
+        "previous_item_id": null
+      },
+      "audioBytes": 5400
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.output_audio_transcript.done",
+        "event_id": "ab551847-9c60-48e3-b027-c10c0a4ef0d1",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "transcript": "Hello there! I'm Eve, and I'm here to chat with you.",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.content_part.done",
+        "event_id": "2506a2b0-1b68-4a8d-8bf3-40b49ac7cdef",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.output_audio.done",
+        "event_id": "0804284c-0da3-4c53-9b8b-2181ffdc6701",
+        "item_id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "content_index": 0,
+        "output_index": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.output_item.done",
+        "event_id": "cd4c3652-9af4-46b3-a7c5-1841dbfd2783",
+        "item": {
+          "id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+          "object": "realtime.item",
+          "type": "message",
+          "status": "completed",
+          "role": "assistant",
+          "replayed": false
+        },
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "output_index": 0,
+        "previous_item_id": null
+      }
+    },
+    {
+      "atMs": 3010,
+      "frame": {
+        "type": "response.done",
+        "event_id": "9319242e-8ccc-46cb-a3d3-c36bcc649a73",
+        "response": {
+          "id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+          "object": "realtime.response",
+          "output": [
+            {
+              "id": "2b5c862b-ad08-48c6-b8c4-40269751d64d",
+              "object": "realtime.item",
+              "type": "message",
+              "status": "completed",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "audio",
+                  "transcript": "Hello there! I'm Eve, and I'm here to chat with you."
+                }
+              ],
+              "replayed": false
+            }
+          ],
+          "status": "completed",
+          "status_details": "unimplemented",
+          "usage": {}
+        },
+        "response_id": "9837b0d3-dceb-4982-92ab-43058c9dc3ba",
+        "usage": {
+          "input_tokens": 7,
+          "input_token_details": {
+            "text_tokens": 7,
+            "audio_tokens": 0,
+            "grok_tokens": 0
+          },
+          "output_tokens": 198,
+          "output_token_details": {
+            "text_tokens": 14,
+            "audio_tokens": 184,
+            "grok_tokens": 0
+          },
+          "total_tokens": 205,
+          "output_audio_seconds": 3.660166666666666,
+          "billable_audio_seconds": 3
+        },
+        "previous_item_id": null
+      }
+    }
+  ]
+}
