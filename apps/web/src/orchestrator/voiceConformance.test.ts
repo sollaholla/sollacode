@@ -127,6 +127,112 @@ describe("voice conformance", () => {
     expectNoViolations(scenario.timeline);
   });
 
+  it("holds the rules when the response carries a fault instead of audio", async () => {
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await speakReply(scenario);
+    await scenario.deliver({ type: "error", error: { message: "internal failure" } });
+    await scenario.advance(20_000);
+
+    // An in-band error is not session death — the channel is still live — but
+    // it must not leave the floor held by a reply that stopped arriving.
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("holds the rules when a second response starts over the first", async () => {
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await speakReply(scenario);
+    await scenario.deliver({ type: "response.created" });
+    await scenario.deliver({ type: "response.output_audio.done" });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(20_000);
+
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("holds the rules when a turn is spent entirely on a tool call", async () => {
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await scenario.deliver({ type: "response.created" });
+    await scenario.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "call-1",
+      name: "list_threads",
+      arguments: "{}",
+    });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(20_000);
+
+    // No audio was ever produced, so nothing would have drained the queue.
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("holds the rules when a response produces no audio at all", async () => {
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await scenario.deliver({ type: "response.created" });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(20_000);
+
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("holds the rules when the audio-done frame arrives before any audio", async () => {
+    // Out-of-order delivery: the frame that says "no more audio" lands first,
+    // and the audio it was closing arrives after it.
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await scenario.deliver({ type: "response.created" });
+    await scenario.deliver({ type: "response.output_audio.done" });
+    await scenario.deliver({ type: "response.output_audio.delta", delta: "AAAAAAAAAAA=" });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(20_000);
+
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("holds the rules through a barge-in on a half-duplex device", async () => {
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await speakReply(scenario);
+    await scenario.deliver({ type: "input_audio_buffer.speech_started" });
+    await scenario.advance(500);
+    await scenario.deliver({ type: "input_audio_buffer.speech_stopped" });
+    await scenario.deliver({ type: "response.output_audio.done" });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(20_000);
+
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
+  it("is still listening two minutes after a reply", async () => {
+    // Nothing arms a timer on the way out of speaking that could fire later
+    // and take the floor back with nobody to give it to.
+    vi.useFakeTimers();
+    const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
+
+    await speakReply(scenario);
+    await scenario.deliver({ type: "response.output_audio.done" });
+    await scenario.deliver({ type: "response.done" });
+    await scenario.advance(120_000);
+
+    expect(scenario.session.state).toBe("listening");
+    expectNoViolations(scenario.timeline, { halfDuplex: true });
+  });
+
   it("holds the rules when a reply is followed immediately by another", async () => {
     vi.useFakeTimers();
     const scenario = await openVoiceScenario({ interruptWhileSpeaking: false });
