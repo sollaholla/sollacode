@@ -124,7 +124,7 @@ export interface RaiseVmAgentBlockerInput {
 export interface ResolveVmAgentBlockerInput {
   readonly vmAgentId: VmAgentId;
   readonly blockerId: VmAgentBlockerId;
-  readonly resolvedBy: "user" | "agent";
+  readonly resolvedBy: "user" | "agent" | "dismissed";
   readonly now: IsoDateTime;
 }
 

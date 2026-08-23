@@ -122,6 +122,7 @@ import {
   VmAgent,
   VmAgentNotificationPreferences,
   VmAgentBlockerRef,
+  VmAgentBlockerResolveInput,
   VmAgentNotificationPreferencesInput,
   VmAgentNotificationRef,
   VmAgentCreateInput,
@@ -945,7 +946,7 @@ export const WsVmAgentNotificationMarkReadRpc = Rpc.make(WS_METHODS.vmAgentNotif
 });
 
 export const WsVmAgentBlockerResolveRpc = Rpc.make(WS_METHODS.vmAgentBlockerResolve, {
-  payload: VmAgentBlockerRef,
+  payload: VmAgentBlockerResolveInput,
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
 });
 

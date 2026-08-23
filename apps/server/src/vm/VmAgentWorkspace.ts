@@ -116,7 +116,7 @@ export interface VmAgentWorkspaceShape {
   readonly resolveBlocker: (input: {
     readonly vmAgentId: VmAgentId;
     readonly blockerId: VmAgentBlockerId;
-    readonly resolvedBy: "user" | "agent";
+    readonly resolvedBy: "user" | "agent" | "dismissed";
   }) => Effect.Effect<Option.Option<VmAgentBlocker>, VmAgentWorkspaceError>;
   /** Publish a fresh snapshot after scheduler-owned persistence changes. */
   readonly refresh: (vmAgentId: VmAgentId) => Effect.Effect<void>;
