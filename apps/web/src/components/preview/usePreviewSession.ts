@@ -5,6 +5,7 @@ import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/e
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { useEffect } from "react";
 
 import {
   applyPreviewServerEvent,
@@ -79,5 +80,20 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
 });
 
 export function usePreviewSession(threadRef: ScopedThreadRef): void {
-  useAtomValue(previewSessionSyncAtom(scopedThreadKey(threadRef)));
+  const threadKey = scopedThreadKey(threadRef);
+  const sessionsAtom = previewEnvironment.list({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId },
+  });
+  const sessionsResult = useAtomValue(sessionsAtom);
+
+  // Mount the list query directly in React. A derived atom that only subscribes
+  // to the query can remain dormant during connection bootstrap, which leaves
+  // restored tabs invisible until an automation request lists them explicitly.
+  useEffect(() => {
+    if (!AsyncResult.isSuccess(sessionsResult)) return;
+    reconcilePreviewServerSessions(threadRef, sessionsResult.value);
+  }, [sessionsResult, threadKey, threadRef]);
+
+  useAtomValue(previewSessionSyncAtom(threadKey));
 }
