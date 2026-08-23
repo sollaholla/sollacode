@@ -85,6 +85,21 @@ export interface ThreadWorkSchedulerShape {
    */
   readonly runtimeLivenessAt: (threadId: ThreadId) => Effect.Effect<Option.Option<number>>;
 
+  /**
+   * Hand a thread's concurrency slot back while its turn is blocked on a
+   * human, and take it again once the answer lands.
+   *
+   * The durable `waiting-user-input` obligation state is only open to
+   * adapters that can rebuild the callback after a restart; Claude cannot, so
+   * its obligation must stay `executing` for the whole time a question sits
+   * unanswered. Without parking, those threads hold the per-provider budget
+   * and starve every other thread on the same provider.
+   */
+  readonly setAdmissionParked: (input: {
+    readonly threadId: ThreadId;
+    readonly parked: boolean;
+  }) => Effect.Effect<void>;
+
   readonly snapshot: Effect.Effect<ThreadWorkSchedulerSnapshot>;
 }
 

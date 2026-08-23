@@ -70,6 +70,13 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "  mcpConfig,",
           "}));",
           "const lines = createInterface({ input: process.stdin });",
+          // Without this the stub outlives the test: readline holds the event
+          // loop open, so when the runner exits the process is reparented to
+          // init and lingers forever. Twenty-three of these had piled up over
+          // two days of test runs, each holding ~8MB, long after their temp
+          // directories were cleaned away.
+          'lines.on("close", () => process.exit(0));',
+          'process.stdin.on("error", () => process.exit(0));',
           'lines.on("line", (line) => {',
           "  const message = JSON.parse(line);",
           '  if (message.type !== "control_request") return;',

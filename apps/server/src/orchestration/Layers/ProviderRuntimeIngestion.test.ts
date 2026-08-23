@@ -622,6 +622,7 @@ describe("ProviderRuntimeIngestion", () => {
           return true;
         }),
       runtimeLivenessAt: () => Effect.succeed(Option.none()),
+      setAdmissionParked: () => Effect.void,
       snapshot: Effect.succeed({
         activeGlobal: 0,
         activeByProvider: {},

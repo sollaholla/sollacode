@@ -153,6 +153,99 @@ layer("ThreadWorkScheduler", (it) => {
     ),
   );
 
+  it.effect("frees a provider slot while a thread waits on a human", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Seven Claude threads, one more than the per-provider budget. While
+        // the first six sit blocked on unanswered questions they must not keep
+        // the budget to themselves: an obligation stays `executing` for the
+        // whole time a person takes to answer, and holding the slot starved
+        // every other thread on the provider with no error anywhere.
+        const repository = yield* ThreadWorkObligationRepository;
+        const scheduler = yield* ThreadWorkScheduler;
+        const release = yield* Deferred.make<void>();
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const provider = ProviderInstanceId.make("claudeAgent");
+        const threadIds = Array.from({ length: 7 }, (_, index) =>
+          ThreadId.make(`parked-thread-${index}`),
+        );
+
+        yield* scheduler.registerHandler("agent-continuation", () =>
+          Deferred.await(release).pipe(Effect.as({ state: "completed" as const })),
+        );
+
+        for (const [index, threadId] of threadIds.entries()) {
+          yield* repository.insert({
+            obligationId: `parked-work-${index}`,
+            threadId,
+            sourceTurnId: TurnId.make(`parked-turn-${index}`),
+            kind: "agent-continuation",
+            state: "pending",
+            providerInstanceId: provider,
+            attempt: 0,
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        yield* scheduler.start();
+        yield* scheduler.wake();
+        yield* waitUntil(
+          scheduler.snapshot.pipe(
+            Effect.map(({ activeByProvider }) => (activeByProvider.claudeAgent ?? 0) === 6),
+          ),
+          "the provider budget to fill",
+        );
+        const saturated = yield* scheduler.snapshot;
+        assert.strictEqual(saturated.activeThreads.length, 6, "seventh thread is starved");
+
+        // The six on screen are all waiting on an answer.
+        const parkedThreads = saturated.activeThreads.slice(0, 6);
+        for (const threadId of parkedThreads) {
+          yield* scheduler.setAdmissionParked({ threadId, parked: true });
+        }
+
+        const parked = yield* scheduler.snapshot;
+        assert.strictEqual(parked.activeByProvider.claudeAgent ?? 0, 0, "slots handed back");
+        assert.strictEqual(parked.activeGlobal, 0);
+
+        // The starved thread can now run while the questions stay open.
+        yield* scheduler.wake();
+        yield* waitUntil(
+          scheduler.snapshot.pipe(Effect.map(({ activeThreads }) => activeThreads.length === 7)),
+          "the previously starved thread to be admitted",
+        );
+
+        // Answering takes the slot back without re-checking the cap: this work
+        // is already running and must keep being supervised.
+        for (const threadId of parkedThreads) {
+          yield* scheduler.setAdmissionParked({ threadId, parked: false });
+        }
+        const resumed = yield* scheduler.snapshot;
+        assert.strictEqual(resumed.activeByProvider.claudeAgent ?? 0, 7);
+        assert.strictEqual(resumed.activeThreads.length, 7);
+
+        // Parking is idempotent and never double-counts.
+        yield* scheduler.setAdmissionParked({ threadId: parkedThreads[0]!, parked: false });
+        assert.strictEqual(
+          (yield* scheduler.snapshot).activeByProvider.claudeAgent ?? 0,
+          7,
+          "unparking twice must not inflate the count",
+        );
+
+        yield* Deferred.succeed(release, undefined);
+        yield* waitUntil(
+          scheduler.snapshot.pipe(Effect.map(({ activeGlobal }) => activeGlobal === 0)),
+          "every obligation to finish and release its slot",
+        );
+      }),
+    ),
+  );
+
   it.effect("retries the same sleeping obligation without growing durable rows", () =>
     Effect.scoped(
       Effect.gen(function* () {

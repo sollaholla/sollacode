@@ -90,3 +90,31 @@ describe("hasRetryableUpstreamStatus", () => {
     expect(hasRetryableUpstreamStatus("529 provider overloaded")).toBe(false);
   });
 });
+
+describe("transient network failures", () => {
+  it("treats DNS and socket codes as retryable upstream", () => {
+    // The exact shape Node hands back when MagicDNS drops out; a raw CLI
+    // shows this as "Can't reach the API server (ENOTFOUND)".
+    expect(
+      hasRetryableUpstreamStatus(
+        Object.assign(new Error("getaddrinfo"), {
+          code: "ENOTFOUND",
+        }),
+      ),
+    ).toBe(true);
+    expect(hasRetryableUpstreamStatus({ cause: { code: "EAI_AGAIN" } })).toBe(true);
+    expect(hasRetryableUpstreamStatus({ error: { code: "ECONNRESET" } })).toBe(true);
+    expect(hasRetryableUpstreamStatus({ code: "undici_err_socket" })).toBe(false);
+  });
+
+  it("still ignores codes that only appear as prose", () => {
+    // Lifecycle must never move because a model wrote about an error.
+    expect(hasRetryableUpstreamStatus({ message: "the build failed with ENOTFOUND" })).toBe(false);
+    expect(hasRetryableUpstreamStatus("ENOTFOUND")).toBe(false);
+  });
+
+  it("leaves genuine application failures alone", () => {
+    expect(hasRetryableUpstreamStatus({ code: "ERR_INVALID_ARG_TYPE" })).toBe(false);
+    expect(hasRetryableUpstreamStatus({ status: 401 })).toBe(false);
+  });
+});
