@@ -31,6 +31,7 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { remoteControlEnvironment } from "~/state/remoteControl";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
 
 import { Button } from "../ui/button";
 import {
@@ -146,6 +147,10 @@ export function RemoteControlViewerDialog(props: {
   // Touch devices have no hardware keyboard to capture; this summons the
   // on-screen one via a hidden input and forwards its text natively.
   const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
+  // The FPS thumbsticks and the on-screen keyboard summoner are touch
+  // affordances. A desktop client captures the real mouse and keyboard
+  // directly, so there the buttons are dead weight.
+  const touchClient = useOnScreenKeyboard();
   const virtualKeyboardInputRef = useRef<HTMLInputElement>(null);
   const sessionRef = useRef(session);
   sessionRef.current = session;
@@ -1135,7 +1140,7 @@ export function RemoteControlViewerDialog(props: {
                   ) : null}
                 </div>
               ) : null}
-              {canKeyboard ? (
+              {touchClient && canKeyboard ? (
                 <input
                   ref={virtualKeyboardInputRef}
                   // Always mounted, never visible: it exists to summon the
@@ -1240,7 +1245,7 @@ export function RemoteControlViewerDialog(props: {
                   </span>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  {canControl && canPointer && canKeyboard ? (
+                  {touchClient && canControl && canPointer && canKeyboard ? (
                     <button
                       type="button"
                       aria-label={fpsArmed ? "Disable FPS controller" : "Enable FPS controller"}
@@ -1261,7 +1266,7 @@ export function RemoteControlViewerDialog(props: {
                       <span className="sr-only sm:not-sr-only">FPS</span>
                     </button>
                   ) : null}
-                  {canKeyboard ? (
+                  {touchClient && canKeyboard ? (
                     <button
                       type="button"
                       aria-label={virtualKeyboardOpen ? "Hide keyboard" : "Show keyboard"}

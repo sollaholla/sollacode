@@ -25,11 +25,7 @@ import {
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
-import {
-  isPreviewUrlNormalizationError,
-  newPreviewTabId,
-  normalizePreviewUrl,
-} from "@t3tools/shared/preview";
+import { isPreviewUrlNormalizationError, normalizePreviewUrl } from "@t3tools/shared/preview";
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -93,6 +89,26 @@ const sessionsForThread = (
     if (session.threadId === threadId) out.push(session);
   }
   return out;
+};
+
+const TAB_ID_PATTERN = /^tab_([0-9a-z]+)$/;
+
+/**
+ * Next tab id for a thread, derived from the sessions that exist right now —
+ * including ones rehydrated from SQLite after a restart. Ids only need to be
+ * unique within a thread, and deriving them from live state is the property a
+ * process-global counter cannot give across restarts.
+ */
+const nextTabIdForThread = (state: ManagerState, threadId: string): string => {
+  let max = 0;
+  for (const session of state.sessions.values()) {
+    if (session.threadId !== threadId) continue;
+    const match = TAB_ID_PATTERN.exec(session.tabId);
+    if (!match) continue;
+    const value = Number.parseInt(match[1] as string, 36);
+    if (Number.isFinite(value) && value > max) max = value;
+  }
+  return `tab_${(max + 1).toString(36)}`;
 };
 
 const normalizeUrl = (rawUrl: string): Effect.Effect<string, PreviewInvalidUrlError> =>
@@ -268,19 +284,19 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   const open: PreviewManager["Service"]["open"] = Effect.fn("PreviewManager.open")(
     function* (input) {
-      const tabId = newPreviewTabId();
       const updatedAt = yield* currentIsoTimestamp;
-      const snapshot = input.url
-        ? buildLoadingSnapshot({
-            threadId: input.threadId,
-            tabId,
-            url: yield* normalizeUrl(input.url),
-            title: "",
-            updatedAt,
-          })
-        : buildIdleSnapshot({ threadId: input.threadId, tabId, updatedAt });
-      yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
+      const url = input.url ? yield* normalizeUrl(input.url) : null;
+      // The tab id is allocated INSIDE the lock, from the thread's live
+      // sessions. A process-global counter here once reset on every server
+      // restart and handed out "tab_1" again, silently replacing the sessions
+      // just rehydrated from SQLite — the user watched restored tabs vanish
+      // one by one as new opens landed on their ids.
+      const snapshot = yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
         Effect.gen(function* () {
+          const tabId = nextTabIdForThread(state, input.threadId);
+          const snapshot = url
+            ? buildLoadingSnapshot({ threadId: input.threadId, tabId, url, title: "", updatedAt })
+            : buildIdleSnapshot({ threadId: input.threadId, tabId, updatedAt });
           const revision = state.revision + 1;
           const sessions = new Map(state.sessions);
           sessions.set(compositeKey(input.threadId, tabId), {
