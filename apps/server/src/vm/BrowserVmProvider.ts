@@ -16,7 +16,9 @@
  * the same seam without touching the manager, RPC, or UI.
  */
 import { type VmAgentInput, VmId, type VmPointerButton, VmProviderError } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 // @effect-diagnostics nodeBuiltinImport:off - Manages the per-agent browser profile directory.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -35,36 +37,47 @@ const DEFAULT_START_URL = "https://www.google.com";
 const NAVIGATION_TIMEOUT_MS = 30_000;
 
 /**
- * System browser executables to fall back on when Playwright's own is absent.
- * Every platform's absolute paths live in one list: probing a Windows path on
- * macOS simply misses, so no host-platform lookup (and its lint constraint) is
- * needed to pick the right one.
+ * Branded Google Chrome installs, preferred over everything else. The agent's
+ * whole purpose is operating real web accounts the user hands it via takeover
+ * sign-in, and Google's own sign-in refuses plain Chromium builds ("This
+ * browser or app may not be secure"): they lack Chrome's branding and API
+ * keys. A real Chrome launched from the same persistent profile sails
+ * through. Every platform's absolute paths live in one list: probing a
+ * Windows path on macOS simply misses, so no host-platform lookup (and its
+ * lint constraint) is needed to pick the right one.
  */
+const BRANDED_CHROME_CANDIDATES: ReadonlyArray<string> = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+];
+
+/** Remaining Chromium-family fallbacks when neither Chrome nor Playwright's browser exists. */
 const SYSTEM_BROWSER_CANDIDATES: ReadonlyArray<string> = [
   // macOS
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
   "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
   "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
   // Linux
-  "/usr/bin/google-chrome",
-  "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
   "/usr/bin/microsoft-edge",
   "/snap/bin/chromium",
   // Windows
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
 ];
 
 /**
- * Find a launchable Chromium-family binary. Prefers Playwright's own managed
- * browser when it is actually installed, then falls back to a system browser.
- * Returns null when nothing usable is present.
+ * Find a launchable Chromium-family binary: branded Chrome first (sign-in
+ * compatibility, see above), then Playwright's managed browser, then any
+ * other Chromium family install. Returns null when nothing usable is present.
  */
 const resolveBrowserExecutable = (): string | null => {
+  for (const candidate of BRANDED_CHROME_CANDIDATES) {
+    if (NodeFS.existsSync(candidate)) return candidate;
+  }
   try {
     const bundled = chromium.executablePath();
     if (bundled && NodeFS.existsSync(bundled)) return bundled;
@@ -75,6 +88,64 @@ const resolveBrowserExecutable = (): string | null => {
     if (NodeFS.existsSync(candidate)) return candidate;
   }
   return null;
+};
+
+/**
+ * "Google Chrome 151.0.7922.170" / "Chromium 140.0.7300.0" → the major version.
+ * Null when the output is unrecognizable — callers then skip the UA override.
+ */
+export const parseBrowserMajorVersion = (versionOutput: string): number | null => {
+  const match = /(\d+)\.\d+\.\d+/.exec(versionOutput);
+  const major = match?.[1] ? Number(match[1]) : Number.NaN;
+  return Number.isInteger(major) && major > 0 ? major : null;
+};
+
+/**
+ * The user agent the agent's browser would present if it had a window.
+ *
+ * Headless Chrome stamps "HeadlessChrome" into its UA — an artifact of
+ * rendering without a window, not a different browser — and Google's sign-in
+ * hard-fails on it. The override is the binary's own reduced UA (Chrome
+ * freezes everything but the major version), so the browser presents exactly
+ * what it is: this Chrome, on this OS.
+ */
+export const buildVmBrowserUserAgent = (
+  platform: NodeJS.Platform,
+  majorVersion: number,
+): string => {
+  const osToken =
+    platform === "darwin"
+      ? "Macintosh; Intel Mac OS X 10_15_7"
+      : platform === "win32"
+        ? "Windows NT 10.0; Win64; x64"
+        : "X11; Linux x86_64";
+  return `Mozilla/5.0 (${osToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${majorVersion}.0.0.0 Safari/537.36`;
+};
+
+/**
+ * Ask the binary its version and build the windowed-Chrome UA for it. Best
+ * effort: any failure (no --version support, sandboxed exec, weird output)
+ * returns null and the launch proceeds with the default headless UA — a
+ * degraded sign-in experience, never a failed agent start.
+ */
+const detectCleanUserAgent = async (
+  executablePath: string,
+  platform: NodeJS.Platform,
+): Promise<string | null> => {
+  try {
+    const output = await new Promise<string>((resolve, reject) => {
+      NodeChildProcess.execFile(
+        executablePath,
+        ["--version"],
+        { timeout: 5_000 },
+        (error, stdout) => (error ? reject(error) : resolve(stdout)),
+      );
+    });
+    const major = parseBrowserMajorVersion(output);
+    return major === null ? null : buildVmBrowserUserAgent(platform, major);
+  } catch {
+    return null;
+  }
 };
 
 const clamp01 = (value: number): number => (value < 0 ? 0 : value > 1 ? 1 : value);
@@ -276,6 +347,7 @@ export const condenseLaunchFailure = (message: string): string => {
 
 const makeBrowserVmProvider = Effect.gen(function* () {
   const config = yield* ServerConfig;
+  const hostPlatform = yield* HostProcessPlatform;
   const vms = new Map<string, BrowserVm>();
   // De-dupes concurrent launches (reconcile + a manual start can race).
   const launching = new Map<string, Promise<BrowserVm>>();
@@ -292,11 +364,13 @@ const makeBrowserVmProvider = Effect.gen(function* () {
     const dir = profileDir(vmId);
     await NodeFSP.mkdir(dir, { recursive: true });
     await clearStaleProfileLock(dir);
+    const userAgent = await detectCleanUserAgent(executablePath, hostPlatform);
     const context = await chromium
       .launchPersistentContext(dir, {
         headless: true,
         executablePath,
         viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
+        ...(userAgent ? { userAgent } : {}),
         args: [
           "--no-first-run",
           "--no-default-browser-check",
