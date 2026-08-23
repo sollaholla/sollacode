@@ -556,7 +556,7 @@ describe("isSidebarListedThread", () => {
     expect(isSidebarListedThread({ id: `${ORCHESTRATOR_THREAD_ID}-2` })).toBe(true);
   });
 
-  it("drops agents-project threads — agent chats and Agent Builder chats surface in the Agents section", () => {
+  it("drops agents-project threads — agent chats surface in the Agents section, the Agent Builder chat behind its ✨ button", () => {
     expect(isSidebarListedThread({ projectId: "solla-agents" })).toBe(false);
     expect(isSidebarListedThread({ id: "agent-builder:0000", projectId: "solla-agents" })).toBe(
       false,

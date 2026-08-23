@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import {
-  isAgentBuilderThreadId,
   type EnvironmentId,
   type VmAgent,
   type VmAgentCollaborationAgentSummary,
@@ -17,7 +16,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useUiStateStore } from "../../uiStateStore";
 import { toastManager } from "../ui/toast";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
-import { environmentThreadShells } from "../../state/threads";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { SidebarMenuButton } from "../ui/sidebar";
@@ -49,7 +47,9 @@ const AGENT_SECTION_BODY_ID = "agent-stack-sections";
  * Opens the singleton Agent Builder chat — one persistent thread per host,
  * created lazily on first click, that designs agents from a single prompt.
  * A dialog used to collect the prompt and model here; the chat's own composer
- * already does both, so the button is now just navigation.
+ * already does both, so the button is now just navigation. The thread is
+ * deliberately listed nowhere — this button is its only doorway, so it reads
+ * as a tool you summon rather than a chat you keep.
  */
 function useOpenAgentBuilder() {
   const router = useRouter();
@@ -378,22 +378,6 @@ function AgentEnvironmentSection(props: {
   });
   const result = useAtomValue(agentsAtom);
   const collaborationResult = useAtomValue(collaborationAtom);
-  // Builder chats live under the reserved agents project, which the normal
-  // thread list excludes — this section is the only place they surface.
-  const environmentThreads = useAtomValue(
-    environmentThreadShells.environmentThreadsAtom(props.environmentId),
-  );
-  const builderThreads = useMemo(
-    () =>
-      environmentThreads
-        .filter((thread) => isAgentBuilderThreadId(thread.id) && thread.archivedAt === null)
-        .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-    [environmentThreads],
-  );
-  const activeThreadId = useParams({
-    strict: false,
-    select: (params) => (params as { threadId?: string }).threadId ?? null,
-  });
   const failureCause = AsyncResult.isFailure(result) ? result.cause : null;
   const latest = Option.getOrNull(AsyncResult.value(result));
   const snapshot = latest && latest.type === "snapshot" ? latest : null;
@@ -480,26 +464,6 @@ function AgentEnvironmentSection(props: {
           Reconnecting… showing last-known agents.
         </p>
       ) : null}
-
-      {builderThreads.map((thread) => (
-        <SidebarMenuButton
-          key={thread.id}
-          type="button"
-          isActive={thread.id === activeThreadId && props.environmentId === activeEnvironmentId}
-          onClick={() =>
-            void router.navigate({
-              to: "/$environmentId/$threadId",
-              params: { environmentId: props.environmentId, threadId: thread.id },
-            })
-          }
-          aria-label={`Open Agent Builder chat: ${thread.title}`}
-          title={`Agent Builder chat · ${thread.title}`}
-          data-testid="agent-builder-sidebar-entry"
-        >
-          <SparklesIcon />
-          <span className="flex-1 truncate text-left">{thread.title}</span>
-        </SidebarMenuButton>
-      ))}
 
       <CreateAgentDialog
         open={props.createOpen}

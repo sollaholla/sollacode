@@ -328,8 +328,9 @@ export function isSidebarListedThread(thread: {
   readonly projectId?: string | undefined;
 }) {
   if (thread.id !== undefined && isOrchestratorThreadId(thread.id)) return false;
-  // Agent chat threads live under the reserved agents project and surface only
-  // in the Agents sidebar section — never in the normal thread list.
+  // Threads under the reserved agents project stay out of the normal list:
+  // agent chats surface in the Agents sidebar section, and the Agent Builder
+  // chat is reached only through the section's ✨ button.
   if (thread.projectId !== undefined && isAgentsProjectId(thread.projectId)) return false;
   return thread.isSideChat !== true;
 }
