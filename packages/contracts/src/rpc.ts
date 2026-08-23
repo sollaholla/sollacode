@@ -120,19 +120,20 @@ import {
 } from "./terminal.ts";
 import {
   VmAgent,
-  VmAgentNotificationPreferences,
-  VmAgentBlockerRef,
+  VmAgentAttentionStreamItem,
   VmAgentBlockerResolveInput,
-  VmAgentNotificationPreferencesInput,
-  VmAgentNotificationRef,
-  VmAgentCreateInput,
   VmAgentCollaborationError,
   VmAgentCollaborationReceipt,
   VmAgentCollaborationStreamItem,
+  VmAgentCreateInput,
   VmAgentDelegationDetail,
   VmAgentDelegationRef,
   VmAgentDelegationSendMessageInput,
   VmAgentError,
+  VmAgentNotificationPreferences,
+  VmAgentNotificationPreferencesInput,
+  VmAgentNotificationRef,
+  VmAgentNotificationUpdateInput,
   VmAgentRef,
   VmAgentStreamItem,
   VmAgentTask,
@@ -307,12 +308,14 @@ export const WS_METHODS = {
   vmAgentDelete: "vmAgent.delete",
   vmAgentSubscribe: "vmAgent.subscribe",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
+  vmAgentAttentionSubscribe: "vmAgent.attention.subscribe",
   vmAgentTaskCreate: "vmAgent.task.create",
   vmAgentTaskUpdate: "vmAgent.task.update",
   vmAgentTaskDelete: "vmAgent.task.delete",
   vmAgentTaskRunNow: "vmAgent.task.runNow",
   vmAgentTaskGeneratePrompt: "vmAgent.task.generatePrompt",
   vmAgentNotificationMarkRead: "vmAgent.notification.markRead",
+  vmAgentNotificationUpdate: "vmAgent.notification.update",
   vmAgentBlockerResolve: "vmAgent.blocker.resolve",
   vmAgentNotificationPreferencesUpdate: "vmAgent.notification.preferences.update",
   vmAgentCollaborationSubscribe: "vmAgent.collaboration.subscribe",
@@ -945,6 +948,18 @@ export const WsVmAgentNotificationMarkReadRpc = Rpc.make(WS_METHODS.vmAgentNotif
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
 });
 
+export const WsVmAgentNotificationUpdateRpc = Rpc.make(WS_METHODS.vmAgentNotificationUpdate, {
+  payload: VmAgentNotificationUpdateInput,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentAttentionSubscribeRpc = Rpc.make(WS_METHODS.vmAgentAttentionSubscribe, {
+  payload: Schema.Struct({}),
+  success: VmAgentAttentionStreamItem,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsVmAgentBlockerResolveRpc = Rpc.make(WS_METHODS.vmAgentBlockerResolve, {
   payload: VmAgentBlockerResolveInput,
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
@@ -1280,12 +1295,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentDeleteRpc,
   WsVmAgentSubscribeRpc,
   WsVmAgentWorkspaceSubscribeRpc,
+  WsVmAgentAttentionSubscribeRpc,
   WsVmAgentTaskCreateRpc,
   WsVmAgentTaskUpdateRpc,
   WsVmAgentTaskDeleteRpc,
   WsVmAgentTaskRunNowRpc,
   WsVmAgentTaskGeneratePromptRpc,
   WsVmAgentNotificationMarkReadRpc,
+  WsVmAgentNotificationUpdateRpc,
   WsVmAgentBlockerResolveRpc,
   WsVmAgentNotificationPreferencesUpdateRpc,
   WsVmAgentCollaborationSubscribeRpc,

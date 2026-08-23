@@ -366,6 +366,7 @@ export const VmAgentNotification = Schema.Struct({
   body: Schema.String.check(Schema.isMaxLength(4_000)),
   deepLink: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
   readAt: Schema.NullOr(IsoDateTime),
+  archivedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
 });
 export type VmAgentNotification = typeof VmAgentNotification.Type;
@@ -419,6 +420,26 @@ export const VmAgentWorkspaceStreamItem = Schema.Union([
   VmAgentResyncRequiredEvent,
 ]);
 export type VmAgentWorkspaceStreamItem = typeof VmAgentWorkspaceStreamItem.Type;
+
+/** Lightweight sidebar state, kept separate from full workspace message bodies. */
+export const VmAgentAttentionSummary = Schema.Struct({
+  vmAgentId: VmAgentId,
+  unreadNotificationCount: NonNegativeInt,
+  openBlockerCount: NonNegativeInt,
+});
+export type VmAgentAttentionSummary = typeof VmAgentAttentionSummary.Type;
+
+export const VmAgentAttentionSnapshot = Schema.Struct({
+  type: Schema.Literal("snapshot"),
+  agents: Schema.Array(VmAgentAttentionSummary),
+});
+export type VmAgentAttentionSnapshot = typeof VmAgentAttentionSnapshot.Type;
+
+export const VmAgentAttentionStreamItem = Schema.Union([
+  VmAgentAttentionSnapshot,
+  VmAgentResyncRequiredEvent,
+]);
+export type VmAgentAttentionStreamItem = typeof VmAgentAttentionStreamItem.Type;
 
 // ---------------------------------------------------------------------------
 // Bounded agent-to-agent collaboration
@@ -756,6 +777,16 @@ export const VmAgentNotificationRef = Schema.Struct({
   notificationId: VmAgentNotificationId,
 });
 export type VmAgentNotificationRef = Schema.Codec.Encoded<typeof VmAgentNotificationRef>;
+
+export const VmAgentNotificationUpdateInput = Schema.Struct({
+  vmAgentId: VmAgentId,
+  notificationId: VmAgentNotificationId,
+  read: Schema.optional(Schema.Boolean),
+  archived: Schema.optional(Schema.Boolean),
+});
+export type VmAgentNotificationUpdateInput = Schema.Codec.Encoded<
+  typeof VmAgentNotificationUpdateInput
+>;
 
 export const VmAgentBlockerRef = Schema.Struct({
   vmAgentId: VmAgentId,

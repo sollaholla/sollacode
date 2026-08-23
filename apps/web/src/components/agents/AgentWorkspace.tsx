@@ -79,7 +79,9 @@ function AgentWorkspaceResolved(props: {
   const workspaceItem = Option.getOrNull(AsyncResult.value(workspaceResult));
   const workspace = workspaceItem?.type === "snapshot" ? workspaceItem : null;
   const unreadCount =
-    workspace?.notifications.filter((notification) => !notification.readAt).length ?? 0;
+    workspace?.notifications.filter(
+      (notification) => notification.readAt === null && notification.archivedAt === null,
+    ).length ?? 0;
   useAgentSystemNotifications(agent, workspace);
   // The agent's browser is the chat's right panel. Track whether it is open so
   // the header's Browser button reads as a toggle.

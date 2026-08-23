@@ -3,10 +3,12 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   EnvironmentId,
   type VmAgent,
+  type VmAgentAttentionSummary,
   type VmAgentCollaborationSnapshot,
   type VmAgentDelegationMessage,
   type VmAgentDelegationStatus,
   type VmAgentDelegationSummary,
+  type VmAgentNotification,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -14,11 +16,13 @@ import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
+import { SymbolView } from "../../components/AppSymbol";
 import { EmptyState } from "../../components/EmptyState";
 import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
+import { MarkdownDocument } from "../files/FileMarkdownPreview";
 import { delegationFollowupKind, isDelegationRelatedToAgent } from "./agentCollaboration";
 
 const TERMINAL_STATUSES = new Set<VmAgentDelegationStatus>([
@@ -51,6 +55,33 @@ function StatusChip({ value }: { readonly value: string }) {
   );
 }
 
+function AgentAttentionIndicators(props: { readonly attention: VmAgentAttentionSummary | null }) {
+  if (!props.attention) return null;
+  return (
+    <View className="shrink-0 flex-row items-center gap-1.5">
+      {props.attention.openBlockerCount > 0 ? (
+        <View
+          accessibilityLabel={`${props.attention.openBlockerCount} waiting on you`}
+          className="size-8 items-center justify-center rounded-full bg-amber-500/12"
+        >
+          <SymbolView name="hand.raised.fill" size={17} tintColor="#d97706" />
+        </View>
+      ) : null}
+      {props.attention.unreadNotificationCount > 0 ? (
+        <View
+          accessibilityLabel={`${props.attention.unreadNotificationCount} unread notifications`}
+          className="min-h-8 min-w-8 flex-row items-center justify-center gap-1 rounded-full bg-primary px-2"
+        >
+          <SymbolView name="bell.badge.fill" size={14} tintColor="#ffffff" />
+          <Text className="text-xs font-t3-bold text-primary-foreground">
+            {props.attention.unreadNotificationCount}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function AgentEnvironmentSection(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
@@ -66,10 +97,17 @@ function AgentEnvironmentSection(props: {
     [props.environmentId],
   );
   const collaborationResult = useAtomValue(collaborationAtom);
+  const attentionAtom = useMemo(
+    () => vmAgentEnvironment.attention({ environmentId: props.environmentId, input: {} }),
+    [props.environmentId],
+  );
+  const attentionResult = useAtomValue(attentionAtom);
   const latest = Option.getOrNull(AsyncResult.value(result));
   const agents = latest?.type === "snapshot" ? latest.agents : [];
   const collaborationItem = Option.getOrNull(AsyncResult.value(collaborationResult));
   const collaboration = collaborationItem?.type === "snapshot" ? collaborationItem : null;
+  const attentionItem = Option.getOrNull(AsyncResult.value(attentionResult));
+  const attention = attentionItem?.type === "snapshot" ? attentionItem.agents : [];
 
   return (
     <View className="min-w-0 gap-2">
@@ -95,6 +133,8 @@ function AgentEnvironmentSection(props: {
           const activeWork =
             collaboration?.agents.find((entry) => entry.vmAgentId === agent.vmAgentId)
               ?.activeDelegations ?? 0;
+          const agentAttention =
+            attention.find((entry) => entry.vmAgentId === agent.vmAgentId) ?? null;
           return (
             <Pressable
               key={agent.vmAgentId}
@@ -121,6 +161,7 @@ function AgentEnvironmentSection(props: {
                   {agent.purpose}
                 </Text>
               </View>
+              <AgentAttentionIndicators attention={agentAttention} />
               {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
               <StatusChip value={agent.status} />
             </Pressable>
@@ -475,6 +516,199 @@ function CollaborationSection(props: {
   );
 }
 
+function notificationPreview(body: string): string {
+  return body.replace(/\s+/g, " ").trim();
+}
+
+function AgentInboxSection(props: {
+  readonly environmentId: EnvironmentId;
+  readonly agent: VmAgent;
+}) {
+  const [folder, setFolder] = useState<"inbox" | "archive">("inbox");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const workspaceAtom = useMemo(
+    () =>
+      vmAgentEnvironment.workspace({
+        environmentId: props.environmentId,
+        input: { vmAgentId: props.agent.vmAgentId },
+      }),
+    [props.agent.vmAgentId, props.environmentId],
+  );
+  const result = useAtomValue(workspaceAtom);
+  const item = Option.getOrNull(AsyncResult.value(result));
+  const workspace = item?.type === "snapshot" ? item : null;
+  const notifications = workspace?.notifications ?? [];
+  const visible = notifications.filter((notification) =>
+    folder === "inbox" ? notification.archivedAt === null : notification.archivedAt !== null,
+  );
+  const selected =
+    visible.find((notification) => notification.notificationId === selectedId) ?? null;
+  const updateNotification = useAtomCommand(vmAgentEnvironment.updateNotification, {
+    reportFailure: false,
+  });
+
+  const mutate = async (
+    notification: VmAgentNotification,
+    patch: { readonly read?: boolean; readonly archived?: boolean },
+  ) => {
+    setPendingId(notification.notificationId);
+    setError(null);
+    const updated = await updateNotification({
+      environmentId: props.environmentId,
+      input: {
+        vmAgentId: props.agent.vmAgentId,
+        notificationId: notification.notificationId,
+        ...patch,
+      },
+    });
+    setPendingId(null);
+    if (updated._tag === "Failure") {
+      setError("The inbox item could not be updated.");
+      return;
+    }
+    if (patch.archived !== undefined) setSelectedId(null);
+  };
+
+  const open = (notification: VmAgentNotification) => {
+    setSelectedId(notification.notificationId);
+    if (notification.readAt === null) void mutate(notification, { read: true });
+  };
+
+  const inboxCount = notifications.filter(
+    (notification) => notification.archivedAt === null,
+  ).length;
+  const archiveCount = notifications.length - inboxCount;
+
+  return (
+    <View className="min-w-0 gap-3">
+      <View className="min-w-0 gap-1">
+        <Text className="text-lg font-t3-bold text-foreground">Inbox</Text>
+        <Text className="text-sm text-foreground-muted">
+          Read agent updates, mark them unread, or archive finished items.
+        </Text>
+      </View>
+      <View className="min-w-0 flex-row gap-2">
+        {(
+          [
+            ["inbox", "Inbox", inboxCount],
+            ["archive", "Archive", archiveCount],
+          ] as const
+        ).map(([value, label, count]) => (
+          <Pressable
+            key={value}
+            accessibilityRole="button"
+            accessibilityState={{ selected: folder === value }}
+            className={`min-h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl border px-3 ${
+              folder === value ? "border-primary bg-primary/10" : "border-border bg-sheet"
+            }`}
+            onPress={() => {
+              setFolder(value);
+              setSelectedId(null);
+            }}
+          >
+            <SymbolView
+              name={value === "inbox" ? "tray" : "archivebox.fill"}
+              size={16}
+              tintColor={folder === value ? "#2563eb" : "#737373"}
+            />
+            <Text className="font-t3-bold text-foreground">
+              {label} · {count}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      {result._tag === "Failure" ? (
+        <View className="rounded-2xl border border-red-500/25 bg-sheet p-4">
+          <Text className="text-sm text-red-700 dark:text-red-300">
+            The inbox is unavailable while this host reconnects.
+          </Text>
+        </View>
+      ) : visible.length === 0 ? (
+        <View className="rounded-2xl border border-border bg-sheet p-4">
+          <Text className="text-sm text-foreground-muted">
+            {folder === "archive" ? "No archived messages." : "Your inbox is clear."}
+          </Text>
+        </View>
+      ) : (
+        <View className="min-w-0 gap-2">
+          {visible.map((notification) => (
+            <Pressable
+              key={notification.notificationId}
+              accessibilityRole="button"
+              className={`min-h-16 min-w-0 gap-1 rounded-2xl border px-4 py-3 active:bg-subtle ${
+                selected?.notificationId === notification.notificationId
+                  ? "border-primary bg-primary/5"
+                  : "border-border bg-sheet"
+              }`}
+              onPress={() => open(notification)}
+            >
+              <View className="min-w-0 flex-row items-center gap-2">
+                {notification.readAt === null ? (
+                  <View className="size-2 shrink-0 rounded-full bg-primary" />
+                ) : null}
+                <Text
+                  className={`min-w-0 flex-1 text-base text-foreground ${
+                    notification.readAt === null ? "font-t3-bold" : "font-t3-medium"
+                  }`}
+                  numberOfLines={1}
+                >
+                  {notification.title}
+                </Text>
+              </View>
+              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                {notificationPreview(notification.body)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {selected ? (
+        <View className="min-w-0 gap-4 rounded-2xl border border-border bg-sheet p-4">
+          <View className="min-w-0 gap-1">
+            <Text className="text-lg font-t3-bold text-foreground">{selected.title}</Text>
+            <Text className="text-xs text-foreground-muted">
+              {new Date(selected.createdAt).toLocaleString()}
+            </Text>
+          </View>
+          <View className="min-w-0 rounded-xl border border-border bg-screen p-4">
+            <MarkdownDocument markdown={selected.body} />
+          </View>
+          <View className="min-w-0 flex-row flex-wrap justify-end gap-2">
+            <Pressable
+              accessibilityRole="button"
+              className="min-h-11 justify-center rounded-xl border border-border px-4 disabled:opacity-50"
+              disabled={pendingId === selected.notificationId}
+              onPress={() => void mutate(selected, { read: selected.readAt === null })}
+            >
+              <Text className="font-t3-bold text-foreground">
+                {selected.readAt === null ? "Mark read" : "Mark unread"}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              className="min-h-11 justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
+              disabled={pendingId === selected.notificationId}
+              onPress={() =>
+                void mutate(selected, {
+                  archived: folder !== "archive",
+                  ...(folder === "archive" ? {} : { read: true }),
+                })
+              }
+            >
+              <Text className="font-t3-bold text-primary-foreground">
+                {folder === "archive" ? "Restore" : "Archive"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+      {error ? <Text className="text-sm text-red-600 dark:text-red-300">{error}</Text> : null}
+    </View>
+  );
+}
+
 type AgentRouteProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly agentId: string;
@@ -550,6 +784,7 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
           <Text className="font-t3-bold text-primary-foreground">Open agent chat</Text>
         </Pressable>
       </View>
+      <AgentInboxSection environmentId={environmentId} agent={agent} />
       <CollaborationSection
         environmentId={environmentId}
         agent={agent}

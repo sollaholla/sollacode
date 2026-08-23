@@ -1,6 +1,7 @@
 import {
   VmAgentArtifact,
   VmAgentArtifactDefinition,
+  type VmAgentAttentionSnapshot,
   VmAgentBlocker,
   VmAgentNotification,
   VmAgentNotificationPreferences,
@@ -80,6 +81,12 @@ const PreferencesDb = Schema.Struct({
   taskFailures: Schema.Int,
   agentMessages: Schema.Int,
   updatedAt: VmAgentNotificationPreferences.fields.updatedAt,
+});
+
+const AttentionDb = Schema.Struct({
+  vmAgentId: VmAgentNotification.fields.vmAgentId,
+  unreadNotificationCount: Schema.Int,
+  openBlockerCount: Schema.Int,
 });
 
 const RunObservationDb = VmAgentTaskRun.mapFields(
@@ -299,11 +306,36 @@ const make = Effect.gen(function* () {
     execute: ({ vmAgentId }) => sql`
       SELECT notification_id AS "notificationId", vm_agent_id AS "vmAgentId",
              task_id AS "taskId", run_id AS "runId", kind, title, body,
-             deep_link AS "deepLink", read_at AS "readAt", created_at AS "createdAt"
+             deep_link AS "deepLink", read_at AS "readAt",
+             archived_at AS "archivedAt", created_at AS "createdAt"
       FROM vm_agent_notifications
       WHERE vm_agent_id = ${vmAgentId}
-      ORDER BY created_at DESC
-      LIMIT 100
+      ORDER BY (archived_at IS NULL) DESC, created_at DESC
+      LIMIT 200
+    `,
+  });
+
+  const listAttention = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: AttentionDb,
+    execute: () => sql`
+      SELECT
+        agent.vm_agent_id AS "vmAgentId",
+        CAST((
+          SELECT COUNT(*)
+          FROM vm_agent_notifications notification
+          WHERE notification.vm_agent_id = agent.vm_agent_id
+            AND notification.read_at IS NULL
+            AND notification.archived_at IS NULL
+        ) AS INTEGER) AS "unreadNotificationCount",
+        CAST((
+          SELECT COUNT(*)
+          FROM vm_agent_blockers blocker
+          WHERE blocker.vm_agent_id = agent.vm_agent_id
+            AND blocker.resolved_at IS NULL
+        ) AS INTEGER) AS "openBlockerCount"
+      FROM vm_agents agent
+      ORDER BY agent.created_at ASC, agent.vm_agent_id ASC
     `,
   });
 
@@ -339,6 +371,26 @@ const make = Effect.gen(function* () {
     execute: ({ vmAgentId, notificationId, readAt }) => sql`
       UPDATE vm_agent_notifications
       SET read_at = COALESCE(read_at, ${readAt})
+      WHERE vm_agent_id = ${vmAgentId} AND notification_id = ${notificationId}
+    `,
+  });
+
+  const updateNotificationRow = SqlSchema.void({
+    Request: Schema.Struct({
+      vmAgentId: VmAgentNotification.fields.vmAgentId,
+      notificationId: VmAgentNotification.fields.notificationId,
+      updateRead: Schema.Int,
+      readAt: Schema.NullOr(VmAgentNotification.fields.createdAt),
+      updateArchived: Schema.Int,
+      archivedAt: Schema.NullOr(VmAgentNotification.fields.createdAt),
+    }),
+    execute: ({ vmAgentId, notificationId, updateRead, readAt, updateArchived, archivedAt }) => sql`
+      UPDATE vm_agent_notifications
+      SET read_at = CASE WHEN ${updateRead} = 1 THEN ${readAt} ELSE read_at END,
+          archived_at = CASE
+            WHEN ${updateArchived} = 1 THEN ${archivedAt}
+            ELSE archived_at
+          END
       WHERE vm_agent_id = ${vmAgentId} AND notification_id = ${notificationId}
     `,
   });
@@ -709,6 +761,17 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const attentionSnapshot: VmAgentWorkspaceStoreShape["attentionSnapshot"] = () =>
+    listAttention(undefined).pipe(
+      mapError("attentionSnapshot"),
+      Effect.map(
+        (agents): VmAgentAttentionSnapshot => ({
+          type: "snapshot",
+          agents,
+        }),
+      ),
+    );
+
   const getTask: VmAgentWorkspaceStoreShape["getTask"] = (vmAgentId, taskId) =>
     getTaskRow({ vmAgentId, taskId }).pipe(mapError("getTask"));
 
@@ -893,6 +956,16 @@ const make = Effect.gen(function* () {
   const markNotificationRead: VmAgentWorkspaceStoreShape["markNotificationRead"] = (input) =>
     markNotificationReadRow(input).pipe(mapError("markNotificationRead"));
 
+  const updateNotification: VmAgentWorkspaceStoreShape["updateNotification"] = (input) =>
+    updateNotificationRow({
+      vmAgentId: input.vmAgentId,
+      notificationId: input.notificationId,
+      updateRead: input.readAt === undefined ? 0 : 1,
+      readAt: input.readAt ?? null,
+      updateArchived: input.archivedAt === undefined ? 0 : 1,
+      archivedAt: input.archivedAt ?? null,
+    }).pipe(mapError("updateNotification"));
+
   const updateNotificationPreferences: VmAgentWorkspaceStoreShape["updateNotificationPreferences"] =
     (preferences) =>
       upsertPreferences({
@@ -945,6 +1018,7 @@ const make = Effect.gen(function* () {
   return {
     ensureDefaults,
     snapshot,
+    attentionSnapshot,
     getTask,
     createTask,
     updateTask,
@@ -957,6 +1031,7 @@ const make = Effect.gen(function* () {
     listRunObservations,
     createNotification,
     markNotificationRead,
+    updateNotification,
     updateNotificationPreferences,
     upsertArtifact,
     raiseBlocker,

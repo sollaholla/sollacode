@@ -114,6 +114,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       transform: (stream) =>
         resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)),
     }),
+    attention: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:vm-agents:attention",
+      tag: WS_METHODS.vmAgentAttentionSubscribe,
+      transform: (stream) =>
+        resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)),
+    }),
     collaboration: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:vm-agents:collaboration",
       tag: WS_METHODS.vmAgentCollaborationSubscribe,
@@ -186,6 +192,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
     markNotificationRead: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:notification-read",
       tag: WS_METHODS.vmAgentNotificationMarkRead,
+      scheduler: workspaceScheduler,
+      concurrency: perAgentSerial,
+    }),
+    updateNotification: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:notification-update",
+      tag: WS_METHODS.vmAgentNotificationUpdate,
       scheduler: workspaceScheduler,
       concurrency: perAgentSerial,
     }),

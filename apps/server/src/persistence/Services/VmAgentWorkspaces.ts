@@ -8,6 +8,7 @@ import type {
   VmAgentBlockerId,
   VmAgentId,
   VmAgentNotificationId,
+  VmAgentAttentionSnapshot,
   VmAgentNotificationKind,
   VmAgentNotificationPreferences,
   VmAgentTask,
@@ -137,6 +138,10 @@ export interface VmAgentWorkspaceStoreShape {
   readonly snapshot: (
     vmAgentId: VmAgentId,
   ) => Effect.Effect<VmAgentWorkspaceSnapshot, ProjectionRepositoryError>;
+  readonly attentionSnapshot: () => Effect.Effect<
+    VmAgentAttentionSnapshot,
+    ProjectionRepositoryError
+  >;
   readonly getTask: (
     vmAgentId: VmAgentId,
     taskId: VmAgentTaskId,
@@ -183,6 +188,12 @@ export interface VmAgentWorkspaceStoreShape {
     readonly vmAgentId: VmAgentId;
     readonly notificationId: VmAgentNotificationId;
     readonly readAt: IsoDateTime;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly updateNotification: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly notificationId: VmAgentNotificationId;
+    readonly readAt?: IsoDateTime | null;
+    readonly archivedAt?: IsoDateTime | null;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly updateNotificationPreferences: (
     preferences: VmAgentNotificationPreferences,

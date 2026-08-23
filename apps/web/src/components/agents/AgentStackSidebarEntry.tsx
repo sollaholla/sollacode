@@ -6,7 +6,16 @@ import {
   type VmAgentCollaborationAgentSummary,
   type VmAgentStatus,
 } from "@t3tools/contracts";
-import { BotIcon, ChevronDownIcon, PlusIcon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  BellIcon,
+  BotIcon,
+  ChevronDownIcon,
+  HandIcon,
+  PlusIcon,
+  SparklesIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -79,6 +88,23 @@ export function activeDelegationsForAgent(
   vmAgentId: string,
 ): number {
   return agents.find((agent) => agent.vmAgentId === vmAgentId)?.activeDelegations ?? 0;
+}
+
+export function attentionForAgent(
+  agents: ReadonlyArray<{
+    readonly vmAgentId: string;
+    readonly unreadNotificationCount: number;
+    readonly openBlockerCount: number;
+  }>,
+  vmAgentId: string,
+) {
+  return (
+    agents.find((agent) => agent.vmAgentId === vmAgentId) ?? {
+      vmAgentId,
+      unreadNotificationCount: 0,
+      openBlockerCount: 0,
+    }
+  );
 }
 
 /**
@@ -180,6 +206,8 @@ export function AgentStackSidebarEntry() {
 function AgentSidebarRow(props: {
   readonly agent: VmAgent;
   readonly activeWork: number;
+  readonly unreadNotifications: number;
+  readonly openBlockers: number;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly isActive: boolean;
@@ -239,6 +267,22 @@ function AgentSidebarRow(props: {
       >
         <BotIcon />
         <span className="flex-1 truncate text-left">{agent.name}</span>
+        {props.openBlockers > 0 ? (
+          <HandIcon
+            className="size-3.5 shrink-0 text-amber-500"
+            aria-label={`${props.openBlockers} waiting on you`}
+          />
+        ) : null}
+        {props.unreadNotifications > 0 ? (
+          <span
+            className="inline-flex min-w-5 shrink-0 items-center justify-center gap-1 rounded-full bg-primary px-1.5 text-[10px] font-semibold tabular-nums text-primary-foreground"
+            aria-label={`${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "notification" : "notifications"}`}
+            title={`${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "notification" : "notifications"}`}
+          >
+            <BellIcon className="size-2.5" aria-hidden />
+            {props.unreadNotifications}
+          </span>
+        ) : null}
         {props.activeWork > 0 ? (
           <span
             className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-primary/12 px-1.5 text-[10px] font-medium tabular-nums text-primary"
@@ -364,6 +408,10 @@ function AgentEnvironmentSection(props: {
     () => vmAgentEnvironment.collaboration({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
   );
+  const attentionAtom = useMemo(
+    () => vmAgentEnvironment.attention({ environmentId: props.environmentId, input: {} }),
+    [props.environmentId],
+  );
   // Held as the agent rather than an id so the dialog can name it even if the
   // row disappears from the list mid-confirmation.
   const [pendingDelete, setPendingDelete] = useState<VmAgent | null>(null);
@@ -378,6 +426,7 @@ function AgentEnvironmentSection(props: {
   });
   const result = useAtomValue(agentsAtom);
   const collaborationResult = useAtomValue(collaborationAtom);
+  const attentionResult = useAtomValue(attentionAtom);
   const failureCause = AsyncResult.isFailure(result) ? result.cause : null;
   const latest = Option.getOrNull(AsyncResult.value(result));
   const snapshot = latest && latest.type === "snapshot" ? latest : null;
@@ -396,6 +445,8 @@ function AgentEnvironmentSection(props: {
   }, [pendingDeleteId, snapshot]);
   const collaborationItem = Option.getOrNull(AsyncResult.value(collaborationResult));
   const collaborationSnapshot = collaborationItem?.type === "snapshot" ? collaborationItem : null;
+  const attentionItem = Option.getOrNull(AsyncResult.value(attentionResult));
+  const attentionSnapshot = attentionItem?.type === "snapshot" ? attentionItem : null;
   const notice = resolveAgentRegistryNotice({
     hasSnapshot: snapshot !== null,
     agentCount: agents.length,
@@ -434,11 +485,14 @@ function AgentEnvironmentSection(props: {
             collaborationSnapshot?.agents ?? [],
             agent.vmAgentId,
           );
+          const attention = attentionForAgent(attentionSnapshot?.agents ?? [], agent.vmAgentId);
           return (
             <AgentSidebarRow
               key={agent.vmAgentId}
               agent={agent}
               activeWork={activeWork}
+              unreadNotifications={attention.unreadNotificationCount}
+              openBlockers={attention.openBlockerCount}
               environmentId={props.environmentId}
               environmentLabel={props.environmentLabel}
               isActive={

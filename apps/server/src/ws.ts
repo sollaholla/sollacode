@@ -55,6 +55,7 @@ import {
   type TerminalLayoutStreamItem,
   type TerminalMetadataStreamItem,
   type VmAgentStreamItem,
+  type VmAgentAttentionStreamItem,
   VmAgentNotFoundError,
   VmAgentWorkspaceOperationError,
   type VmAgentWorkspaceStreamItem,
@@ -522,6 +523,10 @@ function vmWorkspaceStreamItemByteSize(item: VmAgentWorkspaceStreamItem): number
   return item.type === "resync-required"
     ? 256
     : terminalStreamTextEncoder.encode(JSON.stringify(item)).byteLength + 512;
+}
+
+function vmAttentionStreamItemByteSize(item: VmAgentAttentionStreamItem): number {
+  return item.type === "resync-required" ? 256 : item.agents.length * 160 + 256;
 }
 
 function vmCollaborationStreamItemByteSize(item: VmAgentCollaborationStreamItem): number {
@@ -2642,6 +2647,28 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "vm-workspace" },
           ),
+        [WS_METHODS.vmAgentAttentionSubscribe]: () =>
+          observeRpcStream(
+            WS_METHODS.vmAgentAttentionSubscribe,
+            Stream.unwrap(
+              Effect.gen(function* () {
+                const buffer = yield* ByteBoundedResyncBuffer.make<VmAgentAttentionStreamItem>({
+                  maxBytes: VM_AGENT_STREAM_MAX_BYTES,
+                  maxItems: VM_STREAM_MAX_ITEMS,
+                  resyncItem: vmResyncRequired,
+                  sizeOf: vmAttentionStreamItemByteSize,
+                });
+                yield* Effect.acquireRelease(
+                  vmAgentWorkspace.subscribeAttention((snapshot) =>
+                    buffer.offer(snapshot).pipe(Effect.asVoid),
+                  ),
+                  (unsubscribe) => Effect.sync(unsubscribe),
+                );
+                return buffer.stream;
+              }),
+            ),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
         [WS_METHODS.vmAgentCollaborationSubscribe]: (_input) =>
           observeRpcStream(
             WS_METHODS.vmAgentCollaborationSubscribe,
@@ -2767,6 +2794,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.vmAgentNotificationMarkRead,
             vmAgentWorkspace.markNotificationRead(input.vmAgentId, input.notificationId),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentNotificationUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentNotificationUpdate,
+            vmAgentWorkspace.updateNotification(input),
             { "rpc.aggregate": "vm-workspace" },
           ),
         [WS_METHODS.vmAgentBlockerResolve]: (input) =>
