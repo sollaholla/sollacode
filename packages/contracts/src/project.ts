@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import {
   NonNegativeInt,
   PositiveInt,
+  ProjectId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -73,6 +74,32 @@ export const ProjectListEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
 });
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
+
+/**
+ * A cheap health probe for a project's folder: does its workspace root still
+ * exist as a directory? Keyed by project id (not a raw path) so the endpoint
+ * stats only roots the user's projects actually claim. Feeds the
+ * folder-missing overlay that offers to re-point a moved project.
+ */
+export const ProjectCheckWorkspaceRootInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type ProjectCheckWorkspaceRootInput = typeof ProjectCheckWorkspaceRootInput.Type;
+
+export const ProjectCheckWorkspaceRootResult = Schema.Struct({
+  workspaceRoot: TrimmedNonEmptyString,
+  exists: Schema.Boolean,
+});
+export type ProjectCheckWorkspaceRootResult = typeof ProjectCheckWorkspaceRootResult.Type;
+
+export class ProjectCheckWorkspaceRootError extends Schema.TaggedErrorClass<ProjectCheckWorkspaceRootError>()(
+  "ProjectCheckWorkspaceRootError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return `Failed to check the project folder: ${this.detail}`;
+  }
+}
 
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),

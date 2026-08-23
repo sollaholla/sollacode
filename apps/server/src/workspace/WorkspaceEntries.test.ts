@@ -95,6 +95,25 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
     vi.restoreAllMocks();
   });
 
+  describe("rootExists", () => {
+    // The folder-missing overlay's health probe: a moved project must read as
+    // "gone" without erroring, and a path that exists but is a file is just as
+    // unusable as one that is absent.
+    it.effect("distinguishes a live root from a moved or clobbered one", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir();
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        expect(yield* workspaceEntries.rootExists(cwd)).toBe(true);
+
+        const path = yield* Path.Path;
+        expect(yield* workspaceEntries.rootExists(path.join(cwd, "moved-away"))).toBe(false);
+
+        yield* writeTextFile(cwd, "a-file.txt");
+        expect(yield* workspaceEntries.rootExists(path.join(cwd, "a-file.txt"))).toBe(false);
+      }),
+    );
+  });
+
   describe("list", () => {
     it.effect("returns the complete cached workspace index", () =>
       Effect.gen(function* () {

@@ -99,6 +99,13 @@ export class WorkspaceEntries extends Context.Service<
     readonly searchContents: (
       input: ProjectSearchContentsInput,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
+    /**
+     * Does this workspace root still exist as a directory? A cheap stat — no
+     * index, no listing — for the folder-missing overlay that offers to
+     * re-point a moved project. "Exists but is a file" reads as false: either
+     * way the path cannot host the project.
+     */
+    readonly rootExists: (cwd: string) => Effect.Effect<boolean, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
   }
 >()("t3/workspace/WorkspaceEntries") {}
@@ -147,6 +154,20 @@ export const make = Effect.gen(function* () {
     cwd: string,
   ): Effect.fn.Return<string, WorkspaceEntriesError> {
     return yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+  });
+
+  const rootExists: WorkspaceEntries["Service"]["rootExists"] = Effect.fn(
+    "WorkspaceEntries.rootExists",
+  )(function* (cwd) {
+    return yield* normalizeWorkspaceRoot(cwd).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) =>
+          error._tag === "WorkspaceRootNotExistsError" ||
+          error._tag === "WorkspaceRootNotDirectoryError",
+        () => Effect.succeed(false),
+      ),
+    );
   });
 
   const refresh: WorkspaceEntries["Service"]["refresh"] = Effect.fn("WorkspaceEntries.refresh")(
@@ -288,7 +309,7 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return WorkspaceEntries.of({ browse, list, refresh, search, searchContents });
+  return WorkspaceEntries.of({ browse, list, refresh, rootExists, search, searchContents });
 });
 
 export const layer = Layer.effect(WorkspaceEntries, make).pipe(
