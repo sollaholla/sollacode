@@ -13,8 +13,9 @@ import * as McpProviderSession from "./McpProviderSession.ts";
 
 /**
  * Capabilities every thread gets by default. `"vm"` is deliberately NOT here —
- * a desktop/browser-driving capability must be granted per-thread, only to
- * bound VM agents (see ProviderService.prepareMcpSession).
+ * it marks a thread as owned by a custom agent (gating agent_workspace and
+ * workspace_consult) and is granted per-thread in
+ * ProviderService.prepareMcpSession.
  */
 export const DEFAULT_MCP_CAPABILITIES: ReadonlyArray<McpInvocationContext.McpCapability> = [
   "app-update",

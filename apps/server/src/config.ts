@@ -45,19 +45,8 @@ export interface ServerDerivedPaths {
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
   readonly secretsDir: string;
-  /**
-   * Root for Agent Stack per-agent VM disks and golden images. Each named
-   * agent's VM (and its persisted logins/credentials) lives under here.
-   */
-  readonly vmsDir: string;
   /** Workspace root for the reserved project that holds agent chat threads. */
   readonly agentsWorkspaceDir: string;
-  /**
-   * Root for each agent's persistent, isolated browser profile (its "computer":
-   * cookies, logins, and storage survive here across restarts, walled off per
-   * agent). The profile dir IS the agent's persisted-login home.
-   */
-  readonly agentBrowsersDir: string;
   /**
    * Working directory the orchestrator thread's provider runs in.
    *
@@ -159,9 +148,7 @@ export const deriveServerPaths = Effect.fn(function* (
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
     secretsDir: join(stateDir, "secrets"),
     orchestratorWorkspaceDir: join(stateDir, "orchestrator"),
-    vmsDir: join(baseDir, "vms"),
     agentsWorkspaceDir: join(stateDir, "agents"),
-    agentBrowsersDir: join(stateDir, "agent-browsers"),
   };
 });
 
@@ -184,9 +171,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),
       fs.makeDirectory(derivedPaths.orchestratorWorkspaceDir, { recursive: true }),
-      fs.makeDirectory(derivedPaths.vmsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.agentsWorkspaceDir, { recursive: true }),
-      fs.makeDirectory(derivedPaths.agentBrowsersDir, { recursive: true }),
     ],
     { concurrency: "unbounded" },
   );

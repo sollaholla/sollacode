@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ScopedThreadRef,
   VmAgent,
   VmAgentArtifactDefinition,
   VmAgentBlocker,
@@ -18,11 +19,13 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Switch } from "~/components/ui/switch";
+import { openUrlInThreadPreview } from "~/components/preview/openUrlInThreadPreview";
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
 
@@ -62,14 +65,42 @@ export function openAgentBlockers(
 export function AgentBlockerBanner(props: {
   readonly environmentId: EnvironmentId;
   readonly workspace: VmAgentWorkspaceSnapshot | null;
+  /** The agent's chat thread — where its collaborative browser tabs live. */
+  readonly threadRef?: ScopedThreadRef | null;
+  /** Reveal the pane hosting the preview browser (the chat view) first. */
+  readonly onRevealChat?: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const resolveBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
     reportFailure: false,
   });
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
+  const { threadRef, onRevealChat } = props;
   const blockers = openAgentBlockers(props.workspace);
   if (blockers.length === 0) return null;
+
+  const toggleExpanded = (blockerId: string) =>
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(blockerId)) next.add(blockerId);
+      return next;
+    });
+
+  // Show the blocker's page in the agent's own preview browser: focus the tab
+  // the agent already staged at that exact URL, or open a new one there. Only
+  // when this surface has no preview (no thread, non-desktop runtime, odd URL)
+  // does the link leave the app for the system browser.
+  const openBlockerUrl = (url: string) => {
+    const openExternally = () => window.open(url, "_blank", "noopener,noreferrer");
+    if (!threadRef) {
+      openExternally();
+      return;
+    }
+    onRevealChat?.();
+    void openUrlInThreadPreview({ threadRef, url, openPreview, openExternally });
+  };
 
   const resolve = async (blocker: VmAgentBlocker) => {
     setError(null);
@@ -91,31 +122,51 @@ export function AgentBlockerBanner(props: {
         Waiting on you
       </div>
       <div className="mt-1.5 flex min-w-0 flex-col gap-1.5">
-        {blockers.map((blocker) => (
-          <div key={blocker.blockerId} className="flex min-w-0 items-start gap-2">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium">{blocker.title}</p>
-              <p className="line-clamp-3 text-[11px] text-muted-foreground">{blocker.detail}</p>
-            </div>
-            {blocker.url ? (
+        {blockers.map((blocker) => {
+          const blockerUrl = blocker.url;
+          const expanded = expandedIds.has(blocker.blockerId);
+          // Clamp only what plausibly overflows the three visible lines, so
+          // short blockers don't carry a dead "Show more" toggle.
+          const clampable = blocker.detail.length > 160 || blocker.detail.includes("\n");
+          return (
+            <div key={blocker.blockerId} className="flex min-w-0 items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium">{blocker.title}</p>
+                <p
+                  className={
+                    expanded
+                      ? "whitespace-pre-line break-words text-[11px] text-muted-foreground"
+                      : "line-clamp-3 text-[11px] text-muted-foreground"
+                  }
+                >
+                  {blocker.detail}
+                </p>
+                {clampable ? (
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-amber-600 hover:underline dark:text-amber-400"
+                    onClick={() => toggleExpanded(blocker.blockerId)}
+                  >
+                    {expanded ? "Show less" : "Show more"}
+                  </button>
+                ) : null}
+              </div>
+              {blockerUrl ? (
+                <Button size="xs" variant="outline" onClick={() => openBlockerUrl(blockerUrl)}>
+                  <ExternalLinkIcon /> Open
+                </Button>
+              ) : null}
               <Button
                 size="xs"
                 variant="outline"
-                render={<a href={blocker.url} target="_blank" rel="noreferrer noopener" />}
+                disabled={resolvingId === blocker.blockerId}
+                onClick={() => void resolve(blocker)}
               >
-                <ExternalLinkIcon /> Open
+                {resolvingId === blocker.blockerId ? "Resolving…" : "Mark resolved"}
               </Button>
-            ) : null}
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={resolvingId === blocker.blockerId}
-              onClick={() => void resolve(blocker)}
-            >
-              {resolvingId === blocker.blockerId ? "Resolving…" : "Mark resolved"}
-            </Button>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
       {error ? <p className="mt-1.5 break-words text-[11px] text-destructive">{error}</p> : null}
     </div>
@@ -164,7 +215,7 @@ export function AgentTasksPanel(props: {
   return (
     <WorkspacePanel
       title="Tasks"
-      description="Durable work runs in this agent's own computer and conversation."
+      description="Durable work runs in this agent's own conversation and browser."
       action={
         <Button type="button" size="sm" onClick={() => setCreating(true)}>
           <PlusIcon /> New task

@@ -146,7 +146,7 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
       }
       return {
         action: input.action,
-        status: `Agent "${agent.name}" created; its computer is booting. Mention it anywhere as @${agent.handle}.`,
+        status: `Agent "${agent.name}" created and ready. Mention it anywhere as @${agent.handle}.`,
         agent,
       };
     }
@@ -164,20 +164,6 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
       }
       yield* configureChat(agent);
       return { action: input.action, status: "Agent chat configured.", agent };
-    }
-    case "start_agent": {
-      const target = yield* resolveAgent;
-      const agent = yield* manager
-        .start(target.vmAgentId)
-        .pipe(Effect.mapError(mapFailure("starting the agent")));
-      return { action: input.action, status: "Agent starting.", agent };
-    }
-    case "stop_agent": {
-      const target = yield* resolveAgent;
-      const agent = yield* manager
-        .stop(target.vmAgentId)
-        .pipe(Effect.mapError(mapFailure("stopping the agent")));
-      return { action: input.action, status: "Agent stopped.", agent };
     }
     case "create_task": {
       const agent = yield* resolveAgent;

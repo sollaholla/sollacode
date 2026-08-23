@@ -36,7 +36,6 @@ import {
   VmAgentTaskScheduler,
   VmAgentTaskSchedulerLive,
 } from "./VmAgentTaskScheduler.ts";
-import { VmManager } from "./VmManager.ts";
 
 const iso = "2026-08-21T20:00:00.000Z";
 const vmAgentId = VmAgentId.make("agent-scheduler");
@@ -93,115 +92,103 @@ const collaborationLayer = Layer.mock(VmAgentCollaborationStore)({
   listExpired: () => Effect.succeed([]),
 });
 
-it.effect(
-  "defers a queued task while the dedicated conversation is busy, then boots and dispatches it",
-  () =>
-    Effect.gen(function* () {
-      let busy = true;
-      let bootCount = 0;
-      const commands: OrchestrationCommand[] = [];
-      const firstBusyCheck = yield* Deferred.make<void>();
-      const dispatched = yield* Deferred.make<void>();
+it.effect("defers a queued task while the dedicated conversation is busy, then dispatches it", () =>
+  Effect.gen(function* () {
+    let busy = true;
+    const commands: OrchestrationCommand[] = [];
+    const firstBusyCheck = yield* Deferred.make<void>();
+    const dispatched = yield* Deferred.make<void>();
 
-      const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
-        listRunObservations: () =>
-          Effect.succeed([
-            { run, projectionState: null, projectionTurnId: null, assistantText: null },
-          ]),
-        getTask: () => Effect.succeed(Option.some(task)),
-        claimNextDue: () => Effect.succeed(Option.none()),
-        setRunBooting: () => Effect.void,
-        setRunRunning: ({ messageId }) =>
-          Effect.sync(() => assert.strictEqual(messageId, MessageId.make(`vm-task:${run.runId}`))),
-        completeRun: () => Effect.void,
-      });
-      const agentLayer = Layer.mock(VmAgentStore)({
-        getById: () => Effect.succeed(Option.some(agent)),
-      });
-      const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
-        getThreadShellById: () =>
-          Effect.gen(function* () {
-            if (busy) yield* Deferred.succeed(firstBusyCheck, undefined).pipe(Effect.ignore);
-            return Option.some({
-              id: threadId,
-              projectId: ProjectId.make("solla-agents"),
-              title: "Scheduler",
-              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              branch: null,
-              worktreePath: null,
-              latestTurn: busy
-                ? {
-                    turnId: "busy-turn",
-                    state: "running",
-                    requestedAt: iso,
-                    startedAt: iso,
-                    completedAt: null,
-                    assistantMessageId: null,
-                  }
-                : null,
-              createdAt: iso,
-              updatedAt: iso,
-              archivedAt: null,
-              settledOverride: null,
-              settledAt: null,
-              session: null,
-              latestUserMessageAt: iso,
-              hasPendingApprovals: false,
-              hasPendingUserInput: false,
-              hasActionableProposedPlan: false,
-            } as never);
-          }),
-      });
-      const managerLayer = Layer.mock(VmManager)({
-        ensureRunning: () =>
-          Effect.sync(() => {
-            bootCount += 1;
-            return agent;
-          }),
-      });
-      const workspaceLayer = Layer.mock(VmAgentWorkspace)({ refresh: () => Effect.void });
-      const engineLayer = Layer.mock(OrchestrationEngineService)({
-        dispatch: (command) =>
-          Effect.sync(() => {
-            commands.push(command);
-          }).pipe(
-            Effect.andThen(Deferred.succeed(dispatched, undefined)),
-            Effect.as({ sequence: 1 }),
-          ),
-      });
-      const dependencies = Layer.mergeAll(
-        storeLayer,
-        agentLayer,
-        projectionLayer,
-        managerLayer,
-        workspaceLayer,
-        engineLayer,
-        collaborationLayer,
-      );
-      const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () =>
+        Effect.succeed([
+          { run, projectionState: null, projectionTurnId: null, assistantText: null },
+        ]),
+      getTask: () => Effect.succeed(Option.some(task)),
+      claimNextDue: () => Effect.succeed(Option.none()),
+      setRunBooting: () => Effect.void,
+      setRunRunning: ({ messageId }) =>
+        Effect.sync(() => assert.strictEqual(messageId, MessageId.make(`vm-task:${run.runId}`))),
+      completeRun: () => Effect.void,
+    });
+    const agentLayer = Layer.mock(VmAgentStore)({
+      getById: () => Effect.succeed(Option.some(agent)),
+    });
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: () =>
+        Effect.gen(function* () {
+          if (busy) yield* Deferred.succeed(firstBusyCheck, undefined).pipe(Effect.ignore);
+          return Option.some({
+            id: threadId,
+            projectId: ProjectId.make("solla-agents"),
+            title: "Scheduler",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            latestTurn: busy
+              ? {
+                  turnId: "busy-turn",
+                  state: "running",
+                  requestedAt: iso,
+                  startedAt: iso,
+                  completedAt: null,
+                  assistantMessageId: null,
+                }
+              : null,
+            createdAt: iso,
+            updatedAt: iso,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            session: null,
+            latestUserMessageAt: iso,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          } as never);
+        }),
+    });
+    const workspaceLayer = Layer.mock(VmAgentWorkspace)({ refresh: () => Effect.void });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          commands.push(command);
+        }).pipe(
+          Effect.andThen(Deferred.succeed(dispatched, undefined)),
+          Effect.as({ sequence: 1 }),
+        ),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      agentLayer,
+      projectionLayer,
+      workspaceLayer,
+      engineLayer,
+      collaborationLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
 
-      yield* Effect.gen(function* () {
-        const scheduler = yield* VmAgentTaskScheduler;
-        yield* scheduler.start();
-        yield* Deferred.await(firstBusyCheck);
-        assert.strictEqual(commands.length, 0);
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      yield* Deferred.await(firstBusyCheck);
+      assert.strictEqual(commands.length, 0);
 
-        busy = false;
-        yield* scheduler.wake();
-        yield* Deferred.await(dispatched);
-        assert.strictEqual(bootCount, 1);
-        assert.strictEqual(commands.length, 1);
-        const command = commands[0];
-        assert.strictEqual(command?.type, "thread.turn.start");
-        if (command?.type === "thread.turn.start") {
-          assert.strictEqual(command.threadId, threadId);
-          assert.include(command.message.text, "Check dashboard");
-          assert.include(command.message.text, "Summary provided");
-        }
-      }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
-    }),
+      busy = false;
+      yield* scheduler.wake();
+      yield* Deferred.await(dispatched);
+      assert.strictEqual(commands.length, 1);
+      const command = commands[0];
+      assert.strictEqual(command?.type, "thread.turn.start");
+      if (command?.type === "thread.turn.start") {
+        assert.strictEqual(command.threadId, threadId);
+        assert.include(command.message.text, "Check dashboard");
+        assert.include(command.message.text, "Summary provided");
+      }
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
 );
 
 it.effect("fails a running run whose turn never projected instead of retrying forever", () =>
@@ -261,7 +248,6 @@ it.effect("fails a running run whose turn never projected instead of retrying fo
       storeLayer,
       agentLayer,
       projectionLayer,
-      Layer.mock(VmManager)({}),
       workspaceLayer,
       engineLayer,
       stallCollaborationLayer,
@@ -353,7 +339,6 @@ it.effect("fails a running run whose projected turn never left pending", () =>
       storeLayer,
       agentLayer,
       projectionLayer,
-      Layer.mock(VmManager)({}),
       workspaceLayer,
       engineLayer,
       pendingCollaborationLayer,
@@ -432,7 +417,6 @@ it.effect("persists a deduplicated notification before terminalizing a completed
       workspaceLayer,
       Layer.mock(VmAgentStore)({}),
       Layer.mock(ProjectionSnapshotQuery)({}),
-      Layer.mock(VmManager)({}),
       Layer.mock(OrchestrationEngineService)({}),
       collaborationLayer,
     );
@@ -577,7 +561,6 @@ it.effect("re-arms a pending delegation follow-up after the current turn settles
       collaborationStoreLayer,
       Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(agent)) }),
       projectionLayer,
-      Layer.mock(VmManager)({}),
       workspaceLayer,
       engineLayer,
     );
@@ -662,7 +645,6 @@ it.effect(
         collaborationStoreLayer,
         Layer.mock(VmAgentStore)({}),
         projectionLayer,
-        Layer.mock(VmManager)({}),
         Layer.mock(VmAgentWorkspace)({}),
         engineLayer,
       );
@@ -734,7 +716,6 @@ it.effect("re-dispatches a stalled run under a fresh command id so it can actual
       storeLayer,
       agentLayer,
       projectionLayer,
-      Layer.mock(VmManager)({ ensureRunning: () => Effect.succeed(agent) }),
       workspaceLayer,
       engineLayer,
       collaborationLayer,
@@ -814,7 +795,6 @@ it.effect("says in the thread when a run gives up, rather than leaving it readin
       storeLayer,
       agentLayer,
       projectionLayer,
-      Layer.mock(VmManager)({ ensureRunning: () => Effect.succeed(agent) }),
       workspaceLayer,
       engineLayer,
       Layer.mock(VmAgentCollaborationStore)({
@@ -906,7 +886,6 @@ it.effect("gives up on a run that waited out the dispatch deadline without ever 
       storeLayer,
       agentLayer,
       projectionLayer,
-      Layer.mock(VmManager)({}),
       workspaceLayer,
       Layer.mock(OrchestrationEngineService)({
         dispatch: () => Effect.succeed({ sequence: 1 } as never),
@@ -970,7 +949,6 @@ it.effect("leaves a run that is merely waiting alone until the deadline", () =>
             Option.some({ latestTurn: { state: "running" }, pendingWork: null } as never),
           ),
       }),
-      Layer.mock(VmManager)({}),
       Layer.mock(VmAgentWorkspace)({
         refresh: () => Effect.void,
         // Provided so that a deadline firing early would reach completeRun and

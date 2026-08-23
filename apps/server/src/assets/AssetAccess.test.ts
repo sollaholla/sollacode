@@ -31,6 +31,7 @@ import {
   ASSET_ROUTE_PREFIX,
   WORKSPACE_RASTER_IMAGE_MAX_BYTES,
   detectWorkspaceRasterMimeType,
+  ensureUtf8Charset,
   issueAssetUrl,
   resolveAsset,
 } from "./AssetAccess.ts";
@@ -51,6 +52,19 @@ const testLayer = Layer.mergeAll(
   ),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
+
+describe("ensureUtf8Charset", () => {
+  it("declares utf-8 on textual media types and leaves the rest alone", () => {
+    expect(ensureUtf8Charset("text/markdown")).toBe("text/markdown; charset=utf-8");
+    expect(ensureUtf8Charset("application/json")).toBe("application/json; charset=utf-8");
+    expect(ensureUtf8Charset("image/svg+xml")).toBe("image/svg+xml; charset=utf-8");
+    expect(ensureUtf8Charset("text/html; charset=iso-8859-1")).toBe(
+      "text/html; charset=iso-8859-1",
+    );
+    expect(ensureUtf8Charset("image/png")).toBe("image/png");
+    expect(ensureUtf8Charset("application/pdf")).toBe("application/pdf");
+  });
+});
 
 describe("AssetAccess", () => {
   it("detects supported raster signatures without trusting extensions", () => {
@@ -171,19 +185,19 @@ describe("AssetAccess", () => {
         kind: "file",
         path: yield* fileSystem.realPath(indexPath),
         artifact: true,
-        contentType: "text/html",
+        contentType: "text/html; charset=utf-8",
       });
       expect(yield* resolveAsset(token, "site/styles/app.css")).toEqual({
         kind: "file",
         path: yield* fileSystem.realPath(cssPath),
         artifact: true,
-        contentType: "text/css",
+        contentType: "text/css; charset=utf-8",
       });
       expect(yield* resolveAsset(token, "site/scripts/app.js")).toEqual({
         kind: "file",
         path: yield* fileSystem.realPath(jsPath),
         artifact: true,
-        contentType: "text/javascript",
+        contentType: "text/javascript; charset=utf-8",
       });
       const parentRelativeUrl = new URL(`https://remote.test${result.relativeUrl}`);
       const resolvedParentRelativeUrl = new URL("../shared/base.css", parentRelativeUrl);
@@ -196,7 +210,7 @@ describe("AssetAccess", () => {
         kind: "file",
         path: yield* fileSystem.realPath(sharedPath),
         artifact: true,
-        contentType: "text/css",
+        contentType: "text/css; charset=utf-8",
       });
       expect(yield* resolveAsset(token, "site/private.txt")).toBeNull();
       expect(yield* resolveAsset(token, "../.manifest.json")).toBeNull();
@@ -216,7 +230,7 @@ describe("AssetAccess", () => {
         kind: "file",
         path: yield* fileSystem.realPath(iconPath),
         artifact: true,
-        contentType: "image/svg+xml",
+        contentType: "image/svg+xml; charset=utf-8",
       });
       expect(yield* resolveAsset(iconToken, "index.html")).toBeNull();
     }).pipe(Effect.provide(testLayer)),

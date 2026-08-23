@@ -6,22 +6,12 @@ import {
   LayoutDashboardIcon,
   ListTodoIcon,
   MessageSquareIcon,
-  MonitorIcon,
-  PanelRightCloseIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import {
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-} from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { usePrimaryEnvironmentId } from "../../state/environments";
-import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
@@ -36,18 +26,14 @@ import {
   AgentTasksPanel,
   useAgentSystemNotifications,
 } from "./AgentWorkspacePanels";
-import { VmScreenView } from "./VmScreenView";
 
-const MIN_FRACTION = 0.28;
-const MAX_FRACTION = 0.72;
 type AgentWorkspaceView = "chat" | "collaborate" | "tasks" | "artifact" | "notifications";
-type CompactWorkspacePane = "workspace" | "computer";
 
 /**
  * The full surface for one agent: its single-thread chat (the real {@link
- * ChatView} — model picker, effort, usage, everything) beside its live computer,
- * in a resizable split. The computer can be hidden to give the chat full width
- * or expanded to full screen from within its own pane.
+ * ChatView} — model picker, effort, usage, everything). The agent's browser is
+ * the chat's collaborative preview panel, so the chat IS the workspace; the
+ * other views (tasks, artifact, inbox) sit behind the header switch.
  */
 export function AgentWorkspace(props: {
   readonly agentId: string;
@@ -66,14 +52,7 @@ function AgentWorkspaceResolved(props: {
   readonly environmentId: EnvironmentId;
 }) {
   const { environmentId } = props;
-  const isCompact = useMediaQuery("max-md");
-  const [screenOpen, setScreenOpen] = useState(true);
-  const [compactPane, setCompactPane] = useState<CompactWorkspacePane>("workspace");
   const [view, setView] = useState<AgentWorkspaceView>("chat");
-  // Fraction of the width given to the chat pane; the computer takes the rest.
-  const [chatFraction, setChatFraction] = useState(0.5);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef(false);
 
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
@@ -99,28 +78,6 @@ function AgentWorkspaceResolved(props: {
   const unreadCount =
     workspace?.notifications.filter((notification) => !notification.readAt).length ?? 0;
   useAgentSystemNotifications(agent, workspace);
-  const computerVisible = isCompact ? compactPane === "computer" : screenOpen;
-
-  const onDividerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    draggingRef.current = true;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  }, []);
-  const onDividerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return;
-    const container = containerRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    if (rect.width === 0) return;
-    const fraction = (event.clientX - rect.left) / rect.width;
-    setChatFraction(Math.min(MAX_FRACTION, Math.max(MIN_FRACTION, fraction)));
-  }, []);
-  const onDividerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    draggingRef.current = false;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, []);
 
   if (registryUnavailable) {
     return <CenteredNote text="Agents are unavailable. Reconnect to the host and try again." />;
@@ -181,49 +138,18 @@ function AgentWorkspaceResolved(props: {
             onClick={() => setView("notifications")}
             badge={unreadCount}
           />
-          <span className="mx-1 h-5 w-px bg-border max-md:hidden" />
-          <Button
-            type="button"
-            size="sm"
-            variant={computerVisible ? "default" : "outline"}
-            aria-pressed={computerVisible}
-            aria-label={computerVisible ? "Hide computer" : "Show computer"}
-            title={computerVisible ? "Hide computer" : "Show computer"}
-            disabled={agent.threadId === null}
-            onClick={() => {
-              if (isCompact) {
-                setCompactPane((pane) => (pane === "computer" ? "workspace" : "computer"));
-                return;
-              }
-              setScreenOpen((open) => !open);
-            }}
-          >
-            {computerVisible ? (
-              <PanelRightCloseIcon className="size-3.5" />
-            ) : (
-              <MonitorIcon className="size-3.5" />
-            )}
-            <span className="hidden lg:inline">
-              {computerVisible ? "Hide computer" : "Show computer"}
-            </span>
-          </Button>
         </div>
       </header>
 
-      <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {agent.threadId ? (
-          <div
-            className={cn(
-              "h-full min-h-0 min-w-0 flex-col",
-              compactPane === "computer" ? "hidden md:flex" : "flex",
-            )}
-            style={{
-              flexBasis: isCompact ? "100%" : screenOpen ? `${chatFraction * 100}%` : "100%",
-              flexGrow: isCompact ? 1 : 0,
-              flexShrink: isCompact ? 1 : 0,
-            }}
-          >
-            <AgentBlockerBanner environmentId={environmentId} workspace={workspace} />
+          <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+            <AgentBlockerBanner
+              environmentId={environmentId}
+              workspace={workspace}
+              threadRef={{ environmentId, threadId: agent.threadId }}
+              onRevealChat={() => setView("chat")}
+            />
             {view === "chat" ? (
               <AgentChatSurface environmentId={environmentId} threadId={agent.threadId} />
             ) : view === "collaborate" ? (
@@ -249,33 +175,6 @@ function AgentWorkspaceResolved(props: {
             <CenteredNote text="This agent has no chat thread. Create a new agent for the full chat." />
           </div>
         )}
-
-        {!isCompact && screenOpen && agent.threadId ? (
-          <>
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              className={cn(
-                "group relative w-1.5 shrink-0 cursor-col-resize touch-none bg-border",
-                "hover:bg-primary/40",
-              )}
-              onPointerDown={onDividerDown}
-              onPointerMove={onDividerMove}
-              onPointerUp={onDividerUp}
-              onPointerCancel={onDividerUp}
-            >
-              <span className="absolute inset-y-0 -left-1 -right-1" />
-            </div>
-            <div className="h-full min-h-0 min-w-0 flex-1">
-              <VmScreenView agent={agent} environmentId={environmentId} />
-            </div>
-          </>
-        ) : null}
-        {isCompact && compactPane === "computer" && agent.threadId ? (
-          <div className="h-full min-h-0 min-w-0 flex-1">
-            <VmScreenView agent={agent} environmentId={environmentId} />
-          </div>
-        ) : null}
       </div>
     </div>
   );

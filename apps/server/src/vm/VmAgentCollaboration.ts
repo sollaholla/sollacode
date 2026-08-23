@@ -119,16 +119,9 @@ const agentAvailability = (
   runningDelegations = activeDelegations,
   modelSelection?: { readonly instanceId: string; readonly model: string } | null,
 ): VmAgentCollaborationAgentSummary => {
-  const availability =
-    agent.controlMode === "user"
-      ? ("user-control" as const)
-      : agent.status === "failed"
-        ? ("failed" as const)
-        : agent.status !== "running"
-          ? ("offline" as const)
-          : runningDelegations > 0
-            ? ("busy" as const)
-            : ("available" as const);
+  // Agents have no bootable VM and no user-takeover any more: one is simply
+  // busy while a delegated run is in flight, and available otherwise.
+  const availability = runningDelegations > 0 ? ("busy" as const) : ("available" as const);
   return {
     vmAgentId: agent.vmAgentId,
     name: agent.name,
@@ -140,7 +133,7 @@ const agentAvailability = (
     capabilities: [
       "workspace.tasks",
       "workspace.consult",
-      "browser.desktop",
+      "browser.preview",
       "collaboration.receive",
     ],
     providerInstanceId:
@@ -149,7 +142,7 @@ const agentAvailability = (
         : (modelSelection.instanceId as VmAgentCollaborationAgentSummary["providerInstanceId"]),
     model: modelSelection?.model ?? null,
     activeDelegations,
-    canReceiveDelegation: agent.controlMode === "agent" && agent.status === "running",
+    canReceiveDelegation: true,
   };
 };
 
@@ -358,12 +351,6 @@ export const make = Effect.gen(function* () {
       };
     }
     const source = yield* requireAgent(sourceVmAgentId);
-    if (source.controlMode !== "agent") {
-      return yield* new VmAgentCollaborationOperationError({
-        operation: "delegating work",
-        detail: "The source agent is under user control.",
-      });
-    }
     const parent = yield* store
       .findActiveForTarget(sourceVmAgentId)
       .pipe(Effect.mapError(operationError("checking delegation depth")));
@@ -392,19 +379,16 @@ export const make = Effect.gen(function* () {
         });
       }
       targetAgent = yield* requireAgent(input.target.vmAgentId);
-      if (targetAgent.controlMode !== "agent" || targetAgent.status !== "running") {
-        return yield* new VmAgentCollaborationOperationError({
-          operation: "delegating work",
-          detail: "The target agent is not available for delegated work.",
-        });
-      }
     }
 
-    const allowedCapabilities = new Set(
-      input.target.kind === "agent"
-        ? ["workspace.tasks", "workspace.consult", "browser.desktop", "collaboration.receive"]
-        : ["workspace.tasks", "workspace.consult", "collaboration.receive"],
-    );
+    // Every thread carries the collaborative preview browser, so ephemeral
+    // workers get the browser capability just like named agents.
+    const allowedCapabilities = new Set([
+      "workspace.tasks",
+      "workspace.consult",
+      "browser.preview",
+      "collaboration.receive",
+    ]);
     const unavailableCapability = (input.requestedCapabilities ?? []).find(
       (capability) => !allowedCapabilities.has(capability),
     );

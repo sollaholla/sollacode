@@ -258,9 +258,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* McpSessionRegistry.revokeActiveMcpProviderSession(previous.providerSessionId);
         McpProviderSession.clearMcpProviderSession(threadId);
       }
-      // Only a bound VM agent's thread gets the "vm" capability — so vm_computer
-      // is exposed there and nowhere else. VmAgentStore is optional (absent in
-      // unit tests, where no thread is a VM agent anyway).
+      // Only a custom agent's own thread gets the "vm" capability (historical
+      // name) — it marks the thread as agent-owned and gates agent_workspace
+      // and workspace_consult. VmAgentStore is optional (absent in unit
+      // tests, where no thread is an agent anyway).
       const isVmAgent = yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
         onNone: () => Effect.succeed(false),
         onSome: (store) =>

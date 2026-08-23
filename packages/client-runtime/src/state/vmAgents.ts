@@ -1,10 +1,4 @@
-import {
-  WS_METHODS,
-  type VmAgent,
-  type VmAgentStreamEvent,
-  type VmControlMode,
-  type VmScreenFrame,
-} from "@t3tools/contracts";
+import { WS_METHODS, type VmAgent, type VmAgentStreamEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -53,18 +47,6 @@ export function applyVmAgentRegistryEvent(
 }
 
 /**
- * Folded live-screen state. The raw stream interleaves frames and takeover
- * control events; the atom only ever holds one latest value, so we scan the
- * stream into this combined view to keep the last frame across control events.
- */
-export interface VmScreenView {
-  readonly frame: VmScreenFrame | null;
-  readonly controlMode: VmControlMode;
-}
-
-const INITIAL_SCREEN_VIEW: VmScreenView = { frame: null, controlMode: "agent" };
-
-/**
  * Mobile browsers can preserve a WebSocket while silently dropping an
  * individual subscription during suspension. Reopen these lightweight VM
  * metadata streams whenever the app becomes active, even if the supervisor
@@ -99,10 +81,10 @@ export function resubscribeVmStreamOnApplicationActive<A, E, R>(
  * Agent Stack environment atoms.
  *
  * The registry stream (`vmAgent.subscribe`) starts with a full snapshot and can
- * carry live updates. Every VM stream can also request a resync when a slow
+ * carry live updates. Every agent stream can also request a resync when a slow
  * remote client falls behind, so each one reopens the cold RPC stream and waits
- * for its next authoritative snapshot/control state. Lifecycle mutations are
- * serialized per agent so a rapid start/stop/delete can't race.
+ * for its next authoritative snapshot. Lifecycle mutations are serialized per
+ * agent so a rapid create/delete can't race.
  */
 export function createVmAgentEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -124,22 +106,6 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       transform: (stream) =>
         resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)).pipe(
           Stream.scan(INITIAL_AGENT_REGISTRY_VIEW, applyVmAgentRegistryEvent),
-        ),
-    }),
-    screen: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:vm-agents:screen",
-      tag: WS_METHODS.vmAgentSubscribeScreen,
-      // The screen is a live view, not cached data: drop it as soon as nobody
-      // is watching so the server can wind the frame pump down.
-      idleTtlMs: 0,
-      transform: (stream) =>
-        resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)).pipe(
-          Stream.scan(INITIAL_SCREEN_VIEW, (view: VmScreenView, item): VmScreenView => {
-            if (item.type === "frame") return { frame: item, controlMode: view.controlMode };
-            if (item.type === "control")
-              return { frame: view.frame, controlMode: item.controlMode };
-            return view;
-          }),
         ),
     }),
     workspace: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
@@ -186,31 +152,6 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vmAgentDelete,
       scheduler: lifecycleScheduler,
       concurrency: perAgentSerial,
-    }),
-    start: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:vm-agents:start",
-      tag: WS_METHODS.vmAgentStart,
-      scheduler: lifecycleScheduler,
-      concurrency: perAgentSerial,
-    }),
-    stop: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:vm-agents:stop",
-      tag: WS_METHODS.vmAgentStop,
-      scheduler: lifecycleScheduler,
-      concurrency: perAgentSerial,
-    }),
-    setControlMode: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:vm-agents:set-control-mode",
-      tag: WS_METHODS.vmAgentSetControlMode,
-      scheduler: lifecycleScheduler,
-      concurrency: perAgentSerial,
-    }),
-    // Takeover input is high-frequency and fire-and-forget: no per-agent
-    // serialization (that would queue pointer moves behind each other and lag),
-    // and the WS transport already preserves order.
-    sendInput: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:vm-agents:send-input",
-      tag: WS_METHODS.vmAgentSendInput,
     }),
     createTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:task-create",

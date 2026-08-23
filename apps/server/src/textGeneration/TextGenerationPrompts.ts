@@ -226,7 +226,7 @@ export interface VmAgentTaskPromptInput {
 
 export function buildVmAgentTaskPrompt(input: VmAgentTaskPromptInput) {
   const prompt = [
-    "You design one durable automation task for a custom agent that owns a persistent computer.",
+    "You design one durable automation task for a custom agent that works in a persistent browser.",
     "Return a JSON object with keys: title, prompt, schedule, completionCriteria, notificationPolicy.",
     "",
     `Agent: ${input.agentName}`,

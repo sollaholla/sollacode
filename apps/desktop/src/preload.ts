@@ -212,8 +212,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, { tabId }),
     clearCookies: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_COOKIES_CHANNEL),
     clearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
-    getPreviewConfig: (environmentId) =>
-      ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, { environmentId }),
+    getPreviewConfig: (environmentId, threadId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, {
+        environmentId,
+        ...(threadId ? { threadId } : {}),
+      }),
     setAnnotationTheme: (theme) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL, { theme }),
     pickElement: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, { tabId }),

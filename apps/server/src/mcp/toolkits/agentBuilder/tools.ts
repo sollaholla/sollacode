@@ -11,7 +11,7 @@ import { AgentBuilderError, AgentBuilderInput, AgentBuilderResult } from "./type
 
 export const AgentBuilderTool = Tool.make("agent_builder", {
   description:
-    "Design and manage custom agents end to end from this Agent Builder chat. create_agent makes a named agent with its own persistent computer and dedicated chat; then configure everything it has: its chat's model and access (configure_agent_chat), scheduled or manual tasks with full prompts, criteria, schedules and notification policies (create_task/update_task/delete_task/run_task_now), notification preferences, and its structured artifact (define_artifact). start_agent/stop_agent control its computer; get_agent returns the full picture to verify against. delete_agent destroys the agent and requires confirmName to equal its name exactly. Act as the user's pen: what you create is live immediately, so read back with get_agent and report what you built.",
+    "Design and manage custom agents end to end from this Agent Builder chat. create_agent makes a named agent with a dedicated chat whose collaborative browser keeps its own persistent logins; then configure everything it has: its chat's model and access (configure_agent_chat), scheduled or manual tasks with full prompts, criteria, schedules and notification policies (create_task/update_task/delete_task/run_task_now), notification preferences, and its structured artifact (define_artifact). get_agent returns the full picture to verify against. delete_agent destroys the agent and requires confirmName to equal its name exactly. Act as the user's pen: what you create is live immediately, so read back with get_agent and report what you built.",
   parameters: AgentBuilderInput,
   success: AgentBuilderResult,
   failure: AgentBuilderError,

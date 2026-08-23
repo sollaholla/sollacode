@@ -105,6 +105,22 @@ function startsWithBytes(bytes: Uint8Array, signature: ReadonlyArray<number>, of
   return signature.every((value, index) => bytes[offset + index] === value);
 }
 
+const TEXTUAL_CONTENT_TYPE_PATTERN =
+  /^\s*(?:text\/|application\/(?:json|xml|javascript|ecmascript)|image\/svg\+xml)/i;
+
+/**
+ * Artifact publishes are declared UTF-8, but manifests record bare media
+ * types ("text/markdown"). Browsers default charset-less text responses to
+ * windows-1252, turning em dashes and curly quotes into mojibake, so declare
+ * the charset on every textual artifact response.
+ */
+export function ensureUtf8Charset(contentType: string): string {
+  if (contentType.toLowerCase().includes("charset=")) return contentType;
+  return TEXTUAL_CONTENT_TYPE_PATTERN.test(contentType)
+    ? `${contentType}; charset=utf-8`
+    : contentType;
+}
+
 export function detectWorkspaceRasterMimeType(bytes: Uint8Array): WorkspaceRasterMimeType | null {
   if (startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
     return "image/png";
@@ -796,7 +812,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
           kind: "file",
           path: artifactFile,
           artifact: true,
-          contentType: artifactContentType,
+          contentType: ensureUtf8Charset(artifactContentType),
         } satisfies ResolvedAsset)
       : null;
   }
