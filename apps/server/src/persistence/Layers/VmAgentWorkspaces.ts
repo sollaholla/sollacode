@@ -409,10 +409,15 @@ const make = Effect.gen(function* () {
       messageId: VmAgentTaskRun.fields.messageId,
       startedAt: VmAgentTaskRun.fields.scheduledFor,
     }),
+    // 'running' is included so a stalled-dispatch retry restarts the stall
+    // clock: with only queued/booting matched, a retry was a silent no-op on
+    // started_at, the next drain tick still saw the run stalled, and the whole
+    // retry budget burned in consecutive ticks seconds apart. Terminal states
+    // stay excluded so a finished run can never regress to running.
     execute: ({ runId, messageId, startedAt }) => sql`
       UPDATE vm_agent_task_runs
       SET status = 'running', message_id = ${messageId}, started_at = ${startedAt}, updated_at = ${startedAt}
-      WHERE run_id = ${runId} AND status IN ('queued', 'booting')
+      WHERE run_id = ${runId} AND status IN ('queued', 'booting', 'running')
     `,
   });
 

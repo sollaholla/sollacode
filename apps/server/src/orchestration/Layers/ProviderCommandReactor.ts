@@ -88,6 +88,7 @@ import {
   activeTurnWorkSourceId,
   agentAutoResumeIds,
   agentContinuationShouldAwaitBackgroundTask,
+  isAgentAutoResumeMessageId,
   isControlOnlyAgentTurn,
   shouldAutoContinueCompletedAgentTurn,
   startupAutoResumeIds,
@@ -170,7 +171,6 @@ const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
-const AGENT_AUTO_RESUME_MESSAGE_PREFIX = "agent-auto-resume-message:";
 /** Baseline (pre-server-loop) runaway budget: continuations without any real user input. */
 const AGENT_LOOP_MAX_CONSECUTIVE_CONTINUATIONS = 50;
 
@@ -1265,10 +1265,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // Durable Agent continuation owns delivery of this synthetic prompt. The
       // command still projects the collapsed UI chip, but replaying the command
       // must never launch a second provider turn through the hot event reactor.
-      if (
-        message.inputOrigin === "agent-loop" &&
-        String(message.id).startsWith(AGENT_AUTO_RESUME_MESSAGE_PREFIX)
-      ) {
+      if (message.inputOrigin === "agent-loop" && isAgentAutoResumeMessageId(String(message.id))) {
         yield* threadWorkScheduler.wake(
           thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
         );
