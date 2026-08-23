@@ -68,6 +68,7 @@ import Migration0052 from "./Migrations/052_BackfillStandardVmScope.ts";
 import Migration0053 from "./Migrations/053_VmAgentCollaboration.ts";
 import Migration0054 from "./Migrations/054_ThreadArtifacts.ts";
 import Migration0055 from "./Migrations/055_RetireUnschedulableOneTimeTasks.ts";
+import Migration0056 from "./Migrations/056_VmAgentBlockers.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -135,6 +136,7 @@ export const migrationEntries = [
   [53, "VmAgentCollaboration", Migration0053],
   [54, "ThreadArtifacts", Migration0054],
   [55, "RetireUnschedulableOneTimeTasks", Migration0055],
+  [56, "VmAgentBlockers", Migration0056],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

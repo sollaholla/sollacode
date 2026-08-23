@@ -2787,6 +2787,18 @@ const makeWsRpcLayer = (
             vmAgentWorkspace.markNotificationRead(input.vmAgentId, input.notificationId),
             { "rpc.aggregate": "vm-workspace" },
           ),
+        [WS_METHODS.vmAgentBlockerResolve]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentBlockerResolve,
+            vmAgentWorkspace
+              .resolveBlocker({
+                vmAgentId: input.vmAgentId,
+                blockerId: input.blockerId,
+                resolvedBy: "user",
+              })
+              .pipe(Effect.asVoid),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
         [WS_METHODS.vmAgentNotificationPreferencesUpdate]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentNotificationPreferencesUpdate,

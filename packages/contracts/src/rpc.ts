@@ -118,6 +118,7 @@ import {
 import {
   VmAgent,
   VmAgentNotificationPreferences,
+  VmAgentBlockerRef,
   VmAgentNotificationPreferencesInput,
   VmAgentNotificationRef,
   VmAgentCreateInput,
@@ -316,6 +317,7 @@ export const WS_METHODS = {
   vmAgentTaskRunNow: "vmAgent.task.runNow",
   vmAgentTaskGeneratePrompt: "vmAgent.task.generatePrompt",
   vmAgentNotificationMarkRead: "vmAgent.notification.markRead",
+  vmAgentBlockerResolve: "vmAgent.blocker.resolve",
   vmAgentNotificationPreferencesUpdate: "vmAgent.notification.preferences.update",
   vmAgentCollaborationSubscribe: "vmAgent.collaboration.subscribe",
   vmAgentCollaborationGet: "vmAgent.collaboration.get",
@@ -971,6 +973,11 @@ export const WsVmAgentNotificationMarkReadRpc = Rpc.make(WS_METHODS.vmAgentNotif
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
 });
 
+export const WsVmAgentBlockerResolveRpc = Rpc.make(WS_METHODS.vmAgentBlockerResolve, {
+  payload: VmAgentBlockerRef,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
 export const WsVmAgentNotificationPreferencesUpdateRpc = Rpc.make(
   WS_METHODS.vmAgentNotificationPreferencesUpdate,
   {
@@ -1311,6 +1318,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentTaskRunNowRpc,
   WsVmAgentTaskGeneratePromptRpc,
   WsVmAgentNotificationMarkReadRpc,
+  WsVmAgentBlockerResolveRpc,
   WsVmAgentNotificationPreferencesUpdateRpc,
   WsVmAgentCollaborationSubscribeRpc,
   WsVmAgentCollaborationGetRpc,

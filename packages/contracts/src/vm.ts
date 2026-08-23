@@ -331,6 +331,11 @@ export const VmAgentNotificationId = TrimmedNonEmptyString.check(Schema.isMaxLen
 );
 export type VmAgentNotificationId = typeof VmAgentNotificationId.Type;
 
+export const VmAgentBlockerId = TrimmedNonEmptyString.check(Schema.isMaxLength(128)).pipe(
+  Schema.brand("VmAgentBlockerId"),
+);
+export type VmAgentBlockerId = typeof VmAgentBlockerId.Type;
+
 export const VmAgentTaskStatus = Schema.Literals(["draft", "active", "paused", "completed"]);
 export type VmAgentTaskStatus = typeof VmAgentTaskStatus.Type;
 
@@ -504,6 +509,28 @@ export const VmAgentNotificationPreferences = Schema.Struct({
 });
 export type VmAgentNotificationPreferences = typeof VmAgentNotificationPreferences.Type;
 
+/**
+ * A standing "waiting on you" request the agent raised because its work is
+ * blocked on something only the user can do — a login, a CAPTCHA, a
+ * permission grant, a purchase decision. Unlike prose in the chat (which
+ * scrolls away when the turn ends), a blocker persists until one side
+ * resolves it: the user from the workspace UI, or the agent once a later run
+ * finds the path clear.
+ */
+export const VmAgentBlocker = Schema.Struct({
+  blockerId: VmAgentBlockerId,
+  vmAgentId: VmAgentId,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  detail: Schema.String.check(Schema.isMaxLength(4_000)),
+  /** Where the user should go to unblock, when there is a single place. */
+  url: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  resolvedAt: Schema.NullOr(IsoDateTime),
+  resolvedBy: Schema.NullOr(Schema.Literals(["user", "agent"])),
+});
+export type VmAgentBlocker = typeof VmAgentBlocker.Type;
+
 export const VmAgentWorkspaceSnapshot = Schema.Struct({
   type: Schema.Literal("snapshot"),
   vmAgentId: VmAgentId,
@@ -512,6 +539,7 @@ export const VmAgentWorkspaceSnapshot = Schema.Struct({
   artifact: Schema.NullOr(VmAgentArtifact),
   notifications: Schema.Array(VmAgentNotification),
   notificationPreferences: VmAgentNotificationPreferences,
+  blockers: Schema.Array(VmAgentBlocker),
 });
 export type VmAgentWorkspaceSnapshot = typeof VmAgentWorkspaceSnapshot.Type;
 
@@ -857,6 +885,12 @@ export const VmAgentNotificationRef = Schema.Struct({
   notificationId: VmAgentNotificationId,
 });
 export type VmAgentNotificationRef = Schema.Codec.Encoded<typeof VmAgentNotificationRef>;
+
+export const VmAgentBlockerRef = Schema.Struct({
+  vmAgentId: VmAgentId,
+  blockerId: VmAgentBlockerId,
+});
+export type VmAgentBlockerRef = Schema.Codec.Encoded<typeof VmAgentBlockerRef>;
 
 export const VmAgentNotificationPreferencesInput = Schema.Struct({
   vmAgentId: VmAgentId,

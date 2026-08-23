@@ -248,6 +248,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       scheduler: workspaceScheduler,
       concurrency: perAgentSerial,
     }),
+    resolveBlocker: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:blocker-resolve",
+      tag: WS_METHODS.vmAgentBlockerResolve,
+      scheduler: workspaceScheduler,
+      concurrency: perAgentSerial,
+    }),
     updateNotificationPreferences: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:notification-preferences",
       tag: WS_METHODS.vmAgentNotificationPreferencesUpdate,

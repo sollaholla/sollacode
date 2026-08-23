@@ -4,6 +4,8 @@ import type {
   VmAgentArtifact,
   VmAgentArtifactDefinition,
   VmAgentArtifactId,
+  VmAgentBlocker,
+  VmAgentBlockerId,
   VmAgentId,
   VmAgentNotificationId,
   VmAgentNotificationKind,
@@ -110,6 +112,22 @@ export interface UpsertVmAgentArtifactInput {
   readonly updatedAt: IsoDateTime;
 }
 
+export interface RaiseVmAgentBlockerInput {
+  readonly blockerId: VmAgentBlockerId;
+  readonly vmAgentId: VmAgentId;
+  readonly title: string;
+  readonly detail: string;
+  readonly url: string | null;
+  readonly now: IsoDateTime;
+}
+
+export interface ResolveVmAgentBlockerInput {
+  readonly vmAgentId: VmAgentId;
+  readonly blockerId: VmAgentBlockerId;
+  readonly resolvedBy: "user" | "agent";
+  readonly now: IsoDateTime;
+}
+
 export interface VmAgentWorkspaceStoreShape {
   readonly ensureDefaults: (input: {
     readonly vmAgentId: VmAgentId;
@@ -172,6 +190,18 @@ export interface VmAgentWorkspaceStoreShape {
   readonly upsertArtifact: (
     input: UpsertVmAgentArtifactInput,
   ) => Effect.Effect<VmAgentArtifact, ProjectionRepositoryError>;
+  /**
+   * Create or refresh a standing "waiting on you" request. An open blocker
+   * with the same title is updated in place (agents re-report on every
+   * blocked run), so the user sees one card per distinct obstacle.
+   */
+  readonly raiseBlocker: (
+    input: RaiseVmAgentBlockerInput,
+  ) => Effect.Effect<VmAgentBlocker, ProjectionRepositoryError>;
+  /** None when the blocker does not exist or is already resolved. */
+  readonly resolveBlocker: (
+    input: ResolveVmAgentBlockerInput,
+  ) => Effect.Effect<Option.Option<VmAgentBlocker>, ProjectionRepositoryError>;
 }
 
 export class VmAgentWorkspaceStore extends Context.Service<

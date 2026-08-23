@@ -31,6 +31,7 @@ import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import {
   AgentArtifactPanel,
+  AgentBlockerBanner,
   AgentNotificationsPanel,
   AgentTasksPanel,
   useAgentSystemNotifications,
@@ -222,6 +223,7 @@ function AgentWorkspaceResolved(props: {
               flexShrink: isCompact ? 1 : 0,
             }}
           >
+            <AgentBlockerBanner environmentId={environmentId} workspace={workspace} />
             {view === "chat" ? (
               <AgentChatSurface environmentId={environmentId} threadId={agent.threadId} />
             ) : view === "collaborate" ? (

@@ -188,6 +188,7 @@ it.effect("targets agents by exact name only, case-insensitively", () =>
                 runs: [],
                 artifact: null,
                 notifications: [],
+                blockers: [],
                 notificationPreferences: {
                   vmAgentId: agent.vmAgentId,
                   enabled: true,

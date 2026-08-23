@@ -8,7 +8,7 @@ import { AgentWorkspaceError, AgentWorkspaceInput, AgentWorkspaceResult } from "
 
 export const AgentWorkspaceTool = Tool.make("agent_workspace", {
   description:
-    "Manage your durable custom-agent workspace. You can list tasks, propose or create one-off work, update or complete tasks, notify the user, and define your single safe structured artifact. Recurring tasks you create require user approval before they run. The server derives your agent identity from this chat; you cannot target another agent.",
+    "Manage your durable custom-agent workspace. You can list tasks, propose or create one-off work, update or complete tasks, notify the user, report and resolve blockers, and define your single safe structured artifact. When your work is blocked on something only the user can do — a login, a CAPTCHA, a permission grant, a purchase — use report_blocker instead of only describing it in prose: it keeps a standing, visible request in front of the user that persists across turns and scheduled runs until resolved. Check the workspace snapshot's open blockers at the start of a run, retest whether each still blocks you, and resolve_blocker the ones that no longer do. Recurring tasks you create require user approval before they run. The server derives your agent identity from this chat; you cannot target another agent.",
   parameters: AgentWorkspaceInput,
   success: AgentWorkspaceResult,
   failure: AgentWorkspaceError,

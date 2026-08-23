@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
+  VmAgentBlockerId,
   VmAgentId,
   VmAgentTaskId,
   VmId,
@@ -70,6 +71,8 @@ const invocation = (
 const makeHarness = (boundAgent: VmAgent | null = agent) => {
   const created: CreateWorkspaceTaskInput[] = [];
   const updated: UpdateWorkspaceTaskInput[] = [];
+  const raised: Array<{ readonly title: string; readonly detail: string }> = [];
+  const resolvedIds: string[] = [];
   let wakeCount = 0;
   const storeLayer = Layer.mock(VmAgentStore)({
     getByThreadId: () => Effect.succeed(Option.fromNullishOr(boundAgent)),
@@ -83,6 +86,7 @@ const makeHarness = (boundAgent: VmAgent | null = agent) => {
         runs: [],
         artifact: null,
         notifications: [],
+        blockers: [],
         notificationPreferences: {
           vmAgentId,
           enabled: true,
@@ -114,6 +118,38 @@ const makeHarness = (boundAgent: VmAgent | null = agent) => {
         };
       }),
     notify: () => Effect.succeed(false),
+    raiseBlocker: (input) =>
+      Effect.sync(() => {
+        raised.push(input);
+        return {
+          blockerId: VmAgentBlockerId.make("blocker-raised"),
+          vmAgentId: input.vmAgentId,
+          title: input.title,
+          detail: input.detail,
+          url: input.url ?? null,
+          createdAt: iso,
+          updatedAt: iso,
+          resolvedAt: null,
+          resolvedBy: null,
+        };
+      }),
+    resolveBlocker: (input) =>
+      Effect.sync(() => {
+        resolvedIds.push(input.blockerId);
+        return input.blockerId === "blocker-raised"
+          ? Option.some({
+              blockerId: input.blockerId,
+              vmAgentId: input.vmAgentId,
+              title: "Google sign-in needs you",
+              detail: "reCAPTCHA",
+              url: null,
+              createdAt: iso,
+              updatedAt: iso,
+              resolvedAt: iso,
+              resolvedBy: "agent" as const,
+            })
+          : Option.none();
+      }),
     updateTask: (input) =>
       Effect.sync(() => {
         updated.push(input);
@@ -135,6 +171,8 @@ const makeHarness = (boundAgent: VmAgent | null = agent) => {
   return {
     created,
     updated,
+    raised,
+    resolvedIds,
     wakeCount: () => wakeCount,
     layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer),
   };
@@ -158,6 +196,52 @@ it.effect("rejects non-VM callers before resolving an agent", () =>
       run(handleAgentWorkspace({ action: "list_tasks" }), harness.layer, new Set(["history"])),
     );
     assert.strictEqual(error._tag, "AgentWorkspaceCapabilityUnavailableError");
+  }),
+);
+
+it.effect("report_blocker records a standing request and echoes the blocker", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const result = yield* run(
+      handleAgentWorkspace({
+        action: "report_blocker",
+        title: "Google sign-in needs you",
+        blockerDetail: "Studio shows a reCAPTCHA only a human can pass.",
+        blockerUrl: "https://studio.youtube.com/",
+      }),
+      harness.layer,
+    );
+    assert.strictEqual(harness.raised.length, 1);
+    assert.strictEqual(result.blocker?.blockerId, "blocker-raised");
+    assert.include(result.status, "standing request");
+  }),
+);
+
+it.effect("report_blocker refuses a report with no detail to show the user", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const error = yield* Effect.flip(
+      run(handleAgentWorkspace({ action: "report_blocker", title: "Blocked" }), harness.layer),
+    );
+    assert.strictEqual(error._tag, "AgentWorkspaceInvalidInputError");
+    assert.strictEqual(harness.raised.length, 0);
+  }),
+);
+
+it.effect("resolve_blocker reports an already-resolved id as a no-op, not an error", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const resolved = yield* run(
+      handleAgentWorkspace({ action: "resolve_blocker", blockerId: "blocker-raised" }),
+      harness.layer,
+    );
+    assert.strictEqual(resolved.blocker?.resolvedBy, "agent");
+    const missing = yield* run(
+      handleAgentWorkspace({ action: "resolve_blocker", blockerId: "blocker-gone" }),
+      harness.layer,
+    );
+    assert.include(missing.status, "already be resolved");
+    assert.deepStrictEqual(harness.resolvedIds, ["blocker-raised", "blocker-gone"]);
   }),
 );
 

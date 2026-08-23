@@ -3,6 +3,7 @@ import {
   ThreadId,
   type VmAgent,
   VmAgentArtifactId,
+  VmAgentBlockerId,
   VmAgentId,
   VmAgentNotificationId,
   type VmAgentTask,
@@ -416,6 +417,73 @@ it.layer(stores())("VmAgentWorkspaceStore: retention policy", (it) => {
       // it silently is a behaviour change, not a refactor.
       assert.strictEqual(RUN_HISTORY_RETENTION_DAYS, 14);
       assert.strictEqual(MISSED_OCCURRENCE_ATTEMPTS, 3);
+    }),
+  );
+});
+
+it.layer(stores())("VmAgentWorkspaceStore: blockers", (it) => {
+  it.effect("raises once per obstacle, refreshes on re-report, resolves once", () =>
+    Effect.gen(function* () {
+      const store = yield* VmAgentWorkspaceStore;
+      yield* givenTask(null, createdAt);
+
+      const first = yield* store.raiseBlocker({
+        blockerId: VmAgentBlockerId.make("blocker-1"),
+        vmAgentId,
+        title: "Google sign-in needs you",
+        detail: "Studio shows a reCAPTCHA only a human can pass.",
+        url: "https://studio.youtube.com/",
+        now: "2026-08-23T06:00:00.000Z",
+      });
+      assert.strictEqual(first.blockerId, "blocker-1");
+      assert.isNull(first.resolvedAt);
+
+      // The agent re-reports the same obstacle on its next run: same card,
+      // fresher words — never a second card for the user to wade through.
+      const refreshed = yield* store.raiseBlocker({
+        blockerId: VmAgentBlockerId.make("blocker-2"),
+        vmAgentId,
+        title: "Google sign-in needs you",
+        detail: "Still blocked at the reCAPTCHA.",
+        url: null,
+        now: "2026-08-23T07:00:00.000Z",
+      });
+      assert.strictEqual(refreshed.blockerId, "blocker-1");
+      assert.strictEqual(refreshed.detail, "Still blocked at the reCAPTCHA.");
+
+      const snapshot = yield* store.snapshot(vmAgentId);
+      assert.strictEqual(snapshot.blockers.length, 1);
+
+      const resolved = yield* store.resolveBlocker({
+        vmAgentId,
+        blockerId: first.blockerId,
+        resolvedBy: "user",
+        now: "2026-08-23T08:00:00.000Z",
+      });
+      assert.isTrue(Option.isSome(resolved));
+      assert.strictEqual(Option.getOrThrow(resolved).resolvedBy, "user");
+
+      // Resolving again is a no-op, not an error — both sides may race.
+      const again = yield* store.resolveBlocker({
+        vmAgentId,
+        blockerId: first.blockerId,
+        resolvedBy: "agent",
+        now: "2026-08-23T09:00:00.000Z",
+      });
+      assert.isTrue(Option.isNone(again));
+
+      // A new report after resolution is a new obstacle, not a refresh of
+      // the resolved one.
+      const reopened = yield* store.raiseBlocker({
+        blockerId: VmAgentBlockerId.make("blocker-3"),
+        vmAgentId,
+        title: "Google sign-in needs you",
+        detail: "Signed out again after the password change.",
+        url: null,
+        now: "2026-08-23T10:00:00.000Z",
+      });
+      assert.strictEqual(reopened.blockerId, "blocker-3");
+      assert.isNull(reopened.resolvedAt);
     }),
   );
 });
