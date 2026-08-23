@@ -7,6 +7,7 @@ import {
   ASSISTANT_AUDIO_GRACE_MS,
   createVoiceSession,
   isAssistantAudible,
+  PLAYBACK_DRAIN_GRACE_MS,
   type VoiceSessionOptions,
   type VoiceSessionState,
 } from "./realtimeSession";
@@ -1673,6 +1674,8 @@ function installGrokVoiceGlobals(track: ReturnType<typeof makeTrack>) {
   const playbackSources: Array<{
     start: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    /** Fires the source's `ended` event, as the platform does when it drains. */
+    end: () => void;
   }> = [];
   vi.stubGlobal(
     "AudioContext",
@@ -1711,12 +1714,22 @@ function installGrokVoiceGlobals(track: ReturnType<typeof makeTrack>) {
         copyToChannel: () => undefined,
       });
       this.createBufferSource = () => {
+        // `ended` is real here. The session returns to listening only when
+        // every queued source has fired it, so a mock that silently swallowed
+        // the listener made the whole drain path untestable — and the paths
+        // that never reach it indistinguishable from the ones that do.
+        const listeners: Array<() => void> = [];
         const source = {
           buffer: null,
           connect: () => undefined,
-          addEventListener: () => undefined,
+          addEventListener: (type: string, listener: () => void) => {
+            if (type === "ended") listeners.push(listener);
+          },
           start: vi.fn(),
           stop: vi.fn(),
+          end: () => {
+            for (const listener of [...listeners]) listener();
+          },
         };
         playbackSources.push(source);
         return source;
@@ -1981,5 +1994,119 @@ describe("Grok Voice capture and turn close", () => {
     });
     expect(tones.length - before).toBe(0);
     session.stop();
+  });
+});
+
+describe("returning from speaking", () => {
+  /** Plays one chunk of assistant audio and asserts the session is speaking. */
+  const beginSpeaking = (
+    socket: { fire: (type: string, event: unknown) => void },
+    session: { readonly state: VoiceSessionState },
+  ) => {
+    socket.fire("message", { data: JSON.stringify({ type: "response.created" }) });
+    socket.fire("message", {
+      data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+    });
+    expect(session.state).toBe("speaking");
+  };
+
+  it("returns to listening once the queued audio has played out", async () => {
+    const { socket, session, playbackSources } = await openGrokSession();
+    beginSpeaking(socket, session);
+    socket.fire("message", { data: JSON.stringify({ type: "response.output_audio.done" }) });
+    socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+
+    // Still speaking: the server has finished generating, but the user has not
+    // finished hearing it.
+    expect(session.state).toBe("speaking");
+    playbackSources[0]?.end();
+    expect(session.state).toBe("listening");
+  });
+
+  it("returns to listening when the audio-done frame never arrives", async () => {
+    // A response that ends without one — cancelled, errored, or simply dropped
+    // — used to leave the queue waiting to be told no more audio was coming.
+    // It drained to empty and the session sat on "Speaking" for good.
+    const { socket, session, playbackSources } = await openGrokSession();
+    beginSpeaking(socket, session);
+    socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+
+    playbackSources[0]?.end();
+    expect(session.state).toBe("listening");
+  });
+
+  it("returns to listening when a stray delta lands after the audio-done frame", async () => {
+    // Each delta clears the done flag so a second response can reuse the queue.
+    // One arriving after this response's done frame left the flag clear with
+    // nothing left to set it again.
+    const { socket, session, playbackSources } = await openGrokSession();
+    beginSpeaking(socket, session);
+    socket.fire("message", { data: JSON.stringify({ type: "response.output_audio.done" }) });
+    socket.fire("message", {
+      data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+    });
+    socket.fire("message", { data: JSON.stringify({ type: "response.done" }) });
+
+    for (const source of playbackSources) source.end();
+    expect(session.state).toBe("listening");
+  });
+
+  it("gives up on playback that stops draining, and hears the user again", async () => {
+    // The phone locked, took a call, or changed output route: the AudioContext
+    // is suspended, so buffers scheduled into it never reach their end time and
+    // never report `ended`. Nothing else reopens the microphone, so this is the
+    // shape the user sees — "Speaking", deaf, with the reply long finished.
+    vi.useFakeTimers();
+    try {
+      const { socket, session, processors } = await openGrokSession(makeTrack(), undefined, {
+        interruptWhileSpeaking: false,
+      });
+      const processor = processors[0];
+      if (processor === undefined) throw new Error("expected Grok capture");
+      const speak = () =>
+        processor.onaudioprocess?.({
+          inputBuffer: { getChannelData: () => new Float32Array(8).fill(0.2) },
+        });
+
+      beginSpeaking(socket, session);
+      socket.fire("message", { data: JSON.stringify({ type: "response.output_audio.done" }) });
+      // Half duplex stops uploading capture for the duration of the reply.
+      socket.send.mockClear();
+      speak();
+      expect(sentSocketTypes(socket)).not.toContain("input_audio_buffer.append");
+
+      // No source ever fires `ended`.
+      await vi.advanceTimersByTimeAsync(PLAYBACK_DRAIN_GRACE_MS + 1_000);
+
+      expect(session.state).toBe("listening");
+      socket.send.mockClear();
+      speak();
+      expect(sentSocketTypes(socket)).toContain("input_audio_buffer.append");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not cut playback short while chunks are still arriving", async () => {
+    // The deadline is a last resort. A reply that keeps streaming must keep
+    // pushing it out, or the watchdog becomes the thing that truncates replies.
+    vi.useFakeTimers();
+    try {
+      const { socket, session } = await openGrokSession();
+      beginSpeaking(socket, session);
+
+      for (let chunk = 0; chunk < 5; chunk += 1) {
+        await vi.advanceTimersByTimeAsync(PLAYBACK_DRAIN_GRACE_MS - 200);
+        // Checked in the gap, before the next chunk: a delta re-enters
+        // "speaking" by itself, so asserting after one would hide a deadline
+        // that had already fired and dropped the session back to listening.
+        expect(session.state).toBe("speaking");
+        socket.fire("message", {
+          data: JSON.stringify({ type: "response.output_audio.delta", delta: "AAAAAA==" }),
+        });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

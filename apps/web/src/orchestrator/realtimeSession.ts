@@ -113,6 +113,33 @@ export function isAssistantAudible(input: {
  * Long enough that the ack always wins on a working connection, short enough
  * that a server which stops sending it costs a pause rather than a dead mic.
  */
+/**
+ * Slack over the audio still queued before playback is declared broken.
+ *
+ * The session leaves "speaking" when every scheduled buffer reports `ended`.
+ * That event comes from the audio hardware, and on a phone it simply stops
+ * arriving: locking the screen, taking a call, or switching output route
+ * suspends the AudioContext, and buffers scheduled into a suspended context
+ * never reach their end time. Nothing else re-opens the microphone, so the
+ * session sits on "Speaking" — deaf, with the reply already finished — until
+ * it is stopped and started again.
+ *
+ * The deadline is computed from the queue rather than fixed, because we know
+ * exactly how much audio is scheduled; this is only the margin on top.
+ */
+export const PLAYBACK_DRAIN_GRACE_MS = 2_000;
+
+/**
+ * Longest playback may continue after the server says the response is done.
+ *
+ * For the WebRTC transport the audio is on a media track we do not schedule,
+ * so there is no queue length to compute a deadline from — only the knowledge
+ * that whatever is still buffered when generation completes is measured in
+ * seconds. Generous on purpose: firing early reopens the microphone into the
+ * assistant's own voice, which is the failure this whole path exists to avoid.
+ */
+const TRACK_DRAIN_LIMIT_MS = 30_000;
+
 const SESSION_CONFIGURE_TIMEOUT_MS = 3_000;
 /**
  * Longest the waiting tone may sound before the wait is treated as broken.
@@ -352,6 +379,8 @@ export function createVoiceSession(
   let nextPlayTime = 0;
   const playbackSources: AudioBufferSourceNode[] = [];
   let audioGenerationDone = false;
+  /** See {@link PLAYBACK_DRAIN_GRACE_MS}. */
+  let playbackWatchdog: ReturnType<typeof setTimeout> | null = null;
   let onPlaybackDrained = () => undefined;
   let captureResampler: ReturnType<typeof createStreamingLinearResampler> | null = null;
   let voiceProvider: OrchestratorVoiceProvider = "openai";
@@ -903,8 +932,49 @@ export function createVoiceSession(
     }
   };
 
+  /**
+   * Forces the drain when the events that should have ended playback did not.
+   *
+   * Only ever a last resort: it stops whatever is still scheduled and takes
+   * the session back to listening. Being a second early is a worse outcome
+   * than being a second late, which is why the deadlines that arm it are
+   * padded rather than tight.
+   */
+  const abandonStuckPlayback = () => {
+    playbackWatchdog = null;
+    if (!audioPlaying) return;
+    stopPlayback();
+    audioGenerationDone = true;
+    onPlaybackDrained();
+  };
+
+  const clearPlaybackWatchdog = () => {
+    if (playbackWatchdog === null) return;
+    clearTimeout(playbackWatchdog);
+    playbackWatchdog = null;
+  };
+
+  /**
+   * Arms the drain deadline for the audio currently scheduled.
+   *
+   * Re-armed from scratch on every chunk, so a reply that keeps arriving keeps
+   * pushing the deadline out and only a queue that stops draining reaches it.
+   */
+  const armPlaybackWatchdog = (limitMs: number) => {
+    clearPlaybackWatchdog();
+    if (!audioPlaying) return;
+    playbackWatchdog = setTimeout(abandonStuckPlayback, Math.max(limitMs, 0));
+  };
+
+  /** Wall-clock milliseconds of audio still scheduled on the PCM queue. */
+  const queuedPlaybackMs = () => {
+    if (audioContext === null) return 0;
+    return Math.max(0, (nextPlayTime - audioContext.currentTime) * 1_000);
+  };
+
   /** One transition for WebRTC buffer events and Grok's local PCM queue. */
   onPlaybackDrained = () => {
+    clearPlaybackWatchdog();
     if (!audioPlaying) return;
     audioPlaying = false;
     // The "let me check that…" pause begins exactly here. Nothing else
@@ -1557,7 +1627,12 @@ export function createVoiceSession(
         return;
       case "assistant-audio-done":
         audioGenerationDone = true;
-        if (playbackSources.length === 0) onPlaybackDrained();
+        if (playbackSources.length === 0) {
+          onPlaybackDrained();
+          return;
+        }
+        // Nothing more will be queued, so the deadline is now final.
+        armPlaybackWatchdog(queuedPlaybackMs() + PLAYBACK_DRAIN_GRACE_MS);
         return;
       case "speaking-stopped":
         onPlaybackDrained();
@@ -1616,6 +1691,23 @@ export function createVoiceSession(
           if (pendingReplyRequested || pendingAnnouncements.length > 0) {
             flushWhenAudioDrains = true;
           }
+          // It does mean no *further* audio is coming for this response, which
+          // is the only thing the PCM queue was waiting to be told. It used to
+          // learn that solely from `response.output_audio.done`, so a response
+          // that ended without one — cancelled, errored, or with a stray delta
+          // after it that reset the flag — left a queue that drained to empty
+          // and then sat there, mic shut, on "Speaking" for good.
+          if (voiceProvider === "xai") {
+            audioGenerationDone = true;
+            if (playbackSources.length === 0) {
+              onPlaybackDrained();
+              return;
+            }
+            armPlaybackWatchdog(queuedPlaybackMs() + PLAYBACK_DRAIN_GRACE_MS);
+          } else {
+            // No queue to measure on the media-track transport; only a ceiling.
+            armPlaybackWatchdog(TRACK_DRAIN_LIMIT_MS);
+          }
           return;
         }
         // The user asked to be left alone and has now heard the reply that said
@@ -1668,6 +1760,9 @@ export function createVoiceSession(
           if (isHalfDuplex()) setMicrophoneEnabled(false);
           setState("speaking");
         }
+        // Pushed out by every chunk that arrives, so only a queue that stops
+        // draining ever reaches it.
+        armPlaybackWatchdog(queuedPlaybackMs() + PLAYBACK_DRAIN_GRACE_MS);
         return;
       case "ignored":
         return;
@@ -1967,6 +2062,7 @@ export function createVoiceSession(
     clearAnnouncements();
     audioPlaying = false;
     flushWhenAudioDrains = false;
+    clearPlaybackWatchdog();
     clearUtteranceFlush();
     pendingUserUtterance = null;
     lastCommittedUserUtterance = null;
@@ -2078,6 +2174,7 @@ export function createVoiceSession(
       pendingReplyRequested = false;
       audioPlaying = false;
       flushWhenAudioDrains = false;
+      clearPlaybackWatchdog();
       // Cancelling clears the output buffer, which may not emit a stop event.
       if (isHalfDuplex() && configured) setMicrophoneEnabled(true);
       if (state !== "error") setState("listening");
