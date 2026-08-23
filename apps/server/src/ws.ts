@@ -102,11 +102,7 @@ import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
 import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
-import {
-  createAgentBuilderThread,
-  createAgentThread,
-  deleteAgentThread,
-} from "./vm/agentThread.ts";
+import { createAgentThread, deleteAgentThread, openAgentBuilderThread } from "./vm/agentThread.ts";
 import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -2559,13 +2555,13 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "vm" },
           ),
-        [WS_METHODS.vmAgentBuilderCreate]: (input) =>
+        [WS_METHODS.vmAgentBuilderOpen]: () =>
           observeRpcEffect(
-            WS_METHODS.vmAgentBuilderCreate,
-            createAgentBuilderThread(input).pipe(
+            WS_METHODS.vmAgentBuilderOpen,
+            openAgentBuilderThread.pipe(
               Effect.map((threadId) => ({ threadId })),
               Effect.mapError((cause) =>
-                toDispatchCommandError(cause, "The Agent Builder chat could not be started."),
+                toDispatchCommandError(cause, "The Agent Builder chat could not be opened."),
               ),
             ),
             { "rpc.aggregate": "vm" },

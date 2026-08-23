@@ -1,4 +1,5 @@
 import {
+  AGENT_BUILDER_THREAD_ID,
   EventId,
   isOrchestratorProjectId,
   isOrchestratorThreadId,
@@ -480,6 +481,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "The orchestrator thread cannot be deleted.",
         });
       }
+      // Same burn hazard for the singleton Agent Builder chat (exact id only —
+      // legacy per-prompt builder threads stay deletable).
+      if (command.threadId === AGENT_BUILDER_THREAD_ID) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The Agent Builder thread cannot be deleted.",
+        });
+      }
       yield* requireThreadNotDeleted({
         readModel,
         command,
@@ -509,6 +518,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "The orchestrator thread cannot be archived.",
+        });
+      }
+      if (command.threadId === AGENT_BUILDER_THREAD_ID) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The Agent Builder thread cannot be archived.",
         });
       }
       yield* requireThreadNotArchived({

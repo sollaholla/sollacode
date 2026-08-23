@@ -13,7 +13,9 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useUiStateStore } from "../../uiStateStore";
+import { toastManager } from "../ui/toast";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { environmentThreadShells } from "../../state/threads";
 import { vmAgentEnvironment } from "../../state/vmAgents";
@@ -23,7 +25,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useOnScreenKeyboard } from "../../hooks/useOnScreenKeyboard";
 import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
-import { AgentBuilderDialog } from "./AgentBuilderDialog";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
@@ -44,6 +45,35 @@ const STATUS_DOT: Record<VmAgentStatus, string> = {
 
 const AGENT_SECTION_BODY_ID = "agent-stack-sections";
 
+/**
+ * Opens the singleton Agent Builder chat — one persistent thread per host,
+ * created lazily on first click, that designs agents from a single prompt.
+ * A dialog used to collect the prompt and model here; the chat's own composer
+ * already does both, so the button is now just navigation.
+ */
+function useOpenAgentBuilder() {
+  const router = useRouter();
+  const builderOpen = useAtomCommand(vmAgentEnvironment.builderOpen, { reportFailure: false });
+  return useCallback(
+    (environmentId: EnvironmentId) => {
+      void builderOpen({ environmentId, input: {} }).then((result) => {
+        if (result._tag === "Success") {
+          void router.navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId, threadId: result.value.threadId },
+          });
+          return;
+        }
+        toastManager.add({
+          type: "error",
+          title: "The Agent Builder chat could not be opened.",
+        });
+      });
+    },
+    [builderOpen, router],
+  );
+}
+
 export function activeDelegationsForAgent(
   agents: ReadonlyArray<Pick<VmAgentCollaborationAgentSummary, "vmAgentId" | "activeDelegations">>,
   vmAgentId: string,
@@ -63,9 +93,7 @@ export function AgentStackSidebarEntry() {
   const expanded = useUiStateStore((state) => state.agentsSectionExpanded);
   const setExpanded = useUiStateStore((state) => state.setAgentsSectionExpanded);
   const [createForEnvironmentId, setCreateForEnvironmentId] = useState<EnvironmentId | null>(null);
-  const [builderForEnvironmentId, setBuilderForEnvironmentId] = useState<EnvironmentId | null>(
-    null,
-  );
+  const openAgentBuilder = useOpenAgentBuilder();
   const orderedEnvironments = useMemo(() => {
     const entries = environments.map((environment) => ({
       environmentId: environment.environmentId,
@@ -111,7 +139,7 @@ export function AgentStackSidebarEntry() {
         </button>
         {singleEnvironmentId ? (
           <>
-            <BuildAgentButton onClick={() => setBuilderForEnvironmentId(singleEnvironmentId)} />
+            <BuildAgentButton onClick={() => openAgentBuilder(singleEnvironmentId)} />
             <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
           </>
         ) : null}
@@ -131,10 +159,7 @@ export function AgentStackSidebarEntry() {
               onCreateOpenChange={(open) =>
                 setCreateForEnvironmentId(open ? environment.environmentId : null)
               }
-              builderOpen={builderForEnvironmentId === environment.environmentId}
-              onBuilderOpenChange={(open) =>
-                setBuilderForEnvironmentId(open ? environment.environmentId : null)
-              }
+              onOpenBuilder={() => openAgentBuilder(environment.environmentId)}
             />
           ))}
         </div>
@@ -327,8 +352,7 @@ function AgentEnvironmentSection(props: {
   readonly showEnvironmentLabel: boolean;
   readonly createOpen: boolean;
   readonly onCreateOpenChange: (open: boolean) => void;
-  readonly builderOpen: boolean;
-  readonly onBuilderOpenChange: (open: boolean) => void;
+  readonly onOpenBuilder: () => void;
 }) {
   const router = useRouter();
   const environment = useEnvironment(props.environmentId);
@@ -410,7 +434,7 @@ function AgentEnvironmentSection(props: {
             {props.environmentLabel}
           </span>
           <div className="flex shrink-0 items-center">
-            <BuildAgentButton onClick={() => props.onBuilderOpenChange(true)} />
+            <BuildAgentButton onClick={props.onOpenBuilder} />
             <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
           </div>
         </div>
@@ -480,12 +504,6 @@ function AgentEnvironmentSection(props: {
       <CreateAgentDialog
         open={props.createOpen}
         onOpenChange={props.onCreateOpenChange}
-        environmentId={props.environmentId}
-      />
-
-      <AgentBuilderDialog
-        open={props.builderOpen}
-        onOpenChange={props.onBuilderOpenChange}
         environmentId={props.environmentId}
       />
 

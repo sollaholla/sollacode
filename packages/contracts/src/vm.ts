@@ -33,6 +33,17 @@ export const isAgentBuilderThreadId = (threadId: string): boolean =>
   threadId.startsWith(AGENT_BUILDER_THREAD_PREFIX);
 
 /**
+ * The singleton Agent Builder chat.
+ *
+ * One persistent thread — like the orchestrator — that the Agents section's
+ * build button opens. It carries the builder prefix, so the capability grant
+ * needs no extra rule, and its fixed id is what the decider's delete/archive
+ * guards protect (a soft-deleted row would burn the reserved id forever).
+ */
+export const AGENT_BUILDER_THREAD_ID = ThreadId.make("agent-builder:primary");
+export const AGENT_BUILDER_THREAD_TITLE = "Agent Builder";
+
+/**
  * The Agent Stack: named autonomous agents that each own a persistent local
  * virtual machine (full desktop + browser) they control with full permissions.
  *
