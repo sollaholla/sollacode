@@ -19,6 +19,7 @@ import { type VmAgentInput, VmId, type VmPointerButton, VmProviderError } from "
 // @effect-diagnostics nodeBuiltinImport:off - Manages the per-agent browser profile directory.
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -180,6 +181,99 @@ export const applyInput = async (vm: BrowserVm, event: VmAgentInput): Promise<vo
   }
 };
 
+/**
+ * Parses Chromium's `SingletonLock` symlink target, `hostname-pid`.
+ *
+ * The hostname may itself contain dashes, so the pid is whatever follows the
+ * last one. A target that does not parse was not written by a Chromium at all.
+ */
+export const parseSingletonLockTarget = (
+  target: string,
+): { readonly host: string; readonly pid: number } | null => {
+  const separator = target.lastIndexOf("-");
+  if (separator <= 0 || separator === target.length - 1) return null;
+  const pid = Number(target.slice(separator + 1));
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return { host: target.slice(0, separator), pid };
+};
+
+/**
+ * Whether a profile lock belongs to a provably dead owner.
+ *
+ * Only same-host locks whose pid no longer exists are cleared. A live pid is a
+ * genuinely concurrent Chromium, and a foreign host (profile on shared disk)
+ * cannot be checked from here — both keep the lock so the launch still aborts
+ * rather than corrupting the profile.
+ */
+export const shouldClearSingletonLock = (input: {
+  readonly target: string;
+  readonly hostname: string;
+  readonly pidAlive: (pid: number) => boolean;
+}): boolean => {
+  const parsed = parseSingletonLockTarget(input.target);
+  if (parsed === null) return true;
+  if (parsed.host !== input.hostname) return false;
+  return !input.pidAlive(parsed.pid);
+};
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM is "exists, not yours" — alive. Anything else means gone.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * Clears a Chromium profile lock left behind by a dead process.
+ *
+ * `SingletonLock` is a symlink the owning Chromium creates and removes on
+ * clean shutdown. The desktop updater force-kills the server — and with it
+ * every agent's child browser — so after any app update the symlink can still
+ * point at a pid that no longer exists, and the next launch aborts with
+ * "profile is already in use" although nothing is using it. Every agent VM on
+ * the machine then fails to start until someone deletes the file by hand,
+ * which is exactly what happened after the 0.1.203→205 updates.
+ */
+export const clearStaleProfileLock = async (dir: string): Promise<boolean> => {
+  const lockPath = NodePath.join(dir, "SingletonLock");
+  let target: string;
+  try {
+    target = await NodeFSP.readlink(lockPath);
+  } catch {
+    // No lock, or some shape Chromium did not write — nothing to clear.
+    return false;
+  }
+  if (!shouldClearSingletonLock({ target, hostname: NodeOS.hostname(), pidAlive })) {
+    return false;
+  }
+  // The socket and cookie belong to the same dead owner.
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+    await NodeFSP.rm(NodePath.join(dir, name), { force: true }).catch(() => undefined);
+  }
+  return true;
+};
+
+/**
+ * Turns a Playwright launch failure into something a person can read.
+ *
+ * Playwright appends its entire call log — flags, pids, kill attempts — to the
+ * message, and that blob was being stored as the agent's lastError and painted
+ * across the workspace. The first line carries the failure; the rest is
+ * debugging detail that belongs in a log, not a status screen. And with stale
+ * locks now cleared before launch, a ProcessSingleton abort that still happens
+ * means a genuinely live owner, which deserves saying in those words.
+ */
+export const condenseLaunchFailure = (message: string): string => {
+  if (message.includes("ProcessSingleton")) {
+    return "Another Chromium instance is using this agent's browser profile. Quit the other instance (or wait for it to exit), then start the agent again.";
+  }
+  const [head] = message.split(/\n\s*Call log:/u);
+  return (head ?? message).trim();
+};
+
 const makeBrowserVmProvider = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const vms = new Map<string, BrowserVm>();
@@ -197,16 +291,26 @@ const makeBrowserVmProvider = Effect.gen(function* () {
     }
     const dir = profileDir(vmId);
     await NodeFSP.mkdir(dir, { recursive: true });
-    const context = await chromium.launchPersistentContext(dir, {
-      headless: true,
-      executablePath,
-      viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
-      args: [
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-blink-features=AutomationControlled",
-      ],
-    });
+    await clearStaleProfileLock(dir);
+    const context = await chromium
+      .launchPersistentContext(dir, {
+        headless: true,
+        executablePath,
+        viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
+        args: [
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--disable-blink-features=AutomationControlled",
+        ],
+      })
+      .catch((cause: unknown) => {
+        throw new Error(
+          condenseLaunchFailure(cause instanceof Error ? cause.message : String(cause)),
+          {
+            cause,
+          },
+        );
+      });
     const page = context.pages()[0] ?? (await context.newPage());
     const vm: BrowserVm = {
       context,
