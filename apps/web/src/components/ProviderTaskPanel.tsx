@@ -96,32 +96,28 @@ export function ProviderTaskPanel(props: {
     <section
       aria-label="Agents and tasks"
       className={cn(
-        "flex min-h-0 shrink-0 flex-col overflow-hidden border border-x-0 border-b-0 bg-background",
+        "flex min-h-0 shrink-0 flex-col overflow-hidden border-t border-border/70 bg-background",
         collapsed ? "max-h-none" : "max-h-[45%]",
         props.highlighted && "ring-2 ring-primary/60 ring-inset transition-shadow",
       )}
     >
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+      {/* Styled to read as a sibling of the Artifacts shelf directly above it:
+          same row height, muted label, and count pill. */}
+      <header className="flex min-h-11 shrink-0 items-center gap-2 px-3">
         <button
           type="button"
           aria-expanded={!collapsed}
           onClick={() => setCollapsedOverride(!collapsed)}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:text-foreground"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left text-xs font-medium text-muted-foreground hover:text-foreground"
         >
           <ChevronDown
             aria-hidden
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              collapsed && "-rotate-90",
-            )}
+            className={cn("size-3.5 shrink-0 transition-transform", collapsed && "-rotate-90")}
           />
           {activeCount > 0 ? (
-            <LoaderCircle
-              aria-hidden
-              className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-            />
+            <LoaderCircle aria-hidden className="size-3.5 shrink-0 animate-spin" />
           ) : null}
-          <h2 className="truncate text-xs font-medium">
+          <h2 className="truncate">
             {activeCount > 0 ? `Agents & tasks · ${activeCount} running` : "Agents & tasks"}
           </h2>
         </button>
@@ -141,7 +137,9 @@ export function ProviderTaskPanel(props: {
               Clear
             </button>
           ) : null}
-          <span className="text-[11px] text-muted-foreground tabular-nums">{total}</span>
+          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground tabular-nums">
+            {total}
+          </span>
         </div>
       </header>
 
