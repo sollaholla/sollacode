@@ -18,6 +18,7 @@ import type {
   ServerConfig,
 } from "@t3tools/contracts";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { isAgentsProjectId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -110,6 +111,18 @@ export function useEnvironmentThreadRefs(
 
 export function useProjects(): ReadonlyArray<EnvironmentProject> {
   return useAtomValue(environmentProjects.projectsAtom);
+}
+
+/**
+ * Projects a user can list, pick, or start threads in. Excludes the reserved
+ * "Agents" project — every connected environment seeds one (which is why an
+ * unfiltered list shows it once per environment), and its threads belong to
+ * the Agents section, not the project tree. Resolution-by-id consumers keep
+ * using {@link useProjects} so agent threads still resolve their project.
+ */
+export function useListedProjects(): ReadonlyArray<EnvironmentProject> {
+  const projects = useProjects();
+  return useMemo(() => projects.filter((project) => !isAgentsProjectId(project.id)), [projects]);
 }
 
 export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {

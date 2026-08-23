@@ -1,8 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type VmAgent, VmAgentId } from "@t3tools/contracts";
 import {
   BellIcon,
   GitForkIcon,
+  GlobeIcon,
   LayoutDashboardIcon,
   ListTodoIcon,
   MessageSquareIcon,
@@ -13,6 +15,7 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
@@ -78,6 +81,32 @@ function AgentWorkspaceResolved(props: {
   const unreadCount =
     workspace?.notifications.filter((notification) => !notification.readAt).length ?? 0;
   useAgentSystemNotifications(agent, workspace);
+  // The agent's browser is the chat's right panel. Track whether it is open so
+  // the header's Browser button reads as a toggle.
+  const agentThreadId = agent?.threadId ?? null;
+  const browserPanelOpen = useRightPanelStore((state) =>
+    agentThreadId
+      ? (state.byThreadKey[scopedThreadKey({ environmentId, threadId: agentThreadId })]?.isOpen ??
+        false)
+      : false,
+  );
+  const toggleBrowserPanel = () => {
+    if (!agentThreadId) return;
+    const threadRef = { environmentId, threadId: agentThreadId };
+    const store = useRightPanelStore.getState();
+    // From another view, always reveal the chat with the browser open; from
+    // the chat, behave as a plain open/close toggle.
+    if (view !== "chat") {
+      setView("chat");
+      store.open(threadRef, "preview");
+      return;
+    }
+    if (browserPanelOpen) {
+      store.setOpen(threadRef, false);
+      return;
+    }
+    store.open(threadRef, "preview");
+  };
 
   if (registryUnavailable) {
     return <CenteredNote text="Agents are unavailable. Reconnect to the host and try again." />;
@@ -98,7 +127,7 @@ function AgentWorkspaceResolved(props: {
           reserve it lands on top of the agent's name and purpose. */}
       <header
         className={cn(
-          "flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3",
+          "@container/header-actions flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3",
           COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
       >
@@ -110,33 +139,40 @@ function AgentWorkspaceResolved(props: {
           <ViewButton
             active={view === "chat"}
             label="Chat"
-            icon={<MessageSquareIcon />}
+            icon={<MessageSquareIcon className="size-3.5" />}
             onClick={() => setView("chat")}
           />
           <ViewButton
             active={view === "collaborate"}
             label="Collaborate"
-            icon={<GitForkIcon />}
+            icon={<GitForkIcon className="size-3.5" />}
             onClick={() => setView("collaborate")}
           />
           <ViewButton
             active={view === "tasks"}
             label="Tasks"
-            icon={<ListTodoIcon />}
+            icon={<ListTodoIcon className="size-3.5" />}
             onClick={() => setView("tasks")}
           />
           <ViewButton
             active={view === "artifact"}
             label="Artifact"
-            icon={<LayoutDashboardIcon />}
+            icon={<LayoutDashboardIcon className="size-3.5" />}
             onClick={() => setView("artifact")}
           />
           <ViewButton
             active={view === "notifications"}
             label="Inbox"
-            icon={<BellIcon />}
+            icon={<BellIcon className="size-3.5" />}
             onClick={() => setView("notifications")}
             badge={unreadCount}
+          />
+          <span className="mx-1 h-5 w-px shrink-0 bg-border" />
+          <ViewButton
+            active={view === "chat" && browserPanelOpen}
+            label="Browser"
+            icon={<GlobeIcon className="size-3.5" />}
+            onClick={toggleBrowserPanel}
           />
         </div>
       </header>
@@ -180,6 +216,12 @@ function AgentWorkspaceResolved(props: {
   );
 }
 
+/**
+ * Header action in the app's established workspace-header style: an outline
+ * pill whose label collapses to icon-only when the header container is thin
+ * (the same `@container/header-actions` pattern the chat header's Actions /
+ * Remote control buttons use).
+ */
 function ViewButton(props: {
   readonly active: boolean;
   readonly label: string;
@@ -190,14 +232,17 @@ function ViewButton(props: {
   return (
     <Button
       type="button"
-      size="sm"
-      variant={props.active ? "secondary" : "ghost"}
+      size="xs"
+      variant={props.active ? "secondary" : "outline"}
       aria-label={props.label}
+      aria-pressed={props.active}
       title={props.label}
       onClick={props.onClick}
     >
       {props.icon}
-      <span className="hidden xl:inline">{props.label}</span>
+      <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
+        {props.label}
+      </span>
       {props.badge ? <Badge size="sm">{props.badge}</Badge> : null}
     </Button>
   );

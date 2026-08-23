@@ -5,7 +5,7 @@ import { useEffect, useMemo } from "react";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { useClientSettings, useSidebarV2Enabled } from "../hooks/useSettings";
 import { openCommandPalette } from "../commandPaletteBus";
-import { useProjects } from "../state/entities";
+import { useListedProjects } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { selectProjectGroupingSettings } from "../logicalProject";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
@@ -33,7 +33,7 @@ function ChatRouteGlobalShortcuts() {
   const orchestratorVoice = useOrchestratorSessionContext();
   const sidebarV2Enabled = useSidebarV2Enabled();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const projects = useProjects();
+  const projects = useListedProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupCount = useMemo(
     () =>

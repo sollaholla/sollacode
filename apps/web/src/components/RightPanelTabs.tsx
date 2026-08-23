@@ -117,6 +117,15 @@ interface RightPanelTabsProps {
   diffAvailable: boolean;
   filesAvailable: boolean;
   sideChatAvailable: boolean;
+  /** Agent threads: offer only the Browser surface (no terminal/files/diff/side-chat/artifacts). */
+  browserOnly?: boolean;
+  /**
+   * Sheet mode only: dismiss the full-window sheet. Rendered as an always
+   * visible close button at the start of the tab strip, because the sheet has
+   * no visible backdrop to click and the guest webview paints over the body —
+   * without this the panel can read as an unescapable takeover.
+   */
+  onCloseSheet?: () => void;
   /** Thread artifacts live below the general-purpose surface tab strip. */
   artifactShelf?: ReactNode;
   /** Artifact choices shown in the new-surface menu. */
@@ -304,7 +313,11 @@ export type RightPanelNewSurfaceKind =
 
 export function rightPanelNewSurfaceKinds(
   artifactMenuAvailable: boolean,
+  browserOnly = false,
 ): readonly RightPanelNewSurfaceKind[] {
+  // Agent threads: the right panel is the agent's browser, nothing else — no
+  // terminal/files/diff/side-chat and no artifact submenu.
+  if (browserOnly) return ["browser"];
   return [
     "browser",
     "terminal",
@@ -360,8 +373,9 @@ export function RightPanelEmptyState(props: {
   diffAvailable: boolean;
   filesAvailable: boolean;
   sideChatAvailable: boolean;
+  browserOnly?: boolean;
 }) {
-  const actions = [
+  const allActions = [
     {
       label: "Browser",
       description: "Open a local app or URL.",
@@ -403,6 +417,9 @@ export function RightPanelEmptyState(props: {
       onClick: props.onAddSideChat,
     },
   ] as const;
+  const actions = props.browserOnly
+    ? allActions.filter((action) => action.label === "Browser")
+    : allActions;
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-6">
@@ -899,6 +916,23 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         )}
         data-right-panel-tabbar
       >
+        {props.mode === "sheet" && props.onCloseSheet ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  aria-label="Close panel"
+                  onClick={props.onCloseSheet}
+                >
+                  <X className="size-4" />
+                </button>
+              }
+            />
+            <TooltipPopup side="bottom">Back to chat</TooltipPopup>
+          </Tooltip>
+        ) : null}
         <ScrollArea
           ref={tabListRef}
           hideScrollbars
@@ -959,7 +993,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   <Plus className="size-4" />
                 </MenuTrigger>
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
-                  {rightPanelNewSurfaceKinds(props.artifactMenu != null).map((kind) => {
+                  {rightPanelNewSurfaceKinds(
+                    props.artifactMenu != null,
+                    props.browserOnly === true,
+                  ).map((kind) => {
                     switch (kind) {
                       case "browser":
                         return (
@@ -1047,6 +1084,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             diffAvailable={props.diffAvailable}
             filesAvailable={props.filesAvailable}
             sideChatAvailable={props.sideChatAvailable}
+            browserOnly={props.browserOnly === true}
           />
         ) : (
           props.children

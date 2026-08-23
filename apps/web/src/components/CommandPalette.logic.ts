@@ -137,19 +137,25 @@ export function buildProjectActionItems(input: {
   runProject: (project: Project) => Promise<void>;
   searchTerms?: (project: Project) => ReadonlyArray<string>;
   shortcutCommand?: KeybindingCommand;
+  /** Marker after the title — e.g. the remote-environment icon. */
+  titleTrailingContent?: (project: Project) => ReactNode;
 }): CommandPaletteActionItem[] {
-  return input.projects.map((project) => ({
-    kind: "action",
-    value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
-    searchTerms: [project.title, project.workspaceRoot, ...(input.searchTerms?.(project) ?? [])],
-    title: project.title,
-    description: project.workspaceRoot,
-    icon: input.icon(project),
-    ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
-    run: async () => {
-      await input.runProject(project);
-    },
-  }));
+  return input.projects.map((project) => {
+    const trailingContent = input.titleTrailingContent?.(project);
+    return {
+      kind: "action",
+      value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
+      searchTerms: [project.title, project.workspaceRoot, ...(input.searchTerms?.(project) ?? [])],
+      title: project.title,
+      description: project.workspaceRoot,
+      icon: input.icon(project),
+      ...(trailingContent ? { titleTrailingContent: trailingContent } : {}),
+      ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
+      run: async () => {
+        await input.runProject(project);
+      },
+    };
+  });
 }
 
 export type BuildThreadActionItemsThread = Pick<

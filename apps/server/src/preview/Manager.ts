@@ -40,6 +40,8 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
+import { PreviewSessionStore } from "../persistence/Services/PreviewSessions.ts";
+
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
@@ -148,7 +150,60 @@ const buildIdleSnapshot = (input: {
 
 export const make = Effect.gen(function* PreviewManagerMake() {
   const serverEpoch = NodeCrypto.randomUUID();
-  const stateRef = yield* SynchronizedRef.make<ManagerState>(initialState);
+  const sessionStore = yield* PreviewSessionStore;
+  // Rehydrate tabs persisted by the previous process so a restart does not
+  // silently drop every open tab (clients keep their browser surfaces across
+  // restarts and would otherwise render dead webviews). Restored snapshots
+  // keep their stored URL; the renderer re-attaches and reloads the page.
+  const restoredSessions = yield* sessionStore
+    .listAll()
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("preview.session-restore-failed", { cause }).pipe(Effect.as([])),
+      ),
+    );
+  const restoredState: ManagerState = {
+    sessions: new Map(
+      restoredSessions
+        .filter((session) => session.snapshot.navStatus._tag !== "Idle")
+        .map((session) => [
+          compositeKey(session.threadId, session.tabId),
+          {
+            threadId: session.threadId,
+            tabId: session.tabId,
+            snapshot: session.snapshot,
+          } satisfies PreviewSessionState,
+        ]),
+    ),
+    revision: 0,
+  };
+  const stateRef = yield* SynchronizedRef.make<ManagerState>(restoredState);
+
+  // Durability is best-effort decoration: a persistence hiccup may never fail
+  // the live operation that triggered it.
+  const persistSnapshot = (snapshot: PreviewSessionSnapshot) =>
+    snapshot.navStatus._tag === "Idle"
+      ? Effect.void
+      : sessionStore
+          .upsert({
+            threadId: snapshot.threadId,
+            tabId: snapshot.tabId,
+            snapshot,
+            updatedAt: snapshot.updatedAt,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("preview.session-persist-failed", { cause }),
+            ),
+          );
+  const unpersistSession = (threadId: string, tabId: string) =>
+    sessionStore
+      .deleteSession({ threadId, tabId })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("preview.session-unpersist-failed", { cause }),
+        ),
+      );
   // Unbounded PubSub is fine here — events are tiny and we don't want to
   // block publishers if a subscriber is slow. WS clients backpressure on
   // their own queues downstream.
@@ -245,6 +300,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           return [snapshot, { sessions, revision }] as const;
         }),
       );
+      yield* persistSnapshot(snapshot);
       return snapshot;
     },
   );
@@ -281,7 +337,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
-      );
+      ).pipe(Effect.tap((snapshot) => persistSnapshot(snapshot)));
     },
   );
 
@@ -324,9 +380,14 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         return {
           next: { ...session, snapshot },
           emit,
-          result: undefined as void,
+          result: snapshot,
         };
       }),
+    ).pipe(
+      Effect.tap((snapshot) =>
+        snapshot.navStatus._tag === "Success" ? persistSnapshot(snapshot) : Effect.void,
+      ),
+      Effect.asVoid,
     );
   });
 
@@ -354,7 +415,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
-      );
+      ).pipe(Effect.tap((snapshot) => persistSnapshot(snapshot)));
     },
   );
 
@@ -371,7 +432,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const close: PreviewManager["Service"]["close"] = Effect.fn("PreviewManager.close")(
     function* (input) {
       const createdAt = yield* currentIsoTimestamp;
-      yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
+      const closed = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
         const eventsToEmit: PreviewEvent[] = [];
         const sessions = new Map(state.sessions);
         const targets = input.tabId
@@ -393,14 +454,17 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           });
         }
         if (eventsToEmit.length === 0) {
-          return Effect.succeed([undefined, state] as const);
+          return Effect.succeed([targets, state] as const);
         }
         return Effect.as(
           Effect.forEach(eventsToEmit, (event) => PubSub.publish(eventsPubSub, event), {
             discard: true,
           }),
-          [undefined, { sessions, revision }] as const,
+          [targets, { sessions, revision }] as const,
         );
+      });
+      yield* Effect.forEach(closed, (target) => unpersistSession(target.threadId, target.tabId), {
+        discard: true,
       });
     },
   );

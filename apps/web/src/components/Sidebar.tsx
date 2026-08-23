@@ -80,7 +80,7 @@ import { isMacPlatform } from "../lib/utils";
 import {
   readThreadShell,
   useProject,
-  useProjects,
+  useListedProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
 } from "../state/entities";
@@ -3016,7 +3016,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 });
 
 export default function Sidebar() {
-  const projects = useProjects();
+  const projects = useListedProjects();
   const sidebarThreads = useThreadShells();
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);

@@ -34,6 +34,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
+  ServerIcon,
   MessageSquareIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -66,7 +67,7 @@ import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { useProjects, useThreadShells } from "../state/entities";
+import { useListedProjects, useThreadShells } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -594,7 +595,7 @@ function OpenCommandPaletteDialog(props: {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const projects = useProjects();
+  const projects = useListedProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -955,6 +956,14 @@ function OpenCommandPaletteDialog(props: {
     ],
   );
 
+  const remoteProjectMarker = useCallback(
+    (project: { environmentId: string }) =>
+      primaryEnvironmentId !== null && project.environmentId !== primaryEnvironmentId ? (
+        <ServerIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground/70" />
+      ) : null,
+    [primaryEnvironmentId],
+  );
+
   const projectSearchItems = useMemo(
     () =>
       buildProjectActionItems({
@@ -973,9 +982,10 @@ function OpenCommandPaletteDialog(props: {
             className={ITEM_ICON_CLASS}
           />
         ),
+        titleTrailingContent: remoteProjectMarker,
         runProject: openProjectFromSearch,
       }),
-    [openProjectFromSearch, pickerProjects, projectGroupByTargetKey],
+    [openProjectFromSearch, pickerProjects, projectGroupByTargetKey, remoteProjectMarker],
   );
 
   const projectThreadItems = useMemo(
@@ -997,6 +1007,7 @@ function OpenCommandPaletteDialog(props: {
               className={ITEM_ICON_CLASS}
             />
           ),
+          titleTrailingContent: remoteProjectMarker,
           runProject: async (project) => {
             const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const contextualRefBelongsToGroup =
@@ -1014,7 +1025,13 @@ function OpenCommandPaletteDialog(props: {
           },
         }),
       ),
-    [contextualProjectRef, handleNewThread, pickerProjects, projectGroupByTargetKey],
+    [
+      contextualProjectRef,
+      handleNewThread,
+      pickerProjects,
+      projectGroupByTargetKey,
+      remoteProjectMarker,
+    ],
   );
 
   const allThreadItems = useMemo(
@@ -1298,7 +1315,11 @@ function OpenCommandPaletteDialog(props: {
           : option.environmentId
         : option.status,
       disabled: !option.isConnected,
-      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+      icon: option.isPrimary ? (
+        <FolderPlusIcon className={ITEM_ICON_CLASS} />
+      ) : (
+        <ServerIcon className={ITEM_ICON_CLASS} />
+      ),
       keepOpen: true,
       run: async () => {
         startAddProjectSourceSelection(option.environmentId);

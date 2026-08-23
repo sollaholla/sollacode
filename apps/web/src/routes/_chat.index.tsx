@@ -11,7 +11,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   useAllEnvironmentShellsBootstrapped,
-  useProjects,
+  useListedProjects,
   useThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
@@ -36,7 +36,7 @@ function ChatIndexRouteView() {
  * end. Falls back to an add-project hero when no project exists yet.
  */
 function IndexDraftLanding() {
-  const projects = useProjects();
+  const projects = useListedProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
   const handleNewThread = useNewThreadHandler();

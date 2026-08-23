@@ -690,6 +690,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
+      /** Agent threads: the right panel offers only the Browser surface. */
+      browserOnlySurfaces?: boolean;
       threadSyncPhase?: ThreadSyncPhase | null;
       artifactId?: string;
       routeKind: "server";
@@ -703,6 +705,7 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
+      browserOnlySurfaces?: boolean;
       threadSyncPhase?: never;
       artifactId?: never;
       routeKind: "draft";
@@ -1451,6 +1454,7 @@ function ChatViewContent(props: ChatViewProps) {
     forceExpandedMobileComposer = false,
     embeddedSideChat = false,
     hideWorkspaceHeader = false,
+    browserOnlySurfaces = false,
   } = props;
   const requestedArtifactId = routeKind === "server" ? (props.artifactId ?? null) : null;
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
@@ -8879,8 +8883,9 @@ function ChatViewContent(props: ChatViewProps) {
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           sideChatAvailable={sideChatAvailable}
-          artifactShelf={artifactShelf}
-          artifactMenu={artifactMenu}
+          browserOnly={browserOnlySurfaces}
+          artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
+          artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
           footer={providerTaskPanelFooter}
         >
           {rightPanelContent}
@@ -8890,6 +8895,7 @@ function ChatViewContent(props: ChatViewProps) {
         <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}>
           <RightPanelTabs
             mode="sheet"
+            onCloseSheet={planSidebarOpen ? closePlanSidebar : closePreviewPanel}
             layoutControls={panelToggleControls}
             surfaces={rightPanelState.surfaces}
             activeSurfaceId={activeRightPanelSurface?.id ?? null}
@@ -8915,8 +8921,9 @@ function ChatViewContent(props: ChatViewProps) {
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             sideChatAvailable={sideChatAvailable}
-            artifactShelf={artifactShelf}
-            artifactMenu={artifactMenu}
+            browserOnly={browserOnlySurfaces}
+            artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
+            artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
             footer={providerTaskPanelFooter}
           >
             {rightPanelContent}
