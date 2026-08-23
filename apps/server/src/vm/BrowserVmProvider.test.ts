@@ -9,9 +9,11 @@ import * as ServerConfig from "../config.ts";
 import {
   applyInput,
   browserExecutableAvailable,
+  buildVmBrowserUserAgent,
   clearStaleProfileLock,
   condenseLaunchFailure,
   enqueue,
+  parseBrowserMajorVersion,
   parseSingletonLockTarget,
   shouldClearSingletonLock,
   VmProviderBrowserLive,
@@ -84,6 +86,31 @@ it("drops a stray release when nothing is held", async () => {
   await enqueue(vm, () => applyInput(vm, press("up")));
   assert.deepStrictEqual(calls, ["move(640,400)"]);
   assert.strictEqual(vm.pressed.size, 0);
+});
+
+// ── Sign-in-friendly identity (no browser required) ─────────────────────────
+//
+// Google's sign-in refuses browsers whose UA carries the HeadlessChrome
+// artifact, which locked users out of handing their own accounts to their own
+// agent via takeover. The override presents the binary's real reduced UA.
+
+it("parses the browser major version from --version output", () => {
+  assert.strictEqual(parseBrowserMajorVersion("Google Chrome 151.0.7922.170 "), 151);
+  assert.strictEqual(parseBrowserMajorVersion("Chromium 140.0.7300.0"), 140);
+  assert.strictEqual(parseBrowserMajorVersion("Microsoft Edge 139.0.3405.86"), 139);
+  assert.isNull(parseBrowserMajorVersion("not a version"));
+  assert.isNull(parseBrowserMajorVersion(""));
+});
+
+it("builds the windowed reduced UA for each platform", () => {
+  assert.strictEqual(
+    buildVmBrowserUserAgent("darwin", 151),
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+  );
+  assert.include(buildVmBrowserUserAgent("win32", 151), "Windows NT 10.0; Win64; x64");
+  assert.include(buildVmBrowserUserAgent("linux", 151), "X11; Linux x86_64");
+  // The whole point: no Headless marker anywhere.
+  assert.notInclude(buildVmBrowserUserAgent("darwin", 151), "Headless");
 });
 
 // This suite drives a real headless Chromium, so it only runs where a
