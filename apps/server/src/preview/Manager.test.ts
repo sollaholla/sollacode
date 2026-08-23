@@ -433,3 +433,37 @@ it.effect("restores persisted tabs across a restart and forgets closed ones", ()
     Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
   ),
 );
+
+// Regression: tab ids used to come from a process-global counter that reset
+// on every restart, so the first open after a reboot was handed "tab_1" again
+// and silently replaced the session just restored from the database.
+it.effect("opening after a restart never reuses a restored tab's id", () =>
+  Effect.gen(function* () {
+    const threadId = freshThreadId();
+    const first = yield* PreviewManager.make;
+    const openedIds: string[] = [];
+    for (const url of ["https://one.example/", "https://two.example/", "https://three.example/"]) {
+      const opened = yield* first.open({ threadId, url });
+      openedIds.push(opened.tabId);
+      yield* first.reportStatus({
+        threadId,
+        tabId: opened.tabId,
+        navStatus: { _tag: "Success", url, title: url },
+        canGoBack: false,
+        canGoForward: false,
+      });
+    }
+
+    const second = yield* PreviewManager.make;
+    const restored = yield* second.list({ threadId });
+    expect(restored.sessions).toHaveLength(3);
+
+    const reopened = yield* second.open({ threadId, url: "https://four.example/" });
+    expect(openedIds).not.toContain(reopened.tabId);
+    const afterOpen = yield* second.list({ threadId });
+    expect(afterOpen.sessions).toHaveLength(4);
+    expect(new Set(afterOpen.sessions.map((session) => session.tabId)).size).toBe(4);
+  }).pipe(
+    Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+  ),
+);
