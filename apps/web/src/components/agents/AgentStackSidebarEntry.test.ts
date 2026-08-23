@@ -23,8 +23,11 @@ describe("activeDelegationsForAgent", () => {
 describe("agent row delete affordance", () => {
   it("collapses the X out of layout instead of reserving a transparent slot", () => {
     // Reserved-but-invisible left the status dot sitting beside a hole at the
-    // row's edge. The X and the dot share one slot: hidden swaps for hover
-    // and for focus-within, which is also what makes the X tabbable at all.
+    // row's edge. The X collapses with display, so at rest the dot is the last
+    // flex item and holds the edge; hover or focus-within materialises the X
+    // beside it — both stay visible — and focus-within is also what makes the
+    // X tabbable at all. The dot itself never hides: it is the one glyph that
+    // must survive every state.
     const source = NodeFS.readFileSync(
       NodePath.join(import.meta.dirname, "AgentStackSidebarEntry.tsx"),
       "utf8",
@@ -32,7 +35,7 @@ describe("agent row delete affordance", () => {
     expect(source).toContain(
       "hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
     );
-    expect(source).toContain("group-hover/agent-row:hidden group-focus-within/agent-row:hidden");
+    expect(source).not.toContain("group-hover/agent-row:hidden");
     expect(source).not.toContain("group-hover/agent-row:opacity-100");
   });
 });
