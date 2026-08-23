@@ -174,10 +174,10 @@ describe("buildTurnStartParams", () => {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
-          reasoning_effort: "medium",
+          reasoning_effort: "high",
           developer_instructions: buildCodexDeveloperInstructions("default", {
             model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
+            reasoningEffort: "high",
           }),
         },
       },
@@ -196,8 +196,8 @@ describe("buildTurnStartParams", () => {
 
     const settings = params.collaborationMode?.settings;
     NodeAssert.equal(settings?.model, DEFAULT_MODEL);
-    NodeAssert.equal(settings?.reasoning_effort, "medium");
-    NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
+    NodeAssert.equal(settings?.reasoning_effort, "high");
+    NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with high`));
   });
 
   it.effect("routes approvals to the auto reviewer in auto mode", () =>
@@ -638,6 +638,36 @@ describe("openCodexThread", () => {
         model_auto_compact_token_limit: 206_720,
         model_auto_compact_token_limit_scope: "total",
       });
+    }),
+  );
+});
+
+describe("reasoning effort default", () => {
+  it.effect("falls back to high when the caller names none", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-default-effort",
+        runtimeMode: "full-access",
+        prompt: "Go",
+        model: "gpt-5.3-codex",
+        interactionMode: "default",
+      });
+      // Agentic turns run long; the extra reasoning is worth the latency.
+      NodeAssert.equal(params.collaborationMode?.settings.reasoning_effort, "high");
+    }),
+  );
+
+  it.effect("still honours an effort the caller does name", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-explicit-effort",
+        runtimeMode: "full-access",
+        prompt: "Go",
+        model: "gpt-5.3-codex",
+        effort: "low",
+        interactionMode: "default",
+      });
+      NodeAssert.equal(params.collaborationMode?.settings.reasoning_effort, "low");
     }),
   );
 });

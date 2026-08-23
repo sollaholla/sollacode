@@ -544,7 +544,10 @@ function buildCodexCollaborationMode(input: {
     return undefined;
   }
   const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
-  const reasoningEffort = input.effort ?? "medium";
+  // Defaults to high rather than medium: these turns are agentic and
+  // long-running, where the extra reasoning is worth more than the latency it
+  // costs. An explicit effort from the caller still wins.
+  const reasoningEffort = input.effort ?? "high";
   return {
     // Codex only knows its own two modes; "agent" is a client-side turn loop
     // that should otherwise run exactly like the default mode.

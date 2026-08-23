@@ -124,7 +124,7 @@ it("uses standard routing when the catalog has no default service tier", () => {
   ]);
 });
 
-it("defaults GPT-5.6-Sol to medium reasoning and standard routing unless options override it", () => {
+it("defaults GPT-5.6-Sol to high reasoning and standard routing unless options override it", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: [],
     defaultReasoningEffort: "high",
@@ -158,7 +158,7 @@ it("defaults GPT-5.6-Sol to medium reasoning and standard routing unless options
           : undefined,
     })),
     [
-      { id: "reasoningEffort", currentValue: "medium", defaultOption: "medium" },
+      { id: "reasoningEffort", currentValue: "high", defaultOption: "high" },
       { id: "serviceTier", currentValue: "default", defaultOption: "default" },
     ],
   );
