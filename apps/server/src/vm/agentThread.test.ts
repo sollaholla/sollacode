@@ -1,4 +1,4 @@
-import { AGENT_BUILDER_THREAD_ID, type OrchestrationCommand } from "@t3tools/contracts";
+import { AGENT_BUILDER_THREAD_ID, type OrchestrationCommand, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ServerConfig from "../config.ts";
-import { openAgentBuilderThread } from "./agentThread.ts";
+import { notifyAgentBlockerResolved, openAgentBuilderThread } from "./agentThread.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-agent-thread-test-",
@@ -63,5 +63,31 @@ it.effect("opens one persistent builder thread, greeting exactly once", () =>
     // The repeat run creates nothing and greets nobody.
     const repeatTypes = engine.dispatched.slice(before).map((command) => command.type);
     assert.deepStrictEqual(repeatTypes, []);
+  }),
+);
+
+it.effect("sends resolved and dismissed blocker outcomes to the agent as follow-up turns", () =>
+  Effect.gen(function* () {
+    const engine = makeEngine();
+    const threadId = ThreadId.make("thread-waiting-on-user");
+    const notify = (resolvedBy: "user" | "dismissed") =>
+      notifyAgentBlockerResolved({
+        threadId,
+        title: "Sign in to the dashboard",
+        resolvedBy,
+      }).pipe(Effect.provide(engine.layer));
+
+    yield* notify("user");
+    yield* notify("dismissed");
+
+    const turns = engine.dispatched.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    assert.strictEqual(turns.length, 2);
+    assert.strictEqual(turns[0]?.threadId, threadId);
+    assert.strictEqual(turns[0]?.message.inputOrigin, "agent-loop");
+    assert.include(turns[0]?.message.text ?? "", "The user resolved the request");
+    assert.include(turns[1]?.message.text ?? "", "dismissed the request");
   }),
 );

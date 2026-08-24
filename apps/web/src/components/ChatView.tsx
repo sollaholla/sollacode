@@ -205,7 +205,6 @@ import {
   ArrowUpRightIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
-  CircleDashedIcon,
   GitBranchIcon,
   LogInIcon,
   LoaderCircleIcon,

@@ -49,6 +49,8 @@ import {
   DEFAULT_RESOLVED_KEYBINDINGS,
   compileResolvedKeybindingRule,
   compileResolvedKeybindingsConfig,
+  isPushToTalkReservedKeybinding,
+  isPushToTalkReservedShortcut,
   parseKeybindingShortcut,
 } from "@t3tools/shared/keybindings";
 
@@ -207,15 +209,16 @@ function invalidEntryIssue(index: number, detail: string): ServerConfigIssue {
 }
 
 function mergeWithDefaultKeybindings(custom: ResolvedKeybindingsConfig): ResolvedKeybindingsConfig {
-  if (custom.length === 0) {
+  const allowedCustom = custom.filter((binding) => !isPushToTalkReservedShortcut(binding.shortcut));
+  if (allowedCustom.length === 0) {
     return [...DEFAULT_RESOLVED_KEYBINDINGS];
   }
 
-  const overriddenCommands = new Set(custom.map((binding) => binding.command));
+  const overriddenCommands = new Set(allowedCustom.map((binding) => binding.command));
   const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
     (binding) => !overriddenCommands.has(binding.command),
   );
-  const merged = [...retainedDefaults, ...custom];
+  const merged = [...retainedDefaults, ...allowedCustom];
 
   if (merged.length <= MAX_KEYBINDINGS_COUNT) {
     return merged;
@@ -417,6 +420,15 @@ const make = Effect.gen(function* () {
         });
         continue;
       }
+      if (isPushToTalkReservedKeybinding(decodedRule.value.key)) {
+        yield* Effect.logWarning("ignoring keybinding reserved for voice transcription", {
+          path: keybindingsConfigPath,
+          index,
+          key: decodedRule.value.key,
+          command: decodedRule.value.command,
+        });
+        continue;
+      }
       keybindings.push(decodedRule.value);
     }
 
@@ -493,7 +505,17 @@ const make = Effect.gen(function* () {
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
-      const customConfig = runtimeConfig.keybindings;
+      const persistedConfig = yield* loadWritableCustomKeybindingsConfig();
+      const customConfig = persistedConfig.filter(
+        (entry) => !isPushToTalkReservedKeybinding(entry.key),
+      );
+      const removedReservedCount = persistedConfig.length - customConfig.length;
+      if (removedReservedCount > 0) {
+        yield* Effect.logWarning("removing keybindings reserved for voice transcription", {
+          path: keybindingsConfigPath,
+          count: removedReservedCount,
+        });
+      }
       const existingCommands = new Set(customConfig.map((entry) => entry.command));
       const missingDefaults: KeybindingRule[] = [];
       const shortcutConflictWarnings: Array<{
@@ -530,7 +552,7 @@ const make = Effect.gen(function* () {
           reason: "shortcut context already used by existing rule",
         });
       }
-      if (missingDefaults.length === 0) {
+      if (missingDefaults.length === 0 && removedReservedCount === 0) {
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -559,7 +581,7 @@ const make = Effect.gen(function* () {
           commands: skippedDefaults.map((rule) => rule.command),
         });
       }
-      if (defaultsToAppend.length === 0) {
+      if (defaultsToAppend.length === 0 && removedReservedCount === 0) {
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -643,8 +665,14 @@ const make = Effect.gen(function* () {
     upsertKeybindingRule: (input) =>
       upsertSemaphore.withPermits(1)(
         Effect.gen(function* () {
-          const customConfig = yield* loadWritableCustomKeybindingsConfig();
           const rule = keybindingRuleFromUpsertInput(input);
+          if (isPushToTalkReservedKeybinding(rule.key)) {
+            return yield* new KeybindingsConfigError({
+              configPath: keybindingsConfigPath,
+              detail: "Cmd+D and Ctrl+D are reserved for voice transcription",
+            });
+          }
+          const customConfig = yield* loadWritableCustomKeybindingsConfig();
           const replaceTarget = replaceTargetFromUpsertInput(input);
           const nextConfig = [
             ...customConfig.filter((entry) => {

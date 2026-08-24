@@ -22,11 +22,9 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+b", command: "sidebar.toggle" },
   { key: "mod+j", command: "terminal.toggle" },
   { key: "mod+alt+b", command: "rightPanel.toggle" },
-  { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
   { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" },
   { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
   { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
-  { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
   { key: "mod+shift+j", command: "preview.toggle" },
   { key: "mod+r", command: "preview.refresh", when: "previewFocus" },
   { key: "mod+l", command: "preview.focusUrl", when: "previewFocus" },
@@ -127,6 +125,24 @@ export function parseKeybindingShortcut(value: string): KeybindingShortcut | nul
     altKey,
     modKey,
   };
+}
+
+/**
+ * Cmd+D on macOS and Ctrl+D elsewhere belong exclusively to push-to-talk.
+ * They are intentionally outside the configurable command system so a stale
+ * or custom rule cannot make a held recording chord repeatedly toggle UI.
+ */
+export function isPushToTalkReservedShortcut(shortcut: KeybindingShortcut): boolean {
+  const primaryModifierCount =
+    Number(shortcut.modKey) + Number(shortcut.metaKey) + Number(shortcut.ctrlKey);
+  return (
+    shortcut.key === "d" && primaryModifierCount === 1 && !shortcut.shiftKey && !shortcut.altKey
+  );
+}
+
+export function isPushToTalkReservedKeybinding(value: string): boolean {
+  const shortcut = parseKeybindingShortcut(value);
+  return shortcut !== null && isPushToTalkReservedShortcut(shortcut);
 }
 
 function tokenizeWhenExpression(expression: string): WhenToken[] | null {

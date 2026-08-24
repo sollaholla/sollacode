@@ -80,12 +80,14 @@ const makeContext = (
       {
         projectId: "project-1",
         environmentId: "env-1",
+        environmentName: "Mac",
         name: "Rover Project",
         workspaceName: "rover",
       },
       {
         projectId: "project-2",
         environmentId: "env-1",
+        environmentName: "Mac",
         name: "Acme Medical",
         workspaceName: "nora",
       },
@@ -1438,6 +1440,7 @@ describe("create_thread", () => {
         {
           projectId: "only",
           environmentId: "env-1",
+          environmentName: "Mac",
           name: "Rover Project",
           workspaceName: "rover",
         },
@@ -1469,6 +1472,74 @@ describe("create_thread", () => {
     })) as { notFound: boolean };
     expect(result.notFound).toBe(true);
     expect(context.createThread).not.toHaveBeenCalled();
+  });
+
+  it("targets a duplicate project name when qualified by environment", async () => {
+    const context = createContext({
+      listProjects: () => [
+        {
+          projectId: "gameproject-mac",
+          environmentId: "env-mac",
+          environmentName: "Mac",
+          name: "GameProject",
+          workspaceName: "GameProject",
+        },
+        {
+          projectId: "gameproject-windows",
+          environmentId: "env-windows",
+          environmentName: "StudioComputer",
+          name: "GameProject",
+          workspaceName: "GameProject",
+        },
+      ],
+    });
+
+    const result = (await executeOrchestratorTool(context, {
+      name: "create_thread",
+      args: {
+        project: "GameProject on StudioComputer",
+        title: "Windows task",
+        message: "Run this on Windows.",
+      },
+    })) as { created: boolean };
+
+    expect(result.created).toBe(true);
+    expect(context.createThread).toHaveBeenCalledWith({
+      environmentId: "env-windows",
+      projectId: "gameproject-windows",
+      title: "Windows task",
+      message: "Run this on Windows.",
+    });
+  });
+
+  it("names environments when duplicate project titles remain ambiguous", async () => {
+    const context = createContext({
+      listProjects: () => [
+        {
+          projectId: "gameproject-mac",
+          environmentId: "env-mac",
+          environmentName: "Mac",
+          name: "GameProject",
+          workspaceName: "GameProject",
+        },
+        {
+          projectId: "gameproject-windows",
+          environmentId: "env-windows",
+          environmentName: "StudioComputer",
+          name: "GameProject",
+          workspaceName: "GameProject",
+        },
+      ],
+    });
+
+    const result = (await executeOrchestratorTool(context, {
+      name: "create_thread",
+      args: { project: "GameProject", title: "Task", message: "Go." },
+    })) as { needsProject: boolean; projects: string[]; say: string };
+
+    expect(result.needsProject).toBe(true);
+    expect(result.projects).toEqual(["GameProject on Mac", "GameProject on StudioComputer"]);
+    expect(result.say).toContain("GameProject on StudioComputer");
   });
 
   it("validates the title like a rename does", async () => {
@@ -1581,6 +1652,7 @@ describe("read-only project inspection", () => {
         {
           projectId: "only",
           environmentId: "env-1",
+          environmentName: "Mac",
           name: "Rover Project",
           workspaceName: "rover",
         },

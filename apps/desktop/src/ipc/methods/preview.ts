@@ -214,12 +214,17 @@ export const getPreviewConfig = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_GET_CONFIG_CHANNEL,
   payload: DesktopPreviewConfigInputSchema,
   result: DesktopPreviewWebviewConfigSchema,
-  handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({ environmentId, threadId }) {
+  handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({
+    environmentId,
+    threadId,
+    browserProfileThreadId,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
     // Per-thread partitions: each conversation — and therefore each agent,
     // which owns exactly one thread — keeps its own cookies, logins, and
     // cache. Threadless callers fall back to the environment-wide profile.
-    const scope = threadId ? `${environmentId}:thread:${threadId}` : environmentId;
+    const profileThreadId = browserProfileThreadId ?? threadId;
+    const scope = profileThreadId ? `${environmentId}:thread:${profileThreadId}` : environmentId;
     yield* manager.getBrowserSession(scope);
     return {
       partition: yield* manager.getBrowserPartition(scope),

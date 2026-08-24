@@ -110,7 +110,7 @@ export function ThreadArtifactShelf(props: ThreadArtifactShelfProps) {
       // activation and find-in-page revealing it.
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-muted-foreground marker:content-none">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-muted-foreground marker:content-none hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <ChevronDownIcon className="size-3.5 shrink-0 -rotate-90 transition-transform group-open:rotate-0 motion-reduce:transition-none" />
         <span className="min-w-0 flex-1 truncate">Artifacts</span>
         {artifacts.length > 0 ? (

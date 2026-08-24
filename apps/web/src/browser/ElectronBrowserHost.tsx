@@ -1,12 +1,17 @@
 "use client";
 
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  parseScopedThreadKey,
+  scopedThreadKey,
+  scopeThreadRef,
+} from "@t3tools/client-runtime/environment";
 import { FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
 import { useEffect, useMemo } from "react";
 
 import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
+import { useThreadShells } from "~/state/entities";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
@@ -16,6 +21,17 @@ import { previewRuntimeTabId } from "./previewRuntimeTabId";
 export function ElectronBrowserHost() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
+  const threadShells = useThreadShells();
+  const browserProfileByThreadKey = useMemo(
+    () =>
+      new Map(
+        threadShells.map((thread) => [
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+          thread.browserProfileThreadId ?? undefined,
+        ]),
+      ),
+    [threadShells],
+  );
   const sessions = useMemo(
     () =>
       Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
@@ -23,6 +39,7 @@ export function ElectronBrowserHost() {
         return threadRef
           ? Object.values(previewState.sessions).map((snapshot) => ({
               threadRef,
+              browserProfileThreadId: browserProfileByThreadKey.get(threadKey),
               snapshot,
               runtimeTabId: previewRuntimeTabId(
                 threadRef,
@@ -33,7 +50,7 @@ export function ElectronBrowserHost() {
             }))
           : [];
       }),
-    [previewByThreadKey],
+    [browserProfileByThreadKey, previewByThreadKey],
   );
 
   useEffect(() => {
@@ -80,12 +97,13 @@ export function ElectronBrowserHost() {
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
-      {sessions.map(({ threadRef, snapshot, runtimeTabId, zoomFactor }) => {
+      {sessions.map(({ threadRef, browserProfileThreadId, snapshot, runtimeTabId, zoomFactor }) => {
         const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
         return (
           <HostedBrowserWebview
             key={runtimeTabId}
             threadRef={threadRef}
+            browserProfileThreadId={browserProfileThreadId}
             tabId={snapshot.tabId}
             runtimeTabId={runtimeTabId}
             initialUrl={url}

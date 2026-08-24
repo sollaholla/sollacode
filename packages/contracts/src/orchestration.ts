@@ -401,6 +401,12 @@ export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  /** Thread that caused this conversation to be created. Present for
+      agent-created conversations, including orchestrator-created work. */
+  createdByThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  /** Thread whose collaborative-browser profile supplies cookies, storage,
+      and HTTP cache. Tabs and conversation state remain owned by this thread. */
+  browserProfileThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   /** Disposable fork shown as a side-chat surface. Missing on snapshots from
       older servers and therefore treated as a normal thread. */
   isSideChat: Schema.optionalKey(Schema.Boolean),
@@ -465,6 +471,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  createdByThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  browserProfileThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   isSideChat: Schema.optionalKey(Schema.Boolean),
   sideChatParentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   modelSelection: ModelSelection,
@@ -654,6 +662,8 @@ const ThreadCreateCommand = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  createdByThreadId: Schema.optionalKey(ThreadId),
+  browserProfileThreadId: Schema.optionalKey(ThreadId),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode.pipe(
@@ -1139,6 +1149,8 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  createdByThreadId: Schema.optionalKey(ThreadId),
+  browserProfileThreadId: Schema.optionalKey(ThreadId),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(

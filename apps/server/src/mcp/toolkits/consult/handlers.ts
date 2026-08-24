@@ -274,6 +274,8 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             threadId: targetId,
             projectId: project.id,
             title: input.title ?? titleFromQuestion(question),
+            createdByThreadId: invocation.threadId,
+            browserProfileThreadId: invocation.threadId,
             modelSelection,
             interactionMode: "default",
             // `auto` rather than the app default `full-access`: a consulted

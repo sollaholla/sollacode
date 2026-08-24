@@ -89,11 +89,6 @@ const DEFAULT_BINDINGS = compile([
   { shortcut: modShortcut("j"), command: "terminal.toggle" },
   { shortcut: modShortcut("b", { altKey: true }), command: "rightPanel.toggle" },
   {
-    shortcut: modShortcut("d"),
-    command: "terminal.split",
-    whenAst: whenIdentifier("terminalFocus"),
-  },
-  {
     shortcut: modShortcut("d", { shiftKey: true }),
     command: "terminal.splitVertical",
     whenAst: whenIdentifier("terminalFocus"),
@@ -107,11 +102,6 @@ const DEFAULT_BINDINGS = compile([
     shortcut: modShortcut("w"),
     command: "terminal.close",
     whenAst: whenIdentifier("terminalFocus"),
-  },
-  {
-    shortcut: modShortcut("d"),
-    command: "diff.toggle",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
     shortcut: modShortcut("k"),
@@ -215,8 +205,8 @@ describe("split/new/close terminal shortcuts", () => {
     );
   });
 
-  it("matches split/new when terminalFocus is true", () => {
-    assert.isTrue(
+  it("keeps bare Cmd+D reserved while matching the remaining terminal shortcuts", () => {
+    assert.isFalse(
       isTerminalSplitShortcut(event({ key: "d", metaKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
         context: { terminalFocus: true },
@@ -328,7 +318,7 @@ describe("shortcutLabelForCommand", () => {
       "⌘B",
     );
     assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "chat.new", "MacIntel"), "⇧⌘O");
-    assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "diff.toggle", "Linux"), "Ctrl+D");
+    assert.isNull(shortcutLabelForCommand(DEFAULT_BINDINGS, "diff.toggle", "Linux"));
     assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "rightPanel.toggle", "MacIntel"),
       "⌥⌘B",
@@ -380,7 +370,7 @@ describe("shortcutLabelForCommand", () => {
     assert.strictEqual(shortcutLabelForCommand(bindings, "thread.jump.7", "MacIntel"), "⇧⌘1");
   });
 
-  it("respects when-context while resolving labels", () => {
+  it("hides stale Cmd+D and Ctrl+D command bindings because voice owns them", () => {
     const bindings = compile([
       { shortcut: modShortcut("d"), command: "diff.toggle" },
       {
@@ -390,12 +380,11 @@ describe("shortcutLabelForCommand", () => {
       },
     ]);
 
-    assert.strictEqual(
+    assert.isNull(
       shortcutLabelForCommand(bindings, "diff.toggle", {
         platform: "Linux",
         context: { terminalFocus: false },
       }),
-      "Ctrl+D",
     );
     assert.isNull(
       shortcutLabelForCommand(bindings, "diff.toggle", {
@@ -403,12 +392,23 @@ describe("shortcutLabelForCommand", () => {
         context: { terminalFocus: true },
       }),
     );
-    assert.strictEqual(
+    assert.isNull(
       shortcutLabelForCommand(bindings, "terminal.split", {
         platform: "Linux",
         context: { terminalFocus: true },
       }),
-      "Ctrl+D",
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "d", metaKey: true }), bindings, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+    );
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "d", ctrlKey: true }), bindings, {
+        platform: "Linux",
+        context: { terminalFocus: true },
+      }),
     );
   });
 });
@@ -566,8 +566,8 @@ describe("chat/editor shortcuts", () => {
     );
   });
 
-  it("matches diff.toggle shortcut outside terminal focus", () => {
-    assert.isTrue(
+  it("never routes the voice chord to diff.toggle", () => {
+    assert.isFalse(
       isDiffToggleShortcut(event({ key: "d", metaKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
         context: { terminalFocus: false },

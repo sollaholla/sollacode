@@ -8,7 +8,9 @@ import {
   type ModelPickerJumpKeybindingCommand,
   type ThreadJumpKeybindingCommand,
 } from "@t3tools/contracts";
+import { isPushToTalkReservedShortcut } from "@t3tools/shared/keybindings";
 import { isMacPlatform } from "./lib/utils";
+import { isPushToTalkShortcut } from "./pushToTalk";
 
 export interface ShortcutEventLike {
   type?: string;
@@ -174,6 +176,7 @@ function findEffectiveShortcutForCommand(
     const binding = keybindings[index];
     if (!binding) continue;
     if (!matchesWhenClause(binding.whenAst, context)) continue;
+    if (isPushToTalkReservedShortcut(binding.shortcut)) continue;
 
     const conflictKey = shortcutConflictKey(binding.shortcut, platform);
     if (claimedShortcuts.has(conflictKey)) {
@@ -205,6 +208,12 @@ export function resolveShortcutCommand(
 ): KeybindingCommand | null {
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
+
+  // Cmd+D on macOS and Ctrl+D elsewhere are owned exclusively by the
+  // capture-phase push-to-talk lifecycle. Returning no configurable command
+  // here also neutralizes stale user config from releases where mod+d opened
+  // the diff or split a terminal on every repeated keydown.
+  if (isPushToTalkShortcut(event, platform)) return null;
 
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];

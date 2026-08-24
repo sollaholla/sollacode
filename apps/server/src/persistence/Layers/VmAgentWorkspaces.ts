@@ -378,6 +378,26 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  /**
+   * Mark every notification raised for one dedupe key as read.
+   *
+   * Blocker alerts are inserted with `blocker:<blockerId>`, which is the only
+   * link between a standing request and the alert that announced it — the
+   * notification table carries no blocker id.
+   */
+  const markNotificationsReadByDedupeKeyRow = SqlSchema.void({
+    Request: Schema.Struct({
+      vmAgentId: VmAgentTask.fields.vmAgentId,
+      dedupeKey: Schema.String,
+      readAt: VmAgentNotification.fields.createdAt,
+    }),
+    execute: ({ vmAgentId, dedupeKey, readAt }) => sql`
+      UPDATE vm_agent_notifications
+      SET read_at = COALESCE(read_at, ${readAt})
+      WHERE vm_agent_id = ${vmAgentId} AND dedupe_key = ${dedupeKey}
+    `,
+  });
+
   const updateNotificationRow = SqlSchema.void({
     Request: Schema.Struct({
       vmAgentId: VmAgentNotification.fields.vmAgentId,
@@ -978,6 +998,10 @@ const make = Effect.gen(function* () {
   const markNotificationRead: VmAgentWorkspaceStoreShape["markNotificationRead"] = (input) =>
     markNotificationReadRow(input).pipe(mapError("markNotificationRead"));
 
+  const markNotificationsReadByDedupeKey: VmAgentWorkspaceStoreShape["markNotificationsReadByDedupeKey"] =
+    (input) =>
+      markNotificationsReadByDedupeKeyRow(input).pipe(mapError("markNotificationsReadByDedupeKey"));
+
   const updateNotification: VmAgentWorkspaceStoreShape["updateNotification"] = (input) =>
     updateNotificationRow({
       vmAgentId: input.vmAgentId,
@@ -1059,6 +1083,7 @@ const make = Effect.gen(function* () {
     listRunObservations,
     createNotification,
     markNotificationRead,
+    markNotificationsReadByDedupeKey,
     updateNotification,
     purgeExpiredArchivedNotifications,
     updateNotificationPreferences,

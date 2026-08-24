@@ -22,6 +22,7 @@ import {
 } from "./threadHistory";
 import {
   describeCandidate,
+  describeProjectReference,
   resolveProjectReference,
   resolveThreadReference,
   type ProjectReference,
@@ -842,6 +843,7 @@ function chooseProject(
   requested: unknown,
 ): ProjectChoice {
   const name = typeof requested === "string" ? requested.trim() : "";
+  const labels = projects.map((entry) => describeProjectReference(entry, projects));
   if (name.length === 0) {
     const only = projects[0];
     if (projects.length === 1 && only !== undefined) return { ok: true, project: only };
@@ -851,8 +853,8 @@ function chooseProject(
         value: {
           ok: false,
           needsProject: true,
-          projects: projects.map((entry) => entry.name),
-          say: `Ask which project they mean: ${projects.map((entry) => entry.name).join(", ")}.`,
+          projects: labels,
+          say: `Ask which project they mean: ${labels.join(", ")}.`,
         },
         outcome: "needs-confirmation",
         detail: "project not specified",
@@ -869,8 +871,8 @@ function chooseProject(
         value: {
           ok: false,
           needsProject: true,
-          projects: resolution.candidates.map((entry) => entry.name),
-          say: `"${name}" matches more than one project. Ask which: ${resolution.candidates.map((entry) => entry.name).join(", ")}.`,
+          projects: resolution.candidates.map((entry) => describeProjectReference(entry, projects)),
+          say: `"${name}" matches more than one project. Ask which: ${resolution.candidates.map((entry) => describeProjectReference(entry, projects)).join(", ")}.`,
         },
         outcome: "needs-confirmation",
         detail: `"${name}" matched several projects`,
@@ -883,7 +885,9 @@ function chooseProject(
       value: {
         ok: false,
         notFound: true,
-        suggestions: resolution.suggestions.map((entry) => entry.name),
+        suggestions: resolution.suggestions.map((entry) =>
+          describeProjectReference(entry, projects),
+        ),
         say: `There is no project called "${name}". Say what does exist and ask which they meant.`,
       },
       outcome: "error",
@@ -1637,6 +1641,7 @@ async function runTool(
       }
 
       const requested = typeof call.args.project === "string" ? call.args.project.trim() : "";
+      const projectLabels = projects.map((entry) => describeProjectReference(entry, projects));
       let project: ProjectReference;
       if (requested.length === 0) {
         // With one project there is nothing to ask about; with several there
@@ -1647,8 +1652,8 @@ async function runTool(
             value: {
               created: false,
               needsProject: true,
-              projects: projects.map((entry) => entry.name),
-              say: `Ask which project this belongs to: ${projects.map((entry) => entry.name).join(", ")}.`,
+              projects: projectLabels,
+              say: `Ask which project this belongs to: ${projectLabels.join(", ")}.`,
             },
             outcome: "needs-confirmation",
             detail: "project not specified",
@@ -1662,8 +1667,10 @@ async function runTool(
             value: {
               created: false,
               needsProject: true,
-              projects: resolution.candidates.map((entry) => entry.name),
-              say: `"${requested}" matches more than one project. Ask which: ${resolution.candidates.map((entry) => entry.name).join(", ")}.`,
+              projects: resolution.candidates.map((entry) =>
+                describeProjectReference(entry, projects),
+              ),
+              say: `"${requested}" matches more than one project. Ask which: ${resolution.candidates.map((entry) => describeProjectReference(entry, projects)).join(", ")}.`,
             },
             outcome: "needs-confirmation",
             detail: `"${requested}" matched several projects`,
@@ -1674,7 +1681,9 @@ async function runTool(
             value: {
               created: false,
               notFound: true,
-              suggestions: resolution.suggestions.map((entry) => entry.name),
+              suggestions: resolution.suggestions.map((entry) =>
+                describeProjectReference(entry, projects),
+              ),
               say: `There is no project called "${requested}". Tell the user what does exist and ask which they meant.`,
             },
             outcome: "error",

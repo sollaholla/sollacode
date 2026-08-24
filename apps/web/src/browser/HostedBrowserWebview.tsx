@@ -1,6 +1,6 @@
 "use client";
 
-import type { PreviewViewportSetting, ScopedThreadRef } from "@t3tools/contracts";
+import type { PreviewViewportSetting, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -43,14 +43,27 @@ declare global {
 
 export function HostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
+  readonly browserProfileThreadId?: ThreadId | undefined;
   readonly tabId: string;
   readonly runtimeTabId: string;
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly zoomFactor: number;
 }) {
-  const { threadRef, tabId, runtimeTabId, initialUrl, viewport, zoomFactor } = props;
-  const config = usePreviewWebviewConfig(threadRef.environmentId, threadRef.threadId);
+  const {
+    threadRef,
+    browserProfileThreadId,
+    tabId,
+    runtimeTabId,
+    initialUrl,
+    viewport,
+    zoomFactor,
+  } = props;
+  const config = usePreviewWebviewConfig(
+    threadRef.environmentId,
+    threadRef.threadId,
+    browserProfileThreadId,
+  );
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);

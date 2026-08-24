@@ -127,6 +127,7 @@ import {
   prStatusIndicator,
   resolveThreadPr,
   settledPrHoverColorClass,
+  ThreadProvenanceIndicators,
 } from "./ThreadStatusIndicators";
 import {
   resolveSnoozePresets,
@@ -330,6 +331,7 @@ function SidebarV2ThreadTooltip({
                 cwd={projectCwd ?? ""}
                 className="size-3 shrink-0 stroke-muted-foreground"
               />
+              <ThreadProvenanceIndicators thread={thread} />
               <div className="min-w-0 truncate text-foreground/75">{projectTitle}</div>
             </div>
           ) : null}

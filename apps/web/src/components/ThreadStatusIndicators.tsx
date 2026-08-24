@@ -4,7 +4,7 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import type { VcsStatusResult } from "@t3tools/contracts";
-import { CloudIcon, FolderGit2Icon, GitPullRequestIcon } from "lucide-react";
+import { BotIcon, CloudIcon, FolderGit2Icon, GitPullRequestIcon, Share2Icon } from "lucide-react";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
 import { useMemo } from "react";
 import { useEnvironment, usePrimaryEnvironmentId } from "../state/environments";
@@ -175,6 +175,57 @@ export function ThreadWorktreeIndicator({
   );
 }
 
+export function ThreadProvenanceIndicators({
+  thread,
+}: {
+  thread: Pick<SidebarThreadSummary, "id" | "createdByThreadId" | "browserProfileThreadId">;
+}) {
+  const agentCreated = thread.createdByThreadId != null;
+  const sharedBrowser = thread.browserProfileThreadId != null;
+  if (!agentCreated && !sharedBrowser) return null;
+
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      {agentCreated ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label="Created by an agent"
+                data-testid={`thread-agent-created-${thread.id}`}
+                className="inline-flex items-center justify-center text-muted-foreground/55"
+              />
+            }
+          >
+            <BotIcon className="size-3" />
+          </TooltipTrigger>
+          <TooltipPopup side="top">Created by an agent</TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {sharedBrowser ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label="Uses a shared agent browser profile"
+                data-testid={`thread-shared-browser-${thread.id}`}
+                className="inline-flex items-center justify-center text-muted-foreground/55"
+              />
+            }
+          >
+            <Share2Icon className="size-3" />
+          </TooltipTrigger>
+          <TooltipPopup side="top">
+            Uses browser cookies, storage, and cache inherited from another agent thread
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+    </span>
+  );
+}
+
 export function ThreadStatusLabel({
   status,
   compact = false,
@@ -264,12 +315,18 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
     },
   });
 
-  if (!prStatus && !threadStatus) {
+  if (
+    !prStatus &&
+    !threadStatus &&
+    thread.createdByThreadId == null &&
+    thread.browserProfileThreadId == null
+  ) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      <ThreadProvenanceIndicators thread={thread} />
       {prStatus ? (
         <Tooltip>
           <TooltipTrigger

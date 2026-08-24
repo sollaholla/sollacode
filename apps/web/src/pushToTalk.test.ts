@@ -25,12 +25,14 @@ const event = (overrides: Partial<Parameters<typeof isPushToTalkShortcut>[0]> = 
 });
 
 describe("isPushToTalkShortcut", () => {
-  it("uses Cmd+D on macOS and Ctrl+D elsewhere", () => {
+  it("captures Cmd+D on Apple platforms and Ctrl+D elsewhere", () => {
     expect(isPushToTalkShortcut(event({ metaKey: true }), "MacIntel")).toBe(true);
+    expect(isPushToTalkShortcut(event({ metaKey: true }), "iPad")).toBe(true);
     expect(isPushToTalkShortcut(event({ ctrlKey: true }), "Win32")).toBe(true);
   });
 
   it("keeps repeated chord events identifiable while rejecting invalid modifiers", () => {
+    expect(isPushToTalkShortcut(event({ ctrlKey: true, repeat: true }), "Win32")).toBe(true);
     expect(isPushToTalkShortcut(event({ metaKey: true, repeat: true }), "MacIntel")).toBe(true);
     expect(isPushToTalkShortcut(event({ metaKey: true, shiftKey: true }), "MacIntel")).toBe(false);
     expect(isPushToTalkShortcut(event({ ctrlKey: true }), "MacIntel")).toBe(false);
@@ -40,9 +42,10 @@ describe("isPushToTalkShortcut", () => {
     );
   });
 
-  it("ends on either chord key, including modifier release when macOS swallows KeyD keyup", () => {
+  it("ends recording when either half of the platform chord is released", () => {
     expect(isPushToTalkReleaseEvent({ code: "KeyD", key: "d" }, "MacIntel")).toBe(true);
     expect(isPushToTalkReleaseEvent({ code: "MetaLeft", key: "Meta" }, "MacIntel")).toBe(true);
+    expect(isPushToTalkReleaseEvent({ code: "KeyD", key: "d" }, "Win32")).toBe(true);
     expect(isPushToTalkReleaseEvent({ code: "ControlRight", key: "Control" }, "Win32")).toBe(true);
     expect(isPushToTalkReleaseEvent({ code: "KeyE", key: "e" }, "MacIntel")).toBe(false);
   });

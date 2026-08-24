@@ -81,7 +81,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
   it.effect("compiles valid rule with parsed when AST", () =>
     Effect.sync(() => {
       const compiled = Keybindings.compileResolvedKeybindingRule({
-        key: "mod+d",
+        key: "mod+g",
         command: "terminal.split",
         when: "terminalOpen && !terminalFocus",
       });
@@ -89,7 +89,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       assert.deepEqual(compiled, {
         command: "terminal.split",
         shortcut: {
-          key: "d",
+          key: "g",
           metaKey: false,
           ctrlKey: false,
           shiftKey: false,
@@ -138,7 +138,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
       assert.isNull(
         Keybindings.compileResolvedKeybindingRule({
-          key: "mod+d",
+          key: "mod+g",
           command: "terminal.split",
           when: "terminalFocus && (",
         }),
@@ -146,7 +146,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
       assert.isNull(
         Keybindings.compileResolvedKeybindingRule({
-          key: "mod+d",
+          key: "mod+g",
           command: "terminal.split",
           when: `${"!".repeat(300)}terminalFocus`,
         }),
@@ -203,9 +203,44 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       assert.equal(defaultsByCommand.get("sidebar.toggle"), "mod+b");
       assert.equal(defaultsByCommand.get("rightPanel.toggle"), "mod+alt+b");
       assert.equal(defaultsByCommand.get("terminal.splitVertical"), "mod+shift+d");
+      assert.isFalse(Keybindings.DEFAULT_KEYBINDINGS.some((binding) => binding.key === "mod+d"));
       assert.equal(defaultsByCommand.get("modelPicker.jump.1"), "mod+1");
       assert.equal(defaultsByCommand.get("modelPicker.jump.9"), "mod+9");
     }),
+  );
+
+  it.effect("removes legacy mod+d command bindings during startup", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
+        { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+      ]);
+
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.isFalse(persisted.some((entry) => entry.key === "mod+d"));
+      assert.isTrue(persisted.some((entry) => entry.command === "script.run-tests.run"));
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it.effect("rejects assigning the voice transcription chord to a command", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        return yield* keybindings.upsertKeybindingRule({
+          key: "mod+d",
+          command: "diff.toggle",
+        });
+      }).pipe(toDetailResult);
+
+      assertFailure(result, "Cmd+D and Ctrl+D are reserved for voice transcription");
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
   it.effect("uses defaults in runtime when config is malformed without overriding file", () =>
@@ -587,7 +622,7 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         yield* Effect.all(
           commands.map((command, index) =>
             keybindings.upsertKeybindingRule({
-              key: `mod+${String.fromCharCode(97 + index)}`,
+              key: `mod+${String.fromCharCode(97 + index + (index >= 3 ? 1 : 0))}`,
               command,
             }),
           ),

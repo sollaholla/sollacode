@@ -23,6 +23,8 @@ describe("ProviderTaskPanel", () => {
     expect(markup).toContain('aria-label="Agents and tasks"');
     expect(markup).toContain("flex-col");
     expect(markup).toContain("max-h-[45%]");
+    expect(markup).toContain("cursor-pointer");
+    expect(markup).toContain("hover:bg-accent");
     expect(markup).not.toContain("fixed inset-0");
     expect(markup).not.toContain('role="dialog"');
   });

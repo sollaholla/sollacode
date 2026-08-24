@@ -103,7 +103,12 @@ import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
 import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
 import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
-import { createAgentThread, deleteAgentThread, openAgentBuilderThread } from "./vm/agentThread.ts";
+import {
+  createAgentThread,
+  deleteAgentThread,
+  notifyAgentBlockerResolved,
+  openAgentBuilderThread,
+} from "./vm/agentThread.ts";
 import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -2805,13 +2810,28 @@ const makeWsRpcLayer = (
         [WS_METHODS.vmAgentBlockerResolve]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentBlockerResolve,
-            vmAgentWorkspace
-              .resolveBlocker({
+            Effect.gen(function* () {
+              const resolvedBy = input.dismissed === true ? "dismissed" : "user";
+              const resolved = yield* vmAgentWorkspace.resolveBlocker({
                 vmAgentId: input.vmAgentId,
                 blockerId: input.blockerId,
-                resolvedBy: input.dismissed === true ? "dismissed" : "user",
-              })
-              .pipe(Effect.asVoid),
+                resolvedBy,
+              });
+              // Only on a real transition: resolving an already-resolved
+              // blocker (a double click, two clients racing) must not start a
+              // second turn saying the same thing.
+              if (Option.isNone(resolved)) return;
+              const agent = yield* vmAgentStore
+                .getById(input.vmAgentId)
+                .pipe(Effect.orElseSucceed(() => Option.none()));
+              const threadId = Option.isSome(agent) ? agent.value.threadId : null;
+              if (threadId === null) return;
+              yield* notifyAgentBlockerResolved({
+                threadId,
+                title: resolved.value.title,
+                resolvedBy,
+              });
+            }).pipe(Effect.asVoid),
             { "rpc.aggregate": "vm-workspace" },
           ),
         [WS_METHODS.vmAgentNotificationPreferencesUpdate]: (input) =>

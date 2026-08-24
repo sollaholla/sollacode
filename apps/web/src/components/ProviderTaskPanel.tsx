@@ -129,13 +129,15 @@ export function ProviderTaskPanel(props: {
     >
       {/* Styled to read as a sibling of the Artifacts shelf directly above it:
           same row height, muted label, and count pill. */}
-      <header className="flex min-h-11 shrink-0 items-center gap-2 px-3">
+      <header className="relative flex min-h-11 shrink-0 items-center gap-2 px-3">
         <button
           type="button"
           aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand agents and tasks" : "Collapse agents and tasks"}
           onClick={() => setCollapsed(!collapsed)}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left text-xs font-medium text-muted-foreground hover:text-foreground"
-        >
+          className="peer absolute inset-0 cursor-pointer text-left text-xs font-medium text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+        <div className="pointer-events-none z-10 flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium text-muted-foreground peer-hover:text-foreground peer-focus-visible:text-foreground">
           <ChevronDown
             aria-hidden
             className={cn("size-3.5 shrink-0 transition-transform", collapsed && "-rotate-90")}
@@ -146,8 +148,8 @@ export function ProviderTaskPanel(props: {
           <h2 className="truncate">
             {activeCount > 0 ? `Agents & tasks · ${activeCount} running` : "Agents & tasks"}
           </h2>
-        </button>
-        <div className="flex shrink-0 items-center gap-1.5">
+        </div>
+        <div className="z-10 flex shrink-0 items-center gap-1.5">
           {/*
            * Clears finished, failed, stopped and stale rows — never running
            * ones. A bulk control gets used without reading the list, so it must
@@ -163,7 +165,7 @@ export function ProviderTaskPanel(props: {
               Clear
             </button>
           ) : null}
-          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground tabular-nums">
+          <span className="pointer-events-none rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground tabular-nums peer-hover:text-foreground peer-focus-visible:text-foreground">
             {total}
           </span>
         </div>

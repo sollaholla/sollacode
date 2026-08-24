@@ -62,6 +62,32 @@ describe("loadPreviewWebviewConfig", () => {
     }),
   );
 
+  it.effect("forwards an inherited browser-profile owner separately from the host thread", () =>
+    Effect.gen(function* () {
+      const profileThreadId = ThreadId.make("agent-thread");
+      let requestedProfileThreadId: ThreadId | undefined;
+      const config = {
+        partition: "persist:test-preview",
+        webPreferences: "sandbox=yes",
+        preloadUrl: null,
+      };
+      const result = yield* loadPreviewWebviewConfig(
+        environmentId,
+        threadId,
+        {
+          getPreviewConfig: (_environment, _thread, profileThread) => {
+            requestedProfileThreadId = profileThread;
+            return Promise.resolve(config);
+          },
+        },
+        profileThreadId,
+      );
+
+      expect(requestedProfileThreadId).toBe(profileThreadId);
+      expect(result).toEqual(config);
+    }),
+  );
+
   it.effect("omits the thread id for threadless callers", () =>
     Effect.gen(function* () {
       let requestedThreadId: ThreadId | null | undefined = null;

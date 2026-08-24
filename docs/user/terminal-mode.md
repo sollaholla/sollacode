@@ -64,11 +64,12 @@ and forth.
   fullscreen live on each pane heading, not on the group rail.
 - The provider usage pill appears top-center - the same placement the New
   Thread view uses - since terminal mode hides the composer footer.
-- Hold the push-to-talk shortcut (⌘D on macOS, Ctrl+D elsewhere) to dictate
-  into the selected terminal: while a terminal pane is focused or terminal
-  mode is active, the transcript is typed into that terminal instead of the
-  chat composer. A listening/transcribing chip floats bottom-center while the
-  recording is in flight.
+- Hold Cmd+D on macOS or Ctrl+D on Windows and Linux to dictate into the selected terminal:
+  while a terminal pane is focused or terminal mode is active, the transcript
+  is typed into that terminal instead of the chat composer. A
+  listening/transcribing chip floats bottom-center while the recording is in
+  flight. The chord is reserved exclusively for voice transcription rather
+  than terminal splitting or the diff viewer.
 - All terminal keybindings work (`terminal.split`, `terminal.new`,
   `terminal.close`, navigation). Terminal mode and the drawer share the
   thread's terminals and layout, but their chrome is separate: mode fills

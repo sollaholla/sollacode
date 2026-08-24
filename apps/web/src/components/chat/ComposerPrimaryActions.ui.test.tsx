@@ -205,7 +205,7 @@ describe("composer push-to-talk action", () => {
     expect(markup).toContain('disabled=""');
   });
 
-  it("uses the platform shortcut in every state-aware action label", () => {
+  it("shows the dedicated push-to-talk chord for each platform", () => {
     expect(formatPushToTalkActionLabel(null, "MacIntel")).toBe(
       "Unmute microphone — hold to record (Cmd+D)",
     );
