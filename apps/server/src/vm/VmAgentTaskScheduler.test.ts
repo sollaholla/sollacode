@@ -12,6 +12,8 @@ import {
   VmId,
   type OrchestrationCommand,
   type VmAgent,
+  type VmAgentCollaborationSnapshot,
+  type VmAgentDelegation,
   type VmAgentTask,
   type VmAgentTaskRun,
 } from "@t3tools/contracts";
@@ -28,14 +30,34 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentCollaborationStore } from "../persistence/Services/VmAgentCollaborations.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
+import { VmAgentCollaboration } from "./VmAgentCollaboration.ts";
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
 import {
   MAX_RUN_START_RETRIES,
   RUN_DISPATCH_DEADLINE_MS,
+  delegationWorkerThreadProvenance,
   taskPrompt,
   VmAgentTaskScheduler,
-  VmAgentTaskSchedulerLive,
+  VmAgentTaskSchedulerLive as VmAgentTaskSchedulerLiveBase,
 } from "./VmAgentTaskScheduler.ts";
+
+it("keeps ephemeral workers on the source agent's ultimate browser profile", () => {
+  const browserRoot = ThreadId.make("thread-browser-root");
+  assert.deepStrictEqual(
+    delegationWorkerThreadProvenance({
+      sourceThreadId: threadId,
+      inheritedBrowserProfileThreadId: browserRoot,
+    }),
+    {
+      createdByThreadId: threadId,
+      browserProfileThreadId: browserRoot,
+    },
+  );
+  assert.deepStrictEqual(delegationWorkerThreadProvenance({ sourceThreadId: threadId }), {
+    createdByThreadId: threadId,
+    browserProfileThreadId: threadId,
+  });
+});
 
 const iso = "2026-08-21T20:00:00.000Z";
 const vmAgentId = VmAgentId.make("agent-scheduler");
@@ -86,11 +108,128 @@ const agent: VmAgent = {
   updatedAt: iso,
 };
 
+it.effect("dispatches a new ephemeral worker with transitive browser provenance", () =>
+  Effect.gen(function* () {
+    const browserRootThreadId = ThreadId.make("thread-browser-root");
+    const delegationId = VmAgentDelegationId.make("delegation-new-worker");
+    const workerThreadId = ThreadId.make(`delegation-worker:${delegationId}`);
+    const delegatedTask = {
+      ...task,
+      schedule: { kind: "once" as const, runAt: iso },
+      notificationPolicy: "never" as const,
+    };
+    const delegatedRun = {
+      ...run,
+      runId: VmAgentTaskRunId.make("run-new-worker"),
+    };
+    const delegation = {
+      delegationId,
+      rootVmAgentId: vmAgentId,
+      sourceVmAgentId: vmAgentId,
+      targetVmAgentId: null,
+      target: { kind: "ephemeral", label: "Focused worker" },
+      workerThreadId: null,
+      taskId: delegatedTask.taskId,
+      runId: delegatedRun.runId,
+      title: "Inspect inherited browser state",
+      task: "Verify the signed-in browser session.",
+      completionCriteria: [],
+      requestedCapabilities: ["browser"],
+      status: "queued",
+    } as never;
+    const commands: OrchestrationCommand[] = [];
+    const started = yield* Deferred.make<void>();
+    let claimed = false;
+
+    const storeLayer = Layer.mock(VmAgentWorkspaceStore)({
+      listRunObservations: () => Effect.succeed([]),
+      claimNextDue: () =>
+        Effect.sync(() => {
+          if (claimed) return Option.none();
+          claimed = true;
+          return Option.some({ task: delegatedTask, run: delegatedRun });
+        }),
+      getTask: () => Effect.succeed(Option.some(delegatedTask)),
+      setRunRunning: () => Effect.void,
+      snapshot: () => Effect.succeed({ blockers: [] } as never),
+    });
+    const collaborationStoreLayer = Layer.mock(VmAgentCollaborationStore)({
+      listExpired: () => Effect.succeed([]),
+      getByTaskId: () => Effect.succeed(Option.some(delegation)),
+      markRunClaimed: () => Effect.void,
+      setWorkerThread: ({ threadId: assignedThreadId }) =>
+        Effect.sync(() => assert.strictEqual(assignedThreadId, workerThreadId)),
+      markRunning: () => Effect.void,
+      listMessages: () => Effect.succeed([]),
+    });
+    const projectionLayer = Layer.mock(ProjectionSnapshotQuery)({
+      getThreadShellById: (requestedThreadId) =>
+        Effect.succeed(
+          requestedThreadId === workerThreadId
+            ? Option.none()
+            : Option.some({
+                id: threadId,
+                projectId: ProjectId.make("solla-agents"),
+                title: "Scheduler",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("codex"),
+                  model: "gpt-5",
+                },
+                runtimeMode: "full-access",
+                interactionMode: "agent",
+                browserProfileThreadId: browserRootThreadId,
+                latestTurn: null,
+                pendingWork: null,
+              } as never),
+        ),
+    });
+    const engineLayer = Layer.mock(OrchestrationEngineService)({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          commands.push(command);
+          if (command.type === "thread.turn.start") {
+            return Deferred.succeed(started, undefined);
+          }
+          return Effect.void;
+        }).pipe(Effect.flatten, Effect.as({ sequence: 1 })),
+    });
+    const dependencies = Layer.mergeAll(
+      storeLayer,
+      collaborationStoreLayer,
+      Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(agent)) }),
+      projectionLayer,
+      Layer.mock(VmAgentWorkspace)({ refresh: () => Effect.void }),
+      engineLayer,
+    );
+    const schedulerLayer = VmAgentTaskSchedulerLive.pipe(Layer.provide(dependencies));
+
+    yield* Effect.gen(function* () {
+      const scheduler = yield* VmAgentTaskScheduler;
+      yield* scheduler.start();
+      yield* Deferred.await(started);
+      const fork = commands.find((command) => command.type === "thread.fork");
+      assert.isDefined(fork);
+      if (fork?.type === "thread.fork") {
+        assert.strictEqual(fork.threadId, workerThreadId);
+        assert.strictEqual(fork.sourceThreadId, threadId);
+        assert.strictEqual(fork.createdByThreadId, threadId);
+        assert.strictEqual(fork.browserProfileThreadId, browserRootThreadId);
+      }
+    }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+  }),
+);
+
 const collaborationLayer = Layer.mock(VmAgentCollaborationStore)({
   getByRunId: () => Effect.succeed(Option.none()),
   getByTaskId: () => Effect.succeed(Option.none()),
   listExpired: () => Effect.succeed([]),
 });
+const collaborationUpdatesLayer = Layer.mock(VmAgentCollaboration)({
+  refresh: Effect.void,
+});
+const VmAgentTaskSchedulerLive = VmAgentTaskSchedulerLiveBase.pipe(
+  Layer.provide(collaborationUpdatesLayer),
+);
 
 it.effect("defers a queued task while the dedicated conversation is busy, then dispatches it", () =>
   Effect.gen(function* () {
@@ -656,6 +795,263 @@ it.effect(
         yield* Deferred.await(drained);
         assert.deepStrictEqual(order.slice(0, 3), ["cancel", "interrupt", "claim"]);
       }).pipe(Effect.provide(schedulerLayer), Effect.scoped);
+    }),
+);
+
+it.effect(
+  "publishes running, message-delivery, and completion revisions to collaboration subscribers",
+  () =>
+    Effect.gen(function* () {
+      const delegationId = VmAgentDelegationId.make("delegation-lifecycle-refresh");
+      const lifecycleTask = {
+        ...task,
+        taskId: VmAgentTaskId.make("task-lifecycle-refresh"),
+        schedule: { kind: "once" as const, runAt: iso },
+        notificationPolicy: "never" as const,
+      };
+      let lifecycleRun = {
+        ...run,
+        runId: VmAgentTaskRunId.make("run-lifecycle-refresh"),
+        taskId: lifecycleTask.taskId,
+      };
+      const identity = {
+        vmAgentId,
+        name: agent.name,
+        handle: agent.handle,
+        purpose: agent.purpose,
+      };
+      let delegation: VmAgentDelegation = {
+        delegationId,
+        rootVmAgentId: vmAgentId,
+        sourceVmAgentId: vmAgentId,
+        rootDelegationId: null,
+        parentDelegationId: null,
+        depth: 1,
+        target: { kind: "agent", vmAgentId },
+        targetVmAgentId: vmAgentId,
+        workerThreadId: null,
+        rootAgentSnapshot: identity,
+        sourceAgentSnapshot: identity,
+        targetAgentSnapshot: identity,
+        taskId: lifecycleTask.taskId,
+        runId: null,
+        title: "Lifecycle refresh",
+        task: "Verify every visible worker lifecycle transition.",
+        completionCriteria: [],
+        requestedCapabilities: [],
+        status: "queued",
+        followupCount: 1,
+        messageCount: 2,
+        revision: 1,
+        createdAt: iso,
+        startedAt: null,
+        completedAt: null,
+        expiresAt: "2026-08-21T20:30:00.000Z",
+        updatedAt: iso,
+        result: null,
+        error: null,
+      } as never;
+      let messageDelivery: "pending" | "delivered" = "pending";
+      let claimed = false;
+      let completionReady = false;
+      let completionObserved = false;
+      const dispatched = yield* Deferred.make<void>();
+      const deliveredRevision = yield* Deferred.make<void>();
+      const completedRevision = yield* Deferred.make<void>();
+      const observed: Array<{
+        readonly revision: number;
+        readonly status: string;
+        readonly messageDelivery: "pending" | "delivered";
+      }> = [];
+      const subscribers = new Set<
+        (snapshot: VmAgentCollaborationSnapshot) => Effect.Effect<void>
+      >();
+      const snapshot = (): VmAgentCollaborationSnapshot =>
+        ({
+          type: "snapshot",
+          agents: [],
+          delegations: [
+            {
+              delegation: {
+                delegationId,
+                revision: delegation.revision,
+                status: delegation.status,
+              },
+              rootAgent: null,
+              sourceAgent: null,
+              targetAgent: null,
+              latestMessage: null,
+            },
+          ],
+        }) as never;
+      const updatesLayer = Layer.mock(VmAgentCollaboration)({
+        subscribe: (listener) =>
+          Effect.gen(function* () {
+            subscribers.add(listener);
+            yield* listener(snapshot());
+            return () => {
+              subscribers.delete(listener);
+            };
+          }),
+        refresh: Effect.suspend(() =>
+          Effect.forEach(subscribers, (listener) => listener(snapshot()), { discard: true }),
+        ),
+      });
+      const collaborationStoreLayer = Layer.mock(VmAgentCollaborationStore)({
+        getByRunId: () => Effect.succeed(Option.some(delegation)),
+        getByTaskId: () => Effect.succeed(Option.some(delegation)),
+        listMessages: () =>
+          Effect.succeed([
+            {
+              messageId: VmAgentDelegationMessageId.make("lifecycle-pending-message"),
+              delegationId,
+              sequence: 2,
+              sender: "source-agent",
+              senderVmAgentId: vmAgentId,
+              kind: "note",
+              delivery: messageDelivery,
+              text: "Carry this follow-up into the worker turn.",
+              createdAt: iso,
+            },
+          ]),
+        listExpired: () => Effect.succeed([]),
+        markRunClaimed: ({ runId, updatedAt }) =>
+          Effect.sync(() => {
+            delegation = {
+              ...delegation,
+              runId,
+              revision: delegation.revision + 1,
+              updatedAt,
+            };
+          }),
+        markRunning: ({ startedAt }) =>
+          Effect.sync(() => {
+            delegation = {
+              ...delegation,
+              status: "running",
+              startedAt,
+              revision: delegation.revision + 1,
+              updatedAt: startedAt,
+            };
+          }),
+        markMessageDelivered: ({ updatedAt }) =>
+          Effect.sync(() => {
+            messageDelivery = "delivered";
+            delegation = {
+              ...delegation,
+              revision: delegation.revision + 1,
+              updatedAt,
+            };
+          }),
+        complete: ({ completedAt }) =>
+          Effect.sync(() => {
+            delegation = {
+              ...delegation,
+              status: "completed",
+              completedAt,
+              revision: delegation.revision + 1,
+              updatedAt: completedAt,
+            };
+          }),
+      });
+      const workspaceStoreLayer = Layer.mock(VmAgentWorkspaceStore)({
+        listRunObservations: () =>
+          Effect.sync(() => {
+            if (!completionReady || completionObserved) return [];
+            completionObserved = true;
+            return [
+              {
+                run: lifecycleRun,
+                projectionState: "completed" as const,
+                projectionTurnId: "turn-lifecycle-refresh",
+                assistantText: "Lifecycle complete.",
+              },
+            ];
+          }),
+        getTask: () => Effect.succeed(Option.some(lifecycleTask)),
+        claimNextDue: () =>
+          Effect.sync(() => {
+            if (claimed) return Option.none();
+            claimed = true;
+            return Option.some({ task: lifecycleTask, run: lifecycleRun });
+          }),
+        setRunBooting: () => Effect.void,
+        setRunRunning: ({ messageId, startedAt }) =>
+          Effect.sync(() => {
+            lifecycleRun = {
+              ...lifecycleRun,
+              status: "running",
+              messageId,
+              startedAt,
+              updatedAt: startedAt,
+            };
+          }),
+        completeRun: () => Effect.void,
+        snapshot: () => Effect.succeed({ blockers: [] } as never),
+      });
+      const dependencies = Layer.mergeAll(
+        workspaceStoreLayer,
+        collaborationStoreLayer,
+        updatesLayer,
+        Layer.mock(VmAgentStore)({ getById: () => Effect.succeed(Option.some(agent)) }),
+        Layer.mock(ProjectionSnapshotQuery)({
+          getThreadShellById: () =>
+            Effect.succeed(
+              Option.some({ latestTurn: { state: "completed" }, pendingWork: null } as never),
+            ),
+        }),
+        Layer.mock(VmAgentWorkspace)({
+          refresh: () => Effect.void,
+          snapshot: () => Effect.succeed({ notificationPreferences: { enabled: false } } as never),
+        }),
+        Layer.mock(OrchestrationEngineService)({
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              if (command.type === "thread.turn.start") {
+                yield* Deferred.succeed(dispatched, undefined).pipe(Effect.ignore);
+              }
+              return { sequence: 1 } as never;
+            }),
+        }),
+      );
+      const testLayer = VmAgentTaskSchedulerLiveBase.pipe(Layer.provideMerge(dependencies));
+
+      yield* Effect.gen(function* () {
+        const collaborationUpdates = yield* VmAgentCollaboration;
+        const unsubscribe = yield* collaborationUpdates.subscribe((next) =>
+          Effect.gen(function* () {
+            const current = next.delegations[0];
+            if (!current) return;
+            observed.push({
+              revision: current.delegation.revision,
+              status: current.delegation.status,
+              messageDelivery,
+            });
+            if (current.delegation.revision === 4) {
+              yield* Deferred.succeed(deliveredRevision, undefined).pipe(Effect.ignore);
+            }
+            if (current.delegation.revision === 5) {
+              yield* Deferred.succeed(completedRevision, undefined).pipe(Effect.ignore);
+            }
+          }),
+        );
+        const scheduler = yield* VmAgentTaskScheduler;
+        yield* scheduler.start();
+        yield* Deferred.await(dispatched);
+        yield* Deferred.await(deliveredRevision);
+        completionReady = true;
+        yield* scheduler.wake();
+        yield* Deferred.await(completedRevision);
+        unsubscribe();
+
+        assert.deepStrictEqual(observed, [
+          { revision: 1, status: "queued", messageDelivery: "pending" },
+          { revision: 2, status: "queued", messageDelivery: "pending" },
+          { revision: 3, status: "running", messageDelivery: "pending" },
+          { revision: 4, status: "running", messageDelivery: "delivered" },
+          { revision: 5, status: "completed", messageDelivery: "delivered" },
+        ]);
+      }).pipe(Effect.provide(testLayer), Effect.scoped);
     }),
 );
 

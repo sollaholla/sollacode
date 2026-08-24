@@ -3,6 +3,7 @@ import type {
   MessageId,
   VmAgentDelegation,
   VmAgentDelegationId,
+  VmAgentDelegationListItem,
   VmAgentDelegationMessage,
   VmAgentDelegationMessageId,
   VmAgentDelegationStatus,
@@ -47,11 +48,24 @@ export interface CompleteVmAgentDelegationInput {
   readonly messageId?: VmAgentDelegationMessageId | undefined;
 }
 
+export interface VmAgentDelegationMessagePage {
+  readonly messages: ReadonlyArray<VmAgentDelegationMessage>;
+  readonly hasEarlierMessages: boolean;
+}
+
 export interface VmAgentCollaborationStoreShape {
   readonly list: () => Effect.Effect<ReadonlyArray<VmAgentDelegation>, ProjectionRepositoryError>;
   readonly listForAgent: (
     vmAgentId: VmAgentId,
   ) => Effect.Effect<ReadonlyArray<VmAgentDelegation>, ProjectionRepositoryError>;
+  /** Bounded rows for snapshots and list surfaces; full payload columns never cross the SQL boundary. */
+  readonly listSummaries: () => Effect.Effect<
+    ReadonlyArray<VmAgentDelegationListItem>,
+    ProjectionRepositoryError
+  >;
+  readonly listSummariesForAgent: (
+    vmAgentId: VmAgentId,
+  ) => Effect.Effect<ReadonlyArray<VmAgentDelegationListItem>, ProjectionRepositoryError>;
   readonly getById: (
     delegationId: VmAgentDelegationId,
   ) => Effect.Effect<Option.Option<VmAgentDelegation>, ProjectionRepositoryError>;
@@ -71,6 +85,11 @@ export interface VmAgentCollaborationStoreShape {
   readonly listMessages: (
     delegationId: VmAgentDelegationId,
   ) => Effect.Effect<ReadonlyArray<VmAgentDelegationMessage>, ProjectionRepositoryError>;
+  readonly listMessagesPage: (
+    delegationId: VmAgentDelegationId,
+    beforeSequence: number | null,
+    limit: number,
+  ) => Effect.Effect<VmAgentDelegationMessagePage, ProjectionRepositoryError>;
   readonly create: (
     input: CreateVmAgentDelegationInput,
   ) => Effect.Effect<VmAgentDelegation, ProjectionRepositoryError>;

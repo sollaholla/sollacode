@@ -1,9 +1,15 @@
 import {
   CommandId,
   DEFAULT_VM_AGENT_DELEGATION_LIMITS,
+  VM_AGENT_COLLABORATION_LIST_LIMIT,
+  VM_AGENT_DELEGATION_DETAIL_PAGE_SIZE,
+  VM_AGENT_DELEGATION_MAX_MESSAGES,
+  VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+  VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH,
   type VmAgent,
   type VmAgentCollaborationAgentSummary,
   type VmAgentCollaborationError,
+  type VmAgentCollaborationIdentitySummary,
   VmAgentCollaborationOperationError,
   type VmAgentCollaborationReceipt,
   type VmAgentCollaborationSnapshot,
@@ -11,6 +17,7 @@ import {
   type VmAgentDelegationDetail,
   VmAgentDelegationId,
   VmAgentDelegationInvalidStateError,
+  type VmAgentDelegationListItem,
   VmAgentDelegationLimitError,
   VmAgentDelegationMessageId,
   VmAgentDelegationNotFoundError,
@@ -18,10 +25,13 @@ import {
   type VmAgentDelegationSummary,
   type VmAgentId,
   type VmAgentIdentitySnapshot,
+  type VmAgentLegacyCollaborationSnapshot,
+  type VmAgentLegacyDelegationSummary,
   VmAgentNotFoundError,
   VmAgentTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeBuffer from "node:buffer";
 import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -35,6 +45,9 @@ import { VmAgentCollaborationStore } from "../persistence/Services/VmAgentCollab
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 
 type CollaborationListener = (snapshot: VmAgentCollaborationSnapshot) => Effect.Effect<void>;
+type LegacyCollaborationListener = (
+  snapshot: VmAgentLegacyCollaborationSnapshot,
+) => Effect.Effect<void>;
 export type CollaborationActor =
   | { readonly kind: "user" }
   | { readonly kind: "agent"; readonly vmAgentId: VmAgentId }
@@ -64,9 +77,16 @@ export interface VmAgentCollaborationShape {
   readonly subscribe: (
     listener: CollaborationListener,
   ) => Effect.Effect<() => void, VmAgentCollaborationError>;
+  readonly subscribeLegacy: (
+    listener: LegacyCollaborationListener,
+  ) => Effect.Effect<() => void, VmAgentCollaborationError>;
   readonly getDetail: (
     actor: CollaborationActor,
     delegationId: VmAgentDelegationId,
+    options?: {
+      readonly beforeSequence?: number | undefined;
+      readonly messageLimit?: number | undefined;
+    },
   ) => Effect.Effect<VmAgentDelegationDetail, VmAgentCollaborationError>;
   readonly delegate: (
     sourceVmAgentId: VmAgentId,
@@ -100,6 +120,107 @@ export class VmAgentCollaboration extends Context.Service<
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const activeStatuses = new Set(["pending-approval", "queued", "running", "waiting-input"]);
 
+/** Leaves the WebSocket buffer's 512-byte accounting overhead inside its 2 MiB item cap. */
+export const VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024 - 512;
+
+/** Absent preserves the pre-pagination 200-message detail response. */
+export const delegationDetailMessageLimit = (paged: true | undefined) =>
+  paged === true ? VM_AGENT_DELEGATION_DETAIL_PAGE_SIZE : VM_AGENT_DELEGATION_MAX_MESSAGES;
+
+/** Absent preserves the full-row snapshot expected by clients from before compact rows. */
+export const collaborationSubscriptionMode = (compact: true | undefined) =>
+  compact === true ? ("compact" as const) : ("legacy" as const);
+
+const jsonBytes = (value: unknown) => NodeBuffer.Buffer.byteLength(JSON.stringify(value), "utf8");
+
+export const collaborationSnapshotPage = <A>(rows: ReadonlyArray<A>) => ({
+  rows: rows.slice(0, VM_AGENT_COLLABORATION_LIST_LIMIT),
+  hasMore: rows.length > VM_AGENT_COLLABORATION_LIST_LIMIT,
+});
+
+export const boundedCollaborationSnapshot = (
+  agents: ReadonlyArray<VmAgentCollaborationAgentSummary>,
+  delegations: ReadonlyArray<VmAgentDelegationSummary>,
+  sourceHasMoreDelegations = false,
+): VmAgentCollaborationSnapshot => {
+  const boundedAgents: Array<VmAgentCollaborationAgentSummary> = [];
+  const boundedDelegations: Array<VmAgentDelegationSummary> = [];
+  // `false` is one byte longer than `true`, so this is the worst-case fixed
+  // envelope regardless of which truncation markers the final snapshot uses.
+  let bytes = jsonBytes({
+    type: "snapshot",
+    compact: true,
+    hasMoreAgents: false,
+    hasMoreDelegations: false,
+    agents: [],
+    delegations: [],
+  });
+  // A registry with thousands of agents must not consume the entire envelope
+  // before the first work row. Reserve the exact first-row cost so a non-empty
+  // source snapshot can never be rendered as an empty handoff list.
+  const firstDelegationBytes = delegations[0] === undefined ? 0 : jsonBytes(delegations[0]);
+  for (const agent of agents) {
+    const added = jsonBytes(agent) + (boundedAgents.length > 0 ? 1 : 0);
+    if (bytes + added + firstDelegationBytes > VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES) {
+      break;
+    }
+    boundedAgents.push(agent);
+    bytes += added;
+  }
+  for (const delegation of delegations) {
+    const added = jsonBytes(delegation) + (boundedDelegations.length > 0 ? 1 : 0);
+    if (bytes + added > VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES) break;
+    boundedDelegations.push(delegation);
+    bytes += added;
+  }
+  return {
+    type: "snapshot",
+    compact: true,
+    hasMoreAgents: boundedAgents.length < agents.length,
+    hasMoreDelegations: sourceHasMoreDelegations || boundedDelegations.length < delegations.length,
+    agents: boundedAgents,
+    delegations: boundedDelegations,
+  };
+};
+
+export const boundedLegacyCollaborationSnapshot = (
+  agents: ReadonlyArray<VmAgentCollaborationAgentSummary>,
+  delegations: ReadonlyArray<VmAgentLegacyDelegationSummary>,
+  sourceHasMoreDelegations = false,
+): VmAgentLegacyCollaborationSnapshot => {
+  const boundedAgents: Array<VmAgentCollaborationAgentSummary> = [];
+  const boundedDelegations: Array<VmAgentLegacyDelegationSummary> = [];
+  let bytes = jsonBytes({
+    type: "snapshot",
+    hasMoreAgents: false,
+    hasMoreDelegations: false,
+    agents: [],
+    delegations: [],
+  });
+  const firstDelegationBytes = delegations[0] === undefined ? 0 : jsonBytes(delegations[0]);
+  for (const agent of agents) {
+    const added = jsonBytes(agent) + (boundedAgents.length > 0 ? 1 : 0);
+    if (bytes + added + firstDelegationBytes > VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES) {
+      break;
+    }
+    boundedAgents.push(agent);
+    bytes += added;
+  }
+  for (const delegation of delegations) {
+    const added = jsonBytes(delegation) + (boundedDelegations.length > 0 ? 1 : 0);
+    if (bytes + added > VM_AGENT_COLLABORATION_SNAPSHOT_MAX_BYTES) break;
+    boundedDelegations.push(delegation);
+    bytes += added;
+  }
+  return {
+    type: "snapshot",
+    hasMoreAgents: boundedAgents.length < agents.length,
+    hasMoreDelegations: sourceHasMoreDelegations || boundedDelegations.length < delegations.length,
+    agents: boundedAgents,
+    delegations: boundedDelegations,
+  };
+};
+
 const operationError = (operation: string) => (error: unknown) =>
   new VmAgentCollaborationOperationError({
     operation,
@@ -112,6 +233,91 @@ const identitySnapshot = (agent: VmAgent): VmAgentIdentitySnapshot => ({
   handle: agent.handle,
   purpose: agent.purpose,
 });
+
+const compactIdentity = (
+  identity: Pick<VmAgentIdentitySnapshot, "vmAgentId" | "name" | "handle">,
+): VmAgentCollaborationIdentitySummary => ({
+  vmAgentId: identity.vmAgentId,
+  name: identity.name,
+  handle: identity.handle,
+});
+
+/** Keeps list payloads bounded while avoiding an unmatched UTF-16 surrogate before the ellipsis. */
+export const boundedDelegationPreview = (text: string, maxLength: number) => {
+  if (text.length <= maxLength) return { text, truncated: false } as const;
+  let end = maxLength - 1;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return {
+    text: `${text.slice(0, end).trimEnd()}…`,
+    truncated: true,
+  } as const;
+};
+
+export const delegationListItem = (delegation: VmAgentDelegation): VmAgentDelegationListItem => ({
+  delegationId: delegation.delegationId,
+  rootVmAgentId: delegation.rootVmAgentId,
+  sourceVmAgentId: delegation.sourceVmAgentId,
+  rootDelegationId: delegation.rootDelegationId,
+  parentDelegationId: delegation.parentDelegationId,
+  depth: delegation.depth,
+  target: delegation.target,
+  targetVmAgentId: delegation.targetVmAgentId,
+  rootAgentSnapshot: compactIdentity(delegation.rootAgentSnapshot),
+  sourceAgentSnapshot: compactIdentity(delegation.sourceAgentSnapshot),
+  targetAgentSnapshot:
+    delegation.targetAgentSnapshot === null
+      ? null
+      : compactIdentity(delegation.targetAgentSnapshot),
+  title: delegation.title,
+  taskPreview: boundedDelegationPreview(
+    delegation.task,
+    VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH,
+  ),
+  status: delegation.status,
+  followupCount: delegation.followupCount,
+  messageCount: delegation.messageCount,
+  revision: delegation.revision,
+  createdAt: delegation.createdAt,
+  startedAt: delegation.startedAt,
+  completedAt: delegation.completedAt,
+  expiresAt: delegation.expiresAt,
+  updatedAt: delegation.updatedAt,
+  resultPreview:
+    delegation.result === null
+      ? null
+      : {
+          ...boundedDelegationPreview(
+            delegation.result.summary,
+            VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+          ),
+          completedBy: delegation.result.completedBy,
+          completedAt: delegation.result.completedAt,
+        },
+  errorPreview:
+    delegation.error === null
+      ? null
+      : boundedDelegationPreview(delegation.error, VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH),
+});
+
+export const delegationSummary = (
+  delegation: VmAgentDelegation | VmAgentDelegationListItem,
+  agentsById: ReadonlyMap<VmAgentId, VmAgentCollaborationAgentSummary>,
+): VmAgentDelegationSummary => {
+  const agentIdentity = (vmAgentId: VmAgentId | null) => {
+    if (vmAgentId === null) return null;
+    const agent = agentsById.get(vmAgentId);
+    return agent === undefined ? null : compactIdentity(agent);
+  };
+  const listItem = "taskPreview" in delegation ? delegation : delegationListItem(delegation);
+  return {
+    delegation: listItem,
+    rootAgent: agentIdentity(delegation.rootVmAgentId),
+    sourceAgent: agentIdentity(delegation.sourceVmAgentId),
+    targetAgent: agentIdentity(delegation.targetVmAgentId),
+    latestMessage: null,
+  };
+};
 
 const agentAvailability = (
   agent: VmAgent,
@@ -152,6 +358,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const listeners = new Set<CollaborationListener>();
+  const legacyListeners = new Set<LegacyCollaborationListener>();
 
   const requireAgent = Effect.fn("VmAgentCollaboration.requireAgent")(function* (
     vmAgentId: VmAgentId,
@@ -163,17 +370,10 @@ export const make = Effect.gen(function* () {
     return agent.value;
   });
 
-  const readSnapshot = Effect.fn("VmAgentCollaboration.readSnapshot")(function* (
-    visibleTo?: VmAgentId,
+  const summarizeAgents = Effect.fn("VmAgentCollaboration.summarizeAgents")(function* (
+    agentRows: ReadonlyArray<VmAgent>,
+    delegationRows: ReadonlyArray<Pick<VmAgentDelegation, "status" | "targetVmAgentId">>,
   ) {
-    const [agentRows, delegationRows] = yield* Effect.all([
-      agents.list().pipe(Effect.mapError(operationError("listing agents"))),
-      visibleTo === undefined
-        ? store.list().pipe(Effect.mapError(operationError("listing delegated work")))
-        : store
-            .listForAgent(visibleTo)
-            .pipe(Effect.mapError(operationError("listing delegated work"))),
-    ]);
     const activeByTarget = new Map<string, number>();
     const runningByTarget = new Map<string, number>();
     for (const delegation of delegationRows) {
@@ -189,7 +389,7 @@ export const make = Effect.gen(function* () {
         );
       }
     }
-    const agentSummaries = yield* Effect.forEach(
+    return yield* Effect.forEach(
       agentRows,
       (agent) =>
         (agent.threadId === null
@@ -210,20 +410,49 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: 8 },
     );
-    const byId = new Map(agentSummaries.map((agent) => [agent.vmAgentId, agent]));
-    const delegations: Array<VmAgentDelegationSummary> = delegationRows.map((delegation) => ({
-      delegation,
-      rootAgent: byId.get(delegation.rootVmAgentId) ?? null,
-      sourceAgent: byId.get(delegation.sourceVmAgentId) ?? null,
-      targetAgent:
-        delegation.targetVmAgentId === null ? null : (byId.get(delegation.targetVmAgentId) ?? null),
-      latestMessage: null,
-    }));
-    return {
-      type: "snapshot" as const,
-      agents: agentSummaries,
-      delegations,
-    } satisfies VmAgentCollaborationSnapshot;
+  });
+
+  const readSnapshot = Effect.fn("VmAgentCollaboration.readSnapshot")(function* (
+    visibleTo?: VmAgentId,
+  ) {
+    const [agentRows, delegationRows] = yield* Effect.all([
+      agents.list().pipe(Effect.mapError(operationError("listing agents"))),
+      visibleTo === undefined
+        ? store.listSummaries().pipe(Effect.mapError(operationError("listing delegated work")))
+        : store
+            .listSummariesForAgent(visibleTo)
+            .pipe(Effect.mapError(operationError("listing delegated work"))),
+    ]);
+    const delegationPage = collaborationSnapshotPage(delegationRows);
+    const agentSummaries = yield* summarizeAgents(agentRows, delegationPage.rows);
+    const byId = new Map(agentSummaries.map((agent) => [agent.vmAgentId, agent] as const));
+    const delegations: Array<VmAgentDelegationSummary> = delegationPage.rows.map((delegation) =>
+      delegationSummary(delegation, byId),
+    );
+    return boundedCollaborationSnapshot(agentSummaries, delegations, delegationPage.hasMore);
+  });
+
+  const readLegacySnapshot = Effect.fn("VmAgentCollaboration.readLegacySnapshot")(function* () {
+    const [agentRows, delegationRows] = yield* Effect.all([
+      agents.list().pipe(Effect.mapError(operationError("listing agents"))),
+      store.list().pipe(Effect.mapError(operationError("listing delegated work"))),
+    ]);
+    const delegationPage = collaborationSnapshotPage(delegationRows);
+    const agentSummaries = yield* summarizeAgents(agentRows, delegationPage.rows);
+    const byId = new Map(agentSummaries.map((agent) => [agent.vmAgentId, agent] as const));
+    const delegations: Array<VmAgentLegacyDelegationSummary> = delegationPage.rows.map(
+      (delegation) => ({
+        delegation,
+        rootAgent: byId.get(delegation.rootVmAgentId) ?? null,
+        sourceAgent: byId.get(delegation.sourceVmAgentId) ?? null,
+        targetAgent:
+          delegation.targetVmAgentId === null
+            ? null
+            : (byId.get(delegation.targetVmAgentId) ?? null),
+        latestMessage: null,
+      }),
+    );
+    return boundedLegacyCollaborationSnapshot(agentSummaries, delegations, delegationPage.hasMore);
   });
 
   const snapshot: VmAgentCollaborationShape["snapshot"] = () => readSnapshot();
@@ -231,10 +460,22 @@ export const make = Effect.gen(function* () {
     requireAgent(vmAgentId).pipe(Effect.flatMap(() => readSnapshot(vmAgentId)));
 
   const publish = Effect.fn("VmAgentCollaboration.publish")(function* () {
-    if (listeners.size === 0) return;
-    const next = yield* readSnapshot().pipe(Effect.orElseSucceed(() => null));
-    if (!next) return;
-    for (const listener of listeners) yield* listener(next).pipe(Effect.ignoreCause({ log: true }));
+    if (listeners.size > 0) {
+      const next = yield* readSnapshot().pipe(Effect.orElseSucceed(() => null));
+      if (next) {
+        for (const listener of listeners) {
+          yield* listener(next).pipe(Effect.ignoreCause({ log: true }));
+        }
+      }
+    }
+    if (legacyListeners.size > 0) {
+      const next = yield* readLegacySnapshot().pipe(Effect.orElseSucceed(() => null));
+      if (next) {
+        for (const listener of legacyListeners) {
+          yield* listener(next).pipe(Effect.ignoreCause({ log: true }));
+        }
+      }
+    }
   });
 
   const subscribe: VmAgentCollaborationShape["subscribe"] = (listener) => {
@@ -248,6 +489,22 @@ export const make = Effect.gen(function* () {
       Effect.catchCause((cause) =>
         Effect.sync(() => {
           if (subscribed) listeners.delete(listener);
+        }).pipe(Effect.flatMap(() => Effect.failCause(cause))),
+      ),
+    );
+  };
+
+  const subscribeLegacy: VmAgentCollaborationShape["subscribeLegacy"] = (listener) => {
+    let subscribed = false;
+    return Effect.gen(function* () {
+      legacyListeners.add(listener);
+      subscribed = true;
+      yield* listener(yield* readLegacySnapshot());
+      return () => legacyListeners.delete(listener);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          if (subscribed) legacyListeners.delete(listener);
         }).pipe(Effect.flatMap(() => Effect.failCause(cause))),
       ),
     );
@@ -315,10 +572,10 @@ export const make = Effect.gen(function* () {
 
   const getDetail: VmAgentCollaborationShape["getDetail"] = Effect.fn(
     "VmAgentCollaboration.getDetail",
-  )(function* (actor, delegationId) {
+  )(function* (actor, delegationId, options) {
     const delegation = yield* requireDelegation(delegationId);
     yield* authorize(actor, delegation);
-    const [rootAgent, sourceAgent, targetAgent, messages] = yield* Effect.all([
+    const [rootAgent, sourceAgent, targetAgent, messagePage] = yield* Effect.all([
       getLiveAgentSummary(delegation.rootVmAgentId, 0),
       getLiveAgentSummary(delegation.sourceVmAgentId, 0),
       delegation.targetVmAgentId === null
@@ -327,9 +584,25 @@ export const make = Effect.gen(function* () {
             delegation.targetVmAgentId,
             activeStatuses.has(delegation.status) ? 1 : 0,
           ),
-      store.listMessages(delegationId).pipe(Effect.mapError(operationError("reading messages"))),
+      store
+        .listMessagesPage(
+          delegationId,
+          options?.beforeSequence ?? null,
+          Math.min(
+            VM_AGENT_DELEGATION_MAX_MESSAGES,
+            Math.max(1, options?.messageLimit ?? VM_AGENT_DELEGATION_MAX_MESSAGES),
+          ),
+        )
+        .pipe(Effect.mapError(operationError("reading messages"))),
     ]);
-    return { delegation, rootAgent, sourceAgent, targetAgent, messages };
+    return {
+      delegation,
+      rootAgent,
+      sourceAgent,
+      targetAgent,
+      messages: messagePage.messages,
+      hasEarlierMessages: messagePage.hasEarlierMessages,
+    };
   });
 
   const delegate: VmAgentCollaborationShape["delegate"] = Effect.fn(
@@ -654,6 +927,7 @@ export const make = Effect.gen(function* () {
     snapshot,
     snapshotForAgent,
     subscribe,
+    subscribeLegacy,
     getDetail,
     delegate,
     sendMessage,

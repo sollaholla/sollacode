@@ -1,14 +1,25 @@
 import {
+  EnvironmentId,
   VmAgentDelegationId,
+  VmAgentDelegationMessageId,
   VmAgentId,
-  VmAgentTaskId,
   type VmAgentCollaborationAgentSummary,
   type VmAgentCollaborationSnapshot,
   type VmAgentDelegationSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { agentDelegationsFor, capabilityChips, delegationRole } from "./AgentCollaborationPanel";
+import {
+  agentDelegationsFor,
+  capabilityChips,
+  captureDelegationCancellation,
+  delegationHistoryLoadState,
+  delegationRole,
+  emptyDelegationListCopy,
+  hasEarlierAfterDelegationPage,
+  mergeDelegationMessages,
+} from "./AgentCollaborationPanel";
+import { agentCollaborationDraftKey } from "./agentCollaborationDraft";
 
 const agent = (id: string) =>
   ({
@@ -41,49 +52,34 @@ const delegation = (
     depth: 1,
     target: { kind: "agent", vmAgentId: VmAgentId.make(target) },
     targetVmAgentId: VmAgentId.make(target),
-    workerThreadId: null,
     rootAgentSnapshot: {
       vmAgentId: VmAgentId.make(root),
       name: root,
       handle: root,
-      purpose: `${root} purpose`,
     },
     sourceAgentSnapshot: {
       vmAgentId: VmAgentId.make(source),
       name: source,
       handle: source,
-      purpose: `${source} purpose`,
     },
     targetAgentSnapshot: {
       vmAgentId: VmAgentId.make(target),
       name: target,
       handle: target,
-      purpose: `${target} purpose`,
     },
-    taskId: VmAgentTaskId.make(`task-${id}`),
-    runId: null,
     title: id,
-    task: `${id} task`,
-    completionCriteria: [],
-    requestedCapabilities: [],
+    taskPreview: { text: `${id} task`, truncated: false },
     status: "running",
     followupCount: 0,
     messageCount: 0,
-    effectiveLimits: {
-      maxDepth: 1,
-      maxChildDelegations: 3,
-      maxFollowups: 5,
-      maxMessages: 200,
-      maxWallClockMinutes: 30,
-    },
     revision: 1,
     createdAt: "2026-08-21T00:00:00.000Z",
     startedAt: "2026-08-21T00:00:00.000Z",
     completedAt: null,
     expiresAt: "2026-08-21T00:30:00.000Z",
     updatedAt: "2026-08-21T00:00:00.000Z",
-    result: null,
-    error: null,
+    resultPreview: null,
+    errorPreview: null,
   },
   rootAgent: agent(root),
   sourceAgent: agent(source),
@@ -130,5 +126,112 @@ describe("capabilityChips", () => {
     ).toEqual(["Tasks", "Consult", "Browser"]);
     expect(capabilityChips(["collaboration.receive", "unknown.future"])).toEqual([]);
     expect(capabilityChips(["workspace.tasks", "workspace.tasks"])).toEqual(["Tasks"]);
+  });
+});
+
+describe("collaboration interaction identity", () => {
+  it("keeps cancellation bound to the delegation captured when confirmation opens", () => {
+    let selected = delegation("first-id", "root", "source", "target");
+    const confirmation = captureDelegationCancellation(selected);
+
+    selected = delegation("second-id", "root", "source", "target");
+
+    expect(selected.delegation.delegationId).toBe("second-id");
+    expect(confirmation).toEqual({ delegationId: "first-id", title: "first-id" });
+  });
+
+  it("merges paged messages by sequence without duplicating page boundaries", () => {
+    const message = (sequence: number, text: string) => ({
+      messageId: VmAgentDelegationMessageId.make(`message-${sequence}`),
+      delegationId: VmAgentDelegationId.make("delegation"),
+      sequence,
+      sender: "system" as const,
+      senderVmAgentId: null,
+      kind: "note" as const,
+      delivery: "delivered" as const,
+      text,
+      createdAt: `2026-08-21T00:00:0${sequence}.000Z`,
+    });
+
+    expect(
+      mergeDelegationMessages(
+        [message(3, "old three"), message(4, "four")],
+        [message(1, "one"), message(2, "two"), message(3, "new three")],
+      ).map(({ sequence, text }) => [sequence, text]),
+    ).toEqual([
+      [1, "one"],
+      [2, "two"],
+      [3, "new three"],
+      [4, "four"],
+    ]);
+  });
+
+  it("stops paging when an older host ignores the message cursor", () => {
+    const message = (sequence: number) => ({
+      messageId: VmAgentDelegationMessageId.make(`message-${sequence}`),
+      delegationId: VmAgentDelegationId.make("delegation"),
+      sequence,
+      sender: "system" as const,
+      senderVmAgentId: null,
+      kind: "note" as const,
+      delivery: "delivered" as const,
+      text: `Message ${sequence}`,
+      createdAt: "2026-08-21T00:00:00.000Z",
+    });
+
+    expect(
+      hasEarlierAfterDelegationPage({
+        beforeSequence: 41,
+        page: [message(161), message(200)],
+        mergedMessageCount: 200,
+        totalMessageCount: 240,
+        serverValue: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      hasEarlierAfterDelegationPage({
+        beforeSequence: 41,
+        page: [message(1), message(40)],
+        mergedMessageCount: 80,
+        totalMessageCount: 120,
+        serverValue: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("distinguishes an older-page failure from an in-flight load", () => {
+    const request = { delegationId: VmAgentDelegationId.make("first-id") };
+
+    expect(
+      delegationHistoryLoadState(request, "first-id", { isPending: true, hasError: false }),
+    ).toEqual({ selectedRequest: true, isLoading: true, hasError: false });
+    expect(
+      delegationHistoryLoadState(request, "first-id", { isPending: false, hasError: true }),
+    ).toEqual({ selectedRequest: true, isLoading: false, hasError: true });
+    expect(
+      delegationHistoryLoadState(request, "second-id", { isPending: true, hasError: true }),
+    ).toEqual({ selectedRequest: false, isLoading: false, hasError: false });
+  });
+
+  it("does not claim a bounded empty snapshot has no handoffs", () => {
+    expect(emptyDelegationListCopy(false)).toEqual({
+      title: "No handoffs yet",
+      detail: "Give a bounded task to a named agent or a one-off helper.",
+    });
+    expect(emptyDelegationListCopy(true)).toEqual({
+      title: "Handoff history is bounded",
+      detail: "Some older handoffs are outside this live view.",
+    });
+  });
+
+  it("scopes collaboration drafts by both environment and agent", () => {
+    const agentId = VmAgentId.make("same-agent-id");
+
+    expect(agentCollaborationDraftKey(EnvironmentId.make("mac"), agentId)).not.toBe(
+      agentCollaborationDraftKey(EnvironmentId.make("windows"), agentId),
+    );
+    expect(agentCollaborationDraftKey(EnvironmentId.make("mac"), agentId)).toBe(
+      agentCollaborationDraftKey(EnvironmentId.make("mac"), agentId),
+    );
   });
 });

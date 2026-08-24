@@ -29,6 +29,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
@@ -92,6 +93,7 @@ import {
   resolveAssistantMessageCopyState,
   resolveTimelineDrawDistance,
   resolveTimelineIsAtEnd,
+  resolveTimelineIsExactlyAtEnd,
   shouldMaintainTimelineScrollAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHeightStyle,
@@ -108,6 +110,8 @@ import {
   shouldCommitTimelineOlderNavigation,
   shouldMaintainTimelineVisibleContentPosition,
   shouldClearOlderNavigationIntent,
+  resolveTimelineKeyboardScrollDirection,
+  resolveTimelineManualScrollDirection,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldSnapTimelineToEndOnResize,
   TIMELINE_MOMENTUM_SETTLE_MS,
@@ -464,48 +468,152 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [listRef],
   );
   const olderNavigationIntentRef = useRef(false);
-  // A finger on the list means the position is being decided by the user right
-  // now, so neither the resize correction nor the at-end bookkeeping may treat
-  // the current offset as settled.
+  const [manualFollowSuppressed, setManualFollowSuppressed] = useState(false);
+  // This ref flips in the input event itself. The state copy rerenders
+  // LegendList with maintainScrollAtEnd disabled; the ref also fences any
+  // already-scheduled resize reconciliation before that render commits.
+  const manualFollowSuppressedRef = useRef(false);
+  const followEndRef = useRef(followEnd);
+  followEndRef.current = followEnd;
+  const previousScrollOffsetRef = useRef<number | null>(null);
+  // Touch and pointer contact are kept separate from the momentum timer so a
+  // stationary finger or held scrollbar thumb cannot settle early.
   const touchActiveRef = useRef(false);
+  const pointerActiveRef = useRef(false);
   /** Pending timer that ends the gesture once momentum scrolling stops. */
-  const momentumTimerRef = useRef<number | null>(null);
+  const momentumTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const positionReconcileFramesRef = useRef<{
+    first: number | null;
+    second: number | null;
+    restoreSavedOffset: boolean | null;
+  }>({ first: null, second: null, restoreSavedOffset: null });
+  const pendingPositionReconcileRef = useRef<boolean | null>(null);
+  const flushDeferredPositionReconcileRef = useRef<() => void>(() => {});
+  const deferPositionReconcile = useCallback((restoreSavedOffset: boolean) => {
+    pendingPositionReconcileRef.current =
+      pendingPositionReconcileRef.current === true || restoreSavedOffset;
+  }, []);
+  const cancelPositionReconcile = useCallback(
+    (preserve = false) => {
+      const frames = positionReconcileFramesRef.current;
+      if (preserve && frames.restoreSavedOffset !== null) {
+        deferPositionReconcile(frames.restoreSavedOffset);
+      }
+      if (frames.first !== null) cancelAnimationFrame(frames.first);
+      if (frames.second !== null) cancelAnimationFrame(frames.second);
+      frames.first = null;
+      frames.second = null;
+      frames.restoreSavedOffset = null;
+    },
+    [deferPositionReconcile],
+  );
+  const clearManualFollowSuppression = useCallback(() => {
+    manualFollowSuppressedRef.current = false;
+    olderNavigationIntentRef.current = false;
+    setManualFollowSuppressed(false);
+  }, []);
+  const claimManualNavigation = useCallback(
+    (towardEnd: boolean) => {
+      // A resize/item-measure reconcile may already be between animation
+      // frames. Preserve it for after the gesture instead of letting it race
+      // the input or silently losing it.
+      cancelPositionReconcile(true);
+      if (!towardEnd && !manualFollowSuppressedRef.current) {
+        olderNavigationIntentRef.current = true;
+        manualFollowSuppressedRef.current = true;
+        // LegendList owns its own data/layout handlers. Commit the prop that
+        // disables those handlers in this input task, before a streamed row
+        // can arrive and snap the viewport back to the live edge.
+        flushSync(() => setManualFollowSuppressed(true));
+      }
+      onManualNavigation(towardEnd);
+    },
+    [cancelPositionReconcile, onManualNavigation],
+  );
+  const userGestureActive = useCallback(
+    () => touchActiveRef.current || pointerActiveRef.current || momentumTimerRef.current !== null,
+    [],
+  );
+  // Lifting a finger or scrollbar thumb does not necessarily end movement:
+  // iOS momentum and middle-button autoscroll continue producing scroll events.
+  // Only settle after the events themselves go quiet.
+  const endGestureWhenMomentumSettles = useCallback(() => {
+    if (momentumTimerRef.current !== null) globalThis.clearTimeout(momentumTimerRef.current);
+    momentumTimerRef.current = globalThis.setTimeout(() => {
+      momentumTimerRef.current = null;
+      const state = mountedListRef.current?.getState?.();
+      if (
+        resolveTimelineIsExactlyAtEnd(state) === true &&
+        (manualFollowSuppressedRef.current || !followEndRef.current)
+      ) {
+        clearManualFollowSuppression();
+        onManualNavigation(true);
+        onIsAtEndChange(true);
+      }
+      flushDeferredPositionReconcileRef.current();
+    }, TIMELINE_MOMENTUM_SETTLE_MS);
+  }, [clearManualFollowSuppression, onIsAtEndChange, onManualNavigation]);
   const handleScroll = useCallback(() => {
     // Still gliding: push the settle deadline out so the gesture stays open
     // for as long as the list is actually moving.
     if (momentumTimerRef.current !== null) {
-      window.clearTimeout(momentumTimerRef.current);
-      momentumTimerRef.current = window.setTimeout(() => {
-        momentumTimerRef.current = null;
-        touchActiveRef.current = false;
-      }, TIMELINE_MOMENTUM_SETTLE_MS);
+      endGestureWhenMomentumSettles();
     }
     const state = mountedListRef.current?.getState?.();
+    if (!state) {
+      return;
+    }
+
     const isAtEnd = resolveTimelineIsAtEnd(state);
+    const isExactlyAtEnd = resolveTimelineIsExactlyAtEnd(state);
+    const scrollTop = state.scroll ?? 0;
+    const scrollDirection = resolveTimelineManualScrollDirection(
+      previousScrollOffsetRef.current,
+      scrollTop,
+    );
+    if (Number.isFinite(scrollTop)) {
+      previousScrollOffsetRef.current = scrollTop;
+    }
+
+    // Offset direction catches the later scroll events from keyboard,
+    // scrollbar, and middle-button paths. It is deliberately gated by an
+    // input token: LegendList and layout changes also move this offset, and
+    // those programmatic movements must never steal viewport ownership.
+    const hasUserGesture = userGestureActive();
+    if (hasUserGesture && scrollDirection === "older" && isExactlyAtEnd !== true) {
+      claimManualNavigation(false);
+    } else if (
+      hasUserGesture &&
+      scrollDirection === "newer" &&
+      (manualFollowSuppressedRef.current || !followEndRef.current)
+    ) {
+      claimManualNavigation(true);
+      if (isExactlyAtEnd === true) {
+        clearManualFollowSuppression();
+      }
+    }
+
     if (isAtEnd !== undefined) {
       if (
         shouldCommitTimelineOlderNavigation({
           olderNavigationIntent: olderNavigationIntentRef.current,
           isAtEnd,
-        })
+        }) &&
+        !manualFollowSuppressedRef.current
       ) {
-        olderNavigationIntentRef.current = false;
-        onManualNavigation(false);
+        claimManualNavigation(false);
       } else if (
         shouldClearOlderNavigationIntent({
-          isAtEnd,
-          userGestureActive: touchActiveRef.current,
+          isAtEnd: isExactlyAtEnd,
+          userGestureActive: userGestureActive(),
+          manualFollowSuppressed: manualFollowSuppressedRef.current,
         })
       ) {
         olderNavigationIntentRef.current = false;
       }
       onIsAtEndChange(isAtEnd);
     }
-    if (!state) {
-      return;
-    }
 
-    const scrollTop = state.scroll ?? 0;
     if (Number.isFinite(scrollTop)) {
       onScrollStateChange({
         scrollOffset: Math.max(0, scrollTop),
@@ -533,38 +641,53 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       strip.dataset.inView = inView ? "true" : "false";
     }
-  }, [minimapItems, minimapStripMap, onIsAtEndChange, onManualNavigation, onScrollStateChange]);
-  const positionReconcileFramesRef = useRef<{
-    first: number | null;
-    second: number | null;
-  }>({ first: null, second: null });
-  const cancelPositionReconcile = useCallback(() => {
-    const frames = positionReconcileFramesRef.current;
-    if (frames.first !== null) cancelAnimationFrame(frames.first);
-    if (frames.second !== null) cancelAnimationFrame(frames.second);
-    frames.first = null;
-    frames.second = null;
-  }, []);
+  }, [
+    claimManualNavigation,
+    clearManualFollowSuppression,
+    endGestureWhenMomentumSettles,
+    minimapItems,
+    minimapStripMap,
+    onIsAtEndChange,
+    onScrollStateChange,
+    userGestureActive,
+  ]);
   const schedulePositionReconcile = useCallback(
     (restoreSavedOffset: boolean) => {
+      const nextRestoreSavedOffset =
+        restoreSavedOffset ||
+        positionReconcileFramesRef.current.restoreSavedOffset === true ||
+        pendingPositionReconcileRef.current === true;
       cancelPositionReconcile();
+      pendingPositionReconcileRef.current = null;
+      positionReconcileFramesRef.current.restoreSavedOffset = nextRestoreSavedOffset;
       positionReconcileFramesRef.current.first = requestAnimationFrame(() => {
         positionReconcileFramesRef.current.first = null;
         positionReconcileFramesRef.current.second = requestAnimationFrame(() => {
           positionReconcileFramesRef.current.second = null;
+          const frames = positionReconcileFramesRef.current;
+          frames.restoreSavedOffset = null;
           const list = mountedListRef.current;
           if (!list) return;
+          if (userGestureActive()) {
+            deferPositionReconcile(nextRestoreSavedOffset);
+            return;
+          }
           if (
             shouldSnapTimelineToEndOnResize({
-              followEnd,
-              userGestureActive: touchActiveRef.current,
+              followEnd: followEndRef.current,
+              userGestureActive: userGestureActive(),
               olderNavigationIntent: olderNavigationIntentRef.current,
+              manualFollowSuppressed: manualFollowSuppressedRef.current,
             })
           ) {
             void list.scrollToEnd({ animated: false }).then(handleScroll);
             return;
           }
-          if (restoreSavedOffset && initialScrollOffset !== null) {
+          if (
+            nextRestoreSavedOffset &&
+            initialScrollOffset !== null &&
+            !manualFollowSuppressedRef.current
+          ) {
             void list
               .scrollToOffset({
                 offset: Math.max(0, initialScrollOffset),
@@ -577,8 +700,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         });
       });
     },
-    [cancelPositionReconcile, followEnd, handleScroll, initialScrollOffset],
+    [
+      cancelPositionReconcile,
+      deferPositionReconcile,
+      handleScroll,
+      initialScrollOffset,
+      userGestureActive,
+    ],
   );
+  flushDeferredPositionReconcileRef.current = () => {
+    const restoreSavedOffset = pendingPositionReconcileRef.current;
+    if (restoreSavedOffset === null) return;
+    pendingPositionReconcileRef.current = null;
+    schedulePositionReconcile(restoreSavedOffset);
+  };
   const handleTimelineLoad = useCallback(() => {
     schedulePositionReconcile(true);
   }, [schedulePositionReconcile]);
@@ -588,44 +723,167 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // so live-follow remains at the end and free-scrolling retains its anchor.
     schedulePositionReconcile(false);
   }, [schedulePositionReconcile]);
-  useEffect(() => cancelPositionReconcile, [cancelPositionReconcile]);
+  useEffect(
+    () => () => {
+      pendingPositionReconcileRef.current = null;
+      cancelPositionReconcile();
+    },
+    [cancelPositionReconcile],
+  );
   const previousTouchYRef = useRef<number | null>(null);
-  const handleWheelNavigation = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
-      olderNavigationIntentRef.current = true;
-    }
-  }, []);
+  const pointerInsideTimelineRef = useRef(false);
+  const handleWheelNavigation = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      if (Number.isFinite(event.deltaY) && event.deltaY !== 0) {
+        endGestureWhenMomentumSettles();
+      }
+      if (shouldReleaseTimelineLiveFollowForWheel(event.deltaY)) {
+        // Claim the viewport at input time, before LegendList's first scroll
+        // event. A streamed row can otherwise arrive in that gap and its
+        // maintainScrollAtEnd correction wins the race back to the bottom.
+        claimManualNavigation(false);
+        return;
+      }
+      if (
+        (manualFollowSuppressedRef.current || !followEndRef.current) &&
+        Number.isFinite(event.deltaY) &&
+        event.deltaY > 0
+      ) {
+        claimManualNavigation(true);
+      }
+    },
+    [claimManualNavigation, endGestureWhenMomentumSettles],
+  );
   const handleTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    if (momentumTimerRef.current !== null) {
+      globalThis.clearTimeout(momentumTimerRef.current);
+      momentumTimerRef.current = null;
+    }
     touchActiveRef.current = true;
     previousTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, []);
-  const handleTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
-    const currentTouchY = event.touches[0]?.clientY ?? null;
-    const previousTouchY = previousTouchYRef.current;
-    previousTouchYRef.current = currentTouchY;
-    if (shouldReleaseTimelineLiveFollowForTouch(previousTouchY, currentTouchY)) {
-      olderNavigationIntentRef.current = true;
-    }
-  }, []);
-  // Lifting a finger does not end an iOS scroll: the list keeps gliding, and
-  // every row measured during that glide fires an item-size change. Holding
-  // the gesture open until the scrolling actually quiesces keeps the
-  // position guards in force for the whole movement the user perceives as
-  // theirs, instead of releasing them mid-glide.
-  const endGestureWhenMomentumSettles = useCallback(() => {
-    if (momentumTimerRef.current !== null) window.clearTimeout(momentumTimerRef.current);
-    momentumTimerRef.current = window.setTimeout(() => {
-      momentumTimerRef.current = null;
-      touchActiveRef.current = false;
-    }, TIMELINE_MOMENTUM_SETTLE_MS);
-  }, []);
+  const handleTouchMove = useCallback(
+    (event: ReactTouchEvent<HTMLDivElement>) => {
+      const currentTouchY = event.touches[0]?.clientY ?? null;
+      const previousTouchY = previousTouchYRef.current;
+      previousTouchYRef.current = currentTouchY;
+      if (shouldReleaseTimelineLiveFollowForTouch(previousTouchY, currentTouchY)) {
+        claimManualNavigation(false);
+        return;
+      }
+      if (
+        previousTouchY !== null &&
+        currentTouchY !== null &&
+        Number.isFinite(previousTouchY) &&
+        Number.isFinite(currentTouchY) &&
+        currentTouchY < previousTouchY &&
+        (manualFollowSuppressedRef.current || !followEndRef.current)
+      ) {
+        claimManualNavigation(true);
+      }
+    },
+    [claimManualNavigation],
+  );
   const handleTouchEnd = useCallback(() => {
+    touchActiveRef.current = false;
     previousTouchYRef.current = null;
     endGestureWhenMomentumSettles();
   }, [endGestureWhenMomentumSettles]);
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    // Touch has its own higher-fidelity direction tracking. For a mouse, only
+    // the native scrollbar surface or middle-button autoscroll should mint a
+    // scroll-intent token; an ordinary click inside a message is not a scroll.
+    if (
+      event.pointerType === "mouse" &&
+      (event.button === 1 || event.target === event.currentTarget)
+    ) {
+      // Scrollbar and middle-button paths do not expose a direction until the
+      // native scroll event. Snapshot the pre-gesture position here so that
+      // first event can be classified even immediately after a route reset.
+      const scrollTop = mountedListRef.current?.getState?.().scroll;
+      previousScrollOffsetRef.current =
+        typeof scrollTop === "number" && Number.isFinite(scrollTop) ? scrollTop : null;
+      pointerActiveRef.current = true;
+    }
+  }, []);
+  const handlePointerEnd = useCallback(() => {
+    if (!pointerActiveRef.current) return;
+    pointerActiveRef.current = false;
+    endGestureWhenMomentumSettles();
+  }, [endGestureWhenMomentumSettles]);
+  useEffect(() => {
+    window.addEventListener("pointerup", handlePointerEnd, true);
+    window.addEventListener("pointercancel", handlePointerEnd, true);
+    return () => {
+      window.removeEventListener("pointerup", handlePointerEnd, true);
+      window.removeEventListener("pointercancel", handlePointerEnd, true);
+    };
+  }, [handlePointerEnd]);
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          "input, textarea, select, button, a[href], [contenteditable='true'], [role='dialog']",
+        )
+      ) {
+        return;
+      }
+      const targetBelongsToTimeline =
+        target instanceof Node && timelineViewportElement?.contains(target);
+      // A body/document/window target has no more specific keyboard owner, so
+      // hover may select the timeline. An explicit external target always wins
+      // over hover (for example, another focusable scroll surface).
+      const targetAllowsHoverFallback =
+        target === window ||
+        target === document ||
+        target === document.body ||
+        target === document.documentElement;
+      const keyboardBelongsToTimeline =
+        targetBelongsToTimeline || (targetAllowsHoverFallback && pointerInsideTimelineRef.current);
+      if (!keyboardBelongsToTimeline) return;
+      const direction = resolveTimelineKeyboardScrollDirection({
+        key: event.key,
+        shiftKey: event.shiftKey,
+      });
+      if (direction === null) return;
+      endGestureWhenMomentumSettles();
+      if (direction === "older") {
+        claimManualNavigation(false);
+      } else if (manualFollowSuppressedRef.current || !followEndRef.current) {
+        claimManualNavigation(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [claimManualNavigation, endGestureWhenMomentumSettles, timelineViewportElement]);
+  const previousRouteThreadKeyRef = useRef(routeThreadKey);
+  const previousFollowEndRef = useRef(followEnd);
+  useEffect(() => {
+    const routeChanged = previousRouteThreadKeyRef.current !== routeThreadKey;
+    const explicitlyReturnedToEnd = !previousFollowEndRef.current && followEnd;
+    previousRouteThreadKeyRef.current = routeThreadKey;
+    previousFollowEndRef.current = followEnd;
+    if (routeChanged || explicitlyReturnedToEnd) {
+      pendingPositionReconcileRef.current = null;
+      cancelPositionReconcile();
+      if (routeChanged && momentumTimerRef.current !== null) {
+        globalThis.clearTimeout(momentumTimerRef.current);
+        momentumTimerRef.current = null;
+      }
+      touchActiveRef.current = false;
+      pointerActiveRef.current = false;
+      clearManualFollowSuppression();
+      previousScrollOffsetRef.current = null;
+    }
+  }, [cancelPositionReconcile, clearManualFollowSuppression, followEnd, routeThreadKey]);
   useEffect(
     () => () => {
-      if (momentumTimerRef.current !== null) window.clearTimeout(momentumTimerRef.current);
+      if (momentumTimerRef.current !== null) globalThis.clearTimeout(momentumTimerRef.current);
+      touchActiveRef.current = false;
+      pointerActiveRef.current = false;
     },
     [],
   );
@@ -744,6 +1002,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ),
     [],
   );
+  const timelineShouldFollowEnd = followEnd && !manualFollowSuppressed;
 
   if (rows.length === 0 && !isWorking) {
     if (hideEmptyPlaceholder) {
@@ -765,6 +1024,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           ref={setTimelineViewportElement}
           data-chat-timeline-bottom-inset="0"
           className="relative h-full min-h-0"
+          onPointerEnter={() => {
+            pointerInsideTimelineRef.current = true;
+          }}
+          onPointerLeave={() => {
+            pointerInsideTimelineRef.current = false;
+          }}
         >
           <LegendList<MessagesTimelineRow>
             ref={attachListRef}
@@ -783,7 +1048,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             maintainScrollAtEnd={
               shouldMaintainTimelineScrollAtEnd({
                 hasAnchoredEndSpace: false,
-                followEnd,
+                followEnd: timelineShouldFollowEnd,
               })
                 ? {
                     animated: false,
@@ -796,7 +1061,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 : false
             }
             maintainVisibleContentPosition={
-              shouldMaintainTimelineVisibleContentPosition({ followEnd })
+              shouldMaintainTimelineVisibleContentPosition({
+                followEnd: timelineShouldFollowEnd,
+              })
                 ? {
                     data: true,
                     size: true,
@@ -811,6 +1078,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
             onTouchCancel={handleTouchEnd}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerEnd}
+            onPointerCancel={handlePointerEnd}
             className={cn(
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",

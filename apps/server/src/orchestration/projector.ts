@@ -365,6 +365,12 @@ export function projectEvent(
             id: payload.threadId,
             projectId: payload.projectId,
             title: payload.title,
+            ...(payload.createdByThreadId !== undefined
+              ? { createdByThreadId: payload.createdByThreadId }
+              : {}),
+            ...(payload.browserProfileThreadId !== undefined
+              ? { browserProfileThreadId: payload.browserProfileThreadId }
+              : {}),
             isSideChat: payload.isSideChat === true,
             sideChatParentThreadId:
               payload.isSideChat === true

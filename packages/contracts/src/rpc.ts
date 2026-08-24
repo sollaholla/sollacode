@@ -124,7 +124,8 @@ import {
   VmAgentBlockerResolveInput,
   VmAgentCollaborationError,
   VmAgentCollaborationReceipt,
-  VmAgentCollaborationStreamItem,
+  VmAgentCollaborationSubscribeInput,
+  VmAgentCollaborationWireStreamItem,
   VmAgentCreateInput,
   VmAgentDelegationDetail,
   VmAgentDelegationRef,
@@ -977,8 +978,8 @@ export const WsVmAgentNotificationPreferencesUpdateRpc = Rpc.make(
 export const WsVmAgentCollaborationSubscribeRpc = Rpc.make(
   WS_METHODS.vmAgentCollaborationSubscribe,
   {
-    payload: Schema.Struct({}),
-    success: VmAgentCollaborationStreamItem,
+    payload: VmAgentCollaborationSubscribeInput,
+    success: VmAgentCollaborationWireStreamItem,
     error: Schema.Union([VmAgentCollaborationError, EnvironmentAuthorizationError]),
     stream: true,
   },

@@ -463,6 +463,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           sourceThreadId: command.sourceThreadId,
           projectId: sourceThread.projectId,
           title: command.title ?? `${sourceThread.title} (fork)`,
+          ...(command.createdByThreadId !== undefined
+            ? { createdByThreadId: command.createdByThreadId }
+            : {}),
+          ...(command.browserProfileThreadId !== undefined
+            ? { browserProfileThreadId: command.browserProfileThreadId }
+            : {}),
           isSideChat: command.isSideChat ?? false,
           ...(sideChatParentThreadId !== undefined ? { sideChatParentThreadId } : {}),
           modelSelection: command.modelSelection ?? sourceThread.modelSelection,

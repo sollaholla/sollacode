@@ -267,6 +267,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
         }
         targetId = ThreadId.make(yield* randomId);
         opened = true;
+        const callerThread = shell.threads.find((thread) => thread.id === invocation.threadId);
         yield* engine
           .dispatch({
             type: "thread.create",
@@ -275,7 +276,7 @@ export const handleWorkspaceConsult = Effect.fn("WorkspaceConsult.handle")(funct
             projectId: project.id,
             title: input.title ?? titleFromQuestion(question),
             createdByThreadId: invocation.threadId,
-            browserProfileThreadId: invocation.threadId,
+            browserProfileThreadId: callerThread?.browserProfileThreadId ?? invocation.threadId,
             modelSelection,
             interactionMode: "default",
             // `auto` rather than the app default `full-access`: a consulted

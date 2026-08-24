@@ -2,6 +2,9 @@ import {
   DEFAULT_VM_AGENT_DELEGATION_LIMITS,
   MessageId,
   ThreadId,
+  VM_AGENT_COLLABORATION_LIST_LIMIT,
+  VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+  VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH,
   type VmAgent,
   type VmAgentDelegation,
   type VmAgentDelegationMessage,
@@ -16,6 +19,8 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { VmAgentStoreLive } from "./VmAgents.ts";
 import { VmAgentCollaborationStoreLive } from "./VmAgentCollaborations.ts";
@@ -34,6 +39,7 @@ const layer = it.layer(stores);
 const createdAt = "2026-08-21T20:00:00.000Z";
 const laterAt = "2026-08-21T20:01:00.000Z";
 const claimAt = "2026-08-21T20:02:00.000Z";
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const insertAgent = (suffix: string) =>
   Effect.gen(function* () {
@@ -120,6 +126,189 @@ const makeDelegation = (
 };
 
 layer("VmAgentCollaborationStore", (it) => {
+  it.effect("returns a 501st truncation sentinel while prioritizing active work", () =>
+    Effect.gen(function* () {
+      const collaboration = yield* VmAgentCollaborationStore;
+      const sql = yield* SqlClient.SqlClient;
+      const agent = yield* insertAgent("snapshot-sentinel");
+      yield* Effect.forEach(
+        Array.from({ length: VM_AGENT_COLLABORATION_LIST_LIMIT }, (_, index) => index),
+        (index) => {
+          const work = makeDelegation(agent, `snapshot-terminal-${index}`, laterAt);
+          return collaboration.create({
+            ...work,
+            delegation: {
+              ...work.delegation,
+              status: "completed",
+              startedAt: laterAt,
+              completedAt: laterAt,
+              result: {
+                summary: "Completed before the active handoff.",
+                completedBy: "ephemeral-worker",
+                completedAt: laterAt,
+              },
+            },
+            idempotencyKey: `snapshot-terminal-request-${index}`,
+            schedulerVmAgentId: agent.vmAgentId,
+          });
+        },
+        { discard: true },
+      );
+      const active = makeDelegation(agent, "snapshot-active", createdAt);
+      yield* collaboration.create({
+        ...active,
+        idempotencyKey: "snapshot-active-request",
+        schedulerVmAgentId: agent.vmAgentId,
+      });
+
+      const fullRows = yield* collaboration.list();
+      const compactRows = yield* collaboration.listSummaries();
+      assert.lengthOf(fullRows, VM_AGENT_COLLABORATION_LIST_LIMIT + 1);
+      assert.lengthOf(compactRows, VM_AGENT_COLLABORATION_LIST_LIMIT + 1);
+      assert.strictEqual(fullRows[0]?.delegationId, active.delegation.delegationId);
+      assert.strictEqual(compactRows[0]?.delegationId, active.delegation.delegationId);
+      // These synthetic rows exist only to prove the 501st sentinel. Retire
+      // their task carriers so this shared in-memory layer cannot leak due work
+      // into the scheduler serialization case below.
+      yield* sql`UPDATE vm_agent_tasks SET status = 'completed', next_run_at = NULL
+        WHERE vm_agent_id = ${agent.vmAgentId}`;
+    }),
+  );
+
+  it.effect("projects bounded list rows before decoding full payload columns", () =>
+    Effect.gen(function* () {
+      const collaboration = yield* VmAgentCollaborationStore;
+      const sql = yield* SqlClient.SqlClient;
+      const agent = yield* insertAgent("compact-list");
+      const work = makeDelegation(agent, "compact-list", createdAt);
+      yield* collaboration.create({
+        ...work,
+        idempotencyKey: "compact-list-request",
+        schedulerVmAgentId: agent.vmAgentId,
+      });
+
+      const oversizedIdentity = {
+        ...work.delegation.rootAgentSnapshot,
+        purpose: `${"P".repeat(3_000)}hidden-purpose-tail`,
+      };
+      const oversizedTask = `${"T".repeat(60_000)}hidden-task-tail`;
+      const oversizedResult = `${"R".repeat(25_000)}hidden-result-tail`;
+      const oversizedError = `${"E".repeat(5_000)}hidden-error-tail`;
+      yield* sql`UPDATE vm_agent_delegations SET
+        task = ${oversizedTask},
+        root_agent_snapshot_json = ${encodeUnknownJson(oversizedIdentity)},
+        source_agent_snapshot_json = ${encodeUnknownJson(oversizedIdentity)},
+        result_json = ${encodeUnknownJson({
+          summary: oversizedResult,
+          completedBy: "ephemeral-worker",
+          completedAt: laterAt,
+        })},
+        error = ${oversizedError}
+        WHERE delegation_id = ${work.delegation.delegationId}`;
+
+      const summaries = yield* collaboration.listSummaries();
+      const summary = summaries.find(
+        (candidate) => candidate.delegationId === work.delegation.delegationId,
+      );
+      assert.isDefined(summary);
+      assert.lengthOf(summary.taskPreview.text, VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH);
+      assert.isTrue(summary.taskPreview.truncated);
+      assert.lengthOf(
+        summary.resultPreview?.text ?? "",
+        VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+      );
+      assert.isTrue(summary.resultPreview?.truncated);
+      assert.lengthOf(
+        summary.errorPreview?.text ?? "",
+        VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+      );
+      assert.isTrue(summary.errorPreview?.truncated);
+      assert.notInclude(summary.taskPreview.text, "hidden-task-tail");
+      assert.notInclude(summary.resultPreview?.text ?? "", "hidden-result-tail");
+      assert.notInclude(summary.errorPreview?.text ?? "", "hidden-error-tail");
+      assert.notProperty(summary.rootAgentSnapshot, "purpose");
+      assert.notProperty(summary.sourceAgentSnapshot, "purpose");
+
+      const scoped = yield* collaboration.listSummariesForAgent(agent.vmAgentId);
+      assert.deepInclude(scoped, summary);
+      yield* collaboration.cancel({
+        delegationId: work.delegation.delegationId,
+        status: "cancelled",
+        detail: "Compact projection test complete.",
+        completedAt: laterAt,
+      });
+    }),
+  );
+
+  it.effect("pages messages newest-first at SQL and returns each page chronologically", () =>
+    Effect.gen(function* () {
+      const collaboration = yield* VmAgentCollaborationStore;
+      const agent = yield* insertAgent("message-page");
+      const work = makeDelegation(agent, "message-page", createdAt);
+      yield* collaboration.create({
+        ...work,
+        idempotencyKey: "message-page-request",
+        schedulerVmAgentId: agent.vmAgentId,
+      });
+      yield* Effect.forEach([2, 3, 4, 5, 6], (sequence) =>
+        collaboration.appendMessage({
+          messageId: VmAgentDelegationMessageId.make(
+            `delegation-message:${work.delegation.delegationId}:${sequence}`,
+          ),
+          delegationId: work.delegation.delegationId,
+          sender: "source-agent",
+          senderVmAgentId: agent.vmAgentId,
+          kind: "note",
+          delivery: "delivered",
+          text: `Message ${sequence}`,
+          createdAt: laterAt,
+          incrementFollowup: false,
+        }),
+      );
+
+      const newest = yield* collaboration.listMessagesPage(work.delegation.delegationId, null, 2);
+      assert.deepStrictEqual(
+        newest.messages.map((message) => message.sequence),
+        [5, 6],
+      );
+      assert.isTrue(newest.hasEarlierMessages);
+
+      const middle = yield* collaboration.listMessagesPage(
+        work.delegation.delegationId,
+        newest.messages[0]?.sequence ?? null,
+        2,
+      );
+      assert.deepStrictEqual(
+        middle.messages.map((message) => message.sequence),
+        [3, 4],
+      );
+      assert.isTrue(middle.hasEarlierMessages);
+
+      const oldest = yield* collaboration.listMessagesPage(
+        work.delegation.delegationId,
+        middle.messages[0]?.sequence ?? null,
+        2,
+      );
+      assert.deepStrictEqual(
+        oldest.messages.map((message) => message.sequence),
+        [1, 2],
+      );
+      assert.isFalse(oldest.hasEarlierMessages);
+
+      const fullHistory = yield* collaboration.listMessages(work.delegation.delegationId);
+      assert.deepStrictEqual(
+        fullHistory.map((message) => message.sequence),
+        [1, 2, 3, 4, 5, 6],
+      );
+      yield* collaboration.cancel({
+        delegationId: work.delegation.delegationId,
+        status: "cancelled",
+        detail: "Message pagination test complete.",
+        completedAt: laterAt,
+      });
+    }),
+  );
+
   it.effect("serializes two ephemeral delegations through the source scheduler slot", () =>
     Effect.gen(function* () {
       const collaboration = yield* VmAgentCollaborationStore;

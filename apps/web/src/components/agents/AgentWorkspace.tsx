@@ -23,6 +23,11 @@ import { Badge } from "../ui/badge";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import {
+  EMPTY_AGENT_COLLABORATION_DRAFT,
+  type AgentCollaborationDraft,
+} from "./CreateDelegationDialog";
+import { agentCollaborationDraftKey } from "./agentCollaborationDraft";
+import {
   AgentArtifactPanel,
   AgentBlockerBanner,
   AgentNotificationsPanel,
@@ -56,6 +61,9 @@ function AgentWorkspaceResolved(props: {
 }) {
   const { environmentId } = props;
   const [view, setView] = useState<AgentWorkspaceView>("chat");
+  const [collaborationDrafts, setCollaborationDrafts] = useState<
+    Readonly<Record<string, AgentCollaborationDraft>>
+  >({});
 
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
@@ -121,6 +129,10 @@ function AgentWorkspaceResolved(props: {
   if (!agent) {
     return <CenteredNote text="This agent no longer exists." />;
   }
+
+  const collaborationDraftStorageKey = agentCollaborationDraftKey(environmentId, agent.vmAgentId);
+  const collaborationDraft =
+    collaborationDrafts[collaborationDraftStorageKey] ?? EMPTY_AGENT_COLLABORATION_DRAFT;
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
@@ -199,6 +211,13 @@ function AgentWorkspaceResolved(props: {
               <AgentCollaborationPanel
                 environmentId={environmentId}
                 agent={agent}
+                draft={collaborationDraft}
+                onDraftChange={(draft) =>
+                  setCollaborationDrafts((current) => ({
+                    ...current,
+                    [collaborationDraftStorageKey]: draft,
+                  }))
+                }
                 onOpenChat={() => setView("chat")}
               />
             ) : view === "tasks" ? (

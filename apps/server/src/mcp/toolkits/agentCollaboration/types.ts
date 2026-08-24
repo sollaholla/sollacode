@@ -48,7 +48,11 @@ export const AgentCollaborationResult = Schema.Struct({
   action: Schema.String,
   status: Schema.String,
   agents: Schema.optional(Schema.Array(VmAgentCollaborationAgentSummary)),
+  /** True when the bounded list_agents result omits additional host agents. */
+  hasMoreAgents: Schema.optional(Schema.Boolean),
   work: Schema.optional(Schema.Array(VmAgentDelegationSummary)),
+  /** True when the bounded list_work result omits older delegated work. */
+  hasMoreWork: Schema.optional(Schema.Boolean),
   detail: Schema.optional(VmAgentDelegationDetail),
   receipt: Schema.optional(VmAgentCollaborationReceipt),
 });

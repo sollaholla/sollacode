@@ -107,6 +107,7 @@ import {
   resolveTimelineSendScrollPlan,
   shouldResumeTimelineLiveFollow,
   shouldSuppressTimelineAutoScroll,
+  TIMELINE_USER_SCROLL_COOLDOWN_MS,
   type TimelineThreadScrollMemory,
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
@@ -530,7 +531,6 @@ interface PendingSideChatArchive {
  * back on the live edge" gestures, so they clear the window rather than wait it
  * out; only agent-driven growth has to serve it.
  */
-const TIMELINE_USER_SCROLL_COOLDOWN_MS = 5_000;
 const observedAuthoritativeThreadSettings = new Map<string, string>();
 const timelineThreadScrollMemory = new Map<string, TimelineThreadScrollMemory>();
 function useDraftHeroLayoutTransition(isDraftHeroState: boolean) {
@@ -5228,15 +5228,22 @@ function ChatViewContent(props: ChatViewProps) {
   const lastUserScrollAtRef = useRef<number | null>(null);
   const cancelTimelineLiveFollowForUserNavigation = useCallback(
     (towardEnd = false) => {
+      const alreadyOwnsViewport =
+        timelineManualNavigationActiveRef.current &&
+        timelineManualNavigationTowardEndRef.current === towardEnd;
+      // Refresh the cooldown on every real input event, but do the state,
+      // memory, and debouncer work only when ownership/direction changes.
+      lastUserScrollAtRef.current = Date.now();
+      if (alreadyOwnsViewport) return;
       if (!timelineManualNavigationActiveRef.current) {
         anchorUserScrollGenerationRef.current += 1;
       }
       timelineManualNavigationActiveRef.current = true;
       timelineManualNavigationTowardEndRef.current = towardEnd;
-      lastUserScrollAtRef.current = Date.now();
       setTimelineLiveFollowEnabled(false);
       timelineScrollModeRef.current = "free-scrolling";
       liveFollowUserScrollGenerationRef.current = null;
+      showScrollDebouncer.current.maybeExecute();
       const scrollOffset = legendListRef.current?.getState?.().scroll;
       if (typeof scrollOffset === "number" && Number.isFinite(scrollOffset)) {
         rememberTimelineThreadScroll(timelineThreadScrollMemory, routeThreadKey, {
@@ -5423,6 +5430,7 @@ function ChatViewContent(props: ChatViewProps) {
       : null;
     timelineManualNavigationActiveRef.current = !shouldFollowEnd;
     timelineManualNavigationTowardEndRef.current = false;
+    lastUserScrollAtRef.current = null;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(!shouldFollowEnd);
 
@@ -5435,11 +5443,10 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThread?.id) {
       return;
     }
-    if (liveFollowUserScrollGenerationRef.current !== anchorUserScrollGenerationRef.current) {
-      return;
-    }
     // This effect re-runs on every timeline change, which during a streaming
-    // turn is constantly. A recent user scroll outranks that growth.
+    // turn is constantly. Check the time guard first: it also fences a stale
+    // frame that was queued immediately before the user's input, independent
+    // of the longer-lived free-scrolling ownership state below.
     if (
       shouldSuppressTimelineAutoScroll({
         lastUserScrollAt: lastUserScrollAtRef.current,
@@ -5449,11 +5456,23 @@ function ChatViewContent(props: ChatViewProps) {
     ) {
       return;
     }
+    if (liveFollowUserScrollGenerationRef.current !== anchorUserScrollGenerationRef.current) {
+      return;
+    }
     lastUserScrollAtRef.current = null;
 
     let secondFrame: number | null = null;
     const frame = requestAnimationFrame(() => {
       secondFrame = requestAnimationFrame(() => {
+        if (
+          shouldSuppressTimelineAutoScroll({
+            lastUserScrollAt: lastUserScrollAtRef.current,
+            nowMs: Date.now(),
+            cooldownMs: TIMELINE_USER_SCROLL_COOLDOWN_MS,
+          })
+        ) {
+          return;
+        }
         if (liveFollowUserScrollGenerationRef.current !== anchorUserScrollGenerationRef.current) {
           return;
         }

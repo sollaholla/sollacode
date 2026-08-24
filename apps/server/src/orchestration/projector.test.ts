@@ -265,6 +265,8 @@ describe("orchestration projector", () => {
             sourceThreadId: "thread-source",
             projectId: "project-1",
             title: "Side chat",
+            createdByThreadId: "thread-source",
+            browserProfileThreadId: "thread-source",
             isSideChat: true,
             modelSelection: {
               provider: ProviderDriverKind.make("codex"),
@@ -283,6 +285,8 @@ describe("orchestration projector", () => {
     const sideChat = withSideChat.threads.find((thread) => thread.id === "thread-side");
     expect(sideChat).toMatchObject({
       isSideChat: true,
+      createdByThreadId: "thread-source",
+      browserProfileThreadId: "thread-source",
       sideChatParentThreadId: "thread-source",
       latestTurn: null,
       messages: [],
@@ -307,6 +311,8 @@ describe("orchestration projector", () => {
             sourceThreadId: "thread-side",
             projectId: "project-1",
             title: "Sibling side chat",
+            createdByThreadId: "thread-side",
+            browserProfileThreadId: "thread-source",
             isSideChat: true,
             sideChatParentThreadId: "thread-source",
             modelSelection: {
@@ -327,6 +333,8 @@ describe("orchestration projector", () => {
       withSiblingSideChat.threads.find((thread) => thread.id === "thread-side-sibling"),
     ).toMatchObject({
       isSideChat: true,
+      createdByThreadId: "thread-side",
+      browserProfileThreadId: "thread-source",
       sideChatParentThreadId: "thread-source",
       latestTurn: null,
       messages: [],

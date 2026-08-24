@@ -1023,6 +1023,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 fallbackIcon={MessageSquareIcon}
               />
             </span>
+            <ThreadProvenanceIndicators thread={thread} />
             {title}
             {/* The PR badge stays outside the hover-fading slot: it must
               remain visible AND clickable while the row is hovered. Only
@@ -1133,6 +1134,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 cwd={props.projectCwd ?? ""}
                 className="size-4 shrink-0"
               />
+              <ThreadProvenanceIndicators thread={thread} />
               {props.projectTitle ? (
                 <span
                   className={cn(
