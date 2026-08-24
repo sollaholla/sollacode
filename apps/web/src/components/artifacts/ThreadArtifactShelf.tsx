@@ -7,8 +7,11 @@ import type { ScopedThreadRef, ThreadArtifactSummary } from "@t3tools/contracts"
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { ChevronDownIcon, PackageIcon } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+
+import { THREAD_PANEL_ARTIFACTS, useUiStateStore } from "../../uiStateStore";
 import { useAssetUrl } from "~/assets/assetUrls";
 import { cn } from "~/lib/utils";
 import { threadArtifactEnvironment } from "~/state/threadArtifacts";
@@ -82,11 +85,31 @@ export function ThreadArtifactDeepLinkOpener(props: {
 export function ThreadArtifactShelf(props: ThreadArtifactShelfProps) {
   const { result, list } = useArtifactList(props.threadRef);
   const artifacts = list?.artifacts ?? [];
+  // Collapsed until this thread is told otherwise, and remembered per thread
+  // from then on: the shelf sits between the conversation and the composer,
+  // so opening every thread with it expanded taxes the reading area for a
+  // list most threads never need.
+  const threadKey = scopedThreadKey(props.threadRef);
+  const expanded = useUiStateStore(
+    (state) => state.threadPanelExpandedById[threadKey]?.[THREAD_PANEL_ARTIFACTS] === true,
+  );
+  const setThreadPanelExpanded = useUiStateStore((state) => state.setThreadPanelExpanded);
+  const setExpanded = useCallback(
+    (next: boolean) => setThreadPanelExpanded(threadKey, THREAD_PANEL_ARTIFACTS, next),
+    [setThreadPanelExpanded, threadKey],
+  );
 
   if (artifacts.length === 0 && result._tag === "Success") return null;
 
   return (
-    <details className="group shrink-0 border-t border-border/70" open>
+    <details
+      className="group shrink-0 border-t border-border/70"
+      open={expanded}
+      // `onToggle` rather than a click handler on the summary: it is the one
+      // event that fires for every way a <details> opens, including keyboard
+      // activation and find-in-page revealing it.
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
       <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs font-medium text-muted-foreground marker:content-none">
         <ChevronDownIcon className="size-3.5 shrink-0 -rotate-90 transition-transform group-open:rotate-0 motion-reduce:transition-none" />
         <span className="min-w-0 flex-1 truncate">Artifacts</span>

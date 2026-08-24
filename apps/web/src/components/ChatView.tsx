@@ -3293,6 +3293,11 @@ function ChatViewContent(props: ChatViewProps) {
         highlighted={providerTasksHighlighted}
         onStopTask={onStopProviderTask}
         tasks={providerTasks}
+        threadKey={
+          activeThreadId === null
+            ? null
+            : scopedThreadKey({ environmentId, threadId: activeThreadId })
+        }
       />
     );
   const providerTaskPanelFooter =

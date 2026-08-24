@@ -17,6 +17,10 @@ const LEGACY_PERSISTED_STATE_KEYS = [
   "codething:renderer-state:v1",
 ] as const;
 
+/** Stable ids for the per-thread shelves whose open state is remembered. */
+export const THREAD_PANEL_ARTIFACTS = "artifacts";
+export const THREAD_PANEL_AGENTS_TASKS = "agents-tasks";
+
 export interface PersistedUiState {
   projectExpandedById?: Record<string, boolean>;
   projectOrder?: string[];
@@ -31,6 +35,12 @@ export interface PersistedUiState {
   threadsSectionExpanded?: boolean;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  /**
+   * Whether each side panel is open, per thread. Absent means collapsed:
+   * these shelves sit above the composer and cost the conversation real
+   * height, so a thread opens quiet and stays however the reader left it.
+   */
+  threadPanelExpandedById?: Record<string, Record<string, boolean>>;
 }
 
 export interface UiProjectState {
@@ -41,6 +51,7 @@ export interface UiProjectState {
 export interface UiThreadState {
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
+  threadPanelExpandedById: Record<string, Record<string, boolean>>;
 }
 
 export interface UiEndpointState {
@@ -74,6 +85,7 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
+  threadPanelExpandedById: {},
   defaultAdvertisedEndpointKey: null,
   showProviderUsageBar: false,
   settledShelfExpanded: false,
@@ -154,6 +166,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
     projectExpandedById,
     projectOrder,
     threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
+    threadPanelExpandedById: sanitizeNestedBooleanRecord(parsed.threadPanelExpandedById),
     threadChangedFilesExpandedById:
       parsed.threadChangedFilesExpansionVersion === THREAD_CHANGED_FILES_EXPANSION_VERSION
         ? sanitizePersistedThreadChangedFilesExpanded(parsed.threadChangedFilesExpandedById)
@@ -191,6 +204,21 @@ function readPersistedState(): UiState {
   } catch {
     return initialState;
   }
+}
+
+/** Shared shape guard for `Record<threadId, Record<key, boolean>>` persistence. */
+function sanitizeNestedBooleanRecord(value: unknown): Record<string, Record<string, boolean>> {
+  if (!value || typeof value !== "object") return {};
+  const next: Record<string, Record<string, boolean>> = {};
+  for (const [threadId, entries] of Object.entries(value as Record<string, unknown>)) {
+    if (!threadId || !entries || typeof entries !== "object") continue;
+    const inner: Record<string, boolean> = {};
+    for (const [key, expanded] of Object.entries(entries as Record<string, unknown>)) {
+      if (key && typeof expanded === "boolean") inner[key] = expanded;
+    }
+    if (Object.keys(inner).length > 0) next[threadId] = inner;
+  }
+  return next;
 }
 
 function sanitizePersistedThreadChangedFilesExpanded(
@@ -240,6 +268,7 @@ export function persistState(state: UiState): void {
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
+        threadPanelExpandedById: state.threadPanelExpandedById,
         showProviderUsageBar: state.showProviderUsageBar,
         settledShelfExpanded: state.settledShelfExpanded,
         agentsSectionExpanded: state.agentsSectionExpanded,
@@ -325,6 +354,30 @@ export function setThreadChangedFilesExpanded(
       [threadId]: {
         ...currentThreadState,
         [turnId]: expanded,
+      },
+    },
+  };
+}
+
+/** Remember a thread's shelf as open or closed. Absent stays collapsed. */
+export function setThreadPanelExpanded(
+  state: UiState,
+  threadId: string,
+  panelId: string,
+  expanded: boolean,
+): UiState {
+  const currentThreadState = state.threadPanelExpandedById[threadId] ?? {};
+  if (currentThreadState[panelId] === expanded) {
+    return state;
+  }
+
+  return {
+    ...state,
+    threadPanelExpandedById: {
+      ...state.threadPanelExpandedById,
+      [threadId]: {
+        ...currentThreadState,
+        [panelId]: expanded,
       },
     },
   };
@@ -422,6 +475,7 @@ interface UiStateStore extends UiState {
   markThreadVisited: (threadId: string, visitedAt: string) => void;
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
+  setThreadPanelExpanded: (threadId: string, panelId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setShowProviderUsageBar: (visible: boolean) => void;
   setSettledShelfExpanded: (expanded: boolean) => void;
@@ -443,6 +497,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => markThreadUnread(state, threadId, latestTurnCompletedAt)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
+  setThreadPanelExpanded: (threadId, panelId, expanded) =>
+    set((state) => setThreadPanelExpanded(state, threadId, panelId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setShowProviderUsageBar: (visible) =>

@@ -13,6 +13,7 @@ import {
 import { useState } from "react";
 
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { THREAD_PANEL_AGENTS_TASKS, useUiStateStore } from "../uiStateStore";
 
 import {
   PROVIDER_TASK_PAGE_SIZE,
@@ -71,6 +72,11 @@ export function ProviderTaskPanel(props: {
   readonly driverKind?: string | null;
   /** Sends the per-task stop. Omitted where no stop channel is wired. */
   readonly onStopTask?: (taskId: string) => void;
+  /**
+   * Scoped key of the owning thread. When given, the open/closed state is
+   * remembered against that thread instead of resetting on every remount.
+   */
+  readonly threadKey?: string | null;
 }) {
   const activeCount = countActiveProviderTasks(props.tasks);
   const dismissTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
@@ -86,8 +92,28 @@ export function ProviderTaskPanel(props: {
   // without saying so.
   const usesCompactLayout = useMediaQuery({ pointer: "coarse" });
   const [collapsedOverride, setCollapsedOverride] = useState<boolean | null>(null);
+  // Remembered per thread, and collapsed until this thread says otherwise —
+  // the local override alone was forgotten on every remount, so a reader who
+  // folded it away got it back on the next visit. Threadless callers (the
+  // markup test, any surface with no thread bound) keep the old behaviour.
+  const threadKey = props.threadKey ?? null;
+  const persistedExpanded = useUiStateStore((state) =>
+    threadKey === null
+      ? undefined
+      : state.threadPanelExpandedById[threadKey]?.[THREAD_PANEL_AGENTS_TASKS],
+  );
+  const setThreadPanelExpanded = useUiStateStore((state) => state.setThreadPanelExpanded);
   const collapsed =
-    collapsedOverride ?? shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout });
+    threadKey === null
+      ? (collapsedOverride ?? shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout }))
+      : persistedExpanded !== true;
+  const setCollapsed = (next: boolean) => {
+    if (threadKey === null) {
+      setCollapsedOverride(next);
+      return;
+    }
+    setThreadPanelExpanded(threadKey, THREAD_PANEL_AGENTS_TASKS, !next);
+  };
   // Clamped inside the helper, so the list ageing out from under a held page
   // index shows the last page rather than nothing.
   const { items, page, pageCount, total } = pageProviderTasks(props.tasks, requestedPage);
@@ -107,7 +133,7 @@ export function ProviderTaskPanel(props: {
         <button
           type="button"
           aria-expanded={!collapsed}
-          onClick={() => setCollapsedOverride(!collapsed)}
+          onClick={() => setCollapsed(!collapsed)}
           className="flex min-w-0 flex-1 items-center gap-2 rounded text-left text-xs font-medium text-muted-foreground hover:text-foreground"
         >
           <ChevronDown
