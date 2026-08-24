@@ -10,6 +10,7 @@ import {
   BellIcon,
   BotIcon,
   ChevronDownIcon,
+  CircleCheckIcon,
   CircleDashedIcon,
   HandIcon,
   PlusIcon,
@@ -27,7 +28,8 @@ import { useUiStateStore } from "../../uiStateStore";
 import { toastManager } from "../ui/toast";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useThreadShell } from "../../state/entities";
-import { resolveSidebarV2Status } from "../Sidebar.logic";
+import { hasUnseenCompletion, resolveSidebarV2Status } from "../Sidebar.logic";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { cn } from "../../lib/utils";
 import { SidebarMenuButton } from "../ui/sidebar";
@@ -231,6 +233,20 @@ function AgentSidebarRow(props: {
   const working =
     threadShell !== null &&
     resolveSidebarV2Status({ ...threadShell, environmentUnreachable }) === "working";
+  // "Done" on the same terms as a thread row: a turn that finished after the
+  // last time this conversation was opened. Same store, same helper, so an
+  // agent and its thread can never disagree about having finished.
+  const lastVisitedAt = useUiStateStore((state) =>
+    agent.threadId === null
+      ? undefined
+      : state.threadLastVisitedAtById[
+          scopedThreadKey({ environmentId: props.environmentId, threadId: agent.threadId })
+        ],
+  );
+  const done =
+    !working &&
+    threadShell !== null &&
+    hasUnseenCompletion({ ...threadShell, ...(lastVisitedAt ? { lastVisitedAt } : {}) });
   const resolveAction = useCallback(
     (direction: SidebarSwipeDirection) => (direction === "right" ? "delete" : null),
     [],
@@ -282,12 +298,28 @@ function AgentSidebarRow(props: {
       >
         <BotIcon />
         <span className="flex-1 truncate text-left">{agent.name}</span>
+        {/* Deliberately identical to the thread rows' working indicator, minus
+            their "Working 4m" label — same CircleDashedIcon, same sky tint,
+            same duty-cycled fade from `animate-sidebar-working-text`. It span
+            spun on `text-primary` before, which read as a different kind of
+            state than the one the threads below it were showing. The span
+            wrapper is load-bearing: SidebarMenuButton repaints direct <svg>
+            children muted grey, which would eat the sky tint. */}
         {working ? (
-          <span title="Working" className="flex shrink-0 items-center">
-            <CircleDashedIcon
-              className="size-3.5 animate-spin text-primary [animation-duration:3s]"
-              aria-label="Working"
-            />
+          <span
+            title="Working"
+            className="flex shrink-0 items-center animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400"
+          >
+            <CircleDashedIcon className="size-4 shrink-0" aria-label="Working" />
+          </span>
+        ) : done ? (
+          // Same slot, same emerald as the thread rows' "Done", label dropped
+          // for width exactly like the working icon above it.
+          <span
+            title="Done"
+            className="flex shrink-0 items-center text-emerald-700 dark:text-emerald-300"
+          >
+            <CircleCheckIcon className="size-4 shrink-0" aria-label="Done" />
           </span>
         ) : null}
         {/* A badge, not a bare glyph, and deliberately a <span> wrapper: this
