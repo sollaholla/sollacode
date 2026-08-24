@@ -57,3 +57,31 @@ describe("agent row delete affordance", () => {
     expect(source).not.toContain("group-hover/agent-row:opacity-100");
   });
 });
+
+describe("waiting-on-you badge", () => {
+  const source = () =>
+    NodeFS.readFileSync(NodePath.join(import.meta.dirname, "AgentStackSidebarEntry.tsx"), "utf8");
+
+  it("renders as a counted amber pill, not a bare icon", () => {
+    // It shipped as a dim grey hand with no number beside a full blue
+    // notification pill, so the count it stood for was invisible.
+    const badge = source().slice(source().indexOf("props.openBlockers > 0"));
+    expect(badge).toContain("bg-warning");
+    expect(badge.slice(0, 700)).toContain("{props.openBlockers}");
+  });
+
+  it("keeps the icon out of SidebarMenuButton's direct-child svg override", () => {
+    // `[&>svg]:text-sidebar-muted-foreground [&>svg]:opacity-60` on
+    // SidebarMenuButton has no `:not([class*='text-'])` escape, so a direct
+    // <svg> child is repainted grey at 60% whatever colour it asks for. The
+    // span wrapper is what keeps the amber.
+    const sidebar = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "..", "ui", "sidebar.tsx"),
+      "utf8",
+    );
+    expect(sidebar).toContain("[&>svg]:text-sidebar-muted-foreground");
+    expect(source()).not.toContain(
+      '<HandIcon\n            className="size-3.5 shrink-0 text-amber',
+    );
+  });
+});
