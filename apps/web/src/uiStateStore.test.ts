@@ -14,6 +14,9 @@ import {
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
+  setThreadPanelExpanded,
+  THREAD_PANEL_AGENTS_TASKS,
+  THREAD_PANEL_ARTIFACTS,
   type UiState,
 } from "./uiStateStore";
 
@@ -23,6 +26,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    threadPanelExpandedById: {},
     defaultAdvertisedEndpointKey: null,
     showProviderUsageBar: false,
     settledShelfExpanded: false,
@@ -225,6 +229,7 @@ describe("parsePersistedState", () => {
           "turn-2": true,
         },
       },
+      threadPanelExpandedById: {},
     });
   });
 
@@ -330,6 +335,7 @@ describe("uiStateStore persistence", () => {
           "turn-2": true,
         },
       },
+      threadPanelExpandedById: {},
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
     });
 
@@ -358,6 +364,7 @@ describe("uiStateStore persistence", () => {
           "turn-2": true,
         },
       },
+      threadPanelExpandedById: {},
     });
     expect(parsePersistedState(persisted)).toEqual({
       ...state,
@@ -388,5 +395,61 @@ describe("uiStateStore persistence", () => {
       localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
     ) as PersistedUiState;
     expect(resolveProjectExpanded(persisted.projectExpandedById ?? {}, ["unknown"])).toBe(true);
+  });
+});
+
+describe("setThreadPanelExpanded", () => {
+  it("remembers each shelf per thread and defaults to collapsed", () => {
+    const state = makeUiState();
+    // Nothing recorded yet: both shelves read as collapsed.
+    expect(state.threadPanelExpandedById["env:thread-a"]?.[THREAD_PANEL_ARTIFACTS]).toBeUndefined();
+
+    const opened = setThreadPanelExpanded(state, "env:thread-a", THREAD_PANEL_ARTIFACTS, true);
+    expect(opened.threadPanelExpandedById["env:thread-a"]?.[THREAD_PANEL_ARTIFACTS]).toBe(true);
+    // A sibling thread is unaffected — the whole point of keying by thread.
+    expect(opened.threadPanelExpandedById["env:thread-b"]).toBeUndefined();
+
+    const bothPanels = setThreadPanelExpanded(
+      opened,
+      "env:thread-a",
+      THREAD_PANEL_AGENTS_TASKS,
+      true,
+    );
+    expect(bothPanels.threadPanelExpandedById["env:thread-a"]).toEqual({
+      [THREAD_PANEL_ARTIFACTS]: true,
+      [THREAD_PANEL_AGENTS_TASKS]: true,
+    });
+
+    const closed = setThreadPanelExpanded(
+      bothPanels,
+      "env:thread-a",
+      THREAD_PANEL_ARTIFACTS,
+      false,
+    );
+    expect(closed.threadPanelExpandedById["env:thread-a"]?.[THREAD_PANEL_ARTIFACTS]).toBe(false);
+    expect(closed.threadPanelExpandedById["env:thread-a"]?.[THREAD_PANEL_AGENTS_TASKS]).toBe(true);
+  });
+
+  it("returns the same state when nothing changes, so no needless rerender", () => {
+    const state = setThreadPanelExpanded(makeUiState(), "env:t", THREAD_PANEL_ARTIFACTS, true);
+    expect(setThreadPanelExpanded(state, "env:t", THREAD_PANEL_ARTIFACTS, true)).toBe(state);
+  });
+
+  it("hydrates a remembered shelf, and drops malformed entries", () => {
+    // Persisting is the whole feature: the shelf has to stay how it was left
+    // across a reload, not just across a remount.
+    const rehydrated = parsePersistedState({
+      threadPanelExpandedById: {
+        "env:t": { [THREAD_PANEL_ARTIFACTS]: true, [THREAD_PANEL_AGENTS_TASKS]: false },
+        "env:bad": { [THREAD_PANEL_ARTIFACTS]: "yes" as unknown as boolean },
+      },
+    } as PersistedUiState);
+
+    expect(rehydrated.threadPanelExpandedById["env:t"]).toEqual({
+      [THREAD_PANEL_ARTIFACTS]: true,
+      [THREAD_PANEL_AGENTS_TASKS]: false,
+    });
+    // A non-boolean cannot decide whether a panel is open, so the whole entry goes.
+    expect(rehydrated.threadPanelExpandedById["env:bad"]).toBeUndefined();
   });
 });
