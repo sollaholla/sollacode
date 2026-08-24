@@ -290,11 +290,21 @@ function AgentSidebarRow(props: {
             />
           </span>
         ) : null}
+        {/* A badge, not a bare glyph, and deliberately a <span> wrapper: this
+            row is a SidebarMenuButton, whose `[&>svg]:text-sidebar-muted-foreground
+            [&>svg]:opacity-60` has no `:not([class*='text-'])` escape, so a
+            direct <svg> child is repainted grey at 60% no matter what colour
+            it asks for. The hand rendered as a dim grey smudge beside a full
+            blue notification pill — the count it stood for was invisible. */}
         {props.openBlockers > 0 ? (
-          <HandIcon
-            className="size-3.5 shrink-0 text-amber-500"
+          <span
+            className="inline-flex min-w-5 shrink-0 items-center justify-center gap-1 rounded-full bg-warning px-1.5 text-[10px] font-semibold tabular-nums text-amber-950"
             aria-label={`${props.openBlockers} waiting on you`}
-          />
+            title={`${props.openBlockers} waiting on you`}
+          >
+            <HandIcon className="size-2.5" aria-hidden />
+            {props.openBlockers}
+          </span>
         ) : null}
         {props.unreadNotifications > 0 ? (
           <span
