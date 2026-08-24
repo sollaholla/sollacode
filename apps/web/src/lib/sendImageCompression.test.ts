@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  MODEL_MAX_IMAGE_EDGE,
   SEND_IMAGE_MAX_BYTES,
   SEND_IMAGE_PAYLOAD_LIMIT_BYTES,
   SendImagePreparationError,
@@ -170,5 +171,51 @@ describe("prepareImageAttachmentsForSend", () => {
         "Image 'cannot-fit.png' could not be compressed below 2 MiB. It was not sent.",
       ),
     );
+  });
+});
+
+describe("model pixel spec", () => {
+  it("downscales a huge-pixel image even when its bytes already fit", async () => {
+    // The reported failure: a screenshot with an enormous pixel count that
+    // happened to compress under the byte ceiling took the untouched fast
+    // path and was refused several hops later as "too large".
+    const stubs = stubCanvasPipeline(() => 1024);
+    const small = makeFile(64 * 1024, "image/png", "screenshot.png");
+
+    const result = await prepareImageForSend(small);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.image.recompressed).toBe(true);
+    // 6000x4000 stub bitmap must come back within the model's long edge.
+    expect(stubs.encodings[0]?.width).toBeLessThanOrEqual(MODEL_MAX_IMAGE_EDGE);
+  });
+
+  it("still forwards a small image that is already within spec untouched", async () => {
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })),
+    );
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        constructor(
+          public width: number,
+          public height: number,
+        ) {}
+        getContext() {
+          return { fillStyle: "", fillRect: vi.fn(), drawImage: vi.fn() };
+        }
+        async convertToBlob() {
+          throw new Error("must not re-encode an image that is already in spec");
+        }
+      },
+    );
+
+    const result = await prepareImageForSend(makeFile(32 * 1024, "image/png", "small.png"));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.image.recompressed).toBe(false);
   });
 });

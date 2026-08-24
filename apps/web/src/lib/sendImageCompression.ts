@@ -8,7 +8,19 @@
 export const SEND_IMAGE_PAYLOAD_LIMIT_BYTES = 2 * 1024 * 1024;
 export const SEND_IMAGE_MAX_BYTES = SEND_IMAGE_PAYLOAD_LIMIT_BYTES - 1;
 
-const MAX_INITIAL_DIMENSION = 4096;
+/**
+ * Longest edge we will hand a model, in pixels.
+ *
+ * Anthropic resizes anything longer than this before the model ever sees it,
+ * so pixels above the line carry no information and only cost bytes and
+ * latency — while a long edge far above it is rejected outright. Enforcing it
+ * here means the request is already within spec before it leaves the app,
+ * rather than being refused several hops later where the only visible symptom
+ * is that the image "was too large".
+ */
+export const MODEL_MAX_IMAGE_EDGE = 1568;
+
+const MAX_INITIAL_DIMENSION = MODEL_MAX_IMAGE_EDGE;
 const MIN_DIMENSION = 32;
 const DIMENSION_SCALE = 0.75;
 const QUALITY_STEPS = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4] as const;
@@ -110,7 +122,10 @@ export async function prepareImageForSend(
   file: File,
   maxBytes: number = SEND_IMAGE_MAX_BYTES,
 ): Promise<PrepareSendImageResult> {
-  if (file.size > 0 && file.size <= maxBytes) {
+  if (file.size <= 0) return { ok: false, reason: "unreadable" };
+  const withinByteBudget = file.size <= maxBytes;
+
+  const sendOriginal = async (): Promise<PrepareSendImageResult> => {
     try {
       return {
         ok: true,
@@ -125,15 +140,29 @@ export async function prepareImageForSend(
     } catch {
       return { ok: false, reason: "unreadable" };
     }
+  };
+
+  // Without a canvas nothing can be measured or resized, so the byte budget is
+  // the only check available.
+  if (!canRecompress()) {
+    return withinByteBudget ? await sendOriginal() : { ok: false, reason: "too-large" };
   }
-  if (file.size <= 0) return { ok: false, reason: "unreadable" };
-  if (!canRecompress()) return { ok: false, reason: "too-large" };
 
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   } catch {
-    return { ok: false, reason: "unreadable" };
+    // Undecodable but small enough to send: forward it rather than refusing
+    // over a measurement we could not take.
+    return withinByteBudget ? await sendOriginal() : { ok: false, reason: "unreadable" };
+  }
+
+  // Byte size alone used to decide this, so a screenshot with an enormous
+  // pixel count that happened to compress under the ceiling was forwarded at
+  // full resolution and refused downstream. Both limits have to hold.
+  if (withinByteBudget && Math.max(bitmap.width, bitmap.height) <= MODEL_MAX_IMAGE_EDGE) {
+    bitmap.close?.();
+    return await sendOriginal();
   }
 
   try {
