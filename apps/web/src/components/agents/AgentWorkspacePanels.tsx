@@ -198,7 +198,12 @@ function BlockerItem(props: {
 
   const blockerUrl = blocker.url;
   return (
-    <div className="flex min-w-0 items-start gap-2">
+    // Stacked on a phone, side by side once there is room. Three buttons in
+    // a row beside the text left both halves too narrow: the title broke over
+    // two lines, the detail wrapped every three or four words into a column
+    // under half the screen, and the whole card grew tall enough to cover the
+    // conversation behind it.
+    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:gap-2">
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium">{blocker.title}</p>
         <p
@@ -221,24 +226,41 @@ function BlockerItem(props: {
           </button>
         ) : null}
       </div>
-      {blockerUrl ? (
-        <Button size="xs" variant="outline" onClick={() => props.onOpenUrl(blockerUrl)}>
-          <ExternalLinkIcon /> Open
+      {/* The two real actions share the width evenly on a phone so neither is
+          a cramped target, and shrink to their labels on a wide panel.
+          Dismiss stays icon-sized at the end either way. */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        {blockerUrl ? (
+          <Button
+            size="xs"
+            variant="outline"
+            className="min-w-0 flex-1 sm:flex-none"
+            onClick={() => props.onOpenUrl(blockerUrl)}
+          >
+            <ExternalLinkIcon /> Open
+          </Button>
+        ) : null}
+        <Button
+          size="xs"
+          variant="outline"
+          className="min-w-0 flex-1 sm:flex-none"
+          disabled={busyAction !== null}
+          onClick={props.onResolve}
+        >
+          {busyAction === "resolve" ? "Resolving…" : "Mark resolved"}
         </Button>
-      ) : null}
-      <Button size="xs" variant="outline" disabled={busyAction !== null} onClick={props.onResolve}>
-        {busyAction === "resolve" ? "Resolving…" : "Mark resolved"}
-      </Button>
-      <Button
-        size="xs"
-        variant="ghost"
-        aria-label="Dismiss"
-        title="Dismiss without marking it done"
-        disabled={busyAction !== null}
-        onClick={props.onDismiss}
-      >
-        <XIcon />
-      </Button>
+        <Button
+          size="xs"
+          variant="ghost"
+          className="shrink-0"
+          aria-label="Dismiss"
+          title="Dismiss without marking it done"
+          disabled={busyAction !== null}
+          onClick={props.onDismiss}
+        >
+          <XIcon />
+        </Button>
+      </div>
     </div>
   );
 }
