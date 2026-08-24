@@ -2295,6 +2295,161 @@ describe("ProviderRuntimeIngestion", () => {
     expect(threadAfterSteer.latestTurn?.state).toBe("running");
   });
 
+  it("does not attribute a newer pending plan to a replayed turn.started event", async () => {
+    const harness = await createHarness();
+    const sourceThreadId = asThreadId("thread-plan-replayed-start");
+    const targetThreadId = asThreadId("thread-1");
+    const sourceTurnId = asTurnId("turn-plan-replayed-start-source");
+    const activeTurnId = asTurnId("turn-plan-replayed-start-active");
+    const pendingTurnId = asTurnId("turn-plan-replayed-start-pending");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-plan-replayed-start-source"),
+        threadId: sourceThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Replayed Start Plan Source",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "plan",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-plan-replayed-start-source-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.500Z",
+      threadId: sourceThreadId,
+      turnId: sourceTurnId,
+      payload: { planMarkdown: "# Preserve this pending plan" },
+    });
+
+    const sourceThreadWithPlan = await waitForThread(
+      harness.readModel,
+      (thread) => thread.proposedPlans.length === 1,
+      2_000,
+      sourceThreadId,
+    );
+    const sourcePlan = sourceThreadWithPlan.proposedPlans[0];
+    expect(sourcePlan).toBeDefined();
+    if (sourcePlan === undefined) {
+      throw new Error("Expected source plan to exist.");
+    }
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: targetThreadId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      activeTurnId,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-plan-replayed-start-active-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: targetThreadId,
+      turnId: activeTurnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.latestTurn?.turnId === activeTurnId,
+      2_000,
+      targetThreadId,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-plan-replayed-start-pending"),
+        threadId: targetThreadId,
+        message: {
+          messageId: asMessageId("msg-plan-replayed-start-pending"),
+          role: "user",
+          text: "PLEASE IMPLEMENT THIS PLAN:\n# Preserve this pending plan",
+          attachments: [],
+        },
+        sourceProposedPlan: {
+          threadId: sourceThreadId,
+          planId: sourcePlan.id,
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    // Some providers replay turn.started for the already-running turn. That
+    // event predates the queued message and must not steal its proposed-plan
+    // reference merely because it is currently the oldest pending start.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-plan-replayed-start-active-repeated"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: targetThreadId,
+      turnId: activeTurnId,
+    });
+    await harness.drain();
+
+    const afterRepeatedStart = await harness.readModel();
+    expect(
+      afterRepeatedStart.threads
+        .find((thread) => thread.id === sourceThreadId)
+        ?.proposedPlans.find((plan) => plan.id === sourcePlan.id),
+    ).toMatchObject({
+      implementedAt: null,
+      implementationThreadId: null,
+    });
+
+    // The later real start for B must still find the pending source reference,
+    // proving the replay neither attributed nor consumed it.
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: targetThreadId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:04.000Z",
+      activeTurnId: pendingTurnId,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-plan-replayed-start-pending-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      threadId: targetThreadId,
+      turnId: pendingTurnId,
+    });
+
+    const sourceThreadAfterPendingStart = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.proposedPlans.some(
+          (plan) =>
+            plan.id === sourcePlan.id &&
+            plan.implementationThreadId === targetThreadId &&
+            plan.implementedAt !== null,
+        ),
+      2_000,
+      sourceThreadId,
+    );
+    expect(
+      sourceThreadAfterPendingStart.proposedPlans.find((plan) => plan.id === sourcePlan.id),
+    ).toMatchObject({
+      implementationThreadId: targetThreadId,
+    });
+  });
+
   it("does not mark the source proposed plan implemented for an unrelated turn.started when no thread active turn is tracked", async () => {
     const harness = await createHarness();
     const sourceThreadId = asThreadId("thread-plan");

@@ -14,6 +14,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -96,6 +97,28 @@ const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJ
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
+
+/**
+ * Once ACP accepts a prompt, local state reconciliation must not turn that
+ * delivery into a retry. Interruptions still propagate so shutdown and an
+ * explicit stop retain their cancellation semantics.
+ */
+export function preserveAcceptedGrokTurn<A, E, R>(
+  finalization: Effect.Effect<A, E, R>,
+  fallback: A,
+  diagnostics: { readonly threadId: ThreadId; readonly turnId: TurnId },
+): Effect.Effect<A, E, R> {
+  return finalization.pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("grok.sendTurn.finalization-failed-after-acceptance", {
+            ...diagnostics,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(fallback)),
+    ),
+  );
+}
 
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
@@ -1357,21 +1380,6 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
 
         return yield* Effect.gen(function* () {
-          // session/prompt is Grok ACP's acceptance of this exact user message.
-          // Emit the receipt as soon as we hand the prompt to the CLI, not when
-          // the turn later finishes — otherwise a long turn would sit on
-          // "Queued" the whole time.
-          if (input.messageId !== undefined) {
-            yield* offerRuntimeEvent({
-              type: "message.delivered",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId: prepared.turnId,
-              payload: { messageId: input.messageId },
-            });
-          }
-
           const result = yield* prepared.acp
             .prompt({
               prompt: prepared.promptParts,
@@ -1394,75 +1402,54 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               ),
             );
 
-          return yield* withThreadLock(
-            input.threadId,
-            Effect.gen(function* () {
-              const ctx = yield* requireSession(input.threadId);
-              if (ctx.acpSessionId !== prepared.acpSessionId) {
-                yield* settlePromptInFlight(
-                  input.threadId,
-                  prepared.turnId,
-                  prepared.acpSessionId,
-                  {
-                    errorMessage: "Grok session changed before the turn completed.",
-                    settleAllPrompts: true,
-                  },
-                );
-                yield* Ref.set(promptSettled, true);
-                return yield* new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/prompt",
-                  detail: "Grok session changed before the turn completed.",
-                });
-              }
-              // Keep prompt settlement atomic with respect to Stop and steering.
-              // interruptTurn marks its target before waiting for this lock, so
-              // cancellation can still win while queued ACP events are drained.
-              for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
-                yield* Effect.yieldNow;
-              }
-              yield* prepared.acp.drainEvents;
-              if (ctx.interruptedTurnIds.has(prepared.turnId)) {
-                yield* Ref.set(promptSettled, true);
-                return {
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  resumeCursor: ctx.session.resumeCursor,
-                };
-              }
+          const acceptedTurn = {
+            threadId: input.threadId,
+            turnId: prepared.turnId,
+          };
+          // A successful session/prompt response is Grok ACP's durable proof
+          // that this exact message was accepted. Local finalization below is
+          // best-effort after that boundary: surfacing its failure would make
+          // the delivery queue replay a prompt Grok already received.
+          if (input.messageId !== undefined) {
+            yield* offerRuntimeEvent({
+              type: "message.delivered",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId: prepared.turnId,
+              payload: { messageId: input.messageId },
+            });
+          }
 
-              if (
-                ctx.promptsInFlight <= 0 ||
-                ctx.activeTurnId !== prepared.turnId ||
-                ctx.session.activeTurnId !== prepared.turnId
-              ) {
-                yield* Ref.set(promptSettled, true);
-                return {
-                  threadId: input.threadId,
-                  turnId: prepared.turnId,
-                  resumeCursor: ctx.session.resumeCursor,
-                };
-              }
-
-              appendPromptResultToTurn(ctx, prepared.turnId, prepared.promptParts, result);
-              ctx.session = {
-                ...ctx.session,
-                status: "running",
-                activeTurnId: prepared.turnId,
-                updatedAt: yield* nowIso,
-                ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
-              };
-              const remainingPrompts = Math.max(0, ctx.promptsInFlight - 1);
-              ctx.promptsInFlight = remainingPrompts;
-
-              // Only the last remaining prompt settles the turn. A steer-
-              // superseded prompt resolving while another is in flight or
-              // pending must leave the merged turn running.
-              if (
-                remainingPrompts === 0 &&
-                ctx.activeTurnId === prepared.turnId &&
-                ctx.session.activeTurnId === prepared.turnId
-              ) {
+          const finalizedTurn = yield* preserveAcceptedGrokTurn(
+            withThreadLock(
+              input.threadId,
+              Effect.gen(function* () {
+                const ctx = yield* requireSession(input.threadId);
+                if (ctx.acpSessionId !== prepared.acpSessionId) {
+                  yield* settlePromptInFlight(
+                    input.threadId,
+                    prepared.turnId,
+                    prepared.acpSessionId,
+                    {
+                      errorMessage: "Grok session changed before the turn completed.",
+                      settleAllPrompts: true,
+                    },
+                  );
+                  yield* Ref.set(promptSettled, true);
+                  return yield* new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session/prompt",
+                    detail: "Grok session changed before the turn completed.",
+                  });
+                }
+                // Keep prompt settlement atomic with respect to Stop and steering.
+                // interruptTurn marks its target before waiting for this lock, so
+                // cancellation can still win while queued ACP events are drained.
+                for (let yieldAttempt = 0; yieldAttempt < 8; yieldAttempt += 1) {
+                  yield* Effect.yieldNow;
+                }
+                yield* prepared.acp.drainEvents;
                 if (ctx.interruptedTurnIds.has(prepared.turnId)) {
                   yield* Ref.set(promptSettled, true);
                   return {
@@ -1471,49 +1458,95 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     resumeCursor: ctx.session.resumeCursor,
                   };
                 }
-                const completedAt = yield* nowIso;
-                const { activeTurnId: _completedTurnId, ...readySession } = ctx.session;
-                ctx.activeTurnId = undefined;
+
+                if (
+                  ctx.promptsInFlight <= 0 ||
+                  ctx.activeTurnId !== prepared.turnId ||
+                  ctx.session.activeTurnId !== prepared.turnId
+                ) {
+                  yield* Ref.set(promptSettled, true);
+                  return {
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    resumeCursor: ctx.session.resumeCursor,
+                  };
+                }
+
+                appendPromptResultToTurn(ctx, prepared.turnId, prepared.promptParts, result);
                 ctx.session = {
-                  ...readySession,
-                  status: "ready",
-                  updatedAt: completedAt,
+                  ...ctx.session,
+                  status: "running",
+                  activeTurnId: prepared.turnId,
+                  updatedAt: yield* nowIso,
                   ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
                 };
-                const completedStopReason = completedStopReasonFromPromptResponse(result);
-                yield* offerRuntimeEvent({
-                  type: "turn.completed",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
+                const remainingPrompts = Math.max(0, ctx.promptsInFlight - 1);
+                ctx.promptsInFlight = remainingPrompts;
+
+                // Only the last remaining prompt settles the turn. A steer-
+                // superseded prompt resolving while another is in flight or
+                // pending must leave the merged turn running.
+                if (
+                  remainingPrompts === 0 &&
+                  ctx.activeTurnId === prepared.turnId &&
+                  ctx.session.activeTurnId === prepared.turnId
+                ) {
+                  if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                    yield* Ref.set(promptSettled, true);
+                    return {
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      resumeCursor: ctx.session.resumeCursor,
+                    };
+                  }
+                  const completedAt = yield* nowIso;
+                  const { activeTurnId: _completedTurnId, ...readySession } = ctx.session;
+                  ctx.activeTurnId = undefined;
+                  ctx.session = {
+                    ...readySession,
+                    status: "ready",
+                    updatedAt: completedAt,
+                    ...(prepared.displayModel ? { model: prepared.displayModel } : {}),
+                  };
+                  const completedStopReason = completedStopReasonFromPromptResponse(result);
+                  yield* offerRuntimeEvent({
+                    type: "turn.completed",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: prepared.turnId,
+                    payload: {
+                      state: result.stopReason === "cancelled" ? "cancelled" : "completed",
+                      stopReason: completedStopReason,
+                    },
+                  });
+                  yield* emitGrokAccountUsage(ctx.acp, input.threadId, prepared.turnId).pipe(
+                    Effect.forkIn(ctx.scope),
+                  );
+                  yield* emitGrokTokenUsage(
+                    ctx.acp,
+                    input.threadId,
+                    ctx.acpSessionId,
+                    prepared.turnId,
+                  ).pipe(Effect.forkIn(ctx.scope));
+                  ctx.interruptedTurnIds.delete(prepared.turnId);
+                  yield* Ref.set(promptSettled, true);
+                } else if (remainingPrompts > 0) {
+                  yield* Ref.set(promptSettled, true);
+                }
+
+                return {
                   threadId: input.threadId,
                   turnId: prepared.turnId,
-                  payload: {
-                    state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-                    stopReason: completedStopReason,
-                  },
-                });
-                yield* emitGrokAccountUsage(ctx.acp, input.threadId, prepared.turnId).pipe(
-                  Effect.forkIn(ctx.scope),
-                );
-                yield* emitGrokTokenUsage(
-                  ctx.acp,
-                  input.threadId,
-                  ctx.acpSessionId,
-                  prepared.turnId,
-                ).pipe(Effect.forkIn(ctx.scope));
-                ctx.interruptedTurnIds.delete(prepared.turnId);
-                yield* Ref.set(promptSettled, true);
-              } else if (remainingPrompts > 0) {
-                yield* Ref.set(promptSettled, true);
-              }
-
-              return {
-                threadId: input.threadId,
-                turnId: prepared.turnId,
-                resumeCursor: ctx.session.resumeCursor,
-              };
-            }),
+                  resumeCursor: ctx.session.resumeCursor,
+                };
+              }),
+            ),
+            acceptedTurn,
+            { threadId: input.threadId, turnId: prepared.turnId },
           );
+
+          return finalizedTurn;
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {

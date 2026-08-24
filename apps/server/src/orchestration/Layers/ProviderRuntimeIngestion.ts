@@ -1459,11 +1459,17 @@ const make = Effect.gen(function* () {
 
   const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForPendingTurnStart",
-  )(function* (threadId: ThreadId) {
-    const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+  )(function* (threadId: ThreadId, requestedBeforeOrAt?: string) {
+    const pendingTurnStart = yield* projectionTurnRepository.getOldestPendingTurnStartByThreadId({
       threadId,
     });
     if (Option.isNone(pendingTurnStart)) {
+      return null;
+    }
+    if (
+      requestedBeforeOrAt !== undefined &&
+      pendingTurnStart.value.requestedAt > requestedBeforeOrAt
+    ) {
       return null;
     }
 
@@ -1499,7 +1505,24 @@ const make = Effect.gen(function* () {
       return null;
     }
 
-    return yield* getSourceProposedPlanReferenceForPendingTurnStart(threadId);
+    const existingTurn = yield* projectionTurnRepository.getByTurnId({
+      threadId,
+      turnId: eventTurnId,
+    });
+    if (Option.isSome(existingTurn) && existingTurn.value.pendingMessageId !== null) {
+      const sourceThreadId = existingTurn.value.sourceProposedPlanThreadId;
+      const sourcePlanId = existingTurn.value.sourceProposedPlanId;
+      return sourceThreadId === null || sourcePlanId === null
+        ? null
+        : { sourceThreadId, sourcePlanId };
+    }
+
+    return yield* getSourceProposedPlanReferenceForPendingTurnStart(
+      threadId,
+      Option.isSome(existingTurn)
+        ? (existingTurn.value.startedAt ?? existingTurn.value.requestedAt)
+        : undefined,
+    );
   });
 
   const markSourceProposedPlanImplemented = Effect.fn("markSourceProposedPlanImplemented")(
@@ -1866,7 +1889,7 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
-      const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
+      const pendingTurnStart = yield* projectionTurnRepository.getOldestPendingTurnStartByThreadId({
         threadId: thread.id,
       });
       const hasPendingTurnStart =

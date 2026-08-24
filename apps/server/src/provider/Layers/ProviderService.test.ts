@@ -38,6 +38,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
+  ProviderSessionDirectoryPersistenceError,
   ProviderUnsupportedError,
   ProviderValidationError,
   type ProviderAdapterError,
@@ -993,6 +994,57 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.deepEqual(startPayload.resumeCursor, session.resumeCursor);
         assert.equal(startPayload.threadId, session.threadId);
       }
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("preserves an accepted sendTurn when the session binding update fails", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-send-turn-post-acceptance-upsert-failure");
+
+      yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-turn-post-acceptance-upsert-failure",
+        runtimeMode: "full-access",
+      });
+      routing.codex.sendTurn.mockClear();
+
+      const originalUpsert = directory.upsert;
+      let failedRunningUpserts = 0;
+      const upsertSpy = vi.spyOn(directory, "upsert").mockImplementation((binding) => {
+        if (binding.threadId === threadId && binding.status === "running") {
+          failedRunningUpserts += 1;
+          return Effect.fail(
+            new ProviderSessionDirectoryPersistenceError({
+              operation: "ProviderSessionDirectory.upsert:upsert",
+              detail: "simulated post-acceptance persistence failure",
+            }),
+          );
+        }
+        return originalUpsert(binding);
+      });
+
+      const accepted = yield* provider
+        .sendTurn({
+          threadId,
+          input: "deliver exactly once",
+          attachments: [],
+        })
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              upsertSpy.mockRestore();
+            }),
+          ),
+        );
+
+      assert.equal(accepted.threadId, threadId);
+      assert.equal(accepted.turnId, asTurnId(`turn-${String(threadId)}`));
+      assert.equal(failedRunningUpserts, 1);
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
     }),
   );

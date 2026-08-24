@@ -12,7 +12,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ThreadWorkObligationRepositoryLive } from "./ThreadWorkObligations.ts";
 import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
-import { ThreadWorkObligationRepository } from "../Services/ThreadWorkObligations.ts";
+import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  ThreadWorkObligationRepository,
+} from "../Services/ThreadWorkObligations.ts";
 
 const repositoryLayer = it.layer(
   ThreadWorkObligationRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
@@ -204,6 +207,67 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
     }),
   );
 
+  it.effect("prunes ordinary terminal rows but retains an unconfirmed steer owner", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-work-prune-unconfirmed");
+      const messageId = "message-work-prune-unconfirmed";
+      yield* insertThread(threadId);
+
+      const base = {
+        threadId,
+        providerInstanceId,
+        state: "completed" as const,
+        attempt: 0,
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        createdAt: now,
+        updatedAt: now,
+      } as const;
+      yield* repository.insert({
+        ...base,
+        obligationId: "ordinary-terminal-work",
+        sourceTurnId: TurnId.make("turn-ordinary-terminal-work"),
+        kind: "provider-retry",
+        blockedReason: null,
+      });
+      yield* repository.insert({
+        ...base,
+        obligationId: "unconfirmed-terminal-work",
+        sourceTurnId: TurnId.make(`turn-start:${messageId}`),
+        kind: "active-turn-recovery",
+        blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+      });
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          ${threadId}, NULL, ${messageId}, NULL, 'pending',
+          ${now}, NULL, NULL, '[]'
+        )
+      `;
+
+      assert.isAtLeast(
+        yield* repository.pruneTerminal({
+          updatedBefore: "2026-08-05T00:00:00.000Z",
+          limit: 256,
+        }),
+        1,
+      );
+      assert.isTrue(Option.isNone(yield* repository.getById("ordinary-terminal-work")));
+      assert.isTrue(Option.isSome(yield* repository.getById("unconfirmed-terminal-work")));
+      const pending = yield* sql<{ readonly messageId: string }>`
+        SELECT pending_message_id AS "messageId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+      `;
+      assert.deepEqual(pending, [{ messageId }]);
+    }),
+  );
+
   it.effect("cancelByThread modes protect user deliveries and live supervisors", () =>
     Effect.gen(function* () {
       const repository = yield* ThreadWorkObligationRepository;
@@ -360,6 +424,262 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       );
       assert.strictEqual(yield* stateOf(`${terminalThread}:user-delivery`), "cancelled");
       assert.strictEqual(yield* stateOf(`${terminalThread}:supervisor`), "cancelled");
+    }),
+  );
+
+  it.effect("terminal owners consume only their exact queued placeholders", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-work-terminal-placeholder-cleanup");
+      yield* insertThread(threadId);
+
+      const insertPending = (messageId: string, offset: number) => sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          ${threadId}, NULL, ${messageId}, NULL, 'pending',
+          ${`2026-08-24T20:00:0${offset}.000Z`}, NULL, NULL, '[]'
+        )
+      `;
+      const base = {
+        threadId,
+        providerInstanceId,
+        attempt: 0,
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: null,
+        createdAt: now,
+        updatedAt: now,
+      } as const;
+
+      const activeMessageId = "message-terminal-active";
+      const startupSourceTurnId = TurnId.make("turn-terminal-startup");
+      const startupMessageId =
+        `startup-auto-resume-message:${threadId}:${startupSourceTurnId}` as const;
+      const agentSourceTurnId = TurnId.make("turn-terminal-agent");
+      const agentMessageId = `agent-auto-resume-message:${threadId}:${agentSourceTurnId}` as const;
+      const unconfirmedMessageId = "message-unconfirmed-steer";
+
+      yield* Effect.all(
+        [
+          insertPending(activeMessageId, 1),
+          insertPending(startupMessageId, 2),
+          insertPending(agentMessageId, 3),
+          insertPending(unconfirmedMessageId, 4),
+        ],
+        { concurrency: 1, discard: true },
+      );
+      yield* repository.insert({
+        ...base,
+        obligationId: "terminal-active-owner",
+        sourceTurnId: TurnId.make(`turn-start:${activeMessageId}`),
+        kind: "active-turn-recovery",
+        state: "pending",
+      });
+      yield* repository.insert({
+        ...base,
+        obligationId: "terminal-startup-owner",
+        sourceTurnId: startupSourceTurnId,
+        kind: "startup-resume",
+        state: "pending",
+      });
+      yield* repository.insert({
+        ...base,
+        obligationId: "terminal-agent-owner",
+        sourceTurnId: agentSourceTurnId,
+        kind: "agent-continuation",
+        state: "pending",
+      });
+      yield* repository.insert({
+        ...base,
+        obligationId: "unconfirmed-steer-owner",
+        sourceTurnId: TurnId.make(`turn-start:${unconfirmedMessageId}`),
+        kind: "active-turn-recovery",
+        state: "pending",
+      });
+
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "terminal-active-owner",
+          expectedState: "pending",
+          expectedAttempt: 0,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: later,
+        }),
+      );
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "terminal-startup-owner",
+          expectedState: "pending",
+          expectedAttempt: 0,
+          state: "cancelled",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: "stopped",
+          updatedAt: later,
+        }),
+      );
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "terminal-agent-owner",
+          expectedState: "pending",
+          expectedAttempt: 0,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: later,
+        }),
+      );
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "unconfirmed-steer-owner",
+          expectedState: "pending",
+          expectedAttempt: 0,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+          updatedAt: later,
+        }),
+      );
+
+      let pending = yield* sql<{ readonly messageId: string }>`
+        SELECT pending_message_id AS "messageId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+      `;
+      assert.deepEqual(pending, [{ messageId: unconfirmedMessageId }]);
+
+      assert.isTrue(
+        yield* repository.transition({
+          obligationId: "unconfirmed-steer-owner",
+          expectedState: "completed",
+          expectedAttempt: 0,
+          expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: later,
+        }),
+      );
+      pending = yield* sql<{ readonly messageId: string }>`
+        SELECT pending_message_id AS "messageId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+      `;
+      assert.deepEqual(pending, []);
+
+      // A provider-send failure racing the durable receipt/finalizer must not
+      // resurrect the already accepted delivery.
+      assert.isFalse(
+        yield* repository.transition({
+          obligationId: "unconfirmed-steer-owner",
+          expectedState: "completed",
+          expectedAttempt: 0,
+          expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+          state: "pending",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: "stale provider failure",
+          updatedAt: later,
+        }),
+      );
+      const finalized = yield* repository.getById("unconfirmed-steer-owner");
+      assert.equal(Option.getOrNull(finalized)?.state, "completed");
+      assert.equal(Option.getOrNull(finalized)?.blockedReason, null);
+    }),
+  );
+
+  it.effect("user supersession clears synthetic queue rows but preserves user delivery", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-work-synthetic-placeholder-cancel");
+      yield* insertThread(threadId);
+      const activeMessageId = "message-user-delivery";
+      const startupSourceTurnId = TurnId.make("turn-startup-cancel");
+      const startupMessageId = `startup-auto-resume-message:${threadId}:${startupSourceTurnId}`;
+      const agentSourceTurnId = TurnId.make("turn-agent-cancel");
+      const agentMessageId = `agent-auto-resume-message:${threadId}:${agentSourceTurnId}`;
+
+      for (const [index, messageId] of [
+        activeMessageId,
+        startupMessageId,
+        agentMessageId,
+      ].entries()) {
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, NULL, ${messageId}, NULL, 'pending',
+            ${`2026-08-24T20:01:0${index}.000Z`}, NULL, NULL, '[]'
+          )
+        `;
+      }
+      const insertOwner = (input: {
+        readonly obligationId: string;
+        readonly sourceTurnId: TurnId;
+        readonly kind: "active-turn-recovery" | "startup-resume" | "agent-continuation";
+      }) =>
+        repository.insert({
+          ...input,
+          threadId,
+          state: "pending",
+          providerInstanceId,
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      yield* insertOwner({
+        obligationId: "cancel-user-owner",
+        sourceTurnId: TurnId.make(`turn-start:${activeMessageId}`),
+        kind: "active-turn-recovery",
+      });
+      yield* insertOwner({
+        obligationId: "cancel-startup-owner",
+        sourceTurnId: startupSourceTurnId,
+        kind: "startup-resume",
+      });
+      yield* insertOwner({
+        obligationId: "cancel-agent-owner",
+        sourceTurnId: agentSourceTurnId,
+        kind: "agent-continuation",
+      });
+
+      assert.equal(
+        yield* repository.cancelByThread({
+          threadId,
+          updatedAt: later,
+          blockedReason: "superseded by user turn",
+          mode: "user-supersede",
+        }),
+        2,
+      );
+      const pending = yield* sql<{ readonly messageId: string }>`
+        SELECT pending_message_id AS "messageId"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+      `;
+      assert.deepEqual(pending, [{ messageId: activeMessageId }]);
     }),
   );
 
@@ -598,9 +918,20 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
   it.effect("atomically hands active work to a deterministic replacement", () =>
     Effect.gen(function* () {
       const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
       const threadId = ThreadId.make("thread-work-handoff");
-      const sourceTurnId = TurnId.make("turn-work-handoff");
+      const sourceMessageId = "message-work-handoff";
+      const sourceTurnId = TurnId.make(`turn-start:${sourceMessageId}`);
       yield* insertThread(threadId);
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          ${threadId}, NULL, ${sourceMessageId}, NULL, 'pending',
+          ${now}, NULL, NULL, '[]'
+        )
+      `;
       yield* repository.insert({
         obligationId: "handoff-current",
         threadId,
@@ -646,6 +977,12 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       const current = Option.getOrThrow(yield* repository.getById("handoff-current"));
       assert.strictEqual(current.state, "cancelled");
       assert.strictEqual(current.blockedReason, "replaced by authentication-resume");
+      const pending = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS "count"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND pending_message_id = ${sourceMessageId}
+      `;
+      assert.deepEqual(pending, [{ count: 0 }]);
     }),
   );
 

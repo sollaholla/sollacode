@@ -28,7 +28,11 @@ import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../per
 import { refreshProjectionThreadPendingWork } from "../../persistence/PendingWorkProjection.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
-import { ThreadWorkObligationRepository } from "../../persistence/Services/ThreadWorkObligations.ts";
+import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+  ThreadWorkObligationRepository,
+} from "../../persistence/Services/ThreadWorkObligations.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -72,9 +76,9 @@ import {
   activeTurnWorkSourceId,
   agentContinuationSourceTurnId,
   isAgentAutoResumeMessageId,
+  isVmAgentTaskPromptMessageId,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   startupResumeSourceTurnId,
-  STARTUP_RESUME_SIGNED_OFF_REASON,
   threadLostBackgroundTaskAtRestart,
   threadWorkObligationId,
 } from "../agentModeContinuation.ts";
@@ -1571,7 +1575,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.turn-start-requested": {
-          yield* projectionTurnRepository.replacePendingTurnStart({
+          yield* projectionTurnRepository.upsertPendingTurnStart({
             threadId: event.payload.threadId,
             messageId: event.payload.messageId,
             sourceProposedPlanThreadId: event.payload.sourceProposedPlan?.threadId ?? null,
@@ -1581,10 +1585,61 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.session-stop-requested": {
-          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
+        case "thread.activity-appended": {
+          const activity = event.payload.activity;
+          if (activity.kind !== "message.delivered") return;
+          const payload = activity.payload;
+          const rawMessageId =
+            typeof payload === "object" &&
+            payload !== null &&
+            "messageId" in payload &&
+            typeof payload.messageId === "string"
+              ? payload.messageId
+              : null;
+          if (rawMessageId === null) return;
+
+          const messageId = MessageId.make(rawMessageId);
+          const pending = yield* projectionTurnRepository.getPendingTurnStart({
             threadId: event.payload.threadId,
+            messageId,
           });
+          if (Option.isNone(pending)) return;
+
+          const obligation = yield* threadWorkObligationRepository.getByKey({
+            threadId: event.payload.threadId,
+            sourceTurnId: activeTurnWorkSourceId(messageId),
+            kind: "active-turn-recovery",
+          });
+          // The same receipt kind is emitted for ordinary turn/start delivery
+          // and for a steer into an already-running turn. Only the latter can
+          // consume the null-turn placeholder here: a normal start still needs
+          // that row so the subsequent session-set(running) can bind it to the
+          // concrete provider turn. Claude omits the host turn id, so the
+          // pre-claim marker — not activity.turnId — is the cross-provider
+          // discriminator.
+          if (
+            Option.isNone(obligation) ||
+            obligation.value.state !== "completed" ||
+            obligation.value.blockedReason !== ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+          ) {
+            return;
+          }
+          yield* threadWorkObligationRepository.transition({
+            obligationId: obligation.value.obligationId,
+            expectedState: "completed",
+            expectedAttempt: obligation.value.attempt,
+            expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+            state: "completed",
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            updatedAt: activity.createdAt,
+          });
+          return;
+        }
+
+        case "thread.session-stop-requested": {
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
@@ -1607,15 +1662,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "thread.session-set": {
           const turnId = event.payload.session.activeTurnId;
           if (turnId === null || event.payload.session.status !== "running") {
-            if (
-              event.payload.session.status === "error" ||
-              event.payload.session.status === "stopped" ||
-              event.payload.session.status === "interrupted"
-            ) {
-              yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
-                threadId: event.payload.threadId,
-              });
-            }
             // Leaving the "running" session status is the turn-end signal:
             // settle still-running turns so their duration reflects the whole
             // turn rather than the last assistant message.
@@ -1683,8 +1729,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             turnId,
           });
-          const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
+          // A repeated session event for a turn that is already bound must not
+          // pop the next message in the queue. Only an unbound/new concrete
+          // turn adopts the FIFO head; an already-bound turn merely cleans up
+          // a duplicate placeholder for its own immutable source message.
+          const pendingTurnStart = yield* Effect.gen(function* () {
+            if (Option.isNone(existingTurn)) {
+              return yield* projectionTurnRepository.getOldestPendingTurnStartByThreadId({
+                threadId: event.payload.threadId,
+              });
+            }
+            if (existingTurn.value.pendingMessageId !== null) {
+              return yield* projectionTurnRepository.getPendingTurnStart({
+                threadId: event.payload.threadId,
+                messageId: existingTurn.value.pendingMessageId,
+              });
+            }
+
+            const candidate = yield* projectionTurnRepository.getOldestPendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            });
+            if (Option.isNone(candidate)) return candidate;
+            const turnBeganAt = existingTurn.value.startedAt ?? existingTurn.value.requestedAt;
+            return candidate.value.requestedAt <= turnBeganAt ? candidate : Option.none();
           });
           if (Option.isSome(existingTurn)) {
             yield* projectionTurnRepository.upsertByTurnId({
@@ -1749,9 +1816,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             });
           }
 
-          yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
-            threadId: event.payload.threadId,
-          });
+          if (Option.isSome(pendingTurnStart)) {
+            yield* projectionTurnRepository.deletePendingTurnStart({
+              threadId: event.payload.threadId,
+              messageId: pendingTurnStart.value.messageId,
+            });
+          }
           return;
         }
 
@@ -1832,6 +1902,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 ),
               ));
           if (interruptedTurnId === undefined) {
+            // No provider turn exists, so Stop targets the queued starts
+            // themselves. The work projector cancels every pending owner in
+            // the same event; clear the matching visible queue as one unit.
+            yield* projectionTurnRepository.deleteAllPendingTurnStartsByThreadId({
+              threadId: event.payload.threadId,
+            });
             return;
           }
           const existingTurn = yield* projectionTurnRepository.getByTurnId({
@@ -2294,7 +2370,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             // and skipping it here left nothing at all to drive the turn.
             // Revive the row instead; delivery re-checks supersession on
             // claim, so a genuinely overtaken turn is still cancelled there.
-            if (existing.value.state === "cancelled") {
+            if (
+              existing.value.state === "cancelled" &&
+              isVmAgentTaskPromptMessageId(event.payload.messageId) &&
+              existing.value.blockedReason === "turn-start was superseded"
+            ) {
               yield* threadWorkObligationRepository.transition({
                 obligationId: existing.value.obligationId,
                 expectedState: "cancelled",
@@ -2359,6 +2439,59 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             createdAt: event.occurredAt,
             updatedAt: event.occurredAt,
           });
+
+          // This projector trails the turn projector, so future C may already
+          // have a visible row while B's owner is being created. Repair only
+          // rows that sort before the current event, and do it after the
+          // current owner exists. That makes a user's next send clear a legacy
+          // false queue entry without deleting B/C during normal batch replay.
+          yield* sql`
+              DELETE FROM projection_turns AS pending
+              WHERE pending.thread_id = ${event.payload.threadId}
+                AND pending.turn_id IS NULL
+                AND pending.state = 'pending'
+                AND pending.pending_message_id IS NOT NULL
+                AND pending.checkpoint_turn_count IS NULL
+                AND (
+                  pending.requested_at < ${event.payload.createdAt}
+                  OR (
+                    pending.requested_at = ${event.payload.createdAt}
+                    AND pending.pending_message_id < ${event.payload.messageId}
+                  )
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM thread_work_obligations AS work
+                  WHERE work.thread_id = pending.thread_id
+                    AND (
+                      work.state NOT IN ('completed', 'cancelled')
+                      OR (
+                        work.state = 'completed'
+                        AND work.blocked_reason IS ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+                      )
+                    )
+                    AND (
+                      (
+                        work.kind = 'active-turn-recovery'
+                        AND work.source_turn_id = 'turn-start:' || pending.pending_message_id
+                      )
+                      OR (
+                        work.kind = 'startup-resume'
+                        AND pending.pending_message_id =
+                          'startup-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                      )
+                      OR (
+                        work.kind = 'agent-continuation'
+                        AND pending.pending_message_id =
+                          'agent-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                      )
+                    )
+                )
+            `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.repairPendingTurnStarts:query"),
+            ),
+          );
         }
         return;
       }
@@ -2648,6 +2781,217 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         `;
       }
 
+      // Inactive threads cannot own runnable work. Older builds could leave a
+      // nonterminal owner behind when delete/archive/settle raced shutdown;
+      // cancel it before queue reconstruction so it cannot preserve or replay
+      // a stale visible placeholder on this boot.
+      const retiredInactiveOwners = yield* sql<{ readonly threadId: string }>`
+        UPDATE thread_work_obligations AS work
+        SET state = 'cancelled',
+            next_attempt_at = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            blocked_reason = 'thread is inactive after restart',
+            updated_at = ${settledAt}
+        WHERE work.state NOT IN ('completed', 'cancelled')
+          AND EXISTS (
+            SELECT 1
+            FROM projection_threads AS thread
+            WHERE thread.thread_id = work.thread_id
+              AND (
+                thread.deleted_at IS NOT NULL
+                OR thread.archived_at IS NOT NULL
+                OR COALESCE(thread.settled_override, '') = 'settled'
+              )
+          )
+        RETURNING thread_id AS "threadId"
+      `;
+
+      // A mid-turn message is projected as a pending turn before the provider
+      // reactor knows whether it can steer the live turn. On acceptance the
+      // provider emits `message.delivered` for the exact immutable message id;
+      // Claude intentionally omits a host turn id, so the receipt itself is the
+      // cross-provider durable truth.
+      //
+      // Repair both sides before the generic pending-work backfill runs:
+      //   1. a durable exact receipt proves delivery, so retire only that
+      //      message's placeholder and never replay it;
+      //   2. a pre-claimed row carrying the unconfirmed marker but no receipt
+      //      has an ambiguous outcome. Retire its false queue without replaying
+      //      potentially consequential work; the unchanged single-check message
+      //      remains the honest UI signal that delivery was not confirmed.
+      const completedDeliveredSteerOwners = yield* sql<{ readonly threadId: string }>`
+        UPDATE thread_work_obligations AS work
+        SET state = 'completed',
+            next_attempt_at = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            blocked_reason = NULL,
+            updated_at = ${settledAt}
+        WHERE work.kind = 'active-turn-recovery'
+          AND work.state != 'cancelled'
+          AND (
+            work.state != 'completed'
+            OR work.blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM orchestration_events AS delivered
+            WHERE delivered.aggregate_kind = 'thread'
+              AND delivered.stream_id = work.thread_id
+              AND delivered.event_type = 'thread.activity-appended'
+              AND json_extract(delivered.payload_json, '$.activity.kind') = 'message.delivered'
+              AND json_extract(delivered.payload_json, '$.activity.payload.messageId') =
+                substr(work.source_turn_id, length('turn-start:') + 1)
+              AND delivered.sequence >= COALESCE(
+                (
+                  SELECT start.sequence
+                  FROM orchestration_events AS start
+                  WHERE start.aggregate_kind = 'thread'
+                    AND start.stream_id = work.thread_id
+                    AND start.event_type = 'thread.turn-start-requested'
+                    AND json_extract(start.payload_json, '$.messageId') =
+                      substr(work.source_turn_id, length('turn-start:') + 1)
+                  ORDER BY start.sequence DESC
+                  LIMIT 1
+                ),
+                0
+              )
+          )
+        RETURNING thread_id AS "threadId"
+      `;
+      const retiredUnknownSteerOwners = yield* sql<{ readonly threadId: string }>`
+        UPDATE thread_work_obligations AS work
+        SET state = 'completed',
+            next_attempt_at = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON},
+            updated_at = ${settledAt}
+        WHERE work.kind = 'active-turn-recovery'
+          AND work.state = 'completed'
+          AND work.blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+        RETURNING thread_id AS "threadId"
+      `;
+      // Heal placeholders left by older builds whose owner already reached a
+      // durable terminal verdict. Map every owner kind to its exact synthetic
+      // or user message and never disturb a sibling queued message.
+      const retiredTerminalOwnerPlaceholders = yield* sql<{ readonly threadId: string }>`
+        DELETE FROM projection_turns AS pending
+        WHERE pending.turn_id IS NULL
+          AND pending.state = 'pending'
+          AND pending.pending_message_id IS NOT NULL
+          AND pending.checkpoint_turn_count IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM thread_work_obligations AS work
+            WHERE work.thread_id = pending.thread_id
+              AND work.state IN ('completed', 'cancelled')
+              AND NOT (
+                work.state = 'completed'
+                AND work.blocked_reason IS ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+              )
+              AND (
+                (
+                  work.kind = 'active-turn-recovery'
+                  AND work.source_turn_id = 'turn-start:' || pending.pending_message_id
+                )
+                OR (
+                  work.kind = 'startup-resume'
+                  AND pending.pending_message_id =
+                    'startup-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                )
+                OR (
+                  work.kind = 'agent-continuation'
+                  AND pending.pending_message_id =
+                    'agent-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                )
+              )
+          )
+        RETURNING thread_id AS "threadId"
+      `;
+
+      // Older single-slot projection builds could drop B's visible row when C
+      // was queued even though B's durable owner survived. Reconstruct only
+      // nonterminal user-delivery owners from their latest exact start event;
+      // receipt-backed and already-adopted messages are never replayed.
+      const reconstructedPendingStarts = yield* sql<{ readonly threadId: string }>`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          pending_message_id,
+          source_proposed_plan_thread_id,
+          source_proposed_plan_id,
+          assistant_message_id,
+          state,
+          requested_at,
+          started_at,
+          completed_at,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json
+        )
+        SELECT
+          work.thread_id,
+          NULL,
+          substr(work.source_turn_id, length('turn-start:') + 1),
+          json_extract(start.payload_json, '$.sourceProposedPlan.threadId'),
+          json_extract(start.payload_json, '$.sourceProposedPlan.planId'),
+          NULL,
+          'pending',
+          COALESCE(json_extract(start.payload_json, '$.createdAt'), start.occurred_at),
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          NULL,
+          '[]'
+        FROM thread_work_obligations AS work
+        INNER JOIN orchestration_events AS start
+          ON start.sequence = (
+            SELECT MAX(candidate.sequence)
+            FROM orchestration_events AS candidate
+            WHERE candidate.aggregate_kind = 'thread'
+              AND candidate.stream_id = work.thread_id
+              AND candidate.event_type = 'thread.turn-start-requested'
+              AND json_extract(candidate.payload_json, '$.messageId') =
+                substr(work.source_turn_id, length('turn-start:') + 1)
+          )
+        INNER JOIN projection_threads AS thread
+          ON thread.thread_id = work.thread_id
+        INNER JOIN projection_thread_messages AS message
+          ON message.thread_id = work.thread_id
+          AND message.message_id = substr(work.source_turn_id, length('turn-start:') + 1)
+          AND message.role = 'user'
+        WHERE work.kind = 'active-turn-recovery'
+          AND work.state NOT IN ('completed', 'cancelled')
+          AND thread.deleted_at IS NULL
+          AND thread.archived_at IS NULL
+          AND COALESCE(thread.settled_override, '') != 'settled'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM projection_turns AS existing
+            WHERE existing.thread_id = work.thread_id
+              AND existing.pending_message_id =
+                substr(work.source_turn_id, length('turn-start:') + 1)
+          )
+        RETURNING thread_id AS "threadId"
+      `;
+      yield* Effect.forEach(
+        new Set(
+          [
+            ...completedDeliveredSteerOwners,
+            ...retiredUnknownSteerOwners,
+            ...retiredTerminalOwnerPlaceholders,
+            ...reconstructedPendingStarts,
+            ...retiredInactiveOwners,
+          ].map((row) => row.threadId),
+        ),
+        (threadId) => refreshPendingWorkSummary(ThreadId.make(threadId)),
+        { concurrency: 1, discard: true },
+      );
+
       // A synthetic resume turn can reach a durable terminal projection while
       // the supervisor that launched it is being torn down. If the process
       // exits in that window, projector events are already caught up at the
@@ -2697,101 +3041,52 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           )
         RETURNING thread_id AS "threadId"
       `;
+      // By this point every valid queued row has one exact nonterminal owner.
+      // Retire legacy rows whose owner was completed/cancelled (including the
+      // resume owners settled immediately above), pruned, or never existed.
+      // New writes create the row and owner in one projector transaction, so a
+      // missing owner is ambiguous historical state and must not be replayed.
+      const retiredOrphanPendingStarts = yield* sql<{ readonly threadId: string }>`
+        DELETE FROM projection_turns AS pending
+        WHERE pending.turn_id IS NULL
+          AND pending.state = 'pending'
+          AND pending.pending_message_id IS NOT NULL
+          AND pending.checkpoint_turn_count IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM thread_work_obligations AS work
+            WHERE work.thread_id = pending.thread_id
+              AND work.state NOT IN ('completed', 'cancelled')
+              AND (
+                (
+                  work.kind = 'active-turn-recovery'
+                  AND work.source_turn_id = 'turn-start:' || pending.pending_message_id
+                )
+                OR (
+                  work.kind = 'startup-resume'
+                  AND pending.pending_message_id =
+                    'startup-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                )
+                OR (
+                  work.kind = 'agent-continuation'
+                  AND pending.pending_message_id =
+                    'agent-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+                )
+              )
+          )
+        RETURNING thread_id AS "threadId"
+      `;
       yield* Effect.forEach(
-        new Set(retiredResumeOwners.map((row) => row.threadId)),
+        new Set([...retiredResumeOwners, ...retiredOrphanPendingStarts].map((row) => row.threadId)),
         (threadId) => refreshPendingWorkSummary(ThreadId.make(threadId)),
         { concurrency: 1, discard: true },
       );
 
-      // Re-arm resumes that were retired without the thread ever recovering.
-      //
-      // The (thread, source turn, kind) key stops one turn being resumed
-      // twice, which is the right default — but it also meant a resume that
-      // was cancelled in a projection race, or that "completed" as an empty
-      // upstream timeout, could never be retried. The thread was left
-      // orphaned: no CLI, no work queued, and an "Auto-resuming…" badge that
-      // never resolved, because the projector declines to enqueue anything
-      // while a row for that key exists. Re-arming here restores the retry
-      // without weakening the key.
-      //
-      // Boot-only, so nothing is live and this cannot race the scheduler. A
-      // thread qualifies only if its newest turn either died mid-flight or
-      // finished having produced literally nothing, and no real user message
-      // has landed since — if someone already replied, they have moved on and
-      // their message drives the thread instead. `attempt` bounds it so an
-      // unrecoverable thread gives up after a few restarts instead of
-      // resurrecting forever.
-      yield* sql`
-        UPDATE thread_work_obligations
-        SET state = 'pending',
-            attempt = attempt + 1,
-            next_attempt_at = NULL,
-            claimed_at = NULL,
-            lease_expires_at = NULL,
-            blocked_reason = NULL,
-            updated_at = ${settledAt}
-        WHERE kind = 'startup-resume'
-          AND state IN ('cancelled', 'completed')
-          AND attempt < 5
-          -- A resume the handler retired because the agent signed off with
-          -- AGENT_STOP is a deliberate terminal verdict, not a transient
-          -- failure. Re-arming it across restarts is what produced the
-          -- 2026-08-05 self-resume; the signed-off thread must stay retired
-          -- until a real user message creates fresh work.
-          AND COALESCE(blocked_reason, '') != ${STARTUP_RESUME_SIGNED_OFF_REASON}
-          -- One row per thread. A thread accumulates a retired resume per
-          -- restart, and re-arming all of them would queue several redundant
-          -- resumes of the same conversation.
-          AND created_at = (
-            SELECT MAX(newest.created_at)
-            FROM thread_work_obligations newest
-            WHERE newest.thread_id = thread_work_obligations.thread_id
-              AND newest.kind = 'startup-resume'
-              AND newest.state IN ('cancelled', 'completed')
-          )
-          -- Never race work that is already queued or running for this thread.
-          AND NOT EXISTS (
-            SELECT 1 FROM thread_work_obligations live
-            WHERE live.thread_id = thread_work_obligations.thread_id
-              AND live.state NOT IN ('cancelled', 'completed')
-          )
-          AND EXISTS (
-            SELECT 1
-            FROM projection_turns latest
-            WHERE latest.thread_id = thread_work_obligations.thread_id
-              AND latest.started_at = (
-                SELECT MAX(candidate.started_at)
-                FROM projection_turns candidate
-                WHERE candidate.thread_id = thread_work_obligations.thread_id
-              )
-              AND (
-                latest.state IN ('incomplete', 'error')
-                OR (
-                  latest.state = 'completed'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM projection_thread_messages produced
-                    WHERE produced.turn_id = latest.turn_id
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM projection_thread_activities produced
-                    WHERE produced.turn_id = latest.turn_id
-                  )
-                )
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM projection_thread_messages newer
-                WHERE newer.thread_id = thread_work_obligations.thread_id
-                  AND newer.role = 'user'
-                  AND COALESCE(newer.input_origin, '') != 'agent-loop'
-                  AND newer.message_id NOT LIKE 'startup-auto-resume-message:%'
-                  -- Compared against the turn's END, not its start: a message
-                  -- sent *during* a turn is a steer, and the turn it steered is
-                  -- the one that died. Comparing against the start counted that
-                  -- steer as "the user moved on" and left the thread orphaned.
-                  AND newer.created_at > COALESCE(latest.completed_at, latest.started_at)
-              )
-          )
-      `;
+      // Cancelled and completed obligations are durable terminal verdicts.
+      // Transient work remains sleeping or carries an expiring claim, and the
+      // scheduler recovers those states explicitly. Reviving terminal rows at
+      // boot made AGENT_STOP, Stop, supersession, and successful completion all
+      // capable of silently dispatching the same resume prompt again.
 
       // The recovery scan already ran inside `bootstrap`, before these rows
       // settled, so it could not see them. Re-run it now that they have.
@@ -2806,108 +3101,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     );
 
     const backfillCurrentThreadWork = Effect.gen(function* () {
-      let afterPendingRowId = 0;
-      while (true) {
-        const pendingRows = yield* sql<{
-          readonly rowId: number;
-          readonly threadId: string;
-          readonly messageId: string;
-          readonly inputOrigin: string | null;
-          readonly providerInstanceId: string | null;
-          readonly requestedAt: string;
-        }>`
-          SELECT
-            turns.row_id AS "rowId",
-            turns.thread_id AS "threadId",
-            turns.pending_message_id AS "messageId",
-            messages.input_origin AS "inputOrigin",
-            COALESCE(
-              sessions.provider_instance_id,
-              json_extract(threads.model_selection_json, '$.instanceId')
-            ) AS "providerInstanceId",
-            turns.requested_at AS "requestedAt"
-          FROM projection_turns AS turns
-          INNER JOIN projection_threads AS threads
-            ON threads.thread_id = turns.thread_id
-          INNER JOIN projection_thread_messages AS messages
-            ON messages.message_id = turns.pending_message_id
-            AND messages.thread_id = turns.thread_id
-            AND messages.role = 'user'
-          LEFT JOIN projection_thread_sessions AS sessions
-            ON sessions.thread_id = turns.thread_id
-          WHERE turns.row_id > ${afterPendingRowId}
-            AND turns.turn_id IS NULL
-            AND turns.state = 'pending'
-            AND turns.pending_message_id IS NOT NULL
-            AND threads.deleted_at IS NULL
-            AND threads.archived_at IS NULL
-            AND COALESCE(threads.settled_override, '') != 'settled'
-          ORDER BY turns.row_id ASC
-          LIMIT 128
-        `;
-        if (pendingRows.length === 0) break;
-
-        for (const row of pendingRows) {
-          // Same rule as the live path above: only auto-resume prompts are
-          // owned by the continuation; scheduled task prompts must be swept.
-          if (row.providerInstanceId === null || isAgentAutoResumeMessageId(row.messageId)) {
-            continue;
-          }
-          const threadId = ThreadId.make(row.threadId);
-          const messageId = MessageId.make(row.messageId);
-          const startupSourceTurnId = startupResumeSourceTurnId({ threadId, messageId });
-          const sourceTurnId = startupSourceTurnId ?? activeTurnWorkSourceId(messageId);
-          const kind =
-            startupSourceTurnId === null
-              ? ("active-turn-recovery" as const)
-              : ("startup-resume" as const);
-          const existing = yield* threadWorkObligationRepository.getByKey({
-            threadId,
-            sourceTurnId,
-            kind,
-          });
-          if (Option.isSome(existing)) {
-            // Same rule as the live path: a cancelled row is not a receipt of
-            // launched work. The turn row this sweep just matched is still
-            // pending, so the obligation was killed by a transient verdict
-            // before the restart — revive it or the thread stays stuck across
-            // every reboot. Delivery re-validates supersession on claim.
-            if (existing.value.state === "cancelled") {
-              yield* threadWorkObligationRepository.transition({
-                obligationId: existing.value.obligationId,
-                expectedState: "cancelled",
-                expectedAttempt: existing.value.attempt,
-                state: "pending",
-                nextAttemptAt: null,
-                claimedAt: null,
-                leaseExpiresAt: null,
-                blockedReason: null,
-                updatedAt: DateTime.formatIso(yield* DateTime.now),
-              });
-            }
-            continue;
-          }
-          yield* threadWorkObligationRepository.insert({
-            obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
-            threadId,
-            sourceTurnId,
-            kind,
-            state: "pending",
-            providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
-            attempt: 0,
-            nextAttemptAt: null,
-            claimedAt: null,
-            leaseExpiresAt: null,
-            blockedReason: null,
-            createdAt: row.requestedAt,
-            updatedAt: row.requestedAt,
-          });
-        }
-
-        afterPendingRowId = pendingRows.at(-1)!.rowId;
-        if (pendingRows.length < 128) break;
-      }
-
       let afterThreadId = "";
       while (true) {
         const rows = yield* sql<{
