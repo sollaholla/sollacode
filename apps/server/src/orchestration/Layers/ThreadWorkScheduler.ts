@@ -1,4 +1,4 @@
-import { ProviderInstanceId, type ThreadId, type TurnId } from "@t3tools/contracts";
+import { ProviderInstanceId, ThreadId, type TurnId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -88,11 +88,15 @@ interface AdmissionState {
 }
 
 interface ParkedAdmission {
+  readonly obligationId: string;
+  readonly reservationAttempt: number;
   readonly providerKey: string;
   readonly recovery: boolean;
 }
 
 interface Admission {
+  readonly obligationId: string;
+  readonly reservationAttempt: number;
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly recovery: boolean;
@@ -100,6 +104,7 @@ interface Admission {
 
 interface ActiveRuntimeObservation {
   readonly obligationId: string;
+  readonly attempt: number;
   readonly activeTurnId: TurnId | null;
   readonly phase: ThreadRuntimePhase;
   /**
@@ -318,9 +323,16 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
         const activeThreads = new Set(current.activeThreads);
         activeThreads.add(obligation.threadId);
         const activeAdmissions = new Map(current.activeAdmissions);
-        activeAdmissions.set(String(obligation.threadId), { providerKey, recovery });
+        activeAdmissions.set(String(obligation.threadId), {
+          obligationId: obligation.obligationId,
+          reservationAttempt: obligation.attempt,
+          providerKey,
+          recovery,
+        });
         return [
           Option.some({
+            obligationId: obligation.obligationId,
+            reservationAttempt: obligation.attempt,
             threadId: obligation.threadId,
             providerInstanceId: obligation.providerInstanceId,
             recovery,
@@ -338,14 +350,25 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
 
     const releaseAdmission = (admission: Admission) =>
       Ref.update(admissions, (current) => {
+        const threadKey = String(admission.threadId);
+        const ownedAdmission = current.activeAdmissions.get(threadKey);
+        // Reconciliation can release an orphan while its old supervisor fiber
+        // is still unwinding. Fence that stale finalizer from decrementing the
+        // counters of a replacement admission for the same thread.
+        if (
+          ownedAdmission?.obligationId !== admission.obligationId ||
+          ownedAdmission.reservationAttempt !== admission.reservationAttempt
+        ) {
+          return current;
+        }
         const providerKey = String(admission.providerInstanceId);
         // A parked admission already gave its counts back. Decrementing again
         // here would drift them below the real number of running obligations
         // and silently raise the effective concurrency cap.
         const parkedThreads = new Map(current.parkedThreads);
         const activeAdmissions = new Map(current.activeAdmissions);
-        activeAdmissions.delete(String(admission.threadId));
-        if (parkedThreads.delete(String(admission.threadId))) {
+        activeAdmissions.delete(threadKey);
+        if (parkedThreads.delete(threadKey)) {
           const activeThreads = new Set(current.activeThreads);
           activeThreads.delete(admission.threadId);
           return { ...current, activeThreads, parkedThreads, activeAdmissions };
@@ -504,6 +527,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
             const next = new Map(current);
             next.set(claimed.threadId, {
               obligationId: claimed.obligationId,
+              attempt: claimed.attempt,
               activeTurnId: claimed.sourceTurnId,
               phase: runtimePhase(claimed.kind),
               lastObservedAtMs: DateTime.toEpochMillis(executingAt),
@@ -513,7 +537,12 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
           yield* Effect.addFinalizer(() =>
             Ref.update(runtimeObservations, (current) => {
               const existing = current.get(claimed.threadId);
-              if (existing?.obligationId !== claimed.obligationId) return current;
+              if (
+                existing?.obligationId !== claimed.obligationId ||
+                existing.attempt !== claimed.attempt
+              ) {
+                return current;
+              }
               const next = new Map(current);
               next.delete(claimed.threadId);
               return next;
@@ -548,7 +577,8 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
               if (!durableAlive) return;
               const observation = (yield* Ref.get(runtimeObservations)).get(claimed.threadId);
               const liveObservation =
-                observation?.obligationId === claimed.obligationId
+                observation?.obligationId === claimed.obligationId &&
+                observation.attempt === claimed.attempt
                   ? observation
                   : {
                       activeTurnId: claimed.sourceTurnId,
@@ -752,6 +782,57 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
       );
     });
 
+    const reconcileOrphanedAdmissions = (nowMs: number) =>
+      Effect.gen(function* () {
+        const activeAdmissions = Array.from((yield* Ref.get(admissions)).activeAdmissions);
+        yield* Effect.forEach(
+          activeAdmissions,
+          ([threadKey, admission]) =>
+            Effect.gen(function* () {
+              const threadId = ThreadId.make(threadKey);
+              const liveRuntime = yield* runtimeLeases.getLive(threadId);
+              if (Option.isSome(liveRuntime)) return;
+
+              const owner = yield* obligations.getById(admission.obligationId);
+              const durableLeaseExpiresAt = Option.isSome(owner)
+                ? Date.parse(owner.value.leaseExpiresAt ?? "")
+                : Number.NaN;
+              const durableOwnerIsLive =
+                Option.isSome(owner) &&
+                (owner.value.state === "claimed" || owner.value.state === "executing") &&
+                Number.isFinite(durableLeaseExpiresAt) &&
+                durableLeaseExpiresAt > nowMs;
+              if (durableOwnerIsLive) return;
+
+              // The durable row is authoritative. A supervisor can be stranded
+              // after another transaction terminalizes its obligation (for
+              // example, when a completed resume turn is projected). Once its
+              // runtime lease is also gone, keeping the in-memory admission can
+              // only starve later user work on this thread.
+              yield* releaseAdmission({
+                obligationId: admission.obligationId,
+                reservationAttempt: admission.reservationAttempt,
+                threadId,
+                providerInstanceId: ProviderInstanceId.make(admission.providerKey),
+                recovery: admission.recovery,
+              });
+              yield* Ref.update(runtimeObservations, (current) => {
+                const observation = current.get(threadId);
+                if (
+                  observation?.obligationId !== admission.obligationId ||
+                  observation.attempt !== admission.reservationAttempt + 1
+                ) {
+                  return current;
+                }
+                const next = new Map(current);
+                next.delete(threadId);
+                return next;
+              });
+            }),
+          { concurrency: 1, discard: true },
+        );
+      });
+
     const maybePruneTerminal = Effect.gen(function* () {
       const now = yield* DateTime.now;
       const nowMs = DateTime.toEpochMillis(now);
@@ -899,6 +980,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
       yield* reconcileRetainedRetryLeases;
       const now = yield* DateTime.now;
       const nowIso = DateTime.formatIso(now);
+      const nowMs = DateTime.toEpochMillis(now);
       yield* maybeRefreshMetrics(now, nowIso);
       const hints = Array.from(yield* Ref.getAndSet(wakeHints, new Set())).map((value) =>
         ProviderInstanceId.make(value),
@@ -942,6 +1024,7 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
         (max, page) => Math.max(max, page.length),
         0,
       );
+      let reconciledAdmissions = false;
       for (let candidateIndex = 0; candidateIndex < maxProviderPageLength; candidateIndex += 1) {
         for (const page of providerPages) {
           const candidate = page[candidateIndex];
@@ -961,7 +1044,17 @@ const make = (options?: ThreadWorkSchedulerLiveOptions) =>
             continue;
           }
 
-          const admission = yield* tryReserve(candidate);
+          let admission = yield* tryReserve(candidate);
+          if (Option.isNone(admission) && !reconciledAdmissions) {
+            // Admission state is process-local, while its owner is durable.
+            // Only pay for the reconciliation when admission pressure actually
+            // blocks schedulable work; live runtime leases make the common
+            // saturated case an in-memory check, and at most twelve owners can
+            // need a database lookup.
+            yield* reconcileOrphanedAdmissions(nowMs);
+            reconciledAdmissions = true;
+            admission = yield* tryReserve(candidate);
+          }
           if (Option.isNone(admission)) continue;
 
           const claimExpiresAt = DateTime.formatIso(

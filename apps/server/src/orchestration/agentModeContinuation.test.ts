@@ -20,6 +20,7 @@ import {
   activeTurnMessageIdFromSourceTurnId,
   activeTurnWorkSourceId,
   agentAutoResumeIds,
+  agentContinuationSourceTurnId,
   agentContinuationShouldAwaitBackgroundTask,
   BACKGROUND_TASK_CONTINUATION_GRACE_MS,
   isControlOnlyAgentTurn,
@@ -251,6 +252,20 @@ describe("server-owned Agent continuation", () => {
       messageId: "startup-auto-resume-message:thread-agent:turn-completed",
     });
     expect(startupResumeSourceTurnId({ threadId, messageId: startupIds.messageId })).toBe(turnId);
+
+    const continuationIds = agentAutoResumeIds({
+      threadId,
+      completedTurnId: turnId,
+    });
+    expect(agentContinuationSourceTurnId({ threadId, messageId: continuationIds.messageId })).toBe(
+      turnId,
+    );
+    expect(
+      agentContinuationSourceTurnId({
+        threadId,
+        messageId: MessageId.make("agent-auto-resume-message:another-thread:turn-completed"),
+      }),
+    ).toBeNull();
   });
 });
 

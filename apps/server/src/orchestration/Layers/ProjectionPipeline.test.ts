@@ -4162,6 +4162,173 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("retires the exact startup-resume owner when its resumed turn completes", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-completed-startup-resume");
+      const threadId = ThreadId.make("thread-completed-startup-resume");
+      const sourceTurnId = TurnId.make("turn-interrupted-before-startup-resume");
+      const resumedTurnId = TurnId.make("turn-completed-startup-resume");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const resumeMessageId = MessageId.make(
+        `startup-auto-resume-message:${threadId}:${sourceTurnId}`,
+      );
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-completed-startup-resume-project"),
+        projectId,
+        title: "Completed startup resume",
+        workspaceRoot: "/tmp/project-completed-startup-resume",
+        defaultModelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-completed-startup-resume-thread"),
+        threadId,
+        projectId,
+        title: "Completed startup resume thread",
+        modelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`startup-auto-resume-command:${threadId}:${sourceTurnId}`),
+        threadId,
+        message: {
+          messageId: resumeMessageId,
+          role: "user",
+          text: "Please resume your current task.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+
+      // Match the production failure: the supervisor owns the resume and its
+      // lease is live when the provider turn reaches its terminal reply.
+      yield* sql`
+        UPDATE thread_work_obligations
+        SET state = 'executing',
+            attempt = 1,
+            claimed_at = '2026-01-01T00:00:01.500Z',
+            lease_expires_at = '2026-01-01T00:01:01.500Z',
+            updated_at = '2026-01-01T00:00:01.500Z'
+        WHERE thread_id = ${threadId}
+          AND source_turn_id = ${sourceTurnId}
+          AND kind = 'startup-resume'
+      `;
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-completed-startup-resume-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: resumedTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-completed-startup-resume-delta"),
+        threadId,
+        messageId: MessageId.make("assistant-completed-startup-resume"),
+        delta: "Everything requested is complete.\n\nAGENT_STOP",
+        turnId: resumedTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-completed-startup-resume-complete"),
+        threadId,
+        messageId: MessageId.make("assistant-completed-startup-resume"),
+        turnId: resumedTurnId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+
+      const beforeTurnEnd = yield* sql<{ readonly state: string }>`
+        SELECT state
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId} AND kind = 'startup-resume'
+      `;
+      assert.deepEqual(beforeTurnEnd, [{ state: "executing" }]);
+
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-completed-startup-resume-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+
+      const obligations = yield* sql<{
+        readonly kind: string;
+        readonly state: string;
+        readonly claimedAt: string | null;
+        readonly leaseExpiresAt: string | null;
+      }>`
+        SELECT
+          kind,
+          state,
+          claimed_at AS "claimedAt",
+          lease_expires_at AS "leaseExpiresAt"
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+        ORDER BY created_at ASC
+      `;
+      assert.deepEqual(obligations, [
+        {
+          kind: "startup-resume",
+          state: "completed",
+          claimedAt: null,
+          leaseExpiresAt: null,
+        },
+      ]);
+
+      const pendingWork = yield* sql<{
+        readonly kind: string | null;
+        readonly state: string | null;
+        readonly since: string | null;
+      }>`
+        SELECT
+          pending_work_kind AS "kind",
+          pending_work_state AS "state",
+          pending_work_since AS "since"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(pendingWork, [{ kind: null, state: null, since: null }]);
+    }),
+  );
+
   it.effect("does not enqueue Agent continuation for settings turns or a later real user", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;
@@ -4840,6 +5007,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       readonly completedAt: string | null;
       readonly assistantText: string;
       readonly interactionMode?: string;
+      readonly pendingMessageId?: string;
     }) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -4871,7 +5039,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             thread_id, turn_id, pending_message_id, assistant_message_id, state,
             requested_at, started_at, completed_at, checkpoint_files_json
           ) VALUES (
-            ${input.threadId}, ${input.turnId}, NULL, ${input.assistantMessageId}, ${input.turnState},
+            ${input.threadId}, ${input.turnId}, ${input.pendingMessageId ?? null}, ${input.assistantMessageId}, ${input.turnState},
             '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:02.000Z', ${input.completedAt}, '[]'
           )
         `;
@@ -4944,6 +5112,134 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           SELECT kind, state FROM thread_work_obligations WHERE thread_id = ${threadId}
         `;
         assert.deepEqual(obligations, [{ kind: "startup-resume", state: "pending" }]);
+      }),
+    );
+
+    it.effect("retires a completed synthetic resume owner during restart recovery", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-completed-synthetic-resume";
+        const sourceTurnId = "turn-before-completed-synthetic-resume";
+        const resumedTurnId = "turn-completed-synthetic-resume";
+        const resumeMessageId = `startup-auto-resume-message:${threadId}:${sourceTurnId}`;
+
+        yield* seedThread({
+          threadId,
+          turnId: resumedTurnId,
+          assistantMessageId: "assistant-completed-synthetic-resume",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "ready",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "Everything requested is complete.\n\nAGENT_STOP",
+          pendingMessageId: resumeMessageId,
+        });
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, input_origin,
+            is_streaming, created_at, updated_at
+          ) VALUES (
+            ${resumeMessageId}, ${threadId}, ${resumedTurnId}, 'user',
+            'Please resume your current task.', 'agent-loop',
+            0, '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'completed-synthetic-resume-owner', ${threadId}, ${sourceTurnId},
+            'startup-resume', 'executing', 'codex', 1, NULL,
+            '2026-03-02T10:00:01.000Z', '2026-03-02T10:01:01.000Z', NULL,
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          UPDATE projection_threads
+          SET pending_work_kind = 'startup-resume',
+              pending_work_state = 'executing',
+              pending_work_since = '2026-03-02T10:00:00.000Z'
+          WHERE thread_id = ${threadId}
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const obligations = yield* sql<{
+          readonly state: string;
+          readonly claimedAt: string | null;
+          readonly leaseExpiresAt: string | null;
+        }>`
+          SELECT
+            state,
+            claimed_at AS "claimedAt",
+            lease_expires_at AS "leaseExpiresAt"
+          FROM thread_work_obligations
+          WHERE obligation_id = 'completed-synthetic-resume-owner'
+        `;
+        assert.deepEqual(obligations, [
+          { state: "completed", claimedAt: null, leaseExpiresAt: null },
+        ]);
+
+        const pendingWork = yield* sql<{
+          readonly kind: string | null;
+          readonly state: string | null;
+        }>`
+          SELECT
+            pending_work_kind AS "kind",
+            pending_work_state AS "state"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(pendingWork, [{ kind: null, state: null }]);
+      }),
+    );
+
+    it.effect("keeps an empty completed synthetic resume eligible for retry after restart", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-empty-synthetic-resume";
+        const sourceTurnId = "turn-before-empty-synthetic-resume";
+        const resumedTurnId = "turn-empty-synthetic-resume";
+        const resumeMessageId = `startup-auto-resume-message:${threadId}:${sourceTurnId}`;
+
+        yield* seedThread({
+          threadId,
+          turnId: resumedTurnId,
+          assistantMessageId: "assistant-empty-synthetic-resume",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "ready",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: " \n\t\r ",
+          pendingMessageId: resumeMessageId,
+        });
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'empty-synthetic-resume-owner', ${threadId}, ${sourceTurnId},
+            'startup-resume', 'executing', 'codex', 1, NULL,
+            '2026-03-02T10:00:01.000Z', '2026-03-02T10:01:01.000Z', NULL,
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:01.000Z'
+          )
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const obligations = yield* sql<{ readonly state: string }>`
+          SELECT state
+          FROM thread_work_obligations
+          WHERE obligation_id = 'empty-synthetic-resume-owner'
+        `;
+        assert.deepEqual(obligations, [{ state: "executing" }]);
       }),
     );
 

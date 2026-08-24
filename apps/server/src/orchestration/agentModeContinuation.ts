@@ -356,6 +356,17 @@ export function isAgentAutoResumeMessageId(messageId: string): boolean {
   return messageId.startsWith(AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX);
 }
 
+export function agentContinuationSourceTurnId(input: {
+  readonly threadId: string;
+  readonly messageId: MessageId;
+}): TurnId | null {
+  const prefix = `${AGENT_AUTO_RESUME_MESSAGE_ID_PREFIX}${input.threadId}:`;
+  const value = String(input.messageId);
+  if (!value.startsWith(prefix)) return null;
+  const sourceTurnId = value.slice(prefix.length);
+  return sourceTurnId.length > 0 ? TurnId.make(sourceTurnId) : null;
+}
+
 /** Message-id prefix the VM-agent task scheduler mints for its run prompts. */
 export const VM_AGENT_TASK_MESSAGE_ID_PREFIX = "vm-task:";
 
