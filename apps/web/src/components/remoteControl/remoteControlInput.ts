@@ -7,6 +7,18 @@ export type RemoteControlSurfaceInputKind =
   | "wheel"
   | "key";
 
+/**
+ * Global app shortcuts must yield while the remote surface owns keyboard
+ * input. Those listeners are registered before the viewer opens, so relying
+ * on `defaultPrevented` alone lets the app consume a chord before the later
+ * remote-control listener can forward it.
+ */
+export function isRemoteControlInputCaptured(
+  root: Pick<ParentNode, "querySelector"> = document,
+): boolean {
+  return root.querySelector('[data-remote-input-capture="active"]') !== null;
+}
+
 export function shouldForwardRemoteSurfaceInput(input: {
   readonly capabilityGranted: boolean;
   readonly inputCaptured: boolean;

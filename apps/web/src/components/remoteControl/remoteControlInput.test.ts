@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   controllerPlatform,
+  isRemoteControlInputCaptured,
   normalizeRemoteControlKeyCode,
   objectContainContentRect,
   normalizedRemotePoint,
@@ -12,6 +13,16 @@ import {
 } from "./remoteControlInput";
 
 describe("remote-control input mapping", () => {
+  it("lets global shortcuts detect when the remote surface owns keyboard input", () => {
+    const root = (active: boolean) =>
+      ({
+        querySelector: () => (active ? ({} as Element) : null),
+      }) as Pick<ParentNode, "querySelector">;
+
+    expect(isRemoteControlInputCaptured(root(true))).toBe(true);
+    expect(isRemoteControlInputCaptured(root(false))).toBe(false);
+  });
+
   it("maps the controller's primary shortcut modifier to a host-neutral code", () => {
     expect(normalizeRemoteControlKeyCode("MetaLeft", "macos")).toBe("PrimaryLeft");
     expect(normalizeRemoteControlKeyCode("ControlRight", "windows")).toBe("PrimaryRight");

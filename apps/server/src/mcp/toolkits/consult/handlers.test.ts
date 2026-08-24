@@ -235,7 +235,9 @@ it.effect("opens a thread in the project and asks the question there", () =>
     assert.isDefined(created);
     assert.isDefined(started);
     // The new conversation belongs to the consulted project, not the agent's.
-    assert.strictEqual((created as { projectId: ProjectId }).projectId, medicalProjectId);
+    assert.strictEqual(created.projectId, medicalProjectId);
+    assert.strictEqual(created.createdByThreadId, agentThreadId);
+    assert.strictEqual(created.browserProfileThreadId, agentThreadId);
     assert.strictEqual(
       (started as { message: { text: string } }).message.text,
       "Does Example Studio gate exports behind a licence check?",

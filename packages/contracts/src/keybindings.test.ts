@@ -49,7 +49,7 @@ it.effect("parses keybinding rules", () =>
     assert.strictEqual(parsedClose.command, "terminal.close");
 
     const parsedDiffToggle = yield* decode(KeybindingRule, {
-      key: "mod+d",
+      key: "mod+g",
       command: "diff.toggle",
     });
     assert.strictEqual(parsedDiffToggle.command, "diff.toggle");
@@ -124,7 +124,7 @@ it.effect("parses keybindings array payload", () =>
   Effect.gen(function* () {
     const parsed = yield* decode(KeybindingsConfig, [
       { key: "mod+j", command: "terminal.toggle" },
-      { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
+      { key: "mod+g", command: "terminal.split", when: "terminalFocus" },
       { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" },
     ]);
     assert.lengthOf(parsed, 3);
@@ -136,7 +136,7 @@ it.effect("parses resolved keybinding rules", () =>
     const parsed = yield* decode(ResolvedKeybindingRule, {
       command: "terminal.split",
       shortcut: {
-        key: "d",
+        key: "g",
         metaKey: false,
         ctrlKey: false,
         shiftKey: false,
@@ -152,7 +152,7 @@ it.effect("parses resolved keybinding rules", () =>
         },
       },
     });
-    assert.strictEqual(parsed.shortcut.key, "d");
+    assert.strictEqual(parsed.shortcut.key, "g");
   }),
 );
 

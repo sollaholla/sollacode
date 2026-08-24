@@ -2,10 +2,141 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { VmAgentId } from "@t3tools/contracts";
+import { ProviderInstanceId, ThreadId, TurnId, VmAgentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { activeDelegationsForAgent, attentionForAgent } from "./AgentStackSidebarEntry";
+import {
+  activeDelegationsForAgent,
+  AGENT_BUILDER_BUTTON_STATUS_PRESENTATION,
+  attentionForAgent,
+  resolveAgentBuilderButtonStatus,
+} from "./AgentStackSidebarEntry";
+
+const builderSession = {
+  threadId: ThreadId.make("agent-builder:primary"),
+  status: "ready" as const,
+  providerName: "Codex",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+  runtimeMode: "full-access" as const,
+  activeTurnId: null,
+  lastError: null,
+  updatedAt: "2026-08-24T12:00:00.000Z",
+};
+
+const completedBuilderTurn = {
+  turnId: TurnId.make("builder-turn"),
+  state: "completed" as const,
+  requestedAt: "2026-08-24T11:59:00.000Z",
+  startedAt: "2026-08-24T11:59:01.000Z",
+  completedAt: "2026-08-24T12:00:00.000Z",
+  assistantMessageId: null,
+};
+
+const builderThread = (
+  overrides: Partial<NonNullable<Parameters<typeof resolveAgentBuilderButtonStatus>[0]>> = {},
+) => ({
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
+  hasActionableProposedPlan: false,
+  interactionMode: "default" as const,
+  latestTurn: completedBuilderTurn,
+  session: builderSession,
+  lastVisitedAt: "2026-08-24T11:59:30.000Z",
+  ...overrides,
+});
+
+describe("Agent Builder status dot", () => {
+  it("maps live builder state to working, success, input-needed, and error", () => {
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({ session: { ...builderSession, status: "running" } }),
+      ),
+    ).toBe("working");
+    expect(resolveAgentBuilderButtonStatus(builderThread())).toBe("success");
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          hasPendingApprovals: true,
+          session: { ...builderSession, status: "running" },
+        }),
+      ),
+    ).toBe("input");
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          latestTurn: { ...completedBuilderTurn, state: "error" },
+        }),
+      ),
+    ).toBe("error");
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          latestTurn: { ...completedBuilderTurn, state: "error" },
+          session: { ...builderSession, status: "error", lastError: "boom" },
+        }),
+      ),
+    ).toBe("error");
+  });
+
+  it("prioritizes direct user input over a running builder", () => {
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          hasPendingUserInput: true,
+          session: { ...builderSession, status: "running" },
+        }),
+      ),
+    ).toBe("input");
+  });
+
+  it("clears success after the completed Builder thread has been read", () => {
+    expect(
+      resolveAgentBuilderButtonStatus(builderThread({ lastVisitedAt: "2026-08-24T12:00:01.000Z" })),
+    ).toBeNull();
+  });
+
+  it("anchors the compact dot to the sparkle glyph", () => {
+    const source = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "AgentStackSidebarEntry.tsx"),
+      "utf8",
+    );
+    const buildButton = source.slice(
+      source.indexOf("function BuildAgentButton"),
+      source.indexOf("function AgentEnvironmentSection"),
+    );
+    expect(buildButton).toContain('className="relative inline-flex"');
+    expect(buildButton).toContain('"absolute -right-1 -top-1 size-1.5 rounded-full');
+    expect(buildButton).toContain("aria-label={accessibleLabel}");
+  });
+
+  it("uses the established working, success, warning, and error colors", () => {
+    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.working.dotClass).toContain("bg-sky-500");
+    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.success.dotClass).toContain("bg-emerald-500");
+    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.input.dotClass).toContain("bg-amber-500");
+    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.error.dotClass).toContain("bg-red-500");
+  });
+
+  it("shows no dot without a builder result and suppresses stale remote working state", () => {
+    expect(resolveAgentBuilderButtonStatus(null)).toBeNull();
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          latestTurn: { ...completedBuilderTurn, state: "interrupted" },
+          session: { ...builderSession, status: "interrupted" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveAgentBuilderButtonStatus(
+        builderThread({
+          latestTurn: { ...completedBuilderTurn, state: "running", completedAt: null },
+          session: { ...builderSession, status: "running" },
+        }),
+        true,
+      ),
+    ).toBeNull();
+  });
+});
 
 describe("activeDelegationsForAgent", () => {
   it("projects compact active-work counts without borrowing another agent's work", () => {

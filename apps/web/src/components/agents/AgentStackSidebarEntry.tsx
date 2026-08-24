@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useParams, useRouter } from "@tanstack/react-router";
 import {
+  AGENT_BUILDER_THREAD_ID,
   type EnvironmentId,
   type VmAgent,
   type VmAgentCollaborationAgentSummary,
@@ -37,6 +38,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useOnScreenKeyboard } from "../../hooks/useOnScreenKeyboard";
 import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
+import type { SidebarThreadSummary } from "../../types";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
@@ -56,6 +58,63 @@ const STATUS_DOT: Record<VmAgentStatus, string> = {
 };
 
 const AGENT_SECTION_BODY_ID = "agent-stack-sections";
+
+export type AgentBuilderButtonStatus = "working" | "success" | "input" | "error";
+
+export const AGENT_BUILDER_BUTTON_STATUS_PRESENTATION = {
+  working: {
+    label: "Working",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  success: {
+    label: "Success",
+    dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+    pulse: false,
+  },
+  input: {
+    label: "Input needed",
+    dotClass: "bg-amber-500 dark:bg-amber-300/90",
+    pulse: false,
+  },
+  error: {
+    label: "Error",
+    dotClass: "bg-red-500 dark:bg-red-300/90",
+    pulse: false,
+  },
+} as const satisfies Record<
+  AgentBuilderButtonStatus,
+  { readonly label: string; readonly dotClass: string; readonly pulse: boolean }
+>;
+
+type AgentBuilderStatusThread = Pick<
+  SidebarThreadSummary,
+  | "hasActionableProposedPlan"
+  | "hasPendingApprovals"
+  | "hasPendingUserInput"
+  | "interactionMode"
+  | "latestTurn"
+  | "session"
+> & { readonly lastVisitedAt?: string };
+
+/**
+ * Project the singleton builder thread onto the four states its icon can show.
+ * Pending interaction wins over all other state, matching ordinary thread
+ * rows; a disconnected host suppresses an unverifiable working state.
+ */
+export function resolveAgentBuilderButtonStatus(
+  thread: AgentBuilderStatusThread | null,
+  environmentUnreachable = false,
+): AgentBuilderButtonStatus | null {
+  if (thread === null) return null;
+
+  const status = resolveSidebarV2Status({ ...thread, environmentUnreachable });
+  if (status === "approval" || status === "input") return "input";
+  if (status === "working") return "working";
+  if (status === "failed" || thread.latestTurn?.state === "error") return "error";
+  if (thread.latestTurn?.state === "completed" && hasUnseenCompletion(thread)) return "success";
+  return null;
+}
 
 /**
  * Opens the singleton Agent Builder chat — one persistent thread per host,
@@ -170,7 +229,10 @@ export function AgentStackSidebarEntry() {
         </button>
         {singleEnvironmentId ? (
           <>
-            <BuildAgentButton onClick={() => openAgentBuilder(singleEnvironmentId)} />
+            <BuildAgentButton
+              environmentId={singleEnvironmentId}
+              onClick={() => openAgentBuilder(singleEnvironmentId)}
+            />
             <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
           </>
         ) : null}
@@ -434,23 +496,64 @@ function NewAgentButton(props: { readonly onClick: () => void }) {
   );
 }
 
-function BuildAgentButton(props: { readonly onClick: () => void }) {
+function BuildAgentButton(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onClick: () => void;
+}) {
+  const threadShell = useThreadShell({
+    environmentId: props.environmentId,
+    threadId: AGENT_BUILDER_THREAD_ID,
+  });
+  const environment = useEnvironment(props.environmentId);
+  const lastVisitedAt = useUiStateStore(
+    (state) =>
+      state.threadLastVisitedAtById[
+        scopedThreadKey({
+          environmentId: props.environmentId,
+          threadId: AGENT_BUILDER_THREAD_ID,
+        })
+      ],
+  );
+  const status = resolveAgentBuilderButtonStatus(
+    threadShell === null
+      ? null
+      : { ...threadShell, ...(lastVisitedAt === undefined ? {} : { lastVisitedAt }) },
+    environment !== null && environment.connection.phase !== "connected",
+  );
+  const presentation = status === null ? null : AGENT_BUILDER_BUTTON_STATUS_PRESENTATION[status];
+  const accessibleLabel =
+    presentation === null
+      ? "Build an agent with AI"
+      : `Build an agent with AI — ${presentation.label}`;
+
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <button
             type="button"
-            aria-label="Build an agent with AI"
+            aria-label={accessibleLabel}
             data-testid="agents-build"
             className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center rounded-md px-[calc(--spacing(1)-1px)] text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground pointer-fine:min-h-7 pointer-fine:min-w-7"
             onClick={props.onClick}
           />
         }
       >
-        <SparklesIcon className="size-3.5" />
+        <span className="relative inline-flex">
+          <SparklesIcon className="size-3.5" />
+          {presentation ? (
+            <span
+              aria-hidden="true"
+              className={cn(
+                "absolute -right-1 -top-1 size-1.5 rounded-full ring-1 ring-sidebar",
+                presentation.dotClass,
+                presentation.pulse && "animate-status-pulse motion-reduce:animate-none",
+              )}
+            />
+          ) : null}
+        </span>
       </TooltipTrigger>
-      <TooltipPopup side="right">Build an agent with AI</TooltipPopup>
+      <TooltipPopup side="right">{accessibleLabel}</TooltipPopup>
     </Tooltip>
   );
 }
@@ -534,7 +637,7 @@ function AgentEnvironmentSection(props: {
             {props.environmentLabel}
           </span>
           <div className="flex shrink-0 items-center">
-            <BuildAgentButton onClick={props.onOpenBuilder} />
+            <BuildAgentButton environmentId={props.environmentId} onClick={props.onOpenBuilder} />
             <NewAgentButton onClick={() => props.onCreateOpenChange(true)} />
           </div>
         </div>

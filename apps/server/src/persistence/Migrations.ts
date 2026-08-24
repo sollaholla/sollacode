@@ -72,6 +72,7 @@ import Migration0056 from "./Migrations/056_VmAgentBlockers.ts";
 import Migration0057 from "./Migrations/057_RetireVmComputers.ts";
 import Migration0058 from "./Migrations/058_PreviewSessions.ts";
 import Migration0059 from "./Migrations/059_VmAgentNotificationArchive.ts";
+import Migration0060 from "./Migrations/060_ThreadAgentProvenance.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -143,6 +144,7 @@ export const migrationEntries = [
   [57, "RetireVmComputers", Migration0057],
   [58, "PreviewSessions", Migration0058],
   [59, "VmAgentNotificationArchive", Migration0059],
+  [60, "ThreadAgentProvenance", Migration0060],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

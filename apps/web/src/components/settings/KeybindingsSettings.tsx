@@ -28,6 +28,7 @@ import {
   type ServerUpsertKeybindingInput,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { isPushToTalkReservedKeybinding } from "@t3tools/shared/keybindings";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -809,6 +810,14 @@ function KeybindingTableRow({
     }
     const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
     if (!next) return;
+    if (isPushToTalkReservedKeybinding(next)) {
+      setDraft({ keyDraft: row.key, isRecording: false });
+      toastManager.add({
+        type: "info",
+        title: "Cmd+D and Ctrl+D are reserved for voice transcription.",
+      });
+      return;
+    }
     setDraft({ keyDraft: next, isRecording: false });
   };
 
@@ -981,6 +990,14 @@ function NewKeybindingTableRow({
     }
     const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
     if (!next) return;
+    if (isPushToTalkReservedKeybinding(next)) {
+      setDraft({ keyDraft: "", isRecording: false });
+      toastManager.add({
+        type: "info",
+        title: "Cmd+D and Ctrl+D are reserved for voice transcription.",
+      });
+      return;
+    }
     setDraft({ keyDraft: next, isRecording: false });
   };
 

@@ -717,6 +717,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            createdByThreadId: event.payload.createdByThreadId ?? null,
+            browserProfileThreadId: event.payload.browserProfileThreadId ?? null,
             isSideChat: false,
             sideChatParentThreadId: null,
             modelSelection: event.payload.modelSelection,
@@ -752,6 +754,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             title: event.payload.title,
+            createdByThreadId: null,
+            browserProfileThreadId: null,
             isSideChat: event.payload.isSideChat === true,
             sideChatParentThreadId:
               event.payload.isSideChat === true

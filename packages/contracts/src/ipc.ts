@@ -954,6 +954,9 @@ export const DesktopPreviewConfigInputSchema = Schema.Struct({
    * exactly one thread) keeps its own cookies, logins, and cache.
    */
   threadId: Schema.optional(ThreadId),
+  /** Optional profile owner for agent-created threads that intentionally
+      inherit another thread's cookies, storage, and cache. */
+  browserProfileThreadId: Schema.optional(ThreadId),
 });
 
 export const DesktopPreviewSetColorSchemeInputSchema = Schema.Struct({
@@ -1279,6 +1282,7 @@ export interface DesktopPreviewBridge {
   getPreviewConfig: (
     environmentId: EnvironmentId,
     threadId?: ThreadId,
+    browserProfileThreadId?: ThreadId,
   ) => Promise<DesktopPreviewWebviewConfig>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   /**

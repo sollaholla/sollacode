@@ -545,6 +545,22 @@ export const make = Effect.gen(function* () {
         now: yield* nowIso,
       })
       .pipe(Effect.mapError(operationError("resolving a blocker")));
+    // The alert that announced this request has served its purpose the moment
+    // the request stops standing. Leaving it unread left the agent showing a
+    // notification badge for something the user had just dealt with, and the
+    // only way to clear it was to open and read a message about work already
+    // done. Keyed on the dedupe key `raiseBlocker` writes, so it clears the
+    // re-reported copies too. Best-effort: the blocker is genuinely resolved
+    // whether or not its alert could be tidied up.
+    if (Option.isSome(resolved)) {
+      yield* store
+        .markNotificationsReadByDedupeKey({
+          vmAgentId: input.vmAgentId,
+          dedupeKey: `blocker:${input.blockerId}`,
+          readAt: yield* nowIso,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
     yield* publish(input.vmAgentId);
     yield* publishAttention();
     return resolved;

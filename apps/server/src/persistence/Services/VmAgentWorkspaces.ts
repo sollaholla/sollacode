@@ -189,6 +189,12 @@ export interface VmAgentWorkspaceStoreShape {
     readonly notificationId: VmAgentNotificationId;
     readonly readAt: IsoDateTime;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
+  /** Mark every notification sharing one dedupe key as read. */
+  readonly markNotificationsReadByDedupeKey: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly dedupeKey: string;
+    readonly readAt: IsoDateTime;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly updateNotification: (input: {
     readonly vmAgentId: VmAgentId;
     readonly notificationId: VmAgentNotificationId;

@@ -20,6 +20,7 @@ import {
 } from "~/previewStateStore";
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
 import { useEnvironment, useEnvironmentHttpBaseUrl } from "~/state/environments";
+import { useThreadShell } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
@@ -81,6 +82,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
+  const thread = useThreadShell(threadRef);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
   const open = useAtomCommand(previewEnvironment.open);
   const resize = useAtomCommand(previewEnvironment.resize, "preview viewport resize");
@@ -617,6 +619,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         refreshDisabled={refreshDisabled}
+        sharedBrowserProfile={thread?.browserProfileThreadId != null}
         focusUrlNonce={focusUrlNonce}
         onBack={handleBack}
         onForward={handleForward}

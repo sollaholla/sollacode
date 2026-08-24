@@ -20,7 +20,7 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 ```json
 [
   { "key": "mod+j", "command": "terminal.toggle" },
-  { "key": "mod+d", "command": "terminal.split", "when": "terminalFocus" },
+  { "key": "mod+shift+d", "command": "terminal.splitVertical", "when": "terminalFocus" },
   { "key": "mod+n", "command": "terminal.new", "when": "terminalFocus" },
   { "key": "mod+w", "command": "terminal.close", "when": "terminalFocus" },
   { "key": "mod+shift+j", "command": "preview.toggle" },
@@ -41,10 +41,11 @@ For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/key
 
 ## Push to talk
 
-Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux while a send-capable chat
-composer is open. Solla Code records until the key is released, transcribes the recording locally,
-and sends the resulting text as the next user message. Sent voice messages show a
-**Transcribed** badge at the bottom-left of the user bubble.
+Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux while a send-capable chat composer is
+open. Solla Code records until the key is released, transcribes the recording locally, and sends
+the resulting text as the next user message. The microphone button beside the composer provides
+the same behavior. Sent voice messages show a **Transcribed** badge at the bottom-left of the user
+bubble.
 
 The first transcription downloads about 45 MB of quantized Whisper model and tokenizer files.
 The files come from the pinned `onnx-community/whisper-tiny.en` revision
@@ -58,8 +59,8 @@ releasing the key. Recordings are capped at two minutes. If microphone recording
 the one-time model download, or local inference is unavailable, the composer remains unchanged
 and Solla Code shows an error instead of sending an unverified transcript.
 
-Push to talk reserves the platform shortcut while its chat composer is active, ahead of
-single-press configurable commands that also use `mod+d`.
+**Cmd+D** and **Ctrl+D** are reserved exclusively for voice transcription and cannot be assigned
+to configurable commands. Existing command rules using `mod+d` are removed during startup.
 
 The microphone action remains available beside plan-question **Next/Submit** controls and plan
 follow-up **Refine/Implement** controls. Dictation is inserted into whichever input is visibly

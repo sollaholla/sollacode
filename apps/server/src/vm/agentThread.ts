@@ -175,3 +175,52 @@ export const deleteAgentThread = (threadId: ThreadId) =>
       })
       .pipe(Effect.catch(() => Effect.void));
   });
+
+/**
+ * Tell an agent that a standing request it raised has been dealt with.
+ *
+ * A blocker exists because the agent stopped and asked for something only the
+ * user could do. Clearing it in the UI settled the record but never reached
+ * the agent, so the work stayed parked until someone happened to prod the
+ * conversation by hand — the resolution was invisible to the one party that
+ * needed it.
+ *
+ * Delivered as an ordinary user turn on the agent's own thread, tagged
+ * `agent-loop` like scheduled runs so it reads as machinery rather than
+ * something the user typed. Best-effort by design: the blocker is already
+ * resolved, and a busy or missing conversation must not turn that into a
+ * failed request.
+ */
+export const notifyAgentBlockerResolved = (input: {
+  readonly threadId: ThreadId;
+  readonly title: string;
+  readonly resolvedBy: "user" | "agent" | "dismissed";
+}) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+    const text =
+      input.resolvedBy === "dismissed"
+        ? `The user dismissed the request "${input.title}" without completing it. Do not wait on it or raise it again. Continue with whatever else you can make progress on, and say plainly what is now out of reach because of it.`
+        : `The user resolved the request "${input.title}". Verify it really is done before relying on it, then continue the work that was waiting on it.`;
+    yield* engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(NodeCrypto.randomUUID()),
+        threadId: input.threadId,
+        message: {
+          messageId: MessageId.make(NodeCrypto.randomUUID()),
+          role: "user",
+          text,
+          inputOrigin: "agent-loop",
+          attachments: [],
+        },
+        // Mirrors the scheduled-run path: turn.start does not change a
+        // thread's modes (the client sets those separately), so these only
+        // shape this one dispatch.
+        runtimeMode: "full-access",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt,
+      })
+      .pipe(Effect.catch(() => Effect.void));
+  });

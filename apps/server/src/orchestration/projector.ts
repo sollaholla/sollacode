@@ -303,6 +303,12 @@ export function projectEvent(
             id: payload.threadId,
             projectId: payload.projectId,
             title: payload.title,
+            ...(payload.createdByThreadId !== undefined
+              ? { createdByThreadId: payload.createdByThreadId }
+              : {}),
+            ...(payload.browserProfileThreadId !== undefined
+              ? { browserProfileThreadId: payload.browserProfileThreadId }
+              : {}),
             isSideChat: false,
             sideChatParentThreadId: null,
             modelSelection: payload.modelSelection,

@@ -2,6 +2,8 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation whose collaborative browser keeps its own persistent logins. They are separate from ordinary coding threads and from the orchestrator.
 
+When an agent consults a project by opening a new thread, that thread is marked with an agent icon. Its browser keeps separate tabs but intentionally reuses the creating agent's cookies, storage, and HTTP cache so authenticated work can continue without another sign-in. A shared-browser indicator appears on both the thread and browser toolbar; ordinary user-created threads remain isolated.
+
 ## Workspace views
 
 Open an agent and use the tabs in its header:

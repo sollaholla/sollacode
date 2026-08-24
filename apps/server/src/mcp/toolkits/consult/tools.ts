@@ -23,7 +23,7 @@ import { WorkspaceConsultError, WorkspaceConsultInput, WorkspaceConsultResult } 
  */
 export const WorkspaceConsultTool = Tool.make("workspace_consult", {
   description:
-    "Consult the rest of this workspace — its projects and their conversations — when the answer lives outside your own browser. Use `list_projects` and `list_threads` to see what exists, then `ask` to put a question to a project (which opens a new thread there) or to an existing thread, and you get the reply back. Ideal for questions about a product's real behavior, a codebase, or a past decision that you would otherwise have to guess at: ask the conversation that owns that context instead of guessing. If `ask` returns while the other side is still working, poll `read_thread` for the reply. The other conversation cannot see your screen or your chat, so include the context it needs in the question.",
+    "Consult the rest of this workspace — its projects and their conversations — when the answer lives outside your own browser. Use `list_projects` and `list_threads` to see what exists, then `ask` to put a question to a project (which opens a new agent-created thread that shares this agent's browser login/cache profile) or to an existing thread, and you get the reply back. Ideal for questions about a product's real behavior, a codebase, or a past decision that you would otherwise have to guess at: ask the conversation that owns that context instead of guessing. If `ask` returns while the other side is still working, poll `read_thread` for the reply. The other conversation cannot see your screen or your chat, so include the context it needs in the question.",
   parameters: WorkspaceConsultInput,
   success: WorkspaceConsultResult,
   failure: WorkspaceConsultError,

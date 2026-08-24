@@ -23,6 +23,7 @@ import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { isPushToTalkShortcut } from "../pushToTalk";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
+import { isRemoteControlInputCaptured } from "../components/remoteControl/remoteControlInput";
 
 function ChatRouteGlobalShortcuts() {
   const clearSelection = useThreadSelectionStore((state) => state.clearSelection);
@@ -63,8 +64,10 @@ function ChatRouteGlobalShortcuts() {
     const onWindowKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       // ChatView owns the press/release lifecycle. Reserve this shortcut before
-      // resolving the configurable single-press commands that also use Mod+D.
+      // resolving any configurable or remote-control command. Cmd+D/Ctrl+D is
+      // voice-only regardless of which app surface currently has focus.
       if (isPushToTalkShortcut(event)) return;
+      if (isRemoteControlInputCaptured()) return;
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           terminalFocus: isTerminalFocused(),

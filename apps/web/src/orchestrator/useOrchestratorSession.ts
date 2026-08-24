@@ -1247,6 +1247,10 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
       projectsRef.current.map((project) => ({
         projectId: project.id,
         environmentId: project.environmentId,
+        environmentName:
+          environmentsRef.current.find(
+            (environment) => environment.environmentId === project.environmentId,
+          )?.label ?? project.environmentId,
         name: project.title,
         workspaceName: workspaceBasename(project.workspaceRoot),
       })),
@@ -1279,6 +1283,7 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
             threadId,
             projectId: ProjectId.make(input.projectId),
             title: input.title,
+            createdByThreadId: ORCHESTRATOR_THREAD_ID,
             modelSelection,
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,

@@ -363,6 +363,7 @@ export function describeCandidate(thread: ThreadSnapshot): string {
 export interface ProjectReference {
   readonly projectId: string;
   readonly environmentId: string;
+  readonly environmentName: string;
   readonly name: string;
   readonly workspaceName: string;
 }
@@ -390,11 +391,31 @@ export function resolveProjectReference(
   const normalized = normalizeReference(trimmed);
   const phrase = contentPhrase(trimmed);
   const words = contentTokens(trimmed);
+  const queryTokens = new Set(referenceTokens(trimmed));
+
+  const namesProjectAndEnvironment = (project: ProjectReference) => {
+    const projectTokens = referenceTokens(project.name);
+    const workspaceTokens = referenceTokens(project.workspaceName);
+    const environmentTokens = referenceTokens(project.environmentName);
+    const namesProject =
+      projectTokens.every((word) => queryTokens.has(word)) ||
+      (workspaceTokens.length > 0 && workspaceTokens.every((word) => queryTokens.has(word)));
+    return (
+      namesProject &&
+      environmentTokens.length > 0 &&
+      environmentTokens.every((word) => queryTokens.has(word))
+    );
+  };
 
   const tiers: ReadonlyArray<(project: ProjectReference) => boolean> = [
     (project) => normalizeReference(project.name) === normalized,
     (project) => contentPhrase(project.name) === phrase,
+    // Project titles are only unique inside an environment. Accept natural
+    // qualified references such as "TerraGen on SolomansComputer" before
+    // falling back to partial/fuzzy project-name matching.
+    namesProjectAndEnvironment,
     (project) => normalizeReference(project.workspaceName) === normalized,
+    (project) => normalizeReference(project.environmentName) === normalized,
     (project) => normalizeReference(project.name).includes(normalized),
     (project) => words.every((word) => new Set(referenceTokens(project.name)).has(word)),
     // Heard right, spelled by ear — see `sounds-like-title` above.
@@ -422,4 +443,17 @@ export function resolveProjectReference(
     .map((entry) => entry.project);
 
   return { kind: "not-found", suggestions };
+}
+
+/** Human-readable project identity, qualified only when its title is duplicated. */
+export function describeProjectReference(
+  project: ProjectReference,
+  projects: ReadonlyArray<ProjectReference>,
+): string {
+  const duplicateName = projects.some(
+    (candidate) =>
+      candidate !== project &&
+      normalizeReference(candidate.name) === normalizeReference(project.name),
+  );
+  return duplicateName ? `${project.name} on ${project.environmentName}` : project.name;
 }

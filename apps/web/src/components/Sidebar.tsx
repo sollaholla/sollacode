@@ -17,6 +17,7 @@ import {
   PrStatusTooltipContent,
   resolveThreadPr,
   ThreadStatusLabel,
+  ThreadProvenanceIndicators,
   ThreadWorktreeIndicator,
 } from "./ThreadStatusIndicators";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
@@ -743,6 +744,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               </TooltipPopup>
             </Tooltip>
           )}
+          <ThreadProvenanceIndicators thread={thread} />
           <ThreadWorktreeIndicator thread={thread} />
           {terminalStatus && (
             <Tooltip>

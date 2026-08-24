@@ -494,6 +494,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          created_by_thread_id AS "createdByThreadId",
+          browser_profile_thread_id AS "browserProfileThreadId",
           is_side_chat AS "isSideChat",
           side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
@@ -531,6 +533,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          created_by_thread_id AS "createdByThreadId",
+          browser_profile_thread_id AS "browserProfileThreadId",
           is_side_chat AS "isSideChat",
           side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
@@ -570,6 +574,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          created_by_thread_id AS "createdByThreadId",
+          browser_profile_thread_id AS "browserProfileThreadId",
           is_side_chat AS "isSideChat",
           side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
@@ -1042,6 +1048,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          created_by_thread_id AS "createdByThreadId",
+          browser_profile_thread_id AS "browserProfileThreadId",
           is_side_chat AS "isSideChat",
           side_chat_parent_thread_id AS "sideChatParentThreadId",
           model_selection_json AS "modelSelection",
@@ -1731,6 +1739,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 id: row.threadId,
                 projectId: row.projectId,
                 title: row.title,
+                ...(row.createdByThreadId != null
+                  ? { createdByThreadId: row.createdByThreadId }
+                  : {}),
+                ...(row.browserProfileThreadId != null
+                  ? { browserProfileThreadId: row.browserProfileThreadId }
+                  : {}),
                 isSideChat: row.isSideChat === 1,
                 sideChatParentThreadId: row.sideChatParentThreadId ?? null,
                 modelSelection: row.modelSelection,
@@ -1936,6 +1950,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   id: row.threadId,
                   projectId: row.projectId,
                   title: row.title,
+                  ...(row.createdByThreadId != null
+                    ? { createdByThreadId: row.createdByThreadId }
+                    : {}),
+                  ...(row.browserProfileThreadId != null
+                    ? { browserProfileThreadId: row.browserProfileThreadId }
+                    : {}),
                   isSideChat: row.isSideChat === 1,
                   sideChatParentThreadId: row.sideChatParentThreadId ?? null,
                   modelSelection: row.modelSelection,
@@ -2072,6 +2092,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       id: row.threadId,
                       projectId: row.projectId,
                       title: row.title,
+                      ...(row.createdByThreadId != null
+                        ? { createdByThreadId: row.createdByThreadId }
+                        : {}),
+                      ...(row.browserProfileThreadId != null
+                        ? { browserProfileThreadId: row.browserProfileThreadId }
+                        : {}),
                       isSideChat: row.isSideChat === 1,
                       sideChatParentThreadId: row.sideChatParentThreadId ?? null,
                       modelSelection: row.modelSelection,
@@ -2213,6 +2239,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   id: row.threadId,
                   projectId: row.projectId,
                   title: row.title,
+                  ...(row.createdByThreadId != null
+                    ? { createdByThreadId: row.createdByThreadId }
+                    : {}),
+                  ...(row.browserProfileThreadId != null
+                    ? { browserProfileThreadId: row.browserProfileThreadId }
+                    : {}),
                   isSideChat: row.isSideChat === 1,
                   sideChatParentThreadId: row.sideChatParentThreadId ?? null,
                   modelSelection: row.modelSelection,
@@ -2486,6 +2518,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
+        ...(threadRow.value.createdByThreadId != null
+          ? { createdByThreadId: threadRow.value.createdByThreadId }
+          : {}),
+        ...(threadRow.value.browserProfileThreadId != null
+          ? { browserProfileThreadId: threadRow.value.browserProfileThreadId }
+          : {}),
         isSideChat: threadRow.value.isSideChat === 1,
         sideChatParentThreadId: threadRow.value.sideChatParentThreadId ?? null,
         modelSelection: threadRow.value.modelSelection,
@@ -2763,6 +2801,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
+        ...(threadRow.value.createdByThreadId != null
+          ? { createdByThreadId: threadRow.value.createdByThreadId }
+          : {}),
+        ...(threadRow.value.browserProfileThreadId != null
+          ? { browserProfileThreadId: threadRow.value.browserProfileThreadId }
+          : {}),
         isSideChat: threadRow.value.isSideChat === 1,
         sideChatParentThreadId: threadRow.value.sideChatParentThreadId ?? null,
         modelSelection: threadRow.value.modelSelection,

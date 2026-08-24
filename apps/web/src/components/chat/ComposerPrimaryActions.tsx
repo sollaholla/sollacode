@@ -85,7 +85,7 @@ export const formatPushToTalkActionLabel = (
   disabledReason?: string | null,
   autoSend = false,
 ): string => {
-  const shortcut = platform?.toLowerCase().includes("mac") ? "Cmd+D" : "Ctrl+D";
+  const shortcut = platform?.toLowerCase().includes("mac") === true ? "Cmd+D" : "Ctrl+D";
   switch (status) {
     case "recording":
       return `Mute microphone — release to ${

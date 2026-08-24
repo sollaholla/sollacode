@@ -583,7 +583,7 @@ export const ORCHESTRATOR_TOOLS: ReadonlyArray<OrchestratorToolDefinition> = [
         project: {
           type: "string",
           description:
-            "The project it belongs to, named the way the user says it. Omit only when there is exactly one project.",
+            'The project it belongs to, named the way the user says it. When names repeat across hosts, qualify it with the environment, for example "TerraGen on SolomansComputer". Omit only when there is exactly one project.',
         },
         title: {
           type: "string",

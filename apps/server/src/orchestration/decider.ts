@@ -391,6 +391,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
+          ...(command.createdByThreadId !== undefined
+            ? { createdByThreadId: command.createdByThreadId }
+            : {}),
+          ...(command.browserProfileThreadId !== undefined
+            ? { browserProfileThreadId: command.browserProfileThreadId }
+            : {}),
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
