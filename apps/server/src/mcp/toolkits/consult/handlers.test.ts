@@ -23,6 +23,7 @@ import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import { handleWorkspaceConsult } from "./handlers.ts";
 
 const agentThreadId = ThreadId.make("thread-scout");
+const inheritedBrowserProfileThreadId = ThreadId.make("thread-browser-root");
 const medicalThreadId = ThreadId.make("thread-medical");
 const medicalProjectId = ProjectId.make("project-medical");
 
@@ -218,7 +219,12 @@ it.effect("never offers the agent its own thread to talk to", () =>
 
 it.effect("opens a thread in the project and asks the question there", () =>
   Effect.gen(function* () {
-    const { commands, layer } = makeHarness({});
+    const { commands, layer } = makeHarness({
+      threads: [
+        threadShell(),
+        { ...agentThreadShell, browserProfileThreadId: inheritedBrowserProfileThreadId },
+      ],
+    });
     const result = yield* run(
       handleWorkspaceConsult({
         action: "ask",
@@ -237,7 +243,7 @@ it.effect("opens a thread in the project and asks the question there", () =>
     // The new conversation belongs to the consulted project, not the agent's.
     assert.strictEqual(created.projectId, medicalProjectId);
     assert.strictEqual(created.createdByThreadId, agentThreadId);
-    assert.strictEqual(created.browserProfileThreadId, agentThreadId);
+    assert.strictEqual(created.browserProfileThreadId, inheritedBrowserProfileThreadId);
     assert.strictEqual(
       (started as { message: { text: string } }).message.text,
       "Does Example Studio gate exports behind a licence check?",

@@ -13,7 +13,7 @@ import {
 
 export const AgentCollaborationTool = Tool.make("agent_collaboration", {
   description:
-    "Collaborate with VM agents in this Solla environment through bounded durable work. list_agents returns sanitized capabilities and provider/model summaries; delegate targets either one explicit existing agent or a hidden one-off ephemeral worker; list_work and read_work inspect only work in your authorized family; send_message adds a durable note, question, answer, or follow-up; cancel stops work you coordinate. The server derives source identity from this credential, enforces one generation of workers, three active children, a 30-minute wall clock, five follow-ups, 200 messages, same-environment/model inheritance, and explicit human approval for consequential delegated actions.",
+    "Collaborate with VM agents in this Solla environment through bounded durable work. list_agents returns sanitized capabilities and provider/model summaries plus hasMoreAgents when the roster is truncated; delegate targets either one explicit existing agent or a hidden one-off ephemeral worker; list_work returns compact previews for work in your authorized family plus hasMoreWork when older work is truncated, and read_work returns one full request, result, error, and message history; send_message adds a durable note, question, answer, or follow-up; cancel stops work you coordinate. The server derives source identity from this credential, enforces one generation of workers, three active children, a 30-minute wall clock, five follow-ups, 200 messages, same-environment/model inheritance, and explicit human approval for consequential delegated actions.",
   parameters: AgentCollaborationInput,
   success: AgentCollaborationResult,
   failure: AgentCollaborationError,

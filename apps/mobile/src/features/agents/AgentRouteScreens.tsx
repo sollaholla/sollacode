@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
@@ -23,7 +23,16 @@ import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { MarkdownDocument } from "../files/FileMarkdownPreview";
-import { delegationFollowupKind, isDelegationRelatedToAgent } from "./agentCollaboration";
+import {
+  boundedCollaborationPreview,
+  delegationDirectionLabel,
+  delegationFollowupKind,
+  emptyDelegationListMessage,
+  hasEarlierAfterCollaborationPage,
+  hasEarlierCollaborationMessages,
+  isDelegationRelatedToAgent,
+  mergeCollaborationMessages,
+} from "./agentCollaboration";
 
 const TERMINAL_STATUSES = new Set<VmAgentDelegationStatus>([
   "completed",
@@ -227,23 +236,98 @@ function senderName(message: VmAgentDelegationMessage, summary: VmAgentDelegatio
   );
 }
 
+function MobileBoundedCollaborationText(props: {
+  readonly text: string;
+  readonly maxCharacters?: number;
+  readonly maxLines?: number;
+  readonly collapsedLabel: string;
+  readonly textClassName?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = useMemo(
+    () =>
+      boundedCollaborationPreview(props.text, {
+        maxCharacters: props.maxCharacters,
+        maxLines: props.maxLines,
+      }),
+    [props.maxCharacters, props.maxLines, props.text],
+  );
+
+  if (!preview.truncated) {
+    return <Text className={props.textClassName ?? "text-sm text-foreground"}>{preview.text}</Text>;
+  }
+
+  return (
+    <View className="min-w-0 gap-1.5">
+      {expanded ? (
+        <ScrollView
+          className="max-h-64 min-w-0"
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator
+        >
+          <Text className={props.textClassName ?? "text-sm text-foreground"}>{props.text}</Text>
+        </ScrollView>
+      ) : (
+        <Text className={props.textClassName ?? "text-sm text-foreground"}>{preview.text}</Text>
+      )}
+      <Pressable
+        accessibilityLabel={expanded ? "Collapse collaboration text" : props.collapsedLabel}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        className="min-h-8 self-start justify-center rounded-lg px-1 active:opacity-70"
+        onPress={() => setExpanded((current) => !current)}
+      >
+        <Text className="text-xs font-t3-bold text-primary">
+          {expanded ? "Show less" : props.collapsedLabel}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+interface LoadedDelegationHistory {
+  readonly messages: ReadonlyArray<VmAgentDelegationMessage>;
+  readonly hasEarlierMessages: boolean;
+}
+
+function sameMessageReferences(
+  left: ReadonlyArray<VmAgentDelegationMessage>,
+  right: ReadonlyArray<VmAgentDelegationMessage>,
+): boolean {
+  return left.length === right.length && left.every((message, index) => message === right[index]);
+}
+
 function CollaborationSection(props: {
   readonly environmentId: EnvironmentId;
   readonly agent: VmAgent;
   readonly onOpenChat: () => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-  const [pending, setPending] = useState(false);
+  const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
+  const [messageHistory, setMessageHistory] = useState<
+    Readonly<Record<string, LoadedDelegationHistory>>
+  >({});
+  const [historyBeforeSequences, setHistoryBeforeSequences] = useState<
+    Readonly<Record<string, number>>
+  >({});
+  const [pendingOperation, setPendingOperation] = useState<{
+    readonly delegationId: string;
+    readonly kind: "send" | "cancel";
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const collaborationAtom = useMemo(
     () => vmAgentEnvironment.collaboration({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
   );
-  const result = useAtomValue(collaborationAtom);
-  const item = Option.getOrNull(AsyncResult.value(result));
+  const collaborationQuery = useEnvironmentQuery(collaborationAtom);
+  const item = collaborationQuery.data;
   const snapshot = item?.type === "snapshot" ? item : null;
   const delegations = relatedDelegations(snapshot, props.agent.vmAgentId);
+  const collaborators =
+    snapshot?.agents.filter((candidate) => candidate.vmAgentId !== props.agent.vmAgentId) ?? [];
+  const hasMoreAgents = snapshot?.hasMoreAgents === true;
+  const hasMoreDelegations = snapshot?.hasMoreDelegations === true;
   const selected =
     delegations.find((entry) => entry.delegation.delegationId === selectedId) ??
     delegations[0] ??
@@ -259,7 +343,52 @@ function CollaborationSection(props: {
         : null,
     [delegationId, props.environmentId],
   );
-  const detail = useEnvironmentQuery(detailAtom).data;
+  const detailQuery = useEnvironmentQuery(detailAtom);
+  const detail = detailQuery.data;
+  const historyBeforeSequence = delegationId
+    ? (historyBeforeSequences[delegationId] ?? null)
+    : null;
+  const historyAtom = useMemo(
+    () =>
+      delegationId && historyBeforeSequence !== null
+        ? vmAgentEnvironment.delegation({
+            environmentId: props.environmentId,
+            input: { delegationId, beforeSequence: historyBeforeSequence },
+          })
+        : null,
+    [delegationId, historyBeforeSequence, props.environmentId],
+  );
+  const historyQuery = useEnvironmentQuery(historyAtom);
+  const loadedHistory = delegationId ? messageHistory[delegationId] : undefined;
+  const messages = useMemo(
+    () => mergeCollaborationMessages(loadedHistory?.messages ?? [], detail?.messages ?? []),
+    [detail?.messages, loadedHistory?.messages],
+  );
+  const hasEarlierMessages =
+    loadedHistory?.hasEarlierMessages ??
+    (detail
+      ? hasEarlierCollaborationMessages(
+          detail.hasEarlierMessages,
+          detail.delegation.messageCount,
+          messages.length,
+        )
+      : false);
+  const oldestLoadedSequence = messages[0]?.sequence ?? null;
+  const currentMessageDraft = delegationId ? (messageDrafts[delegationId] ?? "") : "";
+  const waitingQuestion =
+    [...messages].toReversed().find((message) => message.kind === "question") ??
+    (selected?.latestMessage?.kind === "question" ? selected.latestMessage : null);
+  const briefText = detail?.delegation.task ?? selected?.delegation.taskPreview.text ?? "";
+  const resultText =
+    detail?.delegation.result?.summary ?? selected?.delegation.resultPreview?.text ?? null;
+  const delegationError =
+    detail?.delegation.error ?? selected?.delegation.errorPreview?.text ?? null;
+  const isSending =
+    pendingOperation?.kind === "send" && pendingOperation.delegationId === delegationId;
+  const isCancelling =
+    pendingOperation?.kind === "cancel" && pendingOperation.delegationId === delegationId;
+  const isLoadingEarlier = historyBeforeSequence !== null && historyQuery.isPending;
+  const observedRevisions = useRef<Readonly<Record<string, number>>>({});
   const sendMessage = useAtomCommand(vmAgentEnvironment.sendDelegationMessage, {
     reportFailure: false,
   });
@@ -267,38 +396,122 @@ function CollaborationSection(props: {
     reportFailure: false,
   });
 
+  useEffect(() => {
+    if (!delegationId || !selected) return;
+    const revision = selected.delegation.revision;
+    const previousRevision = observedRevisions.current[delegationId];
+    observedRevisions.current = { ...observedRevisions.current, [delegationId]: revision };
+    if (previousRevision !== undefined && previousRevision !== revision) detailQuery.refresh();
+  }, [delegationId, detailQuery.refresh, selected]);
+
+  useEffect(() => {
+    if (!delegationId || !detail || detail.delegation.delegationId !== delegationId) return;
+    setMessageHistory((current) => {
+      const existing = current[delegationId];
+      const merged = mergeCollaborationMessages(existing?.messages ?? [], detail.messages);
+      const hasEarlier = hasEarlierCollaborationMessages(
+        detail.hasEarlierMessages,
+        detail.delegation.messageCount,
+        merged.length,
+      );
+      if (
+        existing &&
+        existing.hasEarlierMessages === hasEarlier &&
+        sameMessageReferences(existing.messages, merged)
+      ) {
+        return current;
+      }
+      return { ...current, [delegationId]: { messages: merged, hasEarlierMessages: hasEarlier } };
+    });
+  }, [delegationId, detail]);
+
+  useEffect(() => {
+    const olderDetail = historyQuery.data;
+    if (
+      !delegationId ||
+      historyBeforeSequence === null ||
+      !olderDetail ||
+      olderDetail.delegation.delegationId !== delegationId
+    ) {
+      return;
+    }
+    setMessageHistory((current) => {
+      const existing = current[delegationId];
+      const merged = mergeCollaborationMessages(
+        existing?.messages ?? [],
+        olderDetail.messages,
+        detail?.delegation.delegationId === delegationId ? detail.messages : [],
+      );
+      const hasEarlier = hasEarlierAfterCollaborationPage({
+        beforeSequence: historyBeforeSequence,
+        page: olderDetail.messages,
+        mergedMessageCount: merged.length,
+        totalMessageCount: olderDetail.delegation.messageCount,
+        serverValue: olderDetail.hasEarlierMessages,
+      });
+      if (
+        existing &&
+        existing.hasEarlierMessages === hasEarlier &&
+        sameMessageReferences(existing.messages, merged)
+      ) {
+        return current;
+      }
+      return { ...current, [delegationId]: { messages: merged, hasEarlierMessages: hasEarlier } };
+    });
+    setHistoryBeforeSequences((current) => {
+      if (current[delegationId] !== historyBeforeSequence) return current;
+      const next = { ...current };
+      delete next[delegationId];
+      return next;
+    });
+  }, [delegationId, detail, historyBeforeSequence, historyQuery.data]);
+
   const send = async () => {
-    if (!selected || !message.trim() || pending) return;
-    setPending(true);
+    const message = currentMessageDraft.trim();
+    if (!selected || !message || pendingOperation !== null) return;
+    const selectedDelegationId = selected.delegation.delegationId;
+    setPendingOperation({ delegationId: selectedDelegationId, kind: "send" });
     setError(null);
     const sent = await sendMessage({
       environmentId: props.environmentId,
       input: {
-        delegationId: selected.delegation.delegationId,
-        message: message.trim(),
+        delegationId: selectedDelegationId,
+        message,
         kind: delegationFollowupKind(selected.delegation.status),
         waitForReply: false,
       },
     });
-    setPending(false);
-    if (sent._tag === "Success") setMessage("");
-    else setError("The follow-up could not be sent.");
+    setPendingOperation((current) =>
+      current?.delegationId === selectedDelegationId && current.kind === "send" ? null : current,
+    );
+    if (sent._tag === "Success") {
+      setMessageDrafts((current) => ({ ...current, [selectedDelegationId]: "" }));
+      detailQuery.refresh();
+    } else {
+      setError("The follow-up could not be sent.");
+    }
   };
 
   const cancel = () => {
-    if (!selected || pending) return;
+    if (!selected || pendingOperation !== null) return;
+    const selectedDelegationId = selected.delegation.delegationId;
     Alert.alert("Cancel delegated work?", "The worker will be asked to stop this bounded task.", [
       { text: "Keep running", style: "cancel" },
       {
         text: "Cancel work",
         style: "destructive",
         onPress: () => {
-          setPending(true);
+          setPendingOperation({ delegationId: selectedDelegationId, kind: "cancel" });
+          setError(null);
           void cancelDelegation({
             environmentId: props.environmentId,
-            input: { delegationId: selected.delegation.delegationId },
+            input: { delegationId: selectedDelegationId },
           }).then((cancelled) => {
-            setPending(false);
+            setPendingOperation((current) =>
+              current?.delegationId === selectedDelegationId && current.kind === "cancel"
+                ? null
+                : current,
+            );
             if (cancelled._tag === "Failure") setError("The delegation could not be cancelled.");
           });
         },
@@ -325,13 +538,27 @@ function CollaborationSection(props: {
           <Text className="text-sm font-t3-bold text-primary-foreground">Delegate in chat</Text>
         </Pressable>
       </View>
+      {collaborationQuery.error ? (
+        <View className="min-w-0 gap-2 rounded-2xl border border-red-500/25 bg-sheet p-3">
+          <Text className="text-sm text-red-700 dark:text-red-300">
+            Collaboration updates are unavailable. {collaborationQuery.error}
+          </Text>
+          <Pressable
+            accessibilityLabel="Retry collaboration updates"
+            accessibilityRole="button"
+            className="min-h-11 self-start justify-center rounded-xl border border-border px-4"
+            onPress={collaborationQuery.refresh}
+          >
+            <Text className="font-t3-bold text-foreground">Retry</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {snapshot ? (
         <View className="min-w-0 gap-2">
           <Text className="text-xs font-t3-bold uppercase text-foreground-muted">
             Available collaborators
           </Text>
-          {snapshot.agents.filter((candidate) => candidate.vmAgentId !== props.agent.vmAgentId)
-            .length === 0 ? (
+          {collaborators.length === 0 && !hasMoreAgents ? (
             <View className="rounded-2xl border border-border bg-sheet p-4">
               <Text className="text-sm text-foreground-muted">
                 No other named agents are online. The root can still create a bounded ephemeral
@@ -339,61 +566,76 @@ function CollaborationSection(props: {
               </Text>
             </View>
           ) : (
-            snapshot.agents
-              .filter((candidate) => candidate.vmAgentId !== props.agent.vmAgentId)
-              .map((candidate) => (
-                <View
-                  key={candidate.vmAgentId}
-                  className="min-w-0 gap-2 rounded-2xl border border-border bg-sheet p-3"
-                >
-                  <View className="min-w-0 flex-row flex-wrap items-center gap-2">
-                    <Text className="min-w-0 flex-1 font-t3-bold text-foreground" numberOfLines={1}>
-                      {candidate.name}
-                    </Text>
-                    <StatusChip value={candidate.availability} />
-                    {candidate.activeDelegations > 0 ? (
-                      <StatusChip value={`${candidate.activeDelegations} active`} />
-                    ) : null}
-                  </View>
-                  <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                    {candidate.purpose}
+            collaborators.map((candidate) => (
+              <View
+                key={candidate.vmAgentId}
+                className="min-w-0 gap-2 rounded-2xl border border-border bg-sheet p-3"
+              >
+                <View className="min-w-0 flex-row flex-wrap items-center gap-2">
+                  <Text className="min-w-0 flex-1 font-t3-bold text-foreground" numberOfLines={1}>
+                    {candidate.name}
                   </Text>
-                  {candidate.capabilities.length > 0 ? (
-                    <View className="min-w-0 flex-row flex-wrap gap-1">
-                      {candidate.capabilities.map((capability) => (
-                        <StatusChip key={capability} value={capability} />
-                      ))}
-                    </View>
-                  ) : null}
-                  {candidate.providerInstanceId || candidate.model ? (
-                    <Text className="text-xs text-foreground-muted" numberOfLines={1}>
-                      {[candidate.providerInstanceId, candidate.model].filter(Boolean).join(" · ")}
-                    </Text>
+                  <StatusChip value={candidate.availability} />
+                  {candidate.activeDelegations > 0 ? (
+                    <StatusChip value={`${candidate.activeDelegations} active`} />
                   ) : null}
                 </View>
-              ))
+                <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                  {candidate.purpose}
+                </Text>
+                {candidate.capabilities.length > 0 ? (
+                  <View className="min-w-0 flex-row flex-wrap gap-1">
+                    {candidate.capabilities.map((capability) => (
+                      <StatusChip key={capability} value={capability} />
+                    ))}
+                  </View>
+                ) : null}
+                {candidate.providerInstanceId || candidate.model ? (
+                  <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+                    {[candidate.providerInstanceId, candidate.model].filter(Boolean).join(" · ")}
+                  </Text>
+                ) : null}
+              </View>
+            ))
           )}
+          {hasMoreAgents ? (
+            <View className="rounded-xl border border-border bg-screen/50 px-3 py-2">
+              <Text className="text-xs text-foreground-muted">
+                This host has additional agents outside the bounded live roster, so some targets are
+                not shown here.
+              </Text>
+            </View>
+          ) : null}
         </View>
       ) : null}
-      {delegations.length === 0 ? (
+      {snapshot === null && collaborationQuery.error === null ? (
+        <View className="rounded-2xl border border-border bg-sheet p-4">
+          <Text className="text-sm text-foreground-muted">Loading delegated work…</Text>
+        </View>
+      ) : snapshot !== null && delegations.length === 0 ? (
         <View className="rounded-2xl border border-border bg-sheet p-4">
           <Text className="text-sm text-foreground-muted">
-            No delegated work yet. The root can create a named or ephemeral collaborator through
-            chat.
+            {emptyDelegationListMessage(hasMoreDelegations)}
           </Text>
         </View>
-      ) : (
+      ) : delegations.length > 0 ? (
         <View className="min-w-0 gap-2">
           {delegations.map((entry) => (
             <Pressable
               key={entry.delegation.delegationId}
               accessibilityRole="button"
+              accessibilityState={{
+                selected: selected?.delegation.delegationId === entry.delegation.delegationId,
+              }}
               className={`min-h-11 min-w-0 rounded-xl border px-3 py-2 ${
                 selected?.delegation.delegationId === entry.delegation.delegationId
                   ? "border-primary bg-primary/5"
                   : "border-border bg-sheet"
               }`}
-              onPress={() => setSelectedId(entry.delegation.delegationId)}
+              onPress={() => {
+                setSelectedId(entry.delegation.delegationId);
+                setError(null);
+              }}
             >
               <View className="min-w-0 flex-row flex-wrap items-center gap-2">
                 <Text className="min-w-0 flex-1 font-t3-bold text-foreground" numberOfLines={1}>
@@ -402,16 +644,31 @@ function CollaborationSection(props: {
                 <StatusChip value={entry.delegation.status} />
               </View>
               <Text className="mt-1 text-xs text-foreground-muted" numberOfLines={2}>
-                {entry.delegation.target.kind === "ephemeral"
-                  ? "Ephemeral worker"
-                  : (entry.targetAgent?.name ?? entry.delegation.targetAgentSnapshot?.name)}
+                {delegationDirectionLabel(entry, props.agent.vmAgentId)}
               </Text>
             </Pressable>
           ))}
+          {hasMoreDelegations ? (
+            <View className="rounded-xl border border-border bg-screen/50 px-3 py-2">
+              <Text className="text-xs text-foreground-muted">
+                Showing the most recent handoffs. Older history is outside this bounded live view.
+              </Text>
+            </View>
+          ) : null}
         </View>
-      )}
+      ) : null}
       {selected ? (
         <View className="min-w-0 gap-3 rounded-2xl border border-border bg-sheet p-3">
+          <View className="min-w-0 gap-1 rounded-xl border border-border bg-screen/50 p-3">
+            <Text className="text-xs font-t3-bold uppercase text-foreground-muted">Brief</Text>
+            <MobileBoundedCollaborationText
+              key={`brief:${delegationId}`}
+              text={briefText}
+              maxCharacters={420}
+              maxLines={5}
+              collapsedLabel="Show full brief"
+            />
+          </View>
           {selected.delegation.status === "pending-approval" ? (
             <View className="min-w-0 gap-2 rounded-xl bg-amber-500/10 p-3">
               <Text className="text-xs font-t3-bold text-amber-700 dark:text-amber-300">
@@ -436,24 +693,100 @@ function CollaborationSection(props: {
               <Text className="text-xs font-t3-bold text-amber-700 dark:text-amber-300">
                 Waiting for your answer
               </Text>
-              <Text className="mt-1 text-sm text-foreground">
-                {[...(detail?.messages ?? [])].toReversed().find((item) => item.kind === "question")
-                  ?.text ?? "The worker needs input before it can continue."}
-              </Text>
+              <View className="mt-1">
+                <MobileBoundedCollaborationText
+                  key={`question:${waitingQuestion?.messageId ?? delegationId}`}
+                  text={waitingQuestion?.text ?? "The worker needs input before it can continue."}
+                  maxCharacters={600}
+                  maxLines={6}
+                  collapsedLabel="Show full question"
+                />
+              </View>
             </View>
           ) : null}
-          {selected.delegation.result ? (
+          {resultText !== null ? (
             <View className="rounded-xl bg-emerald-500/10 p-3">
               <Text className="text-xs font-t3-bold text-emerald-700 dark:text-emerald-300">
                 Completed result
               </Text>
-              <Text className="mt-1 text-sm text-foreground">
-                {selected.delegation.result.summary}
-              </Text>
+              <View className="mt-1">
+                <MobileBoundedCollaborationText
+                  key={`result:${delegationId}`}
+                  text={resultText}
+                  maxCharacters={700}
+                  maxLines={7}
+                  collapsedLabel="Show full result"
+                />
+              </View>
             </View>
           ) : null}
+          {delegationError !== null ? (
+            <View className="rounded-xl bg-red-500/10 p-3">
+              <Text className="text-xs font-t3-bold text-red-700 dark:text-red-300">Error</Text>
+              <View className="mt-1">
+                <MobileBoundedCollaborationText
+                  key={`error:${delegationId}`}
+                  text={delegationError}
+                  maxCharacters={500}
+                  maxLines={6}
+                  collapsedLabel="Show full error"
+                  textClassName="text-sm text-red-700 dark:text-red-300"
+                />
+              </View>
+            </View>
+          ) : null}
+          {detailQuery.error ? (
+            <View className="min-w-0 gap-2 rounded-xl border border-red-500/25 p-3">
+              <Text className="text-sm text-red-700 dark:text-red-300">
+                The handoff details could not be loaded. {detailQuery.error}
+              </Text>
+              <Pressable
+                accessibilityLabel="Retry handoff details"
+                accessibilityRole="button"
+                className="min-h-11 self-start justify-center rounded-xl border border-border px-4"
+                onPress={detailQuery.refresh}
+              >
+                <Text className="font-t3-bold text-foreground">Retry</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {historyQuery.error ? (
+            <View className="min-w-0 gap-2 rounded-xl border border-red-500/25 p-3">
+              <Text className="text-sm text-red-700 dark:text-red-300">
+                Earlier messages could not be loaded. {historyQuery.error}
+              </Text>
+              <Pressable
+                accessibilityLabel="Retry earlier collaboration messages"
+                accessibilityRole="button"
+                className="min-h-11 self-start justify-center rounded-xl border border-border px-4"
+                onPress={historyQuery.refresh}
+              >
+                <Text className="font-t3-bold text-foreground">Retry</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {hasEarlierMessages && oldestLoadedSequence !== null && historyQuery.error === null ? (
+            <Pressable
+              accessibilityLabel="Load earlier collaboration messages"
+              accessibilityRole="button"
+              accessibilityState={{ busy: isLoadingEarlier }}
+              className="min-h-10 self-center justify-center rounded-xl px-3 active:bg-subtle"
+              disabled={isLoadingEarlier}
+              onPress={() => {
+                if (!delegationId) return;
+                setHistoryBeforeSequences((current) => ({
+                  ...current,
+                  [delegationId]: oldestLoadedSequence,
+                }));
+              }}
+            >
+              <Text className="text-xs font-t3-bold text-primary">
+                {isLoadingEarlier ? "Loading earlier messages…" : "Show earlier messages"}
+              </Text>
+            </Pressable>
+          ) : null}
           <View className="min-w-0 gap-2">
-            {(detail?.messages ?? []).map((item) => (
+            {messages.map((item) => (
               <View
                 key={item.messageId}
                 className={`max-w-[92%] rounded-xl px-3 py-2 ${
@@ -464,46 +797,63 @@ function CollaborationSection(props: {
                       : "self-end bg-primary/10"
                 }`}
               >
-                <Text className="text-sm text-foreground">{item.text}</Text>
+                <MobileBoundedCollaborationText
+                  text={item.text}
+                  maxCharacters={800}
+                  maxLines={8}
+                  collapsedLabel="Show full message"
+                />
                 <Text className="mt-1 text-2xs text-foreground-muted">
                   {senderName(item, selected)} · {item.kind}
                   {item.delivery === "pending" ? " · sending" : ""}
                 </Text>
               </View>
             ))}
+            {detail === null && detailQuery.error === null ? (
+              <Text className="text-sm text-foreground-muted">Loading conversation…</Text>
+            ) : messages.length === 0 ? (
+              <Text className="text-sm text-foreground-muted">No messages yet.</Text>
+            ) : null}
           </View>
           {!TERMINAL_STATUSES.has(selected.delegation.status) ? (
             <>
               <TextInput
                 accessibilityLabel="Delegation follow-up"
-                className="min-h-20 rounded-xl border border-input-border bg-input px-3 py-2 text-base text-foreground"
+                className="max-h-32 min-h-20 rounded-xl border border-input-border bg-input px-3 py-2 text-base text-foreground"
                 multiline
                 maxLength={20_000}
+                scrollEnabled
+                textAlignVertical="top"
                 placeholder={
                   selected.delegation.status === "waiting-input"
                     ? "Answer the worker’s question"
                     : "Send a bounded follow-up"
                 }
-                value={message}
-                onChangeText={setMessage}
+                value={currentMessageDraft}
+                onChangeText={(value) => {
+                  if (!delegationId) return;
+                  setMessageDrafts((current) => ({ ...current, [delegationId]: value }));
+                }}
               />
               <View className="min-w-0 flex-row flex-wrap justify-end gap-2">
                 <Pressable
                   accessibilityRole="button"
                   className="min-h-11 justify-center rounded-xl border border-border px-4"
-                  disabled={pending}
+                  disabled={pendingOperation !== null}
                   onPress={cancel}
                 >
-                  <Text className="font-t3-bold text-foreground">Cancel work</Text>
+                  <Text className="font-t3-bold text-foreground">
+                    {isCancelling ? "Cancelling…" : "Cancel work"}
+                  </Text>
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
                   className="min-h-11 justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
-                  disabled={pending || message.trim().length === 0}
+                  disabled={pendingOperation !== null || currentMessageDraft.trim().length === 0}
                   onPress={() => void send()}
                 >
                   <Text className="font-t3-bold text-primary-foreground">
-                    {pending ? "Sending…" : "Send"}
+                    {isSending ? "Sending…" : "Send"}
                   </Text>
                 </Pressable>
               </View>

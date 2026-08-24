@@ -33,8 +33,12 @@ The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It 
 `packages/client-runtime` owns the environment-scoped workspace stream and serialized mutation commands. The web client renders Tasks, Artifact, and Inbox alongside the existing Chat and Computer surfaces. Desktop inherits the web surface through Electron. Browser notifications are a best-effort delivery channel; the persisted Inbox and workspace stream are authoritative for local, LAN, relay, and tunnel clients.
 
 Bounded collaboration has a separate environment-scoped stream. A snapshot carries named-agent
-capability and availability summaries plus delegation summaries. Detail is fetched only for the
-selected delegation. Messages identify source agent, target agent, user, or system and preserve
+capability and availability summaries plus compact delegation list rows: relationship ids, compact
+identity snapshots, status and counts, timestamps, and bounded task/result/error previews. Full
+requests, results, errors, and completion settings are fetched only for the selected delegation.
+Conversation history is read newest-first in bounded pages; clients fetch older pages explicitly
+and refresh the newest page when the stream's delegation revision changes, rather than polling the
+entire history. Messages identify source agent, target agent, user, or system and preserve
 pending/delivered state. Creation remains an agent/MCP action; clients observe, send bounded
 follow-ups, cancel, and route human approvals back to the root thread.
 

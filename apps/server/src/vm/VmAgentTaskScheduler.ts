@@ -35,6 +35,7 @@ import {
   type VmAgentTaskRunObservation,
   VmAgentWorkspaceStore,
 } from "../persistence/Services/VmAgentWorkspaces.ts";
+import { VmAgentCollaboration } from "./VmAgentCollaboration.ts";
 import { VmAgentWorkspace } from "./VmAgentWorkspace.ts";
 
 const POLL_INTERVAL_MS = 1_000;
@@ -80,6 +81,14 @@ export const MAX_RUN_START_RETRIES = 2;
  * occurrence booked.
  */
 export const RUN_DISPATCH_DEADLINE_MS = 3_600_000;
+
+export const delegationWorkerThreadProvenance = (input: {
+  readonly sourceThreadId: ThreadId;
+  readonly inheritedBrowserProfileThreadId?: ThreadId | null | undefined;
+}) => ({
+  createdByThreadId: input.sourceThreadId,
+  browserProfileThreadId: input.inheritedBrowserProfileThreadId ?? input.sourceThreadId,
+});
 
 export interface VmAgentTaskSchedulerShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -177,6 +186,7 @@ export const make = Effect.gen(function* () {
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const store = yield* VmAgentWorkspaceStore;
   const collaboration = yield* VmAgentCollaborationStore;
+  const collaborationUpdates = yield* VmAgentCollaboration;
   const workspace = yield* VmAgentWorkspace;
   const wakeQueue = yield* Queue.sliding<void>(1);
   const started = yield* Ref.make(false);
@@ -298,6 +308,7 @@ export const make = Effect.gen(function* () {
         delegationId: delegation.value.delegationId,
         updatedAt: completedAt,
       });
+      yield* collaborationUpdates.refresh;
     }
     if (Option.isSome(delegation) && !delegationIsContinuing) {
       yield* collaboration.complete({
@@ -314,6 +325,7 @@ export const make = Effect.gen(function* () {
             }
           : {}),
       });
+      yield* collaborationUpdates.refresh;
     }
     runStartAttempts.delete(observation.run.runId);
     yield* workspace.refresh(observation.run.vmAgentId);
@@ -345,15 +357,13 @@ export const make = Effect.gen(function* () {
    */
   const postRunFailure = Effect.fn("VmAgentTaskScheduler.postRunFailure")(function* (
     run: VmAgentTaskRun,
+    delegation: Option.Option<VmAgentDelegation>,
     detail: string,
     occurredAt: string,
   ) {
     // No message id means the run never got as far as posting the prompt, so
     // there is nothing on screen that needs explaining.
     if (run.messageId === null) return;
-    const delegation = yield* collaboration
-      .getByRunId(run.runId)
-      .pipe(Effect.orElseSucceed(() => Option.none()));
     const agent = yield* agents
       .getById(run.vmAgentId)
       .pipe(Effect.orElseSucceed(() => Option.none()));
@@ -398,7 +408,12 @@ export const make = Effect.gen(function* () {
   ) {
     const detail = errorText(error);
     const completedAt = yield* nowIso;
-    yield* postRunFailure(run, detail, completedAt).pipe(Effect.ignoreCause({ log: true }));
+    const delegation = yield* collaboration
+      .getByRunId(run.runId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    yield* postRunFailure(run, delegation, detail, completedAt).pipe(
+      Effect.ignoreCause({ log: true }),
+    );
     if (task) yield* createRunNotification(task, run, "failed", detail);
     yield* store
       .completeRun({
@@ -419,6 +434,7 @@ export const make = Effect.gen(function* () {
         completedAt,
       })
       .pipe(Effect.ignoreCause({ log: true }));
+    if (Option.isSome(delegation)) yield* collaborationUpdates.refresh;
     runStartAttempts.delete(run.runId);
     yield* workspace.refresh(run.vmAgentId);
   });
@@ -468,6 +484,10 @@ export const make = Effect.gen(function* () {
             threadId,
             sourceThreadId: source.value.threadId,
             title: delegated.value.target.label ?? `Worker: ${delegated.value.title}`,
+            ...delegationWorkerThreadProvenance({
+              sourceThreadId: source.value.threadId,
+              inheritedBrowserProfileThreadId: sourceThread.value.browserProfileThreadId,
+            }),
             modelSelection: sourceThread.value.modelSelection,
             runtimeMode: sourceThread.value.runtimeMode,
             interactionMode: "agent",
@@ -489,6 +509,10 @@ export const make = Effect.gen(function* () {
       yield* store.setRunRunning({ runId: run.runId, messageId, startedAt });
       if (Option.isSome(delegated)) {
         yield* collaboration.markRunning({ runId: run.runId, startedAt, messageId });
+        // The worker thread binding and running transition are one visible
+        // lifecycle boundary, so publish them together rather than sending
+        // two full collaboration snapshots.
+        yield* collaborationUpdates.refresh;
       }
       yield* workspace.refresh(run.vmAgentId);
       const delegationMessages = Option.isSome(delegated)
@@ -524,6 +548,7 @@ export const make = Effect.gen(function* () {
           messageId: pendingMessage.messageId,
           updatedAt: startedAt,
         });
+        yield* collaborationUpdates.refresh;
       }
     }).pipe(
       Effect.catch((error) =>
@@ -563,6 +588,7 @@ export const make = Effect.gen(function* () {
       detail: "Delegated work exceeded its 30 minute wall-clock limit.",
       completedAt,
     });
+    yield* collaborationUpdates.refresh;
     const threadId =
       delegation.workerThreadId !== null
         ? ThreadId.make(delegation.workerThreadId)
@@ -658,11 +684,15 @@ export const make = Effect.gen(function* () {
         now,
       });
       if (Option.isNone(claimed)) break;
+      const delegation = yield* collaboration
+        .getByTaskId(claimed.value.task.taskId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
       yield* collaboration.markRunClaimed({
         taskId: claimed.value.task.taskId,
         runId: claimed.value.run.runId,
         updatedAt: now,
       });
+      if (Option.isSome(delegation)) yield* collaborationUpdates.refresh;
       yield* workspace.refresh(claimed.value.run.vmAgentId);
       yield* launch(claimed.value.run);
     }

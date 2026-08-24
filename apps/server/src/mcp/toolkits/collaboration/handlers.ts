@@ -209,6 +209,8 @@ export const handleThreadCollaboration = Effect.fn("ThreadCollaboration.handle")
           threadId: sideChatThreadId,
           sourceThreadId: source.id,
           title,
+          createdByThreadId: source.id,
+          browserProfileThreadId: source.browserProfileThreadId ?? source.id,
           modelSelection,
           runtimeMode,
           interactionMode,

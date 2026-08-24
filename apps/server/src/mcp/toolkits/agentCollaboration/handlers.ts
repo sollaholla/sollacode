@@ -113,6 +113,7 @@ export const handleAgentCollaboration = Effect.fn("AgentCollaboration.handle")(f
         action: input.action,
         status: `${snapshot.agents.length} collaborator${snapshot.agents.length === 1 ? "" : "s"} available in this scope.`,
         agents: snapshot.agents,
+        hasMoreAgents: snapshot.hasMoreAgents === true,
       };
     }
     case "list_work": {
@@ -121,6 +122,7 @@ export const handleAgentCollaboration = Effect.fn("AgentCollaboration.handle")(f
         action: input.action,
         status: `${snapshot.delegations.length} delegated work item${snapshot.delegations.length === 1 ? "" : "s"} visible.`,
         work: snapshot.delegations,
+        hasMoreWork: snapshot.hasMoreDelegations === true,
       };
     }
     case "delegate": {

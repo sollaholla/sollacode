@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.1.232",
+  "version": "0.1.233",
   "private": true,
   "type": "module",
   "scripts": {
@@ -61,6 +61,7 @@
     "@vercel/config": "^0.3.0",
     "@vitejs/plugin-react": "^6.0.0",
     "babel-plugin-react-compiler": "1.0.0",
+    "happy-dom": "^20.11.6",
     "msw": "2.12.11",
     "tailwindcss": "^4.0.0",
     "vite": "catalog:",

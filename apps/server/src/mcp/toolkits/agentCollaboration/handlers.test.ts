@@ -85,6 +85,8 @@ const makeHarness = (actor: "agent" | "worker") => {
     snapshotForAgent: () =>
       Effect.succeed({
         type: "snapshot",
+        hasMoreAgents: true,
+        hasMoreDelegations: true,
         agents: [
           { vmAgentId: sourceAgentId },
           { vmAgentId: targetAgentId },
@@ -185,5 +187,24 @@ it.effect("limits an ephemeral worker's discovery to its own delegation family",
       result.agents?.map((agent) => agent.vmAgentId),
       [sourceAgentId],
     );
+  }),
+);
+
+it.effect("reports bounded agent and work lists to the calling agent", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness("agent");
+    const agents = yield* run(
+      handleAgentCollaboration({ action: "list_agents" }),
+      harness.layer,
+      sourceThreadId,
+    );
+    const work = yield* run(
+      handleAgentCollaboration({ action: "list_work" }),
+      harness.layer,
+      sourceThreadId,
+    );
+
+    assert.isTrue(agents.hasMoreAgents);
+    assert.isTrue(work.hasMoreWork);
   }),
 );

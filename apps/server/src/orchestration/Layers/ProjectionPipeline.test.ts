@@ -941,6 +941,8 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             sourceThreadId,
             projectId: ProjectId.make("project-attachment-fork"),
             title: "Side chat",
+            createdByThreadId: sourceThreadId,
+            browserProfileThreadId: sourceThreadId,
             isSideChat: true,
             modelSelection: {
               instanceId: ProviderInstanceId.make("codex"),
@@ -956,10 +958,14 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
         const sideChatRows = yield* sql<{
           readonly parentThreadId: string | null;
+          readonly createdByThreadId: string | null;
+          readonly browserProfileThreadId: string | null;
           readonly messageCount: number;
         }>`
           SELECT
             side_chat_parent_thread_id AS "parentThreadId",
+            created_by_thread_id AS "createdByThreadId",
+            browser_profile_thread_id AS "browserProfileThreadId",
             (
               SELECT COUNT(*)
               FROM projection_thread_messages
@@ -968,7 +974,14 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           FROM projection_threads
           WHERE thread_id = ${sideChatThreadId}
         `;
-        assert.deepEqual(sideChatRows, [{ parentThreadId: sourceThreadId, messageCount: 0 }]);
+        assert.deepEqual(sideChatRows, [
+          {
+            parentThreadId: sourceThreadId,
+            createdByThreadId: sourceThreadId,
+            browserProfileThreadId: sourceThreadId,
+            messageCount: 0,
+          },
+        ]);
 
         const siblingSideChatThreadId = ThreadId.make("thread-fork-side-sibling");
         yield* appendAndProject({
@@ -986,6 +999,8 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
             sourceThreadId: sideChatThreadId,
             projectId: ProjectId.make("project-attachment-fork"),
             title: "Sibling side chat",
+            createdByThreadId: sideChatThreadId,
+            browserProfileThreadId: sourceThreadId,
             isSideChat: true,
             sideChatParentThreadId: sourceThreadId,
             modelSelection: {
@@ -1002,10 +1017,14 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
         const siblingSideChatRows = yield* sql<{
           readonly parentThreadId: string | null;
+          readonly createdByThreadId: string | null;
+          readonly browserProfileThreadId: string | null;
           readonly messageCount: number;
         }>`
           SELECT
             side_chat_parent_thread_id AS "parentThreadId",
+            created_by_thread_id AS "createdByThreadId",
+            browser_profile_thread_id AS "browserProfileThreadId",
             (
               SELECT COUNT(*)
               FROM projection_thread_messages
@@ -1015,7 +1034,12 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           WHERE thread_id = ${siblingSideChatThreadId}
         `;
         assert.deepEqual(siblingSideChatRows, [
-          { parentThreadId: sourceThreadId, messageCount: 0 },
+          {
+            parentThreadId: sourceThreadId,
+            createdByThreadId: sideChatThreadId,
+            browserProfileThreadId: sourceThreadId,
+            messageCount: 0,
+          },
         ]);
 
         yield* appendAndProject({

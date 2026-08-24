@@ -46,11 +46,15 @@ const makeThread = (
     readonly parentThreadId?: ThreadId | null;
     readonly runtimeMode?: RuntimeMode;
     readonly interactionMode?: "default" | "plan" | "agent";
+    readonly browserProfileThreadId?: ThreadId;
   } = {},
 ): OrchestrationThreadShell => ({
   id,
   projectId,
   title,
+  ...(options.browserProfileThreadId
+    ? { browserProfileThreadId: options.browserProfileThreadId }
+    : {}),
   isSideChat: options.isSideChat ?? false,
   sideChatParentThreadId: options.parentThreadId ?? null,
   modelSelection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
@@ -135,7 +139,11 @@ const invocationFor = (
 const makeHarness = (
   initialThreads: ReadonlyArray<OrchestrationThreadShell> = [
     makeThread(mainThreadId, "Main"),
-    makeThread(sideThreadId, "Side", { isSideChat: true, parentThreadId: mainThreadId }),
+    makeThread(sideThreadId, "Side", {
+      isSideChat: true,
+      parentThreadId: mainThreadId,
+      browserProfileThreadId: mainThreadId,
+    }),
     makeThread(siblingThreadId, "Sibling", {
       isSideChat: true,
       parentThreadId: mainThreadId,
@@ -172,6 +180,10 @@ const makeHarness = (
             ...source,
             id: command.threadId,
             title: command.title ?? `${source.title} (fork)`,
+            ...(command.createdByThreadId ? { createdByThreadId: command.createdByThreadId } : {}),
+            ...(command.browserProfileThreadId
+              ? { browserProfileThreadId: command.browserProfileThreadId }
+              : {}),
             modelSelection: command.modelSelection ?? source.modelSelection,
             runtimeMode: command.runtimeMode ?? source.runtimeMode,
             interactionMode: command.interactionMode ?? source.interactionMode,
@@ -469,6 +481,8 @@ it.effect("creates and starts an Agent side task while leaving the source active
     expect(harness.commands[0]).toMatchObject({
       type: "thread.fork",
       sourceThreadId: mainThreadId,
+      createdByThreadId: mainThreadId,
+      browserProfileThreadId: mainThreadId,
       sideChatParentThreadId: mainThreadId,
       modelSelection: { instanceId: codexInstanceId, model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
@@ -578,6 +592,8 @@ it.effect("creates side tasks requested by a side agent as visible siblings", ()
       type: "thread.fork",
       sourceThreadId: sideThreadId,
       sideChatParentThreadId: mainThreadId,
+      createdByThreadId: sideThreadId,
+      browserProfileThreadId: mainThreadId,
     });
   }).pipe(Effect.provide(harness.layer));
 });

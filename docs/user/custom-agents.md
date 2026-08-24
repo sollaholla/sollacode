@@ -20,15 +20,20 @@ switches to an agent with the same id on another host.
 
 ## Collaboration
 
-The **Collaborate** view distinguishes the persistent root agent from bounded workers. It shows the
-capabilities and availability advertised by other named agents on the same host, plus active,
-waiting, completed, and failed delegated work.
+The **Collaborate** view is a bounded handoff workspace. Its list and conversation panes scroll
+independently, and narrow windows switch between them with a Back action, so a long request or
+result never stretches the surrounding app. **New handoff** opens a focused target picker; named
+agent availability and capabilities stay visible there without crowding the active conversation.
 
 - A root agent can ask another named agent for help or create a short-lived ephemeral sub-agent.
 - Delegation is requested through the root chat, so normal tools and approval policy remain in
   control. The UI does not create work behind the root agent's back.
 - Questions from a worker appear as **Waiting for your answer**. Replies, delivery state, completed
   results, and cancellation are visible in the delegation detail.
+- Long briefs, questions, results, errors, and messages open on demand inside bounded readers. Reply
+  drafts are retained per handoff while switching between conversations.
+- The newest conversation page arrives with the handoff. **Show earlier messages** loads older
+  pages on demand, so an active collaboration does not repeatedly transfer its full history.
 - A delegation that is **Pending approval** must be opened in the root chat and approved by a human.
   It is never auto-approved by the collaboration view.
 

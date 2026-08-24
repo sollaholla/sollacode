@@ -345,6 +345,8 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
             commandId: asCommandId("cmd-side-chat-sibling"),
             threadId: asThreadId("thread-side-chat-sibling"),
             sourceThreadId: sideChatId,
+            createdByThreadId: sideChatId,
+            browserProfileThreadId: mainThreadId,
             isSideChat: true,
             sideChatParentThreadId: mainThreadId,
             createdAt: "2026-01-01T00:00:02.000Z",
@@ -355,6 +357,8 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
       );
       expect(siblingFork.payload).toMatchObject({
         sourceThreadId: sideChatId,
+        createdByThreadId: sideChatId,
+        browserProfileThreadId: mainThreadId,
         isSideChat: true,
         sideChatParentThreadId: mainThreadId,
       });

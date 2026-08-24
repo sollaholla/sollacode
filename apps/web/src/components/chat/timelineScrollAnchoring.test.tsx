@@ -8,6 +8,8 @@ import {
   shouldCommitTimelineOlderNavigation,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldReleaseTimelineLiveFollowForWheel,
+  resolveTimelineKeyboardScrollDirection,
+  resolveTimelineManualScrollDirection,
   shouldMaintainTimelineVisibleContentPosition,
   shouldResumeTimelineLiveFollow,
   TIMELINE_MOMENTUM_SETTLE_MS,
@@ -107,14 +109,14 @@ describe("timeline scroll anchoring", () => {
     });
   });
 
-  it("keeps live-follow while a manual gesture remains inside the near-end zone", () => {
+  it("does not let the near-end threshold erase an upward manual gesture", () => {
     expect(
       shouldResumeTimelineLiveFollow({
         isAtEnd: true,
         manualNavigationActive: true,
         manualNavigationTowardEnd: false,
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldResumeTimelineLiveFollow({
         isAtEnd: true,
@@ -129,6 +131,13 @@ describe("timeline scroll anchoring", () => {
         manualNavigationTowardEnd: true,
       }),
     ).toBe(false);
+    expect(
+      shouldResumeTimelineLiveFollow({
+        isAtEnd: true,
+        manualNavigationActive: false,
+        manualNavigationTowardEnd: false,
+      }),
+    ).toBe(true);
   });
 
   it("releases send-time live-follow only for an explicit wheel gesture toward older content", () => {
@@ -141,6 +150,22 @@ describe("timeline scroll anchoring", () => {
     expect(shouldReleaseTimelineLiveFollowForTouch(null, 200)).toBe(false);
     expect(shouldReleaseTimelineLiveFollowForTouch(200, 220)).toBe(true);
     expect(shouldReleaseTimelineLiveFollowForTouch(220, 200)).toBe(false);
+  });
+
+  it("derives manual direction from native scroll offsets for keyboard and scrollbar paths", () => {
+    expect(resolveTimelineManualScrollDirection(null, 900)).toBe("stationary");
+    expect(resolveTimelineManualScrollDirection(900, 860)).toBe("older");
+    expect(resolveTimelineManualScrollDirection(860, 900)).toBe("newer");
+    expect(resolveTimelineManualScrollDirection(900, 900.25)).toBe("stationary");
+  });
+
+  it("classifies timeline navigation keys without claiming unrelated shortcuts", () => {
+    expect(resolveTimelineKeyboardScrollDirection({ key: "PageUp", shiftKey: false })).toBe(
+      "older",
+    );
+    expect(resolveTimelineKeyboardScrollDirection({ key: " ", shiftKey: true })).toBe("older");
+    expect(resolveTimelineKeyboardScrollDirection({ key: "End", shiftKey: false })).toBe("newer");
+    expect(resolveTimelineKeyboardScrollDirection({ key: "k", shiftKey: false })).toBeNull();
   });
 
   it("commits an opt-out only after older navigation leaves the near-end zone", () => {
@@ -343,6 +368,25 @@ describe("shouldSnapTimelineToEndOnResize", () => {
     // The intent is raised before the scroll position has moved off the end,
     // so honouring it has to start here rather than a frame later.
     expect(shouldSnapTimelineToEndOnResize({ ...base, olderNavigationIntent: true })).toBe(false);
+  });
+
+  it("keeps an already-queued resize fenced after input clears the near-end intent", () => {
+    // The prop can still be the previous render's `followEnd=true` for a frame.
+    // The synchronous local suppression ref is therefore an independent guard.
+    expect(
+      shouldSnapTimelineToEndOnResize({
+        ...base,
+        olderNavigationIntent: false,
+        manualFollowSuppressed: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearOlderNavigationIntent({
+        isAtEnd: true,
+        userGestureActive: false,
+        manualFollowSuppressed: true,
+      }),
+    ).toBe(false);
   });
 
   it("never snaps when following is already off", () => {

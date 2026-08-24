@@ -7,6 +7,7 @@ import { AGENT_CONTINUE_PROMPT } from "../../agentMode";
 import { RESUME_PROMPT } from "../../resumePrompt";
 
 const assetUrlStateCalls = vi.hoisted(() => [] as Array<unknown>);
+const legendListPropsCalls = vi.hoisted(() => [] as Array<unknown>);
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -49,6 +50,7 @@ vi.mock("@legendapp/list/react", async () => {
     onPointerDown?: (event: { pointerType: string }) => void;
     ref?: Ref<LegendListRef>;
   }) => {
+    legendListPropsCalls.push(props);
     return (
       <div
         data-testid={legendListTestId}
@@ -636,6 +638,7 @@ describe("MessagesTimeline", () => {
   it("uses LegendList isNearEnd when deciding whether the live edge is visible", async () => {
     const {
       resolveTimelineIsAtEnd,
+      resolveTimelineIsExactlyAtEnd,
       resolveTimelineDrawDistance,
       resolveTimelineMinimapHasPersistentGutter,
       resolveTimelineMinimapHeightStyle,
@@ -649,6 +652,9 @@ describe("MessagesTimeline", () => {
     expect(resolveTimelineIsAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(false);
     expect(resolveTimelineIsAtEnd({ isAtEnd: true })).toBe(true);
     expect(resolveTimelineIsAtEnd(undefined)).toBeUndefined();
+    expect(resolveTimelineIsExactlyAtEnd({ isNearEnd: true, isAtEnd: false })).toBe(false);
+    expect(resolveTimelineIsExactlyAtEnd({ isNearEnd: false, isAtEnd: true })).toBe(true);
+    expect(resolveTimelineIsExactlyAtEnd({ isNearEnd: true })).toBe(true);
     expect(resolveTimelineDrawDistance(false)).toBe(4_000);
     expect(resolveTimelineDrawDistance(true)).toBe(6_000);
 
@@ -743,7 +749,60 @@ describe("MessagesTimeline", () => {
     expect(followingMarkup).toContain('data-draw-distance="4000"');
     expect(followingMarkup).toContain('data-manual-wheel-handler="true"');
     expect(followingMarkup).toContain('data-manual-touch-handler="true"');
-    expect(followingMarkup).toContain('data-manual-pointer-handler="false"');
+    expect(followingMarkup).toContain('data-manual-pointer-handler="true"');
+  });
+
+  it("claims the viewport as soon as wheel or touch input moves toward older content", () => {
+    legendListPropsCalls.length = 0;
+    const onManualNavigation = vi.fn();
+    renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        followEnd
+        isWorking
+        onManualNavigation={onManualNavigation}
+        timelineEntries={[buildUserTimelineEntry("Do not yank this scroll back down")]}
+      />,
+    );
+
+    const listProps = legendListPropsCalls.at(-1) as {
+      readonly onWheel?: (event: { readonly deltaY: number }) => void;
+      readonly onTouchStart?: (event: {
+        readonly touches: ArrayLike<{ readonly clientY: number }>;
+      }) => void;
+      readonly onTouchMove?: (event: {
+        readonly touches: ArrayLike<{ readonly clientY: number }>;
+      }) => void;
+    };
+
+    listProps.onWheel?.({ deltaY: -24 });
+    expect(onManualNavigation).toHaveBeenLastCalledWith(false);
+
+    listProps.onTouchStart?.({ touches: [{ clientY: 200 }] });
+    listProps.onTouchMove?.({ touches: [{ clientY: 220 }] });
+    expect(onManualNavigation).toHaveBeenLastCalledWith(false);
+
+    const upwardClaims = onManualNavigation.mock.calls.length;
+    listProps.onWheel?.({ deltaY: 24 });
+    listProps.onTouchMove?.({ touches: [{ clientY: 210 }] });
+    expect(onManualNavigation).toHaveBeenCalledTimes(upwardClaims + 2);
+    expect(onManualNavigation).toHaveBeenLastCalledWith(true);
+
+    renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        followEnd={false}
+        isWorking
+        onManualNavigation={onManualNavigation}
+        timelineEntries={[buildUserTimelineEntry("Let me return to the live edge")]}
+      />,
+    );
+    const optedOutListProps = legendListPropsCalls.at(-1) as typeof listProps;
+    optedOutListProps.onWheel?.({ deltaY: 24 });
+    expect(onManualNavigation).toHaveBeenLastCalledWith(true);
+    optedOutListProps.onTouchStart?.({ touches: [{ clientY: 220 }] });
+    optedOutListProps.onTouchMove?.({ touches: [{ clientY: 210 }] });
+    expect(onManualNavigation).toHaveBeenLastCalledWith(true);
   });
 
   it("restores a deep per-thread scroll offset instead of initializing at the end", () => {

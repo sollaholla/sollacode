@@ -59,7 +59,7 @@ import {
   VmAgentNotFoundError,
   VmAgentWorkspaceOperationError,
   type VmAgentWorkspaceStreamItem,
-  type VmAgentCollaborationStreamItem,
+  type VmAgentCollaborationWireStreamItem,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -534,7 +534,7 @@ function vmAttentionStreamItemByteSize(item: VmAgentAttentionStreamItem): number
   return item.type === "resync-required" ? 256 : item.agents.length * 160 + 256;
 }
 
-function vmCollaborationStreamItemByteSize(item: VmAgentCollaborationStreamItem): number {
+function vmCollaborationStreamItemByteSize(item: VmAgentCollaborationWireStreamItem): number {
   return item.type === "resync-required"
     ? 256
     : terminalStreamTextEncoder.encode(JSON.stringify(item)).byteLength + 512;
@@ -2674,22 +2674,28 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "vm-workspace" },
           ),
-        [WS_METHODS.vmAgentCollaborationSubscribe]: (_input) =>
+        [WS_METHODS.vmAgentCollaborationSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.vmAgentCollaborationSubscribe,
             Stream.unwrap(
               Effect.gen(function* () {
-                const buffer = yield* ByteBoundedResyncBuffer.make<VmAgentCollaborationStreamItem>({
-                  maxBytes: VM_WORKSPACE_STREAM_MAX_BYTES,
-                  maxItems: VM_STREAM_MAX_ITEMS,
-                  resyncItem: vmResyncRequired,
-                  sizeOf: vmCollaborationStreamItemByteSize,
-                });
-                yield* Effect.acquireRelease(
-                  vmAgentCollaboration.subscribe((snapshot) =>
-                    buffer.offer(snapshot).pipe(Effect.asVoid),
-                  ),
-                  (unsubscribe) => Effect.sync(unsubscribe),
+                const buffer =
+                  yield* ByteBoundedResyncBuffer.make<VmAgentCollaborationWireStreamItem>({
+                    maxBytes: VM_WORKSPACE_STREAM_MAX_BYTES,
+                    maxItems: VM_STREAM_MAX_ITEMS,
+                    resyncItem: vmResyncRequired,
+                    sizeOf: vmCollaborationStreamItemByteSize,
+                  });
+                const subscription =
+                  VmAgentCollaboration.collaborationSubscriptionMode(input.compact) === "compact"
+                    ? vmAgentCollaboration.subscribe((snapshot) =>
+                        buffer.offer(snapshot).pipe(Effect.asVoid),
+                      )
+                    : vmAgentCollaboration.subscribeLegacy((snapshot) =>
+                        buffer.offer(snapshot).pipe(Effect.asVoid),
+                      );
+                yield* Effect.acquireRelease(subscription, (unsubscribe) =>
+                  Effect.sync(unsubscribe),
                 );
                 return buffer.stream;
               }),
@@ -2699,7 +2705,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.vmAgentCollaborationGet]: (input) =>
           observeRpcEffect(
             WS_METHODS.vmAgentCollaborationGet,
-            vmAgentCollaboration.getDetail({ kind: "user" }, input.delegationId),
+            vmAgentCollaboration.getDetail({ kind: "user" }, input.delegationId, {
+              ...(input.beforeSequence === undefined
+                ? {}
+                : { beforeSequence: input.beforeSequence }),
+              messageLimit: VmAgentCollaboration.delegationDetailMessageLimit(input.paged),
+            }),
             { "rpc.aggregate": "vm-collaboration" },
           ),
         [WS_METHODS.vmAgentCollaborationSendMessage]: (input) =>

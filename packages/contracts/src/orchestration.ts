@@ -680,6 +680,11 @@ const ThreadForkCommand = Schema.Struct({
   threadId: ThreadId,
   sourceThreadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  /** Causal agent conversation. Omitted for ordinary user-created forks. */
+  createdByThreadId: Schema.optionalKey(ThreadId),
+  /** Root browser profile to reuse. Kept explicit so nested agent work can
+      inherit the ultimate profile instead of creating a fresh partition. */
+  browserProfileThreadId: Schema.optionalKey(ThreadId),
   /**
    * Optional target overrides are part of the fork itself so provider session
    * cloning cannot race a follow-up metadata command. Omitted values preserve
@@ -1167,6 +1172,8 @@ export const ThreadForkedPayload = Schema.Struct({
   sourceThreadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  createdByThreadId: Schema.optionalKey(ThreadId),
+  browserProfileThreadId: Schema.optionalKey(ThreadId),
   isSideChat: Schema.optionalKey(Schema.Boolean),
   sideChatParentThreadId: Schema.optionalKey(ThreadId),
   modelSelection: ModelSelection,

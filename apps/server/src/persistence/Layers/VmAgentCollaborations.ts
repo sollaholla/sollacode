@@ -1,10 +1,15 @@
 import {
+  VM_AGENT_COLLABORATION_LIST_LIMIT,
+  VM_AGENT_DELEGATION_MAX_MESSAGES,
+  VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH,
+  VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH,
+  VmAgentCollaborationIdentitySummary,
   VmAgentCollaborationCapability,
   VmAgentDelegation,
   VmAgentDelegationId,
+  type VmAgentDelegationListItem,
   VmAgentDelegationLimits,
   VmAgentDelegationMessage,
-  VmAgentDelegationMessageId,
   VmAgentDelegationResult,
   VmAgentDelegationTarget,
   VmAgentId,
@@ -23,9 +28,6 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
-  type AppendVmAgentDelegationMessageInput,
-  type CompleteVmAgentDelegationInput,
-  type CreateVmAgentDelegationInput,
   VmAgentCollaborationStore,
   type VmAgentCollaborationStoreShape,
 } from "../Services/VmAgentCollaborations.ts";
@@ -43,12 +45,53 @@ const DelegationDb = VmAgentDelegation.mapFields(
   }),
 );
 
+const DelegationResultMetadataDb = Schema.Struct({
+  completedBy: VmAgentDelegationResult.fields.completedBy,
+  completedAt: VmAgentDelegationResult.fields.completedAt,
+});
+
+const DelegationListItemDb = Schema.Struct({
+  delegationId: VmAgentDelegation.fields.delegationId,
+  rootVmAgentId: VmAgentDelegation.fields.rootVmAgentId,
+  sourceVmAgentId: VmAgentDelegation.fields.sourceVmAgentId,
+  rootDelegationId: VmAgentDelegation.fields.rootDelegationId,
+  parentDelegationId: VmAgentDelegation.fields.parentDelegationId,
+  depth: VmAgentDelegation.fields.depth,
+  target: Schema.fromJsonString(VmAgentDelegationTarget),
+  targetVmAgentId: VmAgentDelegation.fields.targetVmAgentId,
+  rootAgentSnapshot: Schema.fromJsonString(VmAgentCollaborationIdentitySummary),
+  sourceAgentSnapshot: Schema.fromJsonString(VmAgentCollaborationIdentitySummary),
+  targetAgentSnapshot: Schema.NullOr(Schema.fromJsonString(VmAgentCollaborationIdentitySummary)),
+  title: VmAgentDelegation.fields.title,
+  taskPreviewPrefix: Schema.String,
+  status: VmAgentDelegation.fields.status,
+  followupCount: VmAgentDelegation.fields.followupCount,
+  messageCount: VmAgentDelegation.fields.messageCount,
+  revision: VmAgentDelegation.fields.revision,
+  createdAt: VmAgentDelegation.fields.createdAt,
+  startedAt: VmAgentDelegation.fields.startedAt,
+  completedAt: VmAgentDelegation.fields.completedAt,
+  expiresAt: VmAgentDelegation.fields.expiresAt,
+  updatedAt: VmAgentDelegation.fields.updatedAt,
+  resultPreviewPrefix: Schema.NullOr(Schema.String),
+  resultMetadata: Schema.NullOr(Schema.fromJsonString(DelegationResultMetadataDb)),
+  errorPreviewPrefix: Schema.NullOr(Schema.String),
+});
+type DelegationListItemDb = typeof DelegationListItemDb.Type;
+
 const DelegationRef = Schema.Struct({ delegationId: VmAgentDelegationId });
 const TaskRef = Schema.Struct({ taskId: VmAgentTaskId });
 const RunRef = Schema.Struct({ runId: VmAgentTaskRunId });
 const SourceKey = Schema.Struct({ sourceVmAgentId: VmAgentId, idempotencyKey: Schema.String });
 const AgentRef = Schema.Struct({ vmAgentId: VmAgentId });
 const ThreadRef = Schema.Struct({ threadId: Schema.String });
+const MessagePageRef = Schema.Struct({
+  delegationId: VmAgentDelegationId,
+  beforeSequence: Schema.NullOr(VmAgentDelegationMessage.fields.sequence),
+  limit: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: VM_AGENT_DELEGATION_MAX_MESSAGES }),
+  ),
+});
 const encodeDelegationResult = Schema.encodeSync(Schema.fromJsonString(VmAgentDelegationResult));
 
 const delegationColumns = (sql: SqlClient.SqlClient) => sql`
@@ -67,6 +110,88 @@ const delegationColumns = (sql: SqlClient.SqlClient) => sql`
   updated_at AS "updatedAt", result_json AS "result", error
 `;
 
+const compactDelegationColumns = (sql: SqlClient.SqlClient) => sql`
+  delegation_id AS "delegationId", root_vm_agent_id AS "rootVmAgentId",
+  source_vm_agent_id AS "sourceVmAgentId", root_delegation_id AS "rootDelegationId",
+  parent_delegation_id AS "parentDelegationId", depth, target_json AS "target",
+  target_vm_agent_id AS "targetVmAgentId",
+  json_object(
+    'vmAgentId', json_extract(root_agent_snapshot_json, '$.vmAgentId'),
+    'name', json_extract(root_agent_snapshot_json, '$.name'),
+    'handle', json_extract(root_agent_snapshot_json, '$.handle')
+  ) AS "rootAgentSnapshot",
+  json_object(
+    'vmAgentId', json_extract(source_agent_snapshot_json, '$.vmAgentId'),
+    'name', json_extract(source_agent_snapshot_json, '$.name'),
+    'handle', json_extract(source_agent_snapshot_json, '$.handle')
+  ) AS "sourceAgentSnapshot",
+  CASE WHEN target_agent_snapshot_json IS NULL THEN NULL ELSE json_object(
+    'vmAgentId', json_extract(target_agent_snapshot_json, '$.vmAgentId'),
+    'name', json_extract(target_agent_snapshot_json, '$.name'),
+    'handle', json_extract(target_agent_snapshot_json, '$.handle')
+  ) END AS "targetAgentSnapshot",
+  title,
+  substr(task, 1, ${VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH + 1}) AS "taskPreviewPrefix",
+  status, followup_count AS "followupCount", message_count AS "messageCount",
+  revision, created_at AS "createdAt", started_at AS "startedAt",
+  completed_at AS "completedAt", expires_at AS "expiresAt", updated_at AS "updatedAt",
+  CASE WHEN result_json IS NULL THEN NULL
+    ELSE substr(json_extract(result_json, '$.summary'), 1,
+      ${VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH + 1})
+  END AS "resultPreviewPrefix",
+  CASE WHEN result_json IS NULL THEN NULL ELSE json_object(
+    'completedBy', json_extract(result_json, '$.completedBy'),
+    'completedAt', json_extract(result_json, '$.completedAt')
+  ) END AS "resultMetadata",
+  CASE WHEN error IS NULL THEN NULL
+    ELSE substr(error, 1, ${VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH + 1})
+  END AS "errorPreviewPrefix"
+`;
+
+const boundedPreview = (prefix: string, maxLength: number) => {
+  if (prefix.length <= maxLength) return { text: prefix, truncated: false } as const;
+  let end = maxLength - 1;
+  const last = prefix.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return { text: `${prefix.slice(0, end).trimEnd()}…`, truncated: true } as const;
+};
+
+const toDelegationListItem = (row: DelegationListItemDb): VmAgentDelegationListItem => ({
+  delegationId: row.delegationId,
+  rootVmAgentId: row.rootVmAgentId,
+  sourceVmAgentId: row.sourceVmAgentId,
+  rootDelegationId: row.rootDelegationId,
+  parentDelegationId: row.parentDelegationId,
+  depth: row.depth,
+  target: row.target,
+  targetVmAgentId: row.targetVmAgentId,
+  rootAgentSnapshot: row.rootAgentSnapshot,
+  sourceAgentSnapshot: row.sourceAgentSnapshot,
+  targetAgentSnapshot: row.targetAgentSnapshot,
+  title: row.title,
+  taskPreview: boundedPreview(row.taskPreviewPrefix, VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH),
+  status: row.status,
+  followupCount: row.followupCount,
+  messageCount: row.messageCount,
+  revision: row.revision,
+  createdAt: row.createdAt,
+  startedAt: row.startedAt,
+  completedAt: row.completedAt,
+  expiresAt: row.expiresAt,
+  updatedAt: row.updatedAt,
+  resultPreview:
+    row.resultPreviewPrefix === null || row.resultMetadata === null
+      ? null
+      : {
+          ...boundedPreview(row.resultPreviewPrefix, VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH),
+          ...row.resultMetadata,
+        },
+  errorPreview:
+    row.errorPreviewPrefix === null
+      ? null
+      : boundedPreview(row.errorPreviewPrefix, VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH),
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const mapError = (operation: string) =>
@@ -76,7 +201,9 @@ const make = Effect.gen(function* () {
     Request: Schema.Void,
     Result: DelegationDb,
     execute: () => sql`SELECT ${delegationColumns(sql)} FROM vm_agent_delegations
-      ORDER BY updated_at DESC, delegation_id DESC LIMIT 500`,
+      ORDER BY CASE WHEN status IN ('pending-approval', 'queued', 'running', 'waiting-input')
+        THEN 0 ELSE 1 END, updated_at DESC, delegation_id DESC
+      LIMIT ${VM_AGENT_COLLABORATION_LIST_LIMIT + 1}`,
   });
   const listForAgentRows = SqlSchema.findAll({
     Request: AgentRef,
@@ -84,7 +211,28 @@ const make = Effect.gen(function* () {
     execute: ({ vmAgentId }) => sql`SELECT ${delegationColumns(sql)} FROM vm_agent_delegations
       WHERE root_vm_agent_id = ${vmAgentId} OR source_vm_agent_id = ${vmAgentId}
          OR target_vm_agent_id = ${vmAgentId}
-      ORDER BY updated_at DESC, delegation_id DESC LIMIT 500`,
+      ORDER BY CASE WHEN status IN ('pending-approval', 'queued', 'running', 'waiting-input')
+        THEN 0 ELSE 1 END, updated_at DESC, delegation_id DESC
+      LIMIT ${VM_AGENT_COLLABORATION_LIST_LIMIT + 1}`,
+  });
+  const listSummaryRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: DelegationListItemDb,
+    execute: () => sql`SELECT ${compactDelegationColumns(sql)} FROM vm_agent_delegations
+      ORDER BY CASE WHEN status IN ('pending-approval', 'queued', 'running', 'waiting-input')
+        THEN 0 ELSE 1 END, updated_at DESC, delegation_id DESC
+      LIMIT ${VM_AGENT_COLLABORATION_LIST_LIMIT + 1}`,
+  });
+  const listSummaryRowsForAgent = SqlSchema.findAll({
+    Request: AgentRef,
+    Result: DelegationListItemDb,
+    execute: ({ vmAgentId }) =>
+      sql`SELECT ${compactDelegationColumns(sql)} FROM vm_agent_delegations
+      WHERE root_vm_agent_id = ${vmAgentId} OR source_vm_agent_id = ${vmAgentId}
+         OR target_vm_agent_id = ${vmAgentId}
+      ORDER BY CASE WHEN status IN ('pending-approval', 'queued', 'running', 'waiting-input')
+        THEN 0 ELSE 1 END, updated_at DESC, delegation_id DESC
+      LIMIT ${VM_AGENT_COLLABORATION_LIST_LIMIT + 1}`,
   });
   const getByIdRow = SqlSchema.findOneOption({
     Request: DelegationRef,
@@ -127,6 +275,18 @@ const make = Effect.gen(function* () {
              created_at AS "createdAt"
       FROM vm_agent_delegation_messages WHERE delegation_id = ${delegationId}
       ORDER BY sequence ASC LIMIT 200`,
+  });
+  const listMessagePageRows = SqlSchema.findAll({
+    Request: MessagePageRef,
+    Result: VmAgentDelegationMessage,
+    execute: ({ delegationId, beforeSequence, limit }) => sql`
+      SELECT message_id AS "messageId", delegation_id AS "delegationId", sequence,
+             sender, sender_vm_agent_id AS "senderVmAgentId", kind, delivery, text,
+             created_at AS "createdAt"
+      FROM vm_agent_delegation_messages
+      WHERE delegation_id = ${delegationId}
+        AND (${beforeSequence} IS NULL OR sequence < ${beforeSequence})
+      ORDER BY sequence DESC LIMIT ${limit + 1}`,
   });
 
   const insertTask = SqlSchema.void({
@@ -201,6 +361,18 @@ const make = Effect.gen(function* () {
     listRows(undefined).pipe(mapError("list"));
   const listForAgent: VmAgentCollaborationStoreShape["listForAgent"] = (vmAgentId) =>
     listForAgentRows({ vmAgentId }).pipe(mapError("listForAgent"));
+  const listSummaries: VmAgentCollaborationStoreShape["listSummaries"] = () =>
+    listSummaryRows(undefined).pipe(
+      Effect.map((rows) => rows.map(toDelegationListItem)),
+      mapError("listSummaries"),
+    );
+  const listSummariesForAgent: VmAgentCollaborationStoreShape["listSummariesForAgent"] = (
+    vmAgentId,
+  ) =>
+    listSummaryRowsForAgent({ vmAgentId }).pipe(
+      Effect.map((rows) => rows.map(toDelegationListItem)),
+      mapError("listSummariesForAgent"),
+    );
   const getById: VmAgentCollaborationStoreShape["getById"] = (delegationId) =>
     getByIdRow({ delegationId }).pipe(mapError("getById"));
   const getByTaskId: VmAgentCollaborationStoreShape["getByTaskId"] = (taskId) =>
@@ -215,6 +387,18 @@ const make = Effect.gen(function* () {
   ) => getBySourceKeyRow({ sourceVmAgentId, idempotencyKey }).pipe(mapError("getByIdempotencyKey"));
   const listMessages: VmAgentCollaborationStoreShape["listMessages"] = (delegationId) =>
     listMessageRows({ delegationId }).pipe(mapError("listMessages"));
+  const listMessagesPage: VmAgentCollaborationStoreShape["listMessagesPage"] = (
+    delegationId,
+    beforeSequence,
+    limit,
+  ) =>
+    listMessagePageRows({ delegationId, beforeSequence, limit }).pipe(
+      Effect.map((rows) => ({
+        messages: rows.slice(0, limit).toReversed(),
+        hasEarlierMessages: rows.length > limit,
+      })),
+      mapError("listMessagesPage"),
+    );
 
   const create: VmAgentCollaborationStoreShape["create"] = (input) =>
     sql
@@ -518,12 +702,15 @@ const make = Effect.gen(function* () {
   return VmAgentCollaborationStore.of({
     list,
     listForAgent,
+    listSummaries,
+    listSummariesForAgent,
     getById,
     getByRunId,
     getByTaskId,
     getByWorkerThreadId,
     getByIdempotencyKey,
     listMessages,
+    listMessagesPage,
     create,
     markRunClaimed,
     markRunning,

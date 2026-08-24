@@ -1,5 +1,7 @@
 export type TimelineScrollMode = "following-end" | "anchoring-new-turn" | "free-scrolling";
 
+export const TIMELINE_USER_SCROLL_COOLDOWN_MS = 5_000;
+
 export interface TimelineThreadScrollMemory {
   readonly scrollOffset: number;
   readonly followEnd: boolean;
@@ -45,17 +47,20 @@ export function resolveTimelineSendScrollPlan<TMessageId>({
 
 export function shouldResumeTimelineLiveFollow({
   isAtEnd,
-  manualNavigationActive: _manualNavigationActive,
-  manualNavigationTowardEnd: _manualNavigationTowardEnd,
+  manualNavigationActive,
+  manualNavigationTowardEnd,
 }: {
   readonly isAtEnd: boolean;
   readonly manualNavigationActive: boolean;
   readonly manualNavigationTowardEnd: boolean;
 }): boolean {
-  // LegendList's `isNearEnd` feeds this value. A small upward gesture should
-  // not strand the user just above the live edge; only leaving the near-end
-  // zone is an intentional opt-out.
-  return isAtEnd;
+  // LegendList reports a generous near-end zone rather than an exact bottom.
+  // An upward wheel/touch gesture can therefore still report `isAtEnd=true`
+  // for its first few frames. Letting that value immediately re-enable follow
+  // races the gesture and lets the next streamed chunk pull the user back down.
+  // A deliberate gesture toward newer content may resume as soon as it reaches
+  // the end; older navigation must keep ownership of the viewport.
+  return isAtEnd && (!manualNavigationActive || manualNavigationTowardEnd);
 }
 
 /**
@@ -109,6 +114,52 @@ export function shouldReleaseTimelineLiveFollowForTouch(
     Number.isFinite(currentTouchY) &&
     currentTouchY > previousTouchY
   );
+}
+
+export type TimelineManualScrollDirection = "older" | "newer" | "stationary";
+
+/**
+ * Scroll events are the common denominator for wheel, touch, keyboard,
+ * scrollbar dragging, and middle-button autoscroll. Input-specific handlers
+ * claim ownership earlier when possible, while this direction check closes the
+ * paths that do not expose their intent before the offset changes.
+ */
+export function resolveTimelineManualScrollDirection(
+  previousOffset: number | null,
+  currentOffset: number,
+): TimelineManualScrollDirection {
+  if (
+    previousOffset === null ||
+    !Number.isFinite(previousOffset) ||
+    !Number.isFinite(currentOffset)
+  ) {
+    return "stationary";
+  }
+  const delta = currentOffset - previousOffset;
+  if (delta < -0.5) return "older";
+  if (delta > 0.5) return "newer";
+  return "stationary";
+}
+
+export function resolveTimelineKeyboardScrollDirection(input: {
+  readonly key: string;
+  readonly shiftKey: boolean;
+}): Exclude<TimelineManualScrollDirection, "stationary"> | null {
+  if (input.key === "ArrowUp" || input.key === "PageUp" || input.key === "Home") {
+    return "older";
+  }
+  if (input.key === " " && input.shiftKey) {
+    return "older";
+  }
+  if (
+    input.key === "ArrowDown" ||
+    input.key === "PageDown" ||
+    input.key === "End" ||
+    input.key === " "
+  ) {
+    return "newer";
+  }
+  return null;
 }
 
 export function shouldCommitTimelineOlderNavigation({
@@ -231,9 +282,10 @@ export function shouldSnapTimelineToEndOnResize(input: {
   readonly followEnd: boolean;
   readonly userGestureActive: boolean;
   readonly olderNavigationIntent: boolean;
+  readonly manualFollowSuppressed?: boolean;
 }): boolean {
   if (!input.followEnd) return false;
-  return !input.userGestureActive && !input.olderNavigationIntent;
+  return !input.userGestureActive && !input.olderNavigationIntent && !input.manualFollowSuppressed;
 }
 
 /**
@@ -249,8 +301,9 @@ export function shouldSnapTimelineToEndOnResize(input: {
 export function shouldClearOlderNavigationIntent(input: {
   readonly isAtEnd: boolean | undefined;
   readonly userGestureActive: boolean;
+  readonly manualFollowSuppressed?: boolean;
 }): boolean {
-  return input.isAtEnd === true && !input.userGestureActive;
+  return input.isAtEnd === true && !input.userGestureActive && !input.manualFollowSuppressed;
 }
 
 /**

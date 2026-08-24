@@ -450,6 +450,9 @@ export const VM_AGENT_DELEGATION_MAX_DEPTH = 1;
 export const VM_AGENT_DELEGATION_MAX_FOLLOWUPS = 5;
 export const VM_AGENT_DELEGATION_MAX_MESSAGES = 200;
 export const VM_AGENT_DELEGATION_MAX_WALL_CLOCK_MINUTES = 30;
+export const VM_AGENT_DELEGATION_DETAIL_PAGE_SIZE = 40;
+/** Snapshot queries read one extra row so truncation is observable instead of silently lossy. */
+export const VM_AGENT_COLLABORATION_LIST_LIMIT = 500;
 
 export const VmAgentDelegationId = TrimmedNonEmptyString.check(Schema.isMaxLength(128)).pipe(
   Schema.brand("VmAgentDelegationId"),
@@ -607,14 +610,102 @@ export const VmAgentDelegationMessage = Schema.Struct({
 });
 export type VmAgentDelegationMessage = typeof VmAgentDelegationMessage.Type;
 
+export const VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH = 320;
+export const VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH = 500;
+export const VM_AGENT_DELEGATION_MESSAGE_PREVIEW_MAX_LENGTH = 280;
+
+/** Identity fields retained in list rows without repeating an agent's purpose and runtime state. */
+export const VmAgentCollaborationIdentitySummary = Schema.Struct({
+  vmAgentId: VmAgentId,
+  name: VmAgentName,
+  handle: VmAgentHandle,
+});
+export type VmAgentCollaborationIdentitySummary = typeof VmAgentCollaborationIdentitySummary.Type;
+
+export const VmAgentDelegationTaskPreview = Schema.Struct({
+  text: Schema.String.check(Schema.isMaxLength(VM_AGENT_DELEGATION_TASK_PREVIEW_MAX_LENGTH)),
+  truncated: Schema.Boolean,
+});
+export type VmAgentDelegationTaskPreview = typeof VmAgentDelegationTaskPreview.Type;
+
+export const VmAgentDelegationOutputPreview = Schema.Struct({
+  text: Schema.String.check(Schema.isMaxLength(VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH)),
+  truncated: Schema.Boolean,
+});
+export type VmAgentDelegationOutputPreview = typeof VmAgentDelegationOutputPreview.Type;
+
+export const VmAgentDelegationResultPreview = Schema.Struct({
+  text: Schema.String.check(Schema.isMaxLength(VM_AGENT_DELEGATION_OUTPUT_PREVIEW_MAX_LENGTH)),
+  truncated: Schema.Boolean,
+  completedBy: Schema.Literals(["target-agent", "ephemeral-worker"]),
+  completedAt: IsoDateTime,
+});
+export type VmAgentDelegationResultPreview = typeof VmAgentDelegationResultPreview.Type;
+
+export const VmAgentDelegationMessagePreview = Schema.Struct({
+  messageId: VmAgentDelegationMessageId,
+  delegationId: VmAgentDelegationId,
+  sequence: PositiveInt,
+  sender: VmAgentDelegationMessageSender,
+  senderVmAgentId: Schema.NullOr(VmAgentId),
+  kind: VmAgentDelegationMessageKind,
+  delivery: VmAgentDelegationMessageDelivery,
+  text: Schema.String.check(Schema.isMaxLength(VM_AGENT_DELEGATION_MESSAGE_PREVIEW_MAX_LENGTH)),
+  truncated: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+export type VmAgentDelegationMessagePreview = typeof VmAgentDelegationMessagePreview.Type;
+
+/**
+ * Bounded delegation metadata used by snapshots and list_work. Full request,
+ * result, error, completion settings, and messages are available through detail.
+ */
+export const VmAgentDelegationListItem = Schema.Struct({
+  delegationId: VmAgentDelegationId,
+  rootVmAgentId: VmAgentId,
+  sourceVmAgentId: VmAgentId,
+  rootDelegationId: Schema.NullOr(VmAgentDelegationId),
+  parentDelegationId: Schema.NullOr(VmAgentDelegationId),
+  depth: PositiveInt,
+  target: VmAgentDelegationTarget,
+  targetVmAgentId: Schema.NullOr(VmAgentId),
+  rootAgentSnapshot: VmAgentCollaborationIdentitySummary,
+  sourceAgentSnapshot: VmAgentCollaborationIdentitySummary,
+  targetAgentSnapshot: Schema.NullOr(VmAgentCollaborationIdentitySummary),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  taskPreview: VmAgentDelegationTaskPreview,
+  status: VmAgentDelegationStatus,
+  followupCount: NonNegativeInt,
+  messageCount: NonNegativeInt,
+  revision: PositiveInt,
+  createdAt: IsoDateTime,
+  startedAt: Schema.NullOr(IsoDateTime),
+  completedAt: Schema.NullOr(IsoDateTime),
+  expiresAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  resultPreview: Schema.NullOr(VmAgentDelegationResultPreview),
+  errorPreview: Schema.NullOr(VmAgentDelegationOutputPreview),
+});
+export type VmAgentDelegationListItem = typeof VmAgentDelegationListItem.Type;
+
 export const VmAgentDelegationSummary = Schema.Struct({
+  delegation: VmAgentDelegationListItem,
+  rootAgent: Schema.NullOr(VmAgentCollaborationIdentitySummary),
+  sourceAgent: Schema.NullOr(VmAgentCollaborationIdentitySummary),
+  targetAgent: Schema.NullOr(VmAgentCollaborationIdentitySummary),
+  latestMessage: Schema.NullOr(VmAgentDelegationMessagePreview),
+});
+export type VmAgentDelegationSummary = typeof VmAgentDelegationSummary.Type;
+
+/** Wire shape used by collaboration snapshots before compact list rows were introduced. */
+export const VmAgentLegacyDelegationSummary = Schema.Struct({
   delegation: VmAgentDelegation,
   rootAgent: Schema.NullOr(VmAgentCollaborationAgentSummary),
   sourceAgent: Schema.NullOr(VmAgentCollaborationAgentSummary),
   targetAgent: Schema.NullOr(VmAgentCollaborationAgentSummary),
   latestMessage: Schema.NullOr(VmAgentDelegationMessage),
 });
-export type VmAgentDelegationSummary = typeof VmAgentDelegationSummary.Type;
+export type VmAgentLegacyDelegationSummary = typeof VmAgentLegacyDelegationSummary.Type;
 
 export const VmAgentDelegationDetail = Schema.Struct({
   delegation: VmAgentDelegation,
@@ -622,21 +713,54 @@ export const VmAgentDelegationDetail = Schema.Struct({
   sourceAgent: Schema.NullOr(VmAgentCollaborationAgentSummary),
   targetAgent: Schema.NullOr(VmAgentCollaborationAgentSummary),
   messages: Schema.Array(VmAgentDelegationMessage),
+  /** Absent when connected to a server predating paged collaboration details. */
+  hasEarlierMessages: Schema.optional(Schema.Boolean),
 });
 export type VmAgentDelegationDetail = typeof VmAgentDelegationDetail.Type;
 
 export const VmAgentCollaborationSnapshot = Schema.Struct({
   type: Schema.Literal("snapshot"),
+  /** Present on bounded snapshots; absence identifies a legacy server for compatibility polling. */
+  compact: Schema.optional(Schema.Literal(true)),
+  /** True when older delegation rows were omitted to keep the live snapshot within its byte cap. */
+  hasMoreDelegations: Schema.optional(Schema.Boolean),
+  /** True only in pathological registries where even the bounded agent rows exceed the byte cap. */
+  hasMoreAgents: Schema.optional(Schema.Boolean),
   agents: Schema.Array(VmAgentCollaborationAgentSummary),
   delegations: Schema.Array(VmAgentDelegationSummary),
 });
 export type VmAgentCollaborationSnapshot = typeof VmAgentCollaborationSnapshot.Type;
+
+export const VmAgentLegacyCollaborationSnapshot = Schema.Struct({
+  type: Schema.Literal("snapshot"),
+  hasMoreDelegations: Schema.optional(Schema.Boolean),
+  hasMoreAgents: Schema.optional(Schema.Boolean),
+  agents: Schema.Array(VmAgentCollaborationAgentSummary),
+  delegations: Schema.Array(VmAgentLegacyDelegationSummary),
+});
+export type VmAgentLegacyCollaborationSnapshot = typeof VmAgentLegacyCollaborationSnapshot.Type;
 
 export const VmAgentCollaborationStreamItem = Schema.Union([
   VmAgentCollaborationSnapshot,
   VmAgentResyncRequiredEvent,
 ]);
 export type VmAgentCollaborationStreamItem = typeof VmAgentCollaborationStreamItem.Type;
+
+/** Accepts both generations on the wire; client-runtime normalizes legacy snapshots immediately. */
+export const VmAgentCollaborationWireStreamItem = Schema.Union([
+  VmAgentCollaborationSnapshot,
+  VmAgentLegacyCollaborationSnapshot,
+  VmAgentResyncRequiredEvent,
+]);
+export type VmAgentCollaborationWireStreamItem = typeof VmAgentCollaborationWireStreamItem.Type;
+
+export const VmAgentCollaborationSubscribeInput = Schema.Struct({
+  /** Opts into bounded snapshot rows. Absent preserves the legacy response for older clients. */
+  compact: Schema.optional(Schema.Literal(true)),
+});
+export type VmAgentCollaborationSubscribeInput = Schema.Codec.Encoded<
+  typeof VmAgentCollaborationSubscribeInput
+>;
 
 export const VmAgentDelegationCreateInput = Schema.Struct({
   target: VmAgentDelegationTarget,
@@ -655,6 +779,10 @@ export type VmAgentDelegationCreateInput = Schema.Codec.Encoded<
 
 export const VmAgentDelegationRef = Schema.Struct({
   delegationId: VmAgentDelegationId,
+  /** Exclusive upper sequence bound used to load the next older message page. */
+  beforeSequence: Schema.optional(PositiveInt),
+  /** Opts into bounded message pages. Absent returns the legacy full history. */
+  paged: Schema.optional(Schema.Literal(true)),
 });
 export type VmAgentDelegationRef = Schema.Codec.Encoded<typeof VmAgentDelegationRef>;
 

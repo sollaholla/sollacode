@@ -22,6 +22,8 @@ import { useThreadPr, type ThreadPr } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { resolveThreadStatus } from "./threadPresentation";
+import { ThreadProvenanceIndicators } from "./thread-provenance-indicators";
+import { threadProvenanceAccessibilityLabel } from "./thread-provenance";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
 /**
@@ -455,7 +457,13 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
+  const threadAccessibilityLabel = [
+    thread.title,
+    threadProvenanceAccessibilityLabel(thread),
+    pr?.accessibilityLabel,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(", ");
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -559,9 +567,15 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
             }}
           >
             <View className="flex-row items-center justify-between gap-2">
-              <Text className="flex-1 text-lg font-t3-bold text-foreground" numberOfLines={1}>
-                {thread.title}
-              </Text>
+              <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
+                <Text
+                  className="min-w-0 flex-1 text-lg font-t3-bold text-foreground"
+                  numberOfLines={1}
+                >
+                  {thread.title}
+                </Text>
+                <ThreadProvenanceIndicators thread={thread} size={13} />
+              </View>
               <View className="flex-row items-center gap-2">
                 {statusPill}
                 <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
@@ -612,15 +626,18 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       >
         <View className="gap-[3px]">
           <View className="flex-row items-center justify-between gap-2">
-            <Text
-              className={cn(
-                "flex-1 text-base font-t3-medium",
-                selected ? "text-user-bubble-foreground" : "text-foreground",
-              )}
-              numberOfLines={1}
-            >
-              {thread.title}
-            </Text>
+            <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
+              <Text
+                className={cn(
+                  "min-w-0 flex-1 text-base font-t3-medium",
+                  selected ? "text-user-bubble-foreground" : "text-foreground",
+                )}
+                numberOfLines={1}
+              >
+                {thread.title}
+              </Text>
+              <ThreadProvenanceIndicators thread={thread} selected={selected} />
+            </View>
             <View className="flex-row items-center gap-2">
               {statusPill}
               <Text

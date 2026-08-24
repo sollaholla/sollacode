@@ -44,6 +44,19 @@ export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boo
   return state?.isNearEnd ?? state?.isAtEnd;
 }
 
+/**
+ * LegendList's `isNearEnd` is intentionally generous (roughly half a
+ * viewport), which is useful for presentation but cannot decide ownership of
+ * the scroll position. Returning to live-follow requires the exact signal so
+ * an upward gesture that is still inside the near-end band is not mistaken for
+ * a deliberate return to the bottom.
+ */
+export function resolveTimelineIsExactlyAtEnd(
+  state: TimelineEndState | undefined,
+): boolean | undefined {
+  return state?.isAtEnd ?? state?.isNearEnd;
+}
+
 export function shouldMaintainTimelineScrollAtEnd(input: {
   readonly hasAnchoredEndSpace: boolean;
   readonly followEnd: boolean;
