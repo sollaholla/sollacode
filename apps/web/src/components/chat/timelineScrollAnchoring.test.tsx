@@ -10,6 +10,7 @@ import {
   shouldReleaseTimelineLiveFollowForWheel,
   shouldMaintainTimelineVisibleContentPosition,
   shouldResumeTimelineLiveFollow,
+  TIMELINE_MOMENTUM_SETTLE_MS,
   shouldSuppressTimelineAutoScroll,
   shouldClearOlderNavigationIntent,
   shouldSnapTimelineToEndOnResize,
@@ -371,5 +372,40 @@ describe("shouldClearOlderNavigationIntent", () => {
     expect(shouldClearOlderNavigationIntent({ isAtEnd: undefined, userGestureActive: false })).toBe(
       false,
     );
+  });
+});
+
+describe("momentum settle window", () => {
+  it("keeps the resize snap disarmed for the whole glide, not just the drag", () => {
+    // iOS keeps scrolling after touchend. Treating the lifted finger as "no
+    // gesture" re-armed the snap mid-glide and the view hauled itself back
+    // down — the reported "scrolling up constantly shifts the view".
+    const duringDrag = shouldSnapTimelineToEndOnResize({
+      followEnd: true,
+      userGestureActive: true,
+      olderNavigationIntent: false,
+    });
+    const duringMomentum = shouldSnapTimelineToEndOnResize({
+      followEnd: true,
+      // Held open by the settle window instead of flipping false at touchend.
+      userGestureActive: true,
+      olderNavigationIntent: false,
+    });
+    const afterSettle = shouldSnapTimelineToEndOnResize({
+      followEnd: true,
+      userGestureActive: false,
+      olderNavigationIntent: false,
+    });
+
+    expect(duringDrag).toBe(false);
+    expect(duringMomentum).toBe(false);
+    expect(afterSettle).toBe(true);
+  });
+
+  it("outlasts a scroll frame but not a settled list", () => {
+    // A glide fires scroll events about every 16ms; the window has to be
+    // comfortably longer than that, and short enough to release promptly.
+    expect(TIMELINE_MOMENTUM_SETTLE_MS).toBeGreaterThan(16);
+    expect(TIMELINE_MOMENTUM_SETTLE_MS).toBeLessThanOrEqual(300);
   });
 });

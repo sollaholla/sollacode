@@ -110,6 +110,7 @@ import {
   shouldClearOlderNavigationIntent,
   shouldReleaseTimelineLiveFollowForTouch,
   shouldSnapTimelineToEndOnResize,
+  TIMELINE_MOMENTUM_SETTLE_MS,
   shouldReleaseTimelineLiveFollowForWheel,
 } from "./timelineScrollAnchoring";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
@@ -467,7 +468,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // now, so neither the resize correction nor the at-end bookkeeping may treat
   // the current offset as settled.
   const touchActiveRef = useRef(false);
+  /** Pending timer that ends the gesture once momentum scrolling stops. */
+  const momentumTimerRef = useRef<number | null>(null);
   const handleScroll = useCallback(() => {
+    // Still gliding: push the settle deadline out so the gesture stays open
+    // for as long as the list is actually moving.
+    if (momentumTimerRef.current !== null) {
+      window.clearTimeout(momentumTimerRef.current);
+      momentumTimerRef.current = window.setTimeout(() => {
+        momentumTimerRef.current = null;
+        touchActiveRef.current = false;
+      }, TIMELINE_MOMENTUM_SETTLE_MS);
+    }
     const state = mountedListRef.current?.getState?.();
     const isAtEnd = resolveTimelineIsAtEnd(state);
     if (isAtEnd !== undefined) {
@@ -595,10 +607,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       olderNavigationIntentRef.current = true;
     }
   }, []);
-  const handleTouchEnd = useCallback(() => {
-    touchActiveRef.current = false;
-    previousTouchYRef.current = null;
+  // Lifting a finger does not end an iOS scroll: the list keeps gliding, and
+  // every row measured during that glide fires an item-size change. Holding
+  // the gesture open until the scrolling actually quiesces keeps the
+  // position guards in force for the whole movement the user perceives as
+  // theirs, instead of releasing them mid-glide.
+  const endGestureWhenMomentumSettles = useCallback(() => {
+    if (momentumTimerRef.current !== null) window.clearTimeout(momentumTimerRef.current);
+    momentumTimerRef.current = window.setTimeout(() => {
+      momentumTimerRef.current = null;
+      touchActiveRef.current = false;
+    }, TIMELINE_MOMENTUM_SETTLE_MS);
   }, []);
+  const handleTouchEnd = useCallback(() => {
+    previousTouchYRef.current = null;
+    endGestureWhenMomentumSettles();
+  }, [endGestureWhenMomentumSettles]);
+  useEffect(
+    () => () => {
+      if (momentumTimerRef.current !== null) window.clearTimeout(momentumTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const frame = requestAnimationFrame(handleScroll);
