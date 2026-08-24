@@ -252,3 +252,23 @@ export function shouldClearOlderNavigationIntent(input: {
 }): boolean {
   return input.isAtEnd === true && !input.userGestureActive;
 }
+
+/**
+ * How long after the last scroll event a touch gesture is still treated as
+ * in progress.
+ *
+ * `touchend` does not mean the scroll ended. iOS keeps the list moving under
+ * momentum for seconds afterwards, and every row measured during that glide
+ * fires an item-size change. The guards that protect the user's position —
+ * see {@link shouldSnapTimelineToEndOnResize}, whose own comment warns that
+ * a resize snap "happens on nearly every frame of a momentum scroll, so the
+ * timeline repeatedly hauls itself back down" — all key off
+ * `userGestureActive`, which went false the instant the finger lifted. So the
+ * protection covered the drag and then switched itself off for exactly the
+ * part of the scroll the user still perceives as theirs, which is why the
+ * view shifted while scrolling up on iOS but sat still on a trackpad.
+ *
+ * 150ms is comfortably longer than the ~16ms scroll-event cadence of a glide
+ * and short enough that a settled list stops being treated as gesturing.
+ */
+export const TIMELINE_MOMENTUM_SETTLE_MS = 150;
