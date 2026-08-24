@@ -25,6 +25,10 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+} from "../../persistence/Services/ThreadWorkObligations.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
@@ -3497,7 +3501,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-"))(
   "OrchestrationProjectionPipeline pending turn cleanup",
   (it) => {
-    it.effect("clears pending turn starts when startup reaches a terminal session state", () =>
+    it.effect("preserves queued turn starts when an unrelated session becomes terminal", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
@@ -3556,7 +3560,546 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
           WHERE turn_id IS NULL
             AND state = 'pending'
         `;
-        assert.deepEqual(pendingRows, []);
+        assert.deepEqual(pendingRows.map((row) => row.threadId).sort(), [
+          "thread-terminal-error",
+          "thread-terminal-interrupted",
+          "thread-terminal-stopped",
+        ]);
+      }),
+    );
+
+    it.effect("adopts multiple queued starts FIFO without repeated-session queue loss", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-pending-fifo");
+        const messageB = MessageId.make("message-pending-b");
+        const messageC = MessageId.make("message-pending-c");
+        const turnB = TurnId.make("turn-pending-b");
+        const turnC = TurnId.make("turn-pending-c");
+
+        for (const [index, messageId] of [messageB, messageC].entries()) {
+          const createdAt = `2026-02-26T14:30:0${index}.000Z`;
+          yield* eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`evt-pending-fifo-start-${index}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: createdAt,
+            commandId: CommandId.make(`cmd-pending-fifo-start-${index}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-pending-fifo-start-${index}`),
+            metadata: {},
+            payload: {
+              threadId,
+              messageId,
+              runtimeMode: "approval-required",
+              createdAt,
+            },
+          });
+        }
+        yield* projectionPipeline.bootstrap;
+
+        const appendSession = (
+          suffix: string,
+          status: "running" | "ready",
+          activeTurnId: TurnId | null,
+          updatedAt: string,
+        ) =>
+          eventStore.append({
+            type: "thread.session-set",
+            eventId: EventId.make(`evt-pending-fifo-session-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: updatedAt,
+            commandId: CommandId.make(`cmd-pending-fifo-session-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-pending-fifo-session-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId,
+              session: {
+                threadId,
+                status,
+                providerName: "codex",
+                runtimeMode: "approval-required",
+                activeTurnId,
+                lastError: null,
+                updatedAt,
+              },
+            },
+          });
+
+        yield* appendSession("b-running", "running", turnB, "2026-02-26T14:30:02.000Z");
+        yield* projectionPipeline.bootstrap;
+        yield* appendSession("b-repeated", "running", turnB, "2026-02-26T14:30:03.000Z");
+        yield* projectionPipeline.bootstrap;
+
+        let pending = yield* sql<{ readonly messageId: string }>`
+          SELECT pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+        `;
+        assert.deepEqual(pending, [{ messageId: messageC }]);
+
+        yield* appendSession("b-ready", "ready", null, "2026-02-26T14:30:04.000Z");
+        yield* appendSession("c-running", "running", turnC, "2026-02-26T14:30:05.000Z");
+        yield* projectionPipeline.bootstrap;
+
+        pending = yield* sql<{ readonly messageId: string }>`
+          SELECT pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+        `;
+        assert.deepEqual(pending, []);
+        const concrete = yield* sql<{
+          readonly turnId: string;
+          readonly messageId: string | null;
+        }>`
+          SELECT turn_id AS "turnId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NOT NULL
+          ORDER BY turn_id ASC
+        `;
+        assert.deepEqual(concrete, [
+          { turnId: turnB, messageId: messageB },
+          { turnId: turnC, messageId: messageC },
+        ]);
+      }),
+    );
+
+    it.effect("a new user turn removes a legacy orphan before adopting its own message", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-new-turn-repairs-orphan");
+        const orphanMessageId = MessageId.make("message-legacy-orphan");
+        const newMessageId = MessageId.make("message-after-legacy-orphan");
+        const newTurnId = TurnId.make("turn-after-legacy-orphan");
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+            created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+            model_selection_json, latest_user_message_at,
+            pending_approval_count, pending_user_input_count
+          ) VALUES (
+            ${threadId}, 'project-new-turn-repair', 'New Turn Repair', NULL, NULL, NULL,
+            '2026-02-26T14:34:00.000Z', '2026-02-26T14:34:00.000Z', NULL,
+            'full-access', 'default',
+            '{"instanceId":"codex","model":"gpt-5.6-sol"}',
+            '2026-02-26T14:36:00.000Z', 0, 0
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming,
+            created_at, updated_at
+          ) VALUES (
+            ${newMessageId}, ${threadId}, NULL, 'user', 'Continue with the next task', 0,
+            '2026-02-26T14:36:00.000Z', '2026-02-26T14:36:00.000Z'
+          )
+        `;
+        // Simulates the exact old-build state: visible queue row, but no
+        // durable owner capable of ever dispatching or clearing it.
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, NULL, ${orphanMessageId}, NULL, 'pending',
+            '2026-02-26T14:35:00.000Z', NULL, NULL, '[]'
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.turn-start-requested",
+          eventId: EventId.make("evt-new-turn-repairs-orphan"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T14:36:00.000Z",
+          commandId: CommandId.make("cmd-new-turn-repairs-orphan"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-new-turn-repairs-orphan"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: newMessageId,
+            runtimeMode: "approval-required",
+            createdAt: "2026-02-26T14:36:00.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-new-turn-repairs-orphan-running"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T14:36:01.000Z",
+          commandId: CommandId.make("cmd-new-turn-repairs-orphan-running"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-new-turn-repairs-orphan-running"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              activeTurnId: newTurnId,
+              lastError: null,
+              updatedAt: "2026-02-26T14:36:01.000Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{
+          readonly turnId: string | null;
+          readonly messageId: string | null;
+        }>`
+          SELECT turn_id AS "turnId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+          ORDER BY row_id ASC
+        `;
+        assert.deepEqual(rows, [{ turnId: newTurnId, messageId: newMessageId }]);
+      }),
+    );
+
+    it.effect("does not let a repeated old turn adopt a message queued after it began", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-repeated-old-turn");
+        const oldTurnId = TurnId.make("turn-repeated-old");
+        const newMessageId = MessageId.make("message-after-old-turn");
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, ${oldTurnId}, NULL, NULL, 'running',
+            '2026-02-26T14:40:00.000Z', '2026-02-26T14:40:00.000Z', NULL, '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, NULL, ${newMessageId}, NULL, 'pending',
+            '2026-02-26T14:41:00.000Z', NULL, NULL, '[]'
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-repeated-old-turn"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T14:41:01.000Z",
+          commandId: CommandId.make("cmd-repeated-old-turn"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-repeated-old-turn"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              activeTurnId: oldTurnId,
+              lastError: null,
+              updatedAt: "2026-02-26T14:41:01.000Z",
+            },
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{
+          readonly turnId: string | null;
+          readonly messageId: string | null;
+        }>`
+          SELECT turn_id AS "turnId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+          ORDER BY row_id ASC
+        `;
+        assert.deepEqual(rows, [
+          { turnId: oldTurnId, messageId: null },
+          { turnId: null, messageId: newMessageId },
+        ]);
+      }),
+    );
+
+    it.effect("retires the exact pending placeholder when a delivery receipt proves a steer", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-delivered-steer");
+        const hostTurnId = TurnId.make("turn-delivered-steer-host");
+        const hostMessageId = MessageId.make("message-delivered-steer-host");
+        const steeredMessageId = MessageId.make("message-delivered-steer-pending");
+        const requestedAt = "2026-02-26T15:00:00.000Z";
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES
+            (
+              ${threadId}, ${hostTurnId}, ${hostMessageId}, NULL, 'running',
+              '2026-02-26T14:59:00.000Z', '2026-02-26T14:59:00.000Z', NULL, '[]'
+            ),
+            (
+              ${threadId}, NULL, ${steeredMessageId}, NULL, 'pending',
+              ${requestedAt}, NULL, NULL, '[]'
+            )
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'work-delivered-steer', ${threadId}, ${`turn-start:${steeredMessageId}`},
+            'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
+            ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}, ${requestedAt}, ${requestedAt}
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-delivered-steer"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T15:00:00.100Z",
+          commandId: CommandId.make("cmd-delivered-steer"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-delivered-steer"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-delivered-steer"),
+              tone: "info",
+              kind: "message.delivered",
+              summary: "Message delivered to the provider",
+              payload: { messageId: steeredMessageId },
+              // Claude's prompt-stream delivery receipt intentionally has no
+              // provider turn id; the exact pre-claim marker is authoritative.
+              turnId: null,
+              createdAt: "2026-02-26T15:00:00.100Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+        yield* projectionPipeline.bootstrap;
+
+        const turns = yield* sql<{
+          readonly turnId: string | null;
+          readonly pendingMessageId: string | null;
+        }>`
+          SELECT turn_id AS "turnId", pending_message_id AS "pendingMessageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+          ORDER BY row_id ASC
+        `;
+        assert.deepEqual(turns, [{ turnId: hostTurnId, pendingMessageId: hostMessageId }]);
+
+        const obligations = yield* sql<{
+          readonly state: string;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT state, blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(obligations, [{ state: "completed", blockedReason: null }]);
+      }),
+    );
+
+    it.effect("keeps an ordinary delivery placeholder until the concrete turn adopts it", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-ordinary-delivery-receipt");
+        const messageId = MessageId.make("message-ordinary-delivery-receipt");
+        const turnId = TurnId.make("turn-ordinary-delivery-receipt");
+        const requestedAt = "2026-02-26T15:05:00.000Z";
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${threadId}, NULL, ${messageId}, NULL, 'pending',
+            ${requestedAt}, NULL, NULL, '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'work-ordinary-delivery', ${threadId}, ${`turn-start:${messageId}`},
+            'active-turn-recovery', 'executing', 'claudeAgent', 1, NULL,
+            ${requestedAt}, '2026-02-26T15:06:00.000Z', NULL,
+            ${requestedAt}, ${requestedAt}
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-ordinary-delivery-receipt"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T15:05:00.100Z",
+          commandId: CommandId.make("cmd-ordinary-delivery-receipt"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-ordinary-delivery-receipt"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-ordinary-delivery-receipt"),
+              tone: "info",
+              kind: "message.delivered",
+              summary: "Message delivered to the provider",
+              payload: { messageId },
+              turnId: null,
+              createdAt: "2026-02-26T15:05:00.100Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+        let pending = yield* sql<{ readonly messageId: string }>`
+          SELECT pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+        `;
+        assert.deepEqual(pending, [{ messageId }]);
+
+        yield* eventStore.append({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-ordinary-delivery-running"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T15:05:00.200Z",
+          commandId: CommandId.make("cmd-ordinary-delivery-running"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-ordinary-delivery-running"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "claude",
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: "2026-02-26T15:05:00.200Z",
+            },
+          },
+        });
+        yield* projectionPipeline.bootstrap;
+
+        pending = yield* sql<{ readonly messageId: string }>`
+          SELECT pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+        `;
+        assert.deepEqual(pending, []);
+        const concrete = yield* sql<{ readonly messageId: string | null }>`
+          SELECT pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+        `;
+        assert.deepEqual(concrete, [{ messageId }]);
+      }),
+    );
+
+    it.effect("does not let a late steer receipt delete a newer pending message", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-late-steer-receipt");
+        const hostTurnId = TurnId.make("turn-late-steer-host");
+        const oldMessageId = MessageId.make("message-old-steer");
+        const currentMessageId = MessageId.make("message-current-pending");
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES
+            (
+              ${threadId}, ${hostTurnId}, 'message-host-source', NULL, 'running',
+              '2026-02-26T15:09:00.000Z', '2026-02-26T15:09:00.000Z', NULL, '[]'
+            ),
+            (
+              ${threadId}, NULL, ${oldMessageId}, NULL, 'pending',
+              '2026-02-26T15:09:30.000Z', NULL, NULL, '[]'
+            ),
+            (
+              ${threadId}, NULL, ${currentMessageId}, NULL, 'pending',
+              '2026-02-26T15:10:00.000Z', NULL, NULL, '[]'
+            )
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'work-old-steer', ${threadId}, ${`turn-start:${oldMessageId}`},
+            'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
+            ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+            '2026-02-26T15:09:30.000Z', '2026-02-26T15:09:30.000Z'
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-late-steer-receipt"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T15:10:00.100Z",
+          commandId: CommandId.make("cmd-late-steer-receipt"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-late-steer-receipt"),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make("activity-late-steer-receipt"),
+              tone: "info",
+              kind: "message.delivered",
+              summary: "Message delivered to the provider",
+              payload: { messageId: oldMessageId },
+              turnId: hostTurnId,
+              createdAt: "2026-02-26T15:10:00.100Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const pending = yield* sql<{ readonly pendingMessageId: string }>`
+          SELECT pending_message_id AS "pendingMessageId"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id IS NULL AND state = 'pending'
+        `;
+        assert.deepEqual(pending, [{ pendingMessageId: currentMessageId }]);
       }),
     );
   },
@@ -5078,6 +5621,450 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         `;
       });
 
+    it.effect("repairs delivered and unconfirmed steer claims before pending-work backfill", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const deliveredThreadId = "thread-startup-delivered-steer";
+        const deliveredHostTurnId = "turn-startup-delivered-host";
+        const deliveredHostMessageId = "message-startup-delivered-host";
+        const deliveredMessageId = "message-startup-delivered-steer";
+        const unconfirmedThreadId = "thread-startup-unconfirmed-steer";
+        const unconfirmedMessageId = "message-startup-unconfirmed-steer";
+        const seededAt = "2026-03-02T09:00:00.000Z";
+
+        for (const [threadId, messageId] of [
+          [deliveredThreadId, deliveredMessageId],
+          [unconfirmedThreadId, unconfirmedMessageId],
+        ] as const) {
+          yield* sql`
+            INSERT INTO projection_threads (
+              thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+              created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+              model_selection_json, latest_user_message_at,
+              pending_approval_count, pending_user_input_count
+            ) VALUES (
+              ${threadId}, 'project-steer-repair', 'Steer Repair', NULL, NULL, NULL,
+              ${seededAt}, ${seededAt}, NULL, 'full-access', 'default',
+              '{"instanceId":"codex","model":"gpt-5.6-sol"}', ${seededAt}, 0, 0
+            )
+          `;
+          yield* sql`
+            INSERT INTO projection_thread_messages (
+              message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+            ) VALUES (
+              ${messageId}, ${threadId}, NULL, 'user', 'Continue the work', 0,
+              ${seededAt}, ${seededAt}
+            )
+          `;
+          yield* sql`
+            INSERT INTO projection_turns (
+              thread_id, turn_id, pending_message_id, assistant_message_id, state,
+              requested_at, started_at, completed_at, checkpoint_files_json
+            ) VALUES (
+              ${threadId}, NULL, ${messageId}, NULL, 'pending',
+              ${seededAt}, NULL, NULL, '[]'
+            )
+          `;
+          yield* sql`
+            INSERT INTO thread_work_obligations (
+              obligation_id, thread_id, source_turn_id, kind, state,
+              provider_instance_id, attempt, next_attempt_at, claimed_at,
+              lease_expires_at, blocked_reason, created_at, updated_at
+            ) VALUES (
+              ${`work-${threadId}`}, ${threadId}, ${`turn-start:${messageId}`},
+              'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
+              ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+              ${seededAt}, ${seededAt}
+            )
+          `;
+        }
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${deliveredThreadId}, ${deliveredHostTurnId}, ${deliveredHostMessageId}, NULL,
+            'completed', '2026-03-02T08:00:00.000Z', '2026-03-02T08:00:00.000Z',
+            '2026-03-02T09:01:00.000Z', '[]'
+          )
+        `;
+        yield* eventStore.append({
+          type: "thread.turn-start-requested",
+          eventId: EventId.make("evt-startup-delivered-steer-start"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make(deliveredThreadId),
+          occurredAt: seededAt,
+          commandId: CommandId.make("cmd-startup-delivered-steer-start"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-startup-delivered-steer-start"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make(deliveredThreadId),
+            messageId: MessageId.make(deliveredMessageId),
+            runtimeMode: "full-access",
+            createdAt: seededAt,
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.activity-appended",
+          eventId: EventId.make("evt-startup-delivered-steer-receipt"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make(deliveredThreadId),
+          occurredAt: "2026-03-02T08:00:00.100Z",
+          commandId: CommandId.make("cmd-startup-delivered-steer-receipt"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-startup-delivered-steer-receipt"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.make(deliveredThreadId),
+            activity: {
+              id: EventId.make("activity-startup-delivered-steer"),
+              tone: "info",
+              kind: "message.delivered",
+              summary: "Message delivered to the provider",
+              payload: { messageId: MessageId.make(deliveredMessageId) },
+              turnId: TurnId.make(deliveredHostTurnId),
+              // Intentionally clock-skewed earlier than the user event: durable
+              // event sequence, not client/provider wall clocks, proves freshness.
+              createdAt: "2026-03-02T08:00:00.100Z",
+            },
+          },
+        });
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const pendingRows = yield* sql<{
+          readonly threadId: string;
+          readonly messageId: string;
+        }>`
+          SELECT thread_id AS "threadId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE turn_id IS NULL AND state = 'pending'
+            AND thread_id IN (${deliveredThreadId}, ${unconfirmedThreadId})
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(pendingRows, []);
+
+        const obligations = yield* sql<{
+          readonly threadId: string;
+          readonly state: string;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT thread_id AS "threadId", state, blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE thread_id IN (${deliveredThreadId}, ${unconfirmedThreadId})
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(obligations, [
+          { threadId: deliveredThreadId, state: "completed", blockedReason: null },
+          {
+            threadId: unconfirmedThreadId,
+            state: "completed",
+            blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+          },
+        ]);
+      }),
+    );
+
+    it.effect("uses exact receipt sequence at boot without reviving stopped deliveries", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const freshThreadId = "thread-startup-fresh-ordinary-receipt";
+        const freshMessageId = "message-startup-fresh-ordinary-receipt";
+        const siblingMessageId = "message-startup-fresh-sibling";
+        const staleThreadId = "thread-startup-stale-receipt";
+        const staleMessageId = "message-startup-stale-receipt";
+        const cancelledThreadId = "thread-startup-cancelled-receipt";
+        const cancelledMessageId = "message-startup-cancelled-receipt";
+        const seededAt = "2026-03-02T09:10:00.000Z";
+
+        const seedPending = (input: {
+          readonly threadId: string;
+          readonly messageId: string;
+          readonly state: "pending" | "cancelled";
+          readonly offset: number;
+        }) =>
+          Effect.gen(function* () {
+            yield* sql`
+              INSERT OR IGNORE INTO projection_threads (
+                thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+                created_at, updated_at, deleted_at, runtime_mode, interaction_mode,
+                model_selection_json, latest_user_message_at,
+                pending_approval_count, pending_user_input_count
+              ) VALUES (
+                ${input.threadId}, 'project-receipt-sequence', 'Receipt Sequence',
+                NULL, NULL, NULL, ${seededAt}, ${seededAt}, NULL, 'full-access',
+                'default', '{"instanceId":"codex","model":"gpt-5.6-sol"}',
+                ${seededAt}, 0, 0
+              )
+            `;
+            yield* sql`
+              INSERT INTO projection_thread_messages (
+                message_id, thread_id, turn_id, role, text, is_streaming,
+                created_at, updated_at
+              ) VALUES (
+                ${input.messageId}, ${input.threadId}, NULL, 'user', 'Continue', 0,
+                ${seededAt}, ${seededAt}
+              )
+            `;
+            yield* sql`
+              INSERT INTO projection_turns (
+                thread_id, turn_id, pending_message_id, assistant_message_id, state,
+                requested_at, started_at, completed_at, checkpoint_files_json
+              ) VALUES (
+                ${input.threadId}, NULL, ${input.messageId}, NULL, 'pending',
+                ${`2026-03-02T09:10:0${input.offset}.000Z`}, NULL, NULL, '[]'
+              )
+            `;
+            yield* sql`
+              INSERT INTO thread_work_obligations (
+                obligation_id, thread_id, source_turn_id, kind, state,
+                provider_instance_id, attempt, next_attempt_at, claimed_at,
+                lease_expires_at, blocked_reason, created_at, updated_at
+              ) VALUES (
+                ${`work-${input.messageId}`}, ${input.threadId},
+                ${`turn-start:${input.messageId}`}, 'active-turn-recovery', ${input.state},
+                'codex', 0, NULL, NULL, NULL,
+                ${input.state === "cancelled" ? "user stopped the delivery" : null},
+                ${seededAt}, ${seededAt}
+              )
+            `;
+          });
+
+        yield* seedPending({
+          threadId: freshThreadId,
+          messageId: freshMessageId,
+          state: "pending",
+          offset: 1,
+        });
+        yield* seedPending({
+          threadId: freshThreadId,
+          messageId: siblingMessageId,
+          state: "pending",
+          offset: 2,
+        });
+        yield* seedPending({
+          threadId: staleThreadId,
+          messageId: staleMessageId,
+          state: "pending",
+          offset: 3,
+        });
+        yield* seedPending({
+          threadId: cancelledThreadId,
+          messageId: cancelledMessageId,
+          state: "cancelled",
+          offset: 4,
+        });
+
+        const appendStart = (suffix: string, threadId: string, messageId: string) =>
+          eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`evt-receipt-sequence-start-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: seededAt,
+            commandId: CommandId.make(`cmd-receipt-sequence-start-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-receipt-sequence-start-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              messageId: MessageId.make(messageId),
+              runtimeMode: "full-access" as const,
+              createdAt: seededAt,
+            },
+          });
+        const appendReceipt = (suffix: string, threadId: string, messageId: string) =>
+          eventStore.append({
+            type: "thread.activity-appended",
+            eventId: EventId.make(`evt-receipt-sequence-delivered-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: "2026-03-02T09:10:09.000Z",
+            commandId: CommandId.make(`cmd-receipt-sequence-delivered-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-receipt-sequence-delivered-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              activity: {
+                id: EventId.make(`activity-receipt-sequence-${suffix}`),
+                tone: "info" as const,
+                kind: "message.delivered" as const,
+                summary: "Message delivered to the provider",
+                payload: { messageId: MessageId.make(messageId) },
+                turnId: null,
+                createdAt: "2026-03-02T09:10:09.000Z",
+              },
+            },
+          });
+
+        yield* appendStart("fresh", freshThreadId, freshMessageId);
+        yield* appendReceipt("fresh", freshThreadId, freshMessageId);
+        yield* appendStart("sibling", freshThreadId, siblingMessageId);
+        // A receipt from an earlier attempt cannot prove the later exact start.
+        yield* appendReceipt("stale", staleThreadId, staleMessageId);
+        yield* appendStart("stale", staleThreadId, staleMessageId);
+        yield* appendStart("cancelled", cancelledThreadId, cancelledMessageId);
+        yield* appendReceipt("cancelled", cancelledThreadId, cancelledMessageId);
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const pending = yield* sql<{
+          readonly threadId: string;
+          readonly messageId: string;
+        }>`
+          SELECT thread_id AS "threadId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE turn_id IS NULL AND state = 'pending'
+            AND thread_id IN (${freshThreadId}, ${staleThreadId}, ${cancelledThreadId})
+          ORDER BY thread_id ASC, pending_message_id ASC
+        `;
+        assert.deepEqual(pending, [
+          { threadId: freshThreadId, messageId: siblingMessageId },
+          { threadId: staleThreadId, messageId: staleMessageId },
+        ]);
+
+        const owners = yield* sql<{
+          readonly messageId: string;
+          readonly state: string;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT
+            substr(source_turn_id, length('turn-start:') + 1) AS "messageId",
+            state,
+            blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE thread_id IN (${freshThreadId}, ${staleThreadId}, ${cancelledThreadId})
+          ORDER BY messageId ASC
+        `;
+        assert.deepEqual(owners, [
+          {
+            messageId: cancelledMessageId,
+            state: "cancelled",
+            blockedReason: "user stopped the delivery",
+          },
+          { messageId: freshMessageId, state: "completed", blockedReason: null },
+          { messageId: siblingMessageId, state: "pending", blockedReason: null },
+          { messageId: staleMessageId, state: "pending", blockedReason: null },
+        ]);
+      }),
+    );
+
+    it.effect("reconstructs owned queue rows and retires inactive-thread work at boot", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const activeThreadId = "thread-reconstruct-owned-pending";
+        const activeMessageId = "message-reconstruct-owned-pending";
+        const inactiveThreadId = "thread-retire-inactive-pending";
+        const inactiveMessageId = "message-retire-inactive-pending";
+        const seededAt = "2026-03-02T09:20:00.000Z";
+
+        for (const [threadId, messageId, archivedAt] of [
+          [activeThreadId, activeMessageId, null],
+          [inactiveThreadId, inactiveMessageId, "2026-03-02T09:21:00.000Z"],
+        ] as const) {
+          yield* sql`
+            INSERT INTO projection_threads (
+              thread_id, project_id, title, branch, worktree_path, latest_turn_id,
+              created_at, updated_at, deleted_at, archived_at, runtime_mode,
+              interaction_mode, model_selection_json, latest_user_message_at,
+              pending_approval_count, pending_user_input_count
+            ) VALUES (
+              ${threadId}, 'project-startup-queue-repair', 'Startup Queue Repair',
+              NULL, NULL, NULL, ${seededAt}, ${seededAt}, NULL, ${archivedAt},
+              'full-access', 'default',
+              '{"instanceId":"codex","model":"gpt-5.6-sol"}', ${seededAt}, 0, 0
+            )
+          `;
+          yield* sql`
+            INSERT INTO projection_thread_messages (
+              message_id, thread_id, turn_id, role, text, is_streaming,
+              created_at, updated_at
+            ) VALUES (
+              ${messageId}, ${threadId}, NULL, 'user', 'Continue', 0,
+              ${seededAt}, ${seededAt}
+            )
+          `;
+          yield* sql`
+            INSERT INTO thread_work_obligations (
+              obligation_id, thread_id, source_turn_id, kind, state,
+              provider_instance_id, attempt, next_attempt_at, claimed_at,
+              lease_expires_at, blocked_reason, created_at, updated_at
+            ) VALUES (
+              ${`work-${messageId}`}, ${threadId}, ${`turn-start:${messageId}`},
+              'active-turn-recovery', 'pending', 'codex', 0, NULL, NULL, NULL,
+              NULL, ${seededAt}, ${seededAt}
+            )
+          `;
+          yield* eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`evt-startup-queue-repair-${messageId}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: seededAt,
+            commandId: CommandId.make(`cmd-startup-queue-repair-${messageId}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-startup-queue-repair-${messageId}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              messageId: MessageId.make(messageId),
+              runtimeMode: "full-access",
+              createdAt: seededAt,
+            },
+          });
+        }
+        // Only the inactive thread starts with a visible legacy row. The
+        // active thread simulates B having been overwritten by old single-slot
+        // queue code while its durable owner and event survived.
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state,
+            requested_at, started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${inactiveThreadId}, NULL, ${inactiveMessageId}, NULL, 'pending',
+            ${seededAt}, NULL, NULL, '[]'
+          )
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const pending = yield* sql<{
+          readonly threadId: string;
+          readonly messageId: string;
+        }>`
+          SELECT thread_id AS "threadId", pending_message_id AS "messageId"
+          FROM projection_turns
+          WHERE turn_id IS NULL AND state = 'pending'
+            AND thread_id IN (${activeThreadId}, ${inactiveThreadId})
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(pending, [{ threadId: activeThreadId, messageId: activeMessageId }]);
+
+        const inactiveOwner = yield* sql<{
+          readonly state: string;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT state, blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE thread_id = ${inactiveThreadId}
+        `;
+        assert.deepEqual(inactiveOwner, [
+          { state: "cancelled", blockedReason: "thread is inactive after restart" },
+        ]);
+      }),
+    );
+
     // The 2026-08-05 incident: a hard kill (deploy/SIGKILL) projects no
     // session-set, so the turn stays "running" — invisible to the recovery
     // scan, which only considers settled turns. It sat "running" for 95
@@ -5219,6 +6206,97 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           WHERE thread_id = ${threadId}
         `;
         assert.deepEqual(pendingWork, [{ kind: null, state: null }]);
+      }),
+    );
+
+    it.effect("never revives terminal startup-resume verdicts during reconciliation", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const scenarios = [
+          {
+            suffix: "completed",
+            state: "completed",
+            blockedReason: null,
+          },
+          {
+            suffix: "agent-stop",
+            state: "cancelled",
+            blockedReason: "agent signed off with AGENT_STOP",
+          },
+          {
+            suffix: "user-stop",
+            state: "cancelled",
+            blockedReason: "thread.turn-interrupt-requested",
+          },
+        ] as const;
+
+        for (const scenario of scenarios) {
+          const threadId = `thread-terminal-resume-${scenario.suffix}`;
+          const sourceTurnId = `turn-terminal-resume-${scenario.suffix}`;
+          yield* seedThread({
+            threadId,
+            turnId: sourceTurnId,
+            assistantMessageId: `assistant-terminal-resume-${scenario.suffix}`,
+            turnState: "incomplete",
+            isStreaming: 0,
+            sessionStatus: "stopped",
+            activeTurnId: null,
+            completedAt: "2026-03-02T10:00:04.000Z",
+            assistantText: "The previous provider process stopped.",
+          });
+          yield* sql`
+            INSERT INTO thread_work_obligations (
+              obligation_id, thread_id, source_turn_id, kind, state,
+              provider_instance_id, attempt, next_attempt_at, claimed_at,
+              lease_expires_at, blocked_reason, created_at, updated_at
+            ) VALUES (
+              ${`terminal-resume-owner-${scenario.suffix}`}, ${threadId}, ${sourceTurnId},
+              'startup-resume', ${scenario.state}, 'codex', 3, NULL, NULL, NULL,
+              ${scenario.blockedReason}, '2026-03-02T10:00:00.000Z',
+              '2026-03-02T10:00:05.000Z'
+            )
+          `;
+        }
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const owners = yield* sql<{
+          readonly obligationId: string;
+          readonly state: string;
+          readonly attempt: number;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT
+            obligation_id AS "obligationId",
+            state,
+            attempt,
+            blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE obligation_id LIKE 'terminal-resume-owner-%'
+          ORDER BY obligation_id ASC
+        `;
+        assert.deepEqual(owners, [
+          {
+            obligationId: "terminal-resume-owner-agent-stop",
+            state: "cancelled",
+            attempt: 3,
+            blockedReason: "agent signed off with AGENT_STOP",
+          },
+          {
+            obligationId: "terminal-resume-owner-completed",
+            state: "completed",
+            attempt: 3,
+            blockedReason: null,
+          },
+          {
+            obligationId: "terminal-resume-owner-user-stop",
+            state: "cancelled",
+            attempt: 3,
+            blockedReason: "thread.turn-interrupt-requested",
+          },
+        ]);
       }),
     );
 

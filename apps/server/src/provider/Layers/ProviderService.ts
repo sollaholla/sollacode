@@ -832,26 +832,51 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             }),
         ),
       );
-      yield* directory.upsert({
-        threadId: input.threadId,
-        provider: routed.adapter.provider,
-        providerInstanceId: routed.instanceId,
-        status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-        runtimePayload: {
-          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
-          lastRuntimeEventAt: yield* nowIso,
-        },
-      });
-      yield* analytics.record("provider.turn.sent", {
-        provider: routed.adapter.provider,
-        model: input.modelSelection?.model,
-        interactionMode: input.interactionMode,
-        attachmentCount: input.attachments.length,
-        hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-      });
+      // The adapter has accepted the message. Everything below is bookkeeping:
+      // surfacing a persistence or telemetry failure to the caller would make
+      // the delivery reactor requeue an already-accepted steer and send it a
+      // second time. Log each failure independently and preserve the provider's
+      // successful acceptance result.
+      yield* directory
+        .upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.sendTurn.binding-update-failed-after-acceptance", {
+              threadId: input.threadId,
+              provider: routed.adapter.provider,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      yield* analytics
+        .record("provider.turn.sent", {
+          provider: routed.adapter.provider,
+          model: input.modelSelection?.model,
+          interactionMode: input.interactionMode,
+          attachmentCount: input.attachments.length,
+          hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.sendTurn.analytics-failed-after-acceptance", {
+              threadId: input.threadId,
+              provider: routed.adapter.provider,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
       return turn;
     }).pipe(
       withMetrics({

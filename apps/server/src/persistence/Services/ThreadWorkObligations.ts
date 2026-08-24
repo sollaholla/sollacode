@@ -35,6 +35,12 @@ export const ThreadWorkState = Schema.Literals([
 ]);
 export type ThreadWorkState = typeof ThreadWorkState.Type;
 
+export const ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON =
+  "awaiting durable steer delivery receipt";
+
+export const ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON =
+  "steer delivery outcome unknown after restart";
+
 export const ActiveThreadWorkState = Schema.Literals([
   "claimed",
   "executing",
@@ -121,6 +127,7 @@ export const TransitionThreadWorkInput = Schema.Struct({
   obligationId: TrimmedNonEmptyString,
   expectedState: ThreadWorkState,
   expectedAttempt: NonNegativeInt,
+  expectedBlockedReason: Schema.optional(Schema.NullOr(Schema.String)),
   state: ThreadWorkState,
   nextAttemptAt: Schema.NullOr(IsoDateTime),
   claimedAt: Schema.NullOr(IsoDateTime),

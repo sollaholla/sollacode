@@ -45,9 +45,14 @@ import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../
 import { CLAUDE_CODE_NOT_INSTALLED_MESSAGE } from "../../provider/providerFailureMessage.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ThreadWorkObligationRepositoryLive } from "../../persistence/Layers/ThreadWorkObligations.ts";
-import { ThreadWorkObligationRepository } from "../../persistence/Services/ThreadWorkObligations.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  ThreadWorkObligationRepository,
+} from "../../persistence/Services/ThreadWorkObligations.ts";
 import { RuntimeLeaseRegistryLive } from "../../provider/Layers/RuntimeLeaseRegistry.ts";
 import { ThreadSubscriptionRegistryLive } from "./ThreadSubscriptionRegistry.ts";
 import {
@@ -113,6 +118,7 @@ describe("ProviderCommandReactor", () => {
     | OrchestrationEngineService
     | ProviderCommandReactor
     | ProjectionSnapshotQuery
+    | ProjectionTurnRepository
     | ThreadWorkScheduler
     | ThreadWorkObligationRepository
     | ActionApprovalBroker.ActionApprovalBroker,
@@ -593,6 +599,9 @@ describe("ProviderCommandReactor", () => {
     const threadWorkPersistenceLayer = ThreadWorkObligationRepositoryLive.pipe(
       Layer.provideMerge(SqlitePersistenceMemory),
     );
+    const projectionTurnPersistenceLayer = ProjectionTurnRepositoryLive.pipe(
+      Layer.provideMerge(SqlitePersistenceMemory),
+    );
     const threadWorkSchedulerLayer = makeThreadWorkSchedulerLive({
       pollIntervalMs: 60_000,
       claimLeaseMs: 60_000,
@@ -649,6 +658,7 @@ describe("ProviderCommandReactor", () => {
       providerCommandReactorLayer,
       threadWorkSchedulerLayer,
       threadWorkPersistenceLayer,
+      projectionTurnPersistenceLayer,
     ).pipe(Layer.provideMerge(ThreadSubscriptionRegistryLive));
     runtime = ManagedRuntime.make(layer);
 
@@ -658,6 +668,7 @@ describe("ProviderCommandReactor", () => {
     const threadWorkObligations = await runtime.runPromise(
       Effect.service(ThreadWorkObligationRepository),
     );
+    const projectionTurns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
     const threadWorkScheduler = await runtime.runPromise(Effect.service(ThreadWorkScheduler));
     const actionApprovalBroker = await runtime.runPromise(
       Effect.service(ActionApprovalBroker.ActionApprovalBroker),
@@ -721,6 +732,7 @@ describe("ProviderCommandReactor", () => {
       drain,
       startReactor,
       threadWorkObligations,
+      projectionTurns,
       threadWorkScheduler,
       actionApprovalBroker,
     };
@@ -2752,6 +2764,218 @@ describe("ProviderCommandReactor", () => {
   // parked delivery resolves without double-sending, a steer the provider
   // rejects stays parked and delivers at turn end, and the user's Stop never
   // drops a parked message.
+  it("finalizes no-receipt steers and does not rearm one after a delivery receipt wins the race", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const hostTurnId = asTurnId("turn-steer-finalization-host");
+
+    const dispatchTurn = (commandId: string, messageId: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: messageId,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const readObligation = (messageId: string) =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(asMessageId(messageId)),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    const readPendingTurn = (messageId: string) =>
+      Effect.runPromise(
+        harness.projectionTurns.getPendingTurnStart({
+          threadId,
+          messageId: asMessageId(messageId),
+        }),
+      );
+
+    harness.sendTurn.mockImplementation(
+      (_rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+        Effect.sync(() => {
+          const index = harness.runtimeSessions.findIndex(
+            (session) => session.threadId === threadId,
+          );
+          const session = index >= 0 ? harness.runtimeSessions[index] : undefined;
+          const liveTurnId = session?.activeTurnId;
+          if (session?.status === "running" && liveTurnId !== undefined) {
+            return { threadId, turnId: liveTurnId };
+          }
+          if (session !== undefined) {
+            harness.runtimeSessions[index] = {
+              ...session,
+              status: "running",
+              activeTurnId: hostTurnId,
+            };
+          }
+          return { threadId, turnId: hostTurnId };
+        }),
+    );
+
+    await dispatchTurn(
+      "cmd-steer-finalization-host",
+      "message-steer-finalization-host",
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const runtimeIndex = harness.runtimeSessions.findIndex(
+      (session) => session.threadId === threadId,
+    );
+    const runtimeSession = runtimeIndex >= 0 ? harness.runtimeSessions[runtimeIndex] : undefined;
+    if (runtimeSession === undefined) {
+      throw new Error("Expected the host provider session to exist.");
+    }
+    harness.runtimeSessions[runtimeIndex] = {
+      ...runtimeSession,
+      status: "running",
+      activeTurnId: hostTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-steer-finalization-host-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: hostTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation("message-steer-finalization-host");
+      return obligation?.state === "executing";
+    });
+
+    // Codex has no separate prompt-stream receipt. Its successful send result
+    // is the acceptance boundary, so the temporary marker and exact pending
+    // placeholder must both be finalized immediately.
+    const immediateMessageId = "message-steer-finalization-immediate";
+    await dispatchTurn(
+      "cmd-steer-finalization-immediate",
+      immediateMessageId,
+      "2026-01-01T00:00:03.000Z",
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation(immediateMessageId);
+      return obligation?.state === "completed" && obligation.blockedReason === null;
+    });
+    expect(Option.isNone(await readPendingTurn(immediateMessageId))).toBe(true);
+
+    // Hold a second steer in sendTurn, then project its durable receipt first.
+    // When the delayed send subsequently fails, its fallback transition is
+    // stale and must lose the blocked-reason CAS instead of rearming delivery.
+    const racedMessageId = "message-steer-finalization-receipt-race";
+    let racedSendSettled = false;
+    const racedSend = Effect.runSync(Deferred.make<{ threadId: ThreadId; turnId: TurnId }>());
+    harness.sendTurn.mockImplementation(
+      (rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> => {
+        const messageId = (rawInput as { readonly messageId?: string }).messageId;
+        if (messageId !== racedMessageId) {
+          return Effect.succeed({ threadId, turnId: hostTurnId });
+        }
+        return Deferred.await(racedSend).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              racedSendSettled = true;
+            }),
+          ),
+        );
+      },
+    );
+
+    let staleFallbackAttempted = false;
+    const transition = harness.threadWorkObligations.transition;
+    vi.spyOn(harness.threadWorkObligations, "transition").mockImplementation((input) =>
+      transition(input).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (
+              input.state === "pending" &&
+              input.expectedBlockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+            ) {
+              staleFallbackAttempted = true;
+            }
+          }),
+        ),
+      ),
+    );
+
+    await dispatchTurn(
+      "cmd-steer-finalization-receipt-race",
+      racedMessageId,
+      "2026-01-01T00:00:04.000Z",
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation(racedMessageId);
+      return (
+        obligation?.state === "completed" &&
+        obligation.blockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+      );
+    });
+    expect(Option.isSome(await readPendingTurn(racedMessageId))).toBe(true);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-steer-finalization-delivery-receipt"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-steer-finalization-delivery-receipt"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: { messageId: racedMessageId },
+          turnId: hostTurnId,
+          createdAt: "2026-01-01T00:00:04.100Z",
+        },
+        createdAt: "2026-01-01T00:00:04.100Z",
+      }),
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation(racedMessageId);
+      return obligation?.state === "completed" && obligation.blockedReason === null;
+    });
+    expect(Option.isNone(await readPendingTurn(racedMessageId))).toBe(true);
+
+    await Effect.runPromise(
+      Deferred.die(racedSend, new Error("late send failure after durable receipt")),
+    );
+    await waitFor(() => racedSendSettled && staleFallbackAttempted);
+
+    expect(await readObligation(racedMessageId)).toMatchObject({
+      state: "completed",
+      blockedReason: null,
+    });
+    expect(Option.isNone(await readPendingTurn(racedMessageId))).toBe(true);
+    expect(
+      harness.sendTurn.mock.calls.filter(
+        (call) => (call[0] as { readonly messageId?: string }).messageId === racedMessageId,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("injects steers into a running turn and parks them when the provider refuses", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
@@ -4123,6 +4347,31 @@ describe("ProviderCommandReactor", () => {
   it("interrupts a live bound thread and continues on another provider with a JSON handoff", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
+    const sourceTurnId = asTurnId("turn-provider-switch-source");
+    let sendCount = 0;
+    harness.sendTurn.mockImplementation(
+      (_rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+        Effect.sync(() => {
+          sendCount += 1;
+          if (sendCount === 1) {
+            const index = harness.runtimeSessions.findIndex(
+              (session) => session.threadId === ThreadId.make("thread-1"),
+            );
+            const session = index >= 0 ? harness.runtimeSessions[index] : undefined;
+            if (session !== undefined) {
+              harness.runtimeSessions[index] = {
+                ...session,
+                status: "running",
+                activeTurnId: sourceTurnId,
+              };
+            }
+          }
+          return {
+            threadId: ThreadId.make("thread-1"),
+            turnId: sendCount === 1 ? sourceTurnId : asTurnId("turn-provider-switch-destination"),
+          };
+        }),
+    );
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -4143,7 +4392,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    const sourceTurnId = asTurnId("turn-provider-switch-source");
     const runtimeIndex = harness.runtimeSessions.findIndex(
       (session) => session.threadId === ThreadId.make("thread-1"),
     );

@@ -12,6 +12,7 @@ import { refreshProjectionThreadPendingWork } from "../PendingWorkProjection.ts"
 import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
 import { ThreadPendingWorkSignalLive } from "./ThreadPendingWorkSignal.ts";
 import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   CancelThreadWorkByThreadInput,
   ClaimThreadWorkInput,
   HeartbeatThreadWorkClaimInput,
@@ -20,7 +21,6 @@ import {
   ListThreadWorkByStateInput,
   PruneTerminalThreadWorkInput,
   RecoverOrphanedThreadWorkInput,
-  ReplaceActiveThreadWorkInput,
   ThreadWorkObligation,
   ThreadWorkObligationKey,
   ThreadWorkObligationSummary,
@@ -407,6 +407,10 @@ const make = Effect.gen(function* () {
       WHERE obligation_id = ${input.obligationId}
         AND state = ${input.expectedState}
         AND attempt = ${input.expectedAttempt}
+        AND (
+          ${input.expectedBlockedReason === undefined ? 1 : 0} = 1
+          OR blocked_reason IS ${input.expectedBlockedReason ?? null}
+        )
       RETURNING obligation_id AS "obligationId", thread_id AS "threadId"
     `,
   });
@@ -495,6 +499,10 @@ const make = Effect.gen(function* () {
         FROM thread_work_obligations
         WHERE state IN ('completed', 'cancelled')
           AND updated_at < ${updatedBefore}
+          AND NOT (
+            state = 'completed'
+            AND blocked_reason IS ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+          )
         ORDER BY updated_at ASC, obligation_id ASC
         LIMIT ${Math.max(0, Math.min(256, limit))}
       )
@@ -525,6 +533,64 @@ const make = Effect.gen(function* () {
 
   const announcePendingWork = (threadId: string) =>
     pendingWorkSignal.publish(ThreadId.make(threadId));
+
+  const clearTerminalPendingTurnStart = (obligationId: string) =>
+    sql`
+      DELETE FROM projection_turns AS pending
+      WHERE pending.turn_id IS NULL
+        AND pending.state = 'pending'
+        AND pending.pending_message_id IS NOT NULL
+        AND pending.checkpoint_turn_count IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM thread_work_obligations AS work
+          WHERE work.obligation_id = ${obligationId}
+            AND work.thread_id = pending.thread_id
+            AND work.state IN ('completed', 'cancelled')
+            AND NOT (
+              work.state = 'completed'
+              AND work.blocked_reason IS ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+            )
+            AND (
+              (
+                work.kind = 'active-turn-recovery'
+                AND work.source_turn_id = 'turn-start:' || pending.pending_message_id
+              )
+              OR (
+                work.kind = 'startup-resume'
+                AND pending.pending_message_id =
+                  'startup-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+              )
+              OR (
+                work.kind = 'agent-continuation'
+                AND pending.pending_message_id =
+                  'agent-auto-resume-message:' || work.thread_id || ':' || work.source_turn_id
+              )
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM thread_work_obligations AS live
+          WHERE live.thread_id = pending.thread_id
+            AND live.state NOT IN ('completed', 'cancelled')
+            AND (
+              (
+                live.kind = 'active-turn-recovery'
+                AND live.source_turn_id = 'turn-start:' || pending.pending_message_id
+              )
+              OR (
+                live.kind = 'startup-resume'
+                AND pending.pending_message_id =
+                  'startup-auto-resume-message:' || live.thread_id || ':' || live.source_turn_id
+              )
+              OR (
+                live.kind = 'agent-continuation'
+                AND pending.pending_message_id =
+                  'agent-auto-resume-message:' || live.thread_id || ':' || live.source_turn_id
+              )
+            )
+        )
+    `;
 
   return {
     insert: (obligation) =>
@@ -563,16 +629,38 @@ const make = Effect.gen(function* () {
         ),
       ),
     transition: (input) =>
-      transitionRow(input).pipe(
-        mapError("transition"),
-        Effect.tap(
-          Option.match({
-            onNone: () => Effect.void,
-            onSome: (transitioned) => refreshPendingWork(transitioned.threadId),
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const transitioned = yield* transitionRow(input);
+            if (Option.isNone(transitioned)) return transitioned;
+
+            // A terminal delivery owner and a visible pending placeholder may
+            // not coexist. The sole exception is the short live-steer claim
+            // window: provider acceptance has not yet become a durable receipt.
+            if (
+              (input.state === "completed" || input.state === "cancelled") &&
+              !(
+                input.state === "completed" &&
+                input.blockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+              )
+            ) {
+              yield* clearTerminalPendingTurnStart(input.obligationId);
+            }
+            yield* refreshProjectionThreadPendingWork(sql, transitioned.value.threadId);
+            return transitioned;
           }),
+        )
+        .pipe(
+          mapError("transition"),
+          Effect.tap(
+            Option.match({
+              onNone: () => Effect.void,
+              onSome: (transitioned) => announcePendingWork(transitioned.threadId),
+            }),
+          ),
+          Effect.map(Option.isSome),
         ),
-        Effect.map(Option.isSome),
-      ),
     replaceActive: (input) =>
       sql
         .withTransaction(
@@ -615,6 +703,7 @@ const make = Effect.gen(function* () {
             if (!currentTransitioned) {
               return yield* new ThreadWorkHandoffConflict();
             }
+            yield* clearTerminalPendingTurnStart(input.currentObligationId);
 
             const pendingReplacement = yield* getByKeyRow({
               threadId: input.replacement.threadId,
@@ -669,11 +758,27 @@ const make = Effect.gen(function* () {
     heartbeatClaim: (input) =>
       heartbeatClaimRow(input).pipe(mapError("heartbeatClaim"), Effect.map(Option.isSome)),
     cancelByThread: (input) =>
-      cancelRowsByThread(input).pipe(
-        mapError("cancelByThread"),
-        Effect.tap((rows) => (rows.length > 0 ? refreshPendingWork(input.threadId) : Effect.void)),
-        Effect.map((rows) => rows.length),
-      ),
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* cancelRowsByThread(input);
+            if (rows.length === 0) return rows;
+            yield* Effect.forEach(
+              rows,
+              ({ obligationId }) => clearTerminalPendingTurnStart(obligationId),
+              { concurrency: 1, discard: true },
+            );
+            yield* refreshProjectionThreadPendingWork(sql, input.threadId);
+            return rows;
+          }),
+        )
+        .pipe(
+          mapError("cancelByThread"),
+          Effect.tap((rows) =>
+            rows.length > 0 ? announcePendingWork(input.threadId) : Effect.void,
+          ),
+          Effect.map((rows) => rows.length),
+        ),
     recoverOrphanedClaims: (input) =>
       recoverOrphanedClaimRows(input).pipe(
         mapError("recoverOrphanedClaims"),

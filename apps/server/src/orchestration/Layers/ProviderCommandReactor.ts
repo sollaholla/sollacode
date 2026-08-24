@@ -53,6 +53,7 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import {
+  ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   ThreadWorkObligationRepository,
   type ThreadWorkObligation,
 } from "../../persistence/Services/ThreadWorkObligations.ts";
@@ -1456,11 +1457,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             nextAttemptAt: null,
             claimedAt: null,
             leaseExpiresAt: null,
-            blockedReason: null,
+            // `completed` temporarily claims this parked row without creating
+            // a second active scheduler owner for the already-running thread.
+            // The provider's acceptance boundary clears the marker; if the
+            // process dies first, startup retires the ambiguous queue without
+            // replaying a potentially consequential steer.
+            blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
             updatedAt: yield* nowIso,
           });
           if (!claimedForSteer) return;
-          yield* buildSendTurnRequestForThread({
+          const steerAccepted = yield* buildSendTurnRequestForThread({
             threadId: event.payload.threadId,
             messageId: event.payload.messageId,
             messageText: message.text,
@@ -1469,32 +1475,23 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             createdAt: event.payload.createdAt,
           }).pipe(
             Effect.flatMap(providerService.sendTurn),
-            Effect.tap(() => {
-              // A steer cannot change the model of the turn it joins, but the
-              // switch must still land on the thread — the parked path records
-              // it via `thread.meta.update` after a successful send, and
-              // skipping that here meant a model picked mid-turn silently
-              // reverted on the next turn and on every agent continuation.
-              const requestedModelSelection = event.payload.modelSelection;
-              if (requestedModelSelection === undefined) return Effect.void;
-              threadModelSelections.set(event.payload.threadId, requestedModelSelection);
-              return serverCommandId("provider-selection-accepted").pipe(
-                Effect.flatMap((commandId) =>
-                  orchestrationEngine.dispatch({
-                    type: "thread.meta.update",
-                    commandId,
-                    threadId: event.payload.threadId,
-                    modelSelection: requestedModelSelection,
-                  }),
-                ),
-              );
-            }),
+            // Claude's send resolves when its prompt is queued, so wait for the
+            // prompt iterator's durable receipt. Every other adapter resolves
+            // at or after its own acceptance boundary and can finalize here;
+            // any later receipt is an idempotent second proof.
+            Effect.tap(() =>
+              waitForClaudeMessageDelivery({
+                threadId: event.payload.threadId,
+                messageId: event.payload.messageId,
+                providerInstanceId: currentProviderInstanceId,
+              }),
+            ),
+            Effect.as(true),
+            // Only provider delivery belongs in this fallback. A later metadata
+            // write must never re-arm a steer the provider already accepted.
             Effect.catchCause((cause) =>
               Effect.gen(function* () {
                 if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
-                // Info, not debug: this is the moment a user-visible steer silently
-                // degrades to end-of-turn delivery, and debug lines never
-                // reach the shipped trace files.
                 yield* Effect.logInfo("provider.steer.deferred-to-parked-delivery", {
                   threadId: event.payload.threadId,
                   messageId: event.payload.messageId,
@@ -1505,6 +1502,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                     obligationId: parked.value.obligationId,
                     expectedState: "completed",
                     expectedAttempt: parked.value.attempt,
+                    expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
                     state: "pending",
                     nextAttemptAt: null,
                     claimedAt: null,
@@ -1518,10 +1516,57 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                     thread.session?.providerInstanceId ??
                     thread.modelSelection.instanceId,
                 );
-                return undefined;
+                return false;
               }),
             ),
           );
+          if (!steerAccepted) return;
+
+          const acceptedOwner = yield* threadWorkObligations.getByKey(steerObligationKey);
+          if (
+            Option.isSome(acceptedOwner) &&
+            acceptedOwner.value.state === "completed" &&
+            acceptedOwner.value.blockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+          ) {
+            yield* threadWorkObligations.transition({
+              obligationId: acceptedOwner.value.obligationId,
+              expectedState: "completed",
+              expectedAttempt: acceptedOwner.value.attempt,
+              expectedBlockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+              state: "completed",
+              nextAttemptAt: null,
+              claimedAt: null,
+              leaseExpiresAt: null,
+              blockedReason: null,
+              updatedAt: yield* nowIso,
+            });
+          }
+
+          // A steer cannot change the model of the turn it joins, but the
+          // switch must still land on the thread for the next turn. This is a
+          // post-accept bookkeeping action: failure is logged and can never
+          // turn an accepted prompt back into queued work.
+          const requestedModelSelection = event.payload.modelSelection;
+          if (requestedModelSelection !== undefined) {
+            threadModelSelections.set(event.payload.threadId, requestedModelSelection);
+            yield* serverCommandId("provider-selection-accepted").pipe(
+              Effect.flatMap((commandId) =>
+                orchestrationEngine.dispatch({
+                  type: "thread.meta.update",
+                  commandId,
+                  threadId: event.payload.threadId,
+                  modelSelection: requestedModelSelection,
+                }),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.steer.model-selection-update-failed", {
+                  threadId: event.payload.threadId,
+                  messageId: event.payload.messageId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+          }
         }).pipe(
           Effect.catchCause((cause) => {
             if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);

@@ -28,7 +28,11 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import { grokPromptSettlementBelongsToContext, makeGrokAdapter } from "./GrokAdapter.ts";
+import {
+  grokPromptSettlementBelongsToContext,
+  makeGrokAdapter,
+  preserveAcceptedGrokTurn,
+} from "./GrokAdapter.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
@@ -124,6 +128,21 @@ it("requires a settlement to match the live Grok turn", () => {
     }),
   );
 });
+
+it.effect("preserves ACP acceptance when later local finalization fails", () =>
+  Effect.gen(function* () {
+    const threadId = ThreadId.make("grok-post-acceptance-finalization-failure");
+    const turnId = TurnId.make("turn-post-acceptance-finalization-failure");
+    const accepted = { threadId, turnId };
+    const result = yield* preserveAcceptedGrokTurn(
+      Effect.fail(new Error("simulated local finalization failure after session/prompt succeeded")),
+      accepted,
+      { threadId, turnId },
+    );
+
+    assert.deepEqual(result, accepted);
+  }),
+);
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
@@ -1002,6 +1021,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       const error = yield* Effect.flip(
         adapter.sendTurn({
           threadId,
+          messageId: MessageId.make("message-grok-rejected"),
           input: "fail prompt",
           attachments: [],
         }),
@@ -1015,6 +1035,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       assert.equal(error._tag, "ProviderAdapterRequestError");
       assert.equal(readySession?.status, "ready");
       assert.isUndefined(readySession?.activeTurnId);
+      assert.isUndefined(
+        runtimeEvents.find(
+          (event) =>
+            event.type === "message.delivered" &&
+            event.payload.messageId === "message-grok-rejected",
+        ),
+      );
       assert.equal(failedTurnCompleted?.type, "turn.completed");
       if (failedTurnCompleted?.type === "turn.completed") {
         assert.equal(failedTurnCompleted.payload.state, "failed");
