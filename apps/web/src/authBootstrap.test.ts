@@ -362,6 +362,24 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(testApi.calls.browserSession).toEqual([{ credential: "bad-token" }]);
   });
 
+  it("names the likely cause when the server never answered at all", async () => {
+    // What a second copy of the app holding the port looks like from the
+    // renderer: no HTTP response, so no status. It used to report
+    // "Primary environment request failed during fetch-environment-descriptor
+    // (HTTP 500)" — an internal operation name and a status the server never
+    // sent, for a problem the user could have fixed in seconds.
+    const { PrimaryEnvironmentRequestError } = await import("./environments/primary");
+    const error = PrimaryEnvironmentRequestError.fromCause({
+      operation: "fetch-environment-descriptor",
+      cause: new TypeError("Failed to fetch"),
+    });
+
+    expect(error.unreachable).toBe(true);
+    expect(error.message).toContain("Another copy of Solla Code may already be running");
+    expect(error.message).not.toContain("fetch-environment-descriptor");
+    expect(error.message).not.toContain("HTTP 500");
+  });
+
   it("derives primary request messages from structural request context", async () => {
     const cause = new Error("private transport detail");
     const { PrimaryEnvironmentRequestError } = await import("./environments/primary");
@@ -372,9 +390,12 @@ describe("resolveInitialServerAuthGateState", () => {
 
     expect(error.status).toBe(500);
     expect(error.cause).toBe(cause);
-    expect(error.message).toBe(
-      "Primary environment request failed during list-pairing-links (HTTP 500).",
-    );
+    // A bare Error carries no HTTP response, so this is the unreachable case:
+    // the status stays 500 for reporting, but the message must describe
+    // something the user can act on and must never leak the transport detail.
+    expect(error.unreachable).toBe(true);
+    expect(error.message).toContain("can't reach its local server");
+    expect(error.message).not.toContain("list-pairing-links");
     expect(error.message).not.toContain(cause.message);
   });
 

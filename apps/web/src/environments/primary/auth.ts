@@ -40,6 +40,14 @@ export class PrimaryEnvironmentRequestError extends Schema.TaggedErrorClass<Prim
   {
     operation: PrimaryEnvironmentRequestOperation,
     status: Schema.Number,
+    /**
+     * True when the server never answered at all — no HTTP response, so no
+     * status to report. Worth separating from a genuine 500: the app is not
+     * talking to a broken server, it is talking to nothing, and the causes
+     * (not started yet, port taken by another copy, host unreachable) need a
+     * completely different suggestion than "try again".
+     */
+    unreachable: Schema.optionalKey(Schema.Boolean),
     pairingLinkId: Schema.optional(Schema.String),
     sessionId: Schema.optional(Schema.String),
     cause: Schema.Defect(),
@@ -51,10 +59,12 @@ export class PrimaryEnvironmentRequestError extends Schema.TaggedErrorClass<Prim
     readonly pairingLinkId?: string;
     readonly sessionId?: string;
   }): PrimaryEnvironmentRequestError {
-    const status = readHttpApiStatus(input.cause) ?? 500;
+    const resolvedStatus = readHttpApiStatus(input.cause);
+    const status = resolvedStatus ?? 500;
     return new PrimaryEnvironmentRequestError({
       operation: input.operation,
       status,
+      ...(resolvedStatus === null ? { unreachable: true } : {}),
       ...(input.pairingLinkId !== undefined ? { pairingLinkId: input.pairingLinkId } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
       cause: input.cause,
@@ -62,7 +72,24 @@ export class PrimaryEnvironmentRequestError extends Schema.TaggedErrorClass<Prim
   }
 
   override get message(): string {
-    return `Primary environment request failed during ${this.operation} (HTTP ${this.status}).`;
+    // Read by whatever surface reports the failure, so it has to say what the
+    // user can do rather than name an internal operation. The unreachable
+    // case shipped as "Primary environment request failed during
+    // fetch-environment-descriptor (HTTP 500)", which names a component the
+    // user has never heard of and a status the server never sent — observed
+    // 2026-08-24, when a second copy of the app held the port and the real
+    // problem was simply that two copies were running.
+    if (this.unreachable === true) {
+      return (
+        "Solla Code can't reach its local server. " +
+        "Another copy of Solla Code may already be running and holding the port — " +
+        "quit any other Solla Code windows, then reopen the app."
+      );
+    }
+    if (this.status === 401 || this.status === 403) {
+      return "Solla Code is not authorized to reach this environment. Pair this device again to continue.";
+    }
+    return `Solla Code could not reach its environment (HTTP ${this.status}). Retry in a moment, and check the server is running if it keeps failing.`;
   }
 }
 
