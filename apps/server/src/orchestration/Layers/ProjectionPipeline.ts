@@ -70,6 +70,7 @@ import {
 } from "../../attachmentStore.ts";
 import {
   activeTurnWorkSourceId,
+  agentContinuationSourceTurnId,
   isAgentAutoResumeMessageId,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   startupResumeSourceTurnId,
@@ -1450,6 +1451,91 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
+    /**
+     * A synthetic resume turn completing is itself the durable receipt that
+     * its supervising obligation succeeded. Normally the scheduler observes
+     * the same turn and performs this transition, but the provider lifecycle
+     * and the supervisor fiber are independent streams: production has seen a
+     * completed AGENT_STOP turn while its old startup-resume row remained
+     * `executing`, leaving the shell stuck on "Auto-resuming thread…".
+     *
+     * Reconcile the exact owner from the synthetic source message. Requiring a
+     * completed turn with finalized assistant output preserves the retry path
+     * for empty upstream completions, while the compare-and-set makes this
+     * safe to race with the scheduler's normal completion.
+     */
+    const completeResumeOwnerForTurn = Effect.fn("completeResumeOwnerForTurn")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId;
+      readonly occurredAt: string;
+    }) {
+      const turn = yield* projectionTurnRepository.getByTurnId({
+        threadId: input.threadId,
+        turnId: input.turnId,
+      });
+      if (
+        Option.isNone(turn) ||
+        turn.value.state !== "completed" ||
+        turn.value.pendingMessageId === null
+      ) {
+        return;
+      }
+
+      const startupSourceTurnId = startupResumeSourceTurnId({
+        threadId: input.threadId,
+        messageId: turn.value.pendingMessageId,
+      });
+      const continuationSourceTurnId = agentContinuationSourceTurnId({
+        threadId: input.threadId,
+        messageId: turn.value.pendingMessageId,
+      });
+      const owner =
+        startupSourceTurnId !== null
+          ? { sourceTurnId: startupSourceTurnId, kind: "startup-resume" as const }
+          : continuationSourceTurnId !== null
+            ? {
+                sourceTurnId: continuationSourceTurnId,
+                kind: "agent-continuation" as const,
+              }
+            : null;
+      if (owner === null) return;
+
+      const messages = yield* projectionThreadMessageRepository.listByThreadId({
+        threadId: input.threadId,
+      });
+      const producedOutput = messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          message.turnId === input.turnId &&
+          !message.isStreaming &&
+          message.text.trim().length > 0,
+      );
+      if (!producedOutput) return;
+
+      const obligation = yield* threadWorkObligationRepository.getByKey({
+        threadId: input.threadId,
+        ...owner,
+      });
+      if (
+        Option.isNone(obligation) ||
+        obligation.value.state === "completed" ||
+        obligation.value.state === "cancelled"
+      ) {
+        return;
+      }
+      yield* threadWorkObligationRepository.transition({
+        obligationId: obligation.value.obligationId,
+        expectedState: obligation.value.state,
+        expectedAttempt: obligation.value.attempt,
+        state: "completed",
+        nextAttemptAt: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        blockedReason: null,
+        updatedAt: input.occurredAt,
+      });
+    });
+
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {
@@ -1543,17 +1629,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* Effect.forEach(
               existingTurns.filter((turn) => turn.turnId !== null && turn.state === "running"),
               (turn) =>
-                turn.turnId === null
-                  ? Effect.void
-                  : projectionTurnRepository.upsertByTurnId({
-                      ...turn,
-                      turnId: turn.turnId,
-                      state: settledTurnState,
-                      // A running turn's completedAt can only hold a mid-turn
-                      // placeholder checkpoint timestamp — the session leaving
-                      // "running" is the authoritative turn end.
-                      completedAt: event.payload.session.updatedAt,
-                    }),
+                Effect.gen(function* () {
+                  if (turn.turnId === null) return;
+                  yield* projectionTurnRepository.upsertByTurnId({
+                    ...turn,
+                    turnId: turn.turnId,
+                    state: settledTurnState,
+                    // A running turn's completedAt can only hold a mid-turn
+                    // placeholder checkpoint timestamp — the session leaving
+                    // "running" is the authoritative turn end.
+                    completedAt: event.payload.session.updatedAt,
+                  });
+                  yield* completeResumeOwnerForTurn({
+                    threadId: event.payload.threadId,
+                    turnId: turn.turnId,
+                    occurredAt: event.occurredAt,
+                  });
+                }),
               { concurrency: 1 },
             );
             return;
@@ -1570,14 +1662,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               (turn) => turn.turnId !== null && turn.turnId !== turnId && turn.state === "running",
             ),
             (turn) =>
-              turn.turnId === null
-                ? Effect.void
-                : projectionTurnRepository.upsertByTurnId({
-                    ...turn,
-                    turnId: turn.turnId,
-                    state: "completed",
-                    completedAt: event.payload.session.updatedAt,
-                  }),
+              Effect.gen(function* () {
+                if (turn.turnId === null) return;
+                yield* projectionTurnRepository.upsertByTurnId({
+                  ...turn,
+                  turnId: turn.turnId,
+                  state: "completed",
+                  completedAt: event.payload.session.updatedAt,
+                });
+                yield* completeResumeOwnerForTurn({
+                  threadId: event.payload.threadId,
+                  turnId: turn.turnId,
+                  occurredAt: event.occurredAt,
+                });
+              }),
             { concurrency: 1 },
           );
 
@@ -2271,6 +2369,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         event.payload.turnId !== null &&
         !event.payload.streaming
       ) {
+        yield* completeResumeOwnerForTurn({
+          threadId: event.payload.threadId,
+          turnId: event.payload.turnId,
+          occurredAt: event.occurredAt,
+        });
         const projectedAssistant = yield* projectionThreadMessageRepository.getByMessageId({
           messageId: event.payload.messageId,
         });
@@ -2544,6 +2647,61 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           WHERE thread_id = ${session.threadId}
         `;
       }
+
+      // A synthetic resume turn can reach a durable terminal projection while
+      // the supervisor that launched it is being torn down. If the process
+      // exits in that window, projector events are already caught up at the
+      // next boot, so the exact startup/continuation owner would otherwise be
+      // recovered and run again. Treat the completed turn plus finalized
+      // assistant output as the missing supervisor receipt. Matching the
+      // synthetic message id to the owner's exact source turn prevents a
+      // different completed turn from retiring live work.
+      const retiredResumeOwners = yield* sql<{ readonly threadId: string }>`
+        UPDATE thread_work_obligations
+        SET state = 'completed',
+            next_attempt_at = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            blocked_reason = NULL,
+            updated_at = ${settledAt}
+        WHERE kind IN ('startup-resume', 'agent-continuation')
+          AND state NOT IN ('completed', 'cancelled')
+          AND EXISTS (
+            SELECT 1
+            FROM projection_turns AS resumed
+            WHERE resumed.thread_id = thread_work_obligations.thread_id
+              AND resumed.state = 'completed'
+              AND resumed.pending_message_id =
+                CASE thread_work_obligations.kind
+                  WHEN 'startup-resume'
+                    THEN 'startup-auto-resume-message:'
+                  ELSE 'agent-auto-resume-message:'
+                END
+                || thread_work_obligations.thread_id
+                || ':'
+                || thread_work_obligations.source_turn_id
+              AND EXISTS (
+                SELECT 1
+                FROM projection_thread_messages AS output
+                WHERE output.thread_id = resumed.thread_id
+                  AND output.turn_id = resumed.turn_id
+                  AND output.role = 'assistant'
+                  AND output.is_streaming = 0
+                  AND length(
+                    trim(
+                      output.text,
+                      ' ' || char(9) || char(10) || char(11) || char(12) || char(13)
+                    )
+                  ) > 0
+              )
+          )
+        RETURNING thread_id AS "threadId"
+      `;
+      yield* Effect.forEach(
+        new Set(retiredResumeOwners.map((row) => row.threadId)),
+        (threadId) => refreshPendingWorkSummary(ThreadId.make(threadId)),
+        { concurrency: 1, discard: true },
+      );
 
       // Re-arm resumes that were retired without the thread ever recovering.
       //

@@ -9,6 +9,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ThreadWorkObligationRepositoryLive } from "../../persistence/Layers/ThreadWorkObligations.ts";
@@ -675,6 +676,144 @@ const cancellationLayer = it.layer(
 );
 
 cancellationLayer("ThreadWorkScheduler cancellation", (it) => {
+  it.effect("releases an orphaned admission after its durable owner and runtime lease end", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const repository = yield* ThreadWorkObligationRepository;
+        const scheduler = yield* ThreadWorkScheduler;
+        const runtimeLeases = yield* RuntimeLeaseRegistry;
+        const sql = yield* SqlClient.SqlClient;
+        const releaseStrandedHandler = yield* Deferred.make<void>();
+        const strandedHandlerReturned = yield* Deferred.make<void>();
+        const releaseReclaimedHandler = yield* Deferred.make<void>();
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const threadId = ThreadId.make("orphaned-admission-thread");
+        const providerInstanceId = ProviderInstanceId.make("orphaned-admission-provider");
+
+        // The first attempt simulates a supervisor that cannot finish
+        // unwinding after losing both of its leases. A reclaimed second
+        // attempt completes normally.
+        yield* scheduler.registerHandler("startup-resume", (obligation) =>
+          obligation.attempt === 1
+            ? Effect.uninterruptible(Deferred.await(releaseStrandedHandler)).pipe(
+                Effect.as({ state: "completed" as const }),
+                Effect.ensuring(Deferred.succeed(strandedHandlerReturned, undefined)),
+              )
+            : Effect.uninterruptible(Deferred.await(releaseReclaimedHandler)).pipe(
+                Effect.as({ state: "completed" as const }),
+              ),
+        );
+        yield* scheduler.registerHandler("active-turn-recovery", () =>
+          Effect.succeed({ state: "completed" as const }),
+        );
+        yield* repository.insert({
+          obligationId: "orphaned-admission-owner",
+          threadId,
+          sourceTurnId: TurnId.make("orphaned-admission-source-turn"),
+          kind: "startup-resume",
+          state: "pending",
+          providerInstanceId,
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        yield* scheduler.start();
+        yield* scheduler.wake();
+        yield* waitUntil(
+          Effect.zip(scheduler.snapshot, repository.getById("orphaned-admission-owner")).pipe(
+            Effect.map(
+              ([snapshot, row]) =>
+                snapshot.activeGlobal === 1 && Option.getOrNull(row)?.state === "executing",
+            ),
+          ),
+          "the stranded supervisor to acquire its admission",
+        );
+
+        const owner = Option.getOrThrow(yield* repository.getById("orphaned-admission-owner"));
+        const runtimeHandle = Option.getOrThrow(yield* runtimeLeases.getLive(threadId));
+        yield* sql`
+          UPDATE thread_work_obligations
+          SET lease_expires_at = '1970-01-01T00:00:00.000Z'
+          WHERE obligation_id = ${owner.obligationId}
+        `;
+        assert.isTrue(
+          yield* runtimeLeases.release({
+            threadId,
+            leaseToken: runtimeHandle.leaseToken,
+          }),
+        );
+
+        // Both ownership leases are gone while the simulated handler is still
+        // unwinding, leaving only the stale in-memory admission behind.
+        assert.isTrue(Option.isNone(yield* runtimeLeases.getLive(threadId)));
+        assert.strictEqual((yield* scheduler.snapshot).activeGlobal, 1);
+        const expiredOwner = Option.getOrThrow(
+          yield* repository.getById("orphaned-admission-owner"),
+        );
+        assert.strictEqual(expiredOwner.state, "executing");
+        assert.strictEqual(expiredOwner.leaseExpiresAt, "1970-01-01T00:00:00.000Z");
+
+        yield* repository.insert({
+          obligationId: "work-after-orphaned-admission",
+          threadId,
+          sourceTurnId: TurnId.make("work-after-orphaned-admission-turn"),
+          kind: "active-turn-recovery",
+          state: "pending",
+          providerInstanceId,
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          updatedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+        yield* scheduler.wake();
+        yield* waitUntil(
+          Effect.zip(scheduler.snapshot, repository.getById("orphaned-admission-owner")).pipe(
+            Effect.map(([snapshot, row]) => {
+              const reclaimed = Option.getOrNull(row);
+              return (
+                snapshot.activeGlobal === 1 &&
+                reclaimed?.state === "executing" &&
+                reclaimed.attempt === 2
+              );
+            }),
+          ),
+          "the expired owner to be reclaimed under a replacement admission",
+        );
+
+        // The old finalizer is fenced by reservation attempt. Unwinding
+        // attempt 1 while attempt 2 owns the same obligation/thread must not
+        // decrement or remove the replacement admission.
+        yield* Deferred.succeed(releaseStrandedHandler, undefined);
+        yield* Deferred.await(strandedHandlerReturned);
+        for (let index = 0; index < 20; index += 1) yield* Effect.yieldNow;
+        assert.strictEqual((yield* scheduler.snapshot).activeGlobal, 1);
+        assert.isTrue(Option.isSome(yield* scheduler.runtimeLivenessAt(threadId)));
+        const replacementOwner = Option.getOrThrow(
+          yield* repository.getById("orphaned-admission-owner"),
+        );
+        assert.strictEqual(replacementOwner.state, "executing");
+        assert.strictEqual(replacementOwner.attempt, 2);
+
+        yield* Deferred.succeed(releaseReclaimedHandler, undefined);
+        yield* waitUntil(
+          repository
+            .getById("work-after-orphaned-admission")
+            .pipe(Effect.map((row) => Option.getOrNull(row)?.state === "completed")),
+          "later user work to pass the reconciled admission",
+        );
+        assert.strictEqual((yield* scheduler.snapshot).activeGlobal, 0);
+      }),
+    ),
+  );
+
   it.effect("interrupts an executing supervisor and releases leases on thread cancellation", () =>
     Effect.scoped(
       Effect.gen(function* () {
