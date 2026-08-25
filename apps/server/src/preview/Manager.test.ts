@@ -1,13 +1,14 @@
 import { it } from "@effect/vitest";
 import { type PreviewEvent, ThreadId } from "@t3tools/contracts";
 import { PreviewUrlNormalizationError } from "@t3tools/shared/preview";
-import { Effect, PubSub } from "effect";
+import { Deferred, Effect, Fiber, Option, PubSub } from "effect";
 import { expect } from "vite-plus/test";
 
 import * as Layer from "effect/Layer";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { PreviewSessionStoreLive } from "../persistence/Layers/PreviewSessions.ts";
+import { PreviewSessionStore } from "../persistence/Services/PreviewSessions.ts";
 import * as PreviewManager from "./Manager.ts";
 
 const managerTestLayer = PreviewManager.layer.pipe(
@@ -271,20 +272,27 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
     }),
   );
 
-  it.effect("close removes the session and emits closed", () =>
+  it.effect("closing the final tab atomically replaces it with a distinct Idle tab", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
       const manager = yield* PreviewManager.PreviewManager;
       const collector = yield* collectEvents;
 
-      yield* manager.open({ threadId, url: "http://localhost:5173" });
-      yield* manager.close({ threadId });
+      const opened = yield* manager.open({ threadId, url: "http://localhost:5173" });
+      yield* manager.close({ threadId, tabId: opened.tabId });
 
       const result = yield* manager.list({ threadId });
-      expect(result.sessions).toHaveLength(0);
+      expect(result.sessions).toHaveLength(1);
+      expect(result.sessions[0]?.tabId).not.toBe(opened.tabId);
+      expect(result.sessions[0]?.navStatus._tag).toBe("Idle");
+
       const events = yield* collector.drain;
-      const closed = events.find((e) => e.type === "closed");
-      expect(closed?.type).toBe("closed");
+      expect(events.map((event) => event.type)).toEqual(["opened", "closed", "opened"]);
+      expect(events[2]?.revision).toBeGreaterThan(events[1]!.revision);
+      if (events[2]?.type === "opened") {
+        expect(events[2].tabId).toBe(result.sessions[0]?.tabId);
+        expect(events[2].snapshot.navStatus._tag).toBe("Idle");
+      }
     }),
   );
 
@@ -300,11 +308,12 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
 
       const events = yield* collector.drain;
       const listed = yield* manager.list({ threadId });
-      expect(events).toHaveLength(2);
-      expect(events.every((event) => event.type === "closed")).toBe(true);
+      expect(events.map((event) => event.type)).toEqual(["closed", "closed", "opened"]);
       expect(events[1]!.revision).toBeGreaterThan(events[0]!.revision);
-      expect(listed.revision).toBe(events[1]!.revision);
-      expect(listed.sessions).toHaveLength(0);
+      expect(events[2]!.revision).toBeGreaterThan(events[1]!.revision);
+      expect(listed.revision).toBe(events[2]!.revision);
+      expect(listed.sessions).toHaveLength(1);
+      expect(listed.sessions[0]?.navStatus._tag).toBe("Idle");
     }),
   );
 
@@ -350,13 +359,14 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
     }),
   );
 
-  it.effect("close with mismatching tabId is a no-op", () =>
+  it.effect("close with an exact missing tabId fails without changing the thread", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();
       const manager = yield* PreviewManager.PreviewManager;
       yield* manager.open({ threadId, url: "http://localhost:5173" });
-      yield* manager.close({ threadId, tabId: "tab_missing" });
+      const error = yield* Effect.flip(manager.close({ threadId, tabId: "tab_missing" }));
 
+      expect(error._tag).toBe("PreviewSessionLookupError");
       const list = yield* manager.list({ threadId });
       expect(list.sessions).toHaveLength(1);
     }),
@@ -373,6 +383,20 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
 
       const list = yield* manager.list({ threadId });
       expect(list.sessions.map((s) => s.tabId)).toEqual([b.tabId]);
+    }),
+  );
+
+  it.effect("never reuses a closed tab id for unrelated future work", () =>
+    Effect.gen(function* () {
+      const threadId = freshThreadId();
+      const manager = yield* PreviewManager.PreviewManager;
+      yield* manager.open({ threadId, url: "https://one.example/" });
+      const closed = yield* manager.open({ threadId, url: "https://two.example/" });
+
+      yield* manager.close({ threadId, tabId: closed.tabId });
+      const next = yield* manager.open({ threadId, url: "https://three.example/" });
+
+      expect(next.tabId).not.toBe(closed.tabId);
     }),
   );
 
@@ -394,11 +418,28 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
   );
 });
 
-// Durability: sessions must survive a manager (process) restart via the
-// persisted store, and a closed tab must not resurrect. Three managers are
-// built over ONE store layer inside a single provide, modeling three server
-// lifetimes over one database.
-it.effect("restores persisted tabs across a restart and forgets closed ones", () =>
+// Durability: every session, including a blank tab, must survive a manager
+// (process) restart via the persisted store.
+it.effect("restores persisted Idle tabs across a restart", () =>
+  Effect.gen(function* () {
+    const threadId = freshThreadId();
+    const first = yield* PreviewManager.make;
+    const opened = yield* first.open({ threadId });
+
+    const second = yield* PreviewManager.make;
+    const restored = yield* second.list({ threadId });
+    expect(restored.sessions).toHaveLength(1);
+    expect(restored.sessions[0]?.tabId).toBe(opened.tabId);
+    expect(restored.sessions[0]?.navStatus._tag).toBe("Idle");
+  }).pipe(
+    Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+  ),
+);
+
+// Three managers are built over ONE store layer inside a single provide,
+// modeling three server lifetimes over one database. Closing a persisted final
+// tab must forget that identity while retaining its blank replacement.
+it.effect("persists a distinct replacement when the final restored tab closes", () =>
   Effect.gen(function* () {
     const threadId = freshThreadId();
     const first = yield* PreviewManager.make;
@@ -425,13 +466,94 @@ it.effect("restores persisted tabs across a restart and forgets closed ones", ()
       title: "Channel dashboard",
     });
 
-    yield* second.close({ threadId, tabId: opened.tabId });
+    const closeResult = yield* second.close({ threadId, tabId: opened.tabId });
+    const replaced = yield* second.list({ threadId });
+    expect(closeResult).toBeDefined();
+    if (!closeResult) return;
+    expect(closeResult.closedTabIds).toEqual([opened.tabId]);
+    expect(closeResult.sessions).toEqual(replaced.sessions);
+    expect(closeResult.revision).toBe(replaced.revision);
+    expect(closeResult.serverEpoch).toBe(replaced.serverEpoch);
+    expect(replaced.sessions).toHaveLength(1);
+    expect(replaced.sessions[0]?.tabId).not.toBe(opened.tabId);
+    expect(replaced.sessions[0]?.navStatus._tag).toBe("Idle");
+
     const third = yield* PreviewManager.make;
     const afterClose = yield* third.list({ threadId });
-    expect(afterClose.sessions).toEqual([]);
+    expect(afterClose.sessions).toHaveLength(1);
+    expect(afterClose.sessions[0]?.tabId).toBe(replaced.sessions[0]?.tabId);
+    expect(afterClose.sessions[0]?.navStatus._tag).toBe("Idle");
   }).pipe(
     Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
   ),
+);
+
+it.effect(
+  "orders delayed status persistence before close so a restart cannot resurrect the tab",
+  () =>
+    Effect.gen(function* () {
+      const baseStore = yield* PreviewSessionStore;
+      const persistStarted = yield* Deferred.make<void>();
+      const releasePersist = yield* Deferred.make<void>();
+      const deleteStarted = yield* Deferred.make<void>();
+      const delayedStore = PreviewSessionStore.of({
+        ...baseStore,
+        upsert: (session) =>
+          session.snapshot.navStatus._tag === "Success" &&
+          session.snapshot.navStatus.title === "Delayed status"
+            ? Deferred.succeed(persistStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releasePersist)),
+                Effect.andThen(baseStore.upsert(session)),
+              )
+            : baseStore.upsert(session),
+        deleteSession: (input) =>
+          Deferred.succeed(deleteStarted, undefined).pipe(
+            Effect.andThen(baseStore.deleteSession(input)),
+          ),
+      });
+      const threadId = freshThreadId();
+      const first = yield* PreviewManager.make.pipe(
+        Effect.provideService(PreviewSessionStore, delayedStore),
+      );
+      const opened = yield* first.open({ threadId, url: "https://example.com/" });
+
+      const statusFiber = yield* Effect.forkChild(
+        first.reportStatus({
+          threadId,
+          tabId: opened.tabId,
+          navStatus: {
+            _tag: "Success",
+            url: "https://example.com/ready",
+            title: "Delayed status",
+          },
+          canGoBack: false,
+          canGoForward: false,
+        }),
+        { startImmediately: true },
+      );
+      yield* Deferred.await(persistStarted);
+
+      const closeFiber = yield* Effect.forkChild(first.close({ threadId, tabId: opened.tabId }), {
+        startImmediately: true,
+      });
+      yield* Effect.yieldNow;
+      expect(Option.isNone(yield* Deferred.poll(deleteStarted))).toBe(true);
+
+      yield* Deferred.succeed(releasePersist, undefined);
+      yield* Fiber.join(statusFiber);
+      yield* Fiber.join(closeFiber);
+      expect(Option.isSome(yield* Deferred.poll(deleteStarted))).toBe(true);
+
+      const second = yield* PreviewManager.make.pipe(
+        Effect.provideService(PreviewSessionStore, delayedStore),
+      );
+      const restored = yield* second.list({ threadId });
+      expect(restored.sessions).toHaveLength(1);
+      expect(restored.sessions[0]?.tabId).not.toBe(opened.tabId);
+      expect(restored.sessions[0]?.navStatus._tag).toBe("Idle");
+    }).pipe(
+      Effect.provide(PreviewSessionStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory))),
+    ),
 );
 
 // Regression: tab ids used to come from a process-global counter that reset

@@ -960,6 +960,88 @@ describe("orchestration projector", () => {
     expect(message?.updatedAt).toBe(completeAt);
   });
 
+  it("preserves a line boundary when assistant prose resumes after AGENT_STOP", async () => {
+    const createdAt = "2026-08-25T22:55:15.000Z";
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create-agent-boundary",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "Agent boundary",
+            modelSelection: {
+              provider: ProviderDriverKind.make("grok"),
+              model: "grok-4.6",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const messageId = "assistant:agent-boundary";
+    const firstDelta = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: "2026-08-25T22:55:23.000Z",
+          commandId: "cmd-agent-boundary-stop",
+          payload: {
+            threadId: "thread-1",
+            messageId,
+            role: "assistant",
+            text: "Please test the garment.\n\nAGENT_STOP",
+            turnId: "turn-1",
+            streaming: true,
+            createdAt,
+            updatedAt: "2026-08-25T22:55:23.000Z",
+          },
+        }),
+      ),
+    );
+    const resumedDelta = await Effect.runPromise(
+      projectEvent(
+        firstDelta,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: "2026-08-25T22:55:33.000Z",
+          commandId: "cmd-agent-boundary-resume",
+          payload: {
+            threadId: "thread-1",
+            messageId,
+            role: "assistant",
+            text: "Pinch is working, so I’ll inspect the doors next.",
+            turnId: "turn-1",
+            streaming: true,
+            createdAt,
+            updatedAt: "2026-08-25T22:55:33.000Z",
+          },
+        }),
+      ),
+    );
+
+    expect(resumedDelta.threads[0]?.messages[0]?.text).toBe(
+      "Please test the garment.\n\nAGENT_STOP\n\nPinch is working, so I’ll inspect the doors next.",
+    );
+  });
+
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {
     const createdAt = "2026-02-23T10:00:00.000Z";
     const model = createEmptyReadModel(createdAt);

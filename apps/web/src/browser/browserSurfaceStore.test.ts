@@ -95,6 +95,7 @@ describe("browserSurfaceStore", () => {
           hidden: {
             rect: staleRect,
             visible: false,
+            audible: false,
             interactive: true,
             content: null,
             fittedSourceContent: null,
@@ -106,6 +107,7 @@ describe("browserSurfaceStore", () => {
           active: {
             rect: liveRect,
             visible: true,
+            audible: false,
             interactive: true,
             content: null,
             fittedSourceContent: null,
@@ -136,6 +138,7 @@ describe("browserSurfaceStore", () => {
       rect: liveRect,
       visible: true,
     });
+    liveLease.release();
   });
 
   it("hides a surface when its current lease is released", () => {
@@ -150,6 +153,100 @@ describe("browserSurfaceStore", () => {
       visible: false,
       owner: null,
     });
+  });
+
+  it("lets only an explicitly audible owner carry audio", () => {
+    const tabId = "audible-browser-surface";
+    const rect = { x: 10, y: 20, width: 900, height: 640 };
+    const selectedSidebarLease = acquireBrowserSurface(tabId);
+    selectedSidebarLease.present(rect, true, 0, true, true);
+
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]?.audible).toBe(true);
+
+    const floatingLease = acquireBrowserSurface(tabId, true);
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]?.audible).toBe(true);
+    floatingLease.present(rect, true, 12, false, false);
+
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      audible: true,
+      interactive: true,
+      visible: true,
+    });
+    floatingLease.release();
+    selectedSidebarLease.release();
+  });
+
+  it("does not let a transient floating preview black out the visible sidebar", () => {
+    const tabId = "sidebar-floating-overlap";
+    const sidebarRect = { x: 640, y: 80, width: 720, height: 800 };
+    const floatingRect = { x: 300, y: 120, width: 360, height: 225 };
+    const sidebarLease = acquireBrowserSurface(tabId);
+    sidebarLease.present(sidebarRect, true, 0, true, true);
+
+    const floatingLease = acquireBrowserSurface(tabId, true);
+    expect(floatingLease.present(floatingRect, true, 12, false, false)).toBe(false);
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      rect: sidebarRect,
+      visible: true,
+      audible: true,
+      interactive: true,
+      fitSourceContent: false,
+    });
+
+    floatingLease.release();
+
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      rect: sidebarRect,
+      visible: true,
+      audible: true,
+      interactive: true,
+      fitSourceContent: false,
+    });
+    sidebarLease.release();
+  });
+
+  it("restores a still-mounted floating preview after the sidebar releases", () => {
+    const tabId = "floating-sidebar-restoration";
+    const floatingRect = { x: 300, y: 120, width: 360, height: 225 };
+    const sidebarRect = { x: 640, y: 80, width: 720, height: 800 };
+    const floatingLease = acquireBrowserSurface(tabId, true);
+    floatingLease.present(floatingRect, true, 12, false, false);
+
+    const sidebarLease = acquireBrowserSurface(tabId);
+    sidebarLease.present(sidebarRect, true, 0, true, true);
+    sidebarLease.release();
+
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      rect: floatingRect,
+      visible: true,
+      audible: false,
+      interactive: false,
+      fitSourceContent: true,
+    });
+    floatingLease.release();
+  });
+
+  it("retains a losing floating candidate across repeated layout updates", () => {
+    const tabId = "floating-layout-updates";
+    const sidebarRect = { x: 640, y: 80, width: 720, height: 800 };
+    const firstFloatingRect = { x: 300, y: 120, width: 360, height: 225 };
+    const latestFloatingRect = { x: 320, y: 140, width: 400, height: 250 };
+    const sidebarLease = acquireBrowserSurface(tabId);
+    sidebarLease.present(sidebarRect, true, 0, true, true);
+    const floatingLease = acquireBrowserSurface(tabId, true);
+
+    expect(floatingLease.present(firstFloatingRect, true, 12, false, false)).toBe(false);
+    expect(floatingLease.present(latestFloatingRect, true, 12, false, false)).toBe(false);
+    sidebarLease.release();
+
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      rect: latestFloatingRect,
+      visible: true,
+      audible: false,
+      interactive: false,
+      fitSourceContent: true,
+    });
+    floatingLease.release();
   });
 
   it("clears fitted presentation state when its lease is released", () => {

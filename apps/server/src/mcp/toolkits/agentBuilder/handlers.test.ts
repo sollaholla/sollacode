@@ -137,8 +137,7 @@ const run = <A, E>(
 ) =>
   effect.pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
-    Effect.provide(layer),
-    Effect.provide(configLayer),
+    Effect.provide(Layer.merge(layer, configLayer)),
   );
 
 it.effect("is unreachable outside an Agent Builder chat", () =>

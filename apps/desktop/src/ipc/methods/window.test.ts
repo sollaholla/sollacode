@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 
 import type * as Electron from "electron";
 
@@ -12,6 +14,7 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import {
   getLocalEnvironmentBootstraps,
   getWindowFullscreenState,
+  revealFile,
   writeComposerClipboard,
 } from "./window.ts";
 
@@ -182,5 +185,51 @@ describe("writeComposerClipboard", () => {
         }),
       ),
     );
+  });
+});
+
+describe("revealFile", () => {
+  const provideRevealFile = (input: {
+    readonly exists: boolean;
+    readonly revealedPaths: Array<string>;
+  }) =>
+    Layer.mergeAll(
+      FileSystem.layerNoop({
+        exists: () => Effect.succeed(input.exists),
+      }),
+      Path.layer,
+      Layer.mock(ElectronShell.ElectronShell)({
+        revealFile: (path) =>
+          Effect.sync(() => {
+            input.revealedPaths.push(path);
+          }),
+      }),
+    );
+
+  it.effect("reveals an existing absolute path and reports success", () => {
+    const revealedPaths: Array<string> = [];
+
+    return Effect.gen(function* () {
+      assert.isTrue(yield* revealFile.handler("/tmp/clip.mp4"));
+      assert.deepEqual(revealedPaths, ["/tmp/clip.mp4"]);
+    }).pipe(Effect.provide(provideRevealFile({ exists: true, revealedPaths })));
+  });
+
+  it.effect("reports a missing file without invoking the shell", () => {
+    const revealedPaths: Array<string> = [];
+
+    return Effect.gen(function* () {
+      assert.isFalse(yield* revealFile.handler("/tmp/missing.mp4"));
+      assert.deepEqual(revealedPaths, []);
+    }).pipe(Effect.provide(provideRevealFile({ exists: false, revealedPaths })));
+  });
+
+  it.effect("rejects a relative path before invoking the shell", () => {
+    const revealedPaths: Array<string> = [];
+
+    return Effect.gen(function* () {
+      assert.isFalse(yield* revealFile.handler("relative/clip.mp4"));
+      assert.deepEqual(revealedPaths, []);
+    }).pipe(Effect.provide(provideRevealFile({ exists: true, revealedPaths })));
   });
 });

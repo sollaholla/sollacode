@@ -83,6 +83,7 @@ import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
+import * as PreviewManager from "../src/preview/Manager.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -323,9 +324,13 @@ export const makeOrchestrationIntegrationHarness = (
       RuntimeReceiptBusTest,
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
+    const previewManagerLayer = Layer.mock(PreviewManager.PreviewManager)({
+      list: () => Effect.succeed({ sessions: [], serverEpoch: "integration-test", revision: 0 }),
+    });
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(previewManagerLayer),
     );
     const gitWorkflowLayer = Layer.mock(GitWorkflowService)({
       renameBranch: (input: {

@@ -46,6 +46,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  "close",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -79,6 +80,75 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewport: Schema.optional(PreviewRenderedViewportSize),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
+
+const PreviewAutomationOpenReuseArguments = Schema.Struct({
+  tabId: PreviewTabId,
+  url: BoundedUrl,
+  open: Schema.optional(Schema.Boolean),
+});
+
+const PreviewAutomationOpenNewArguments = Schema.Struct({
+  url: BoundedUrl,
+  reuseExistingTab: Schema.Literal(false),
+  open: Schema.optional(Schema.Boolean),
+});
+
+export const PreviewAutomationOpenTabMatch = Schema.Struct({
+  tabId: PreviewTabId,
+  url: BoundedUrl,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  activeForUser: Schema.Boolean,
+  currentForAgent: Schema.Boolean,
+  reuseCall: Schema.Struct({
+    tool: Schema.Literal("preview_open"),
+    arguments: PreviewAutomationOpenReuseArguments,
+  }),
+});
+export type PreviewAutomationOpenTabMatch = typeof PreviewAutomationOpenTabMatch.Type;
+
+const PreviewAutomationOpenSelectionRequired = Schema.Struct({
+  outcome: Schema.Literal("selection-required"),
+  requestedUrl: BoundedUrl,
+  domain: TrimmedNonEmptyString,
+  matchingTabs: Schema.Array(PreviewAutomationOpenTabMatch),
+  newTabCall: Schema.Struct({
+    tool: Schema.Literal("preview_open"),
+    arguments: PreviewAutomationOpenNewArguments,
+  }),
+  message: Schema.String,
+});
+
+const PreviewAutomationOpenCreated = Schema.Struct({
+  outcome: Schema.Literal("created"),
+  tabId: PreviewTabId,
+  status: PreviewAutomationStatus,
+  message: Schema.String,
+  cleanup: Schema.Struct({
+    tool: Schema.Literal("preview_close"),
+    arguments: Schema.Struct({ tabId: PreviewTabId }),
+  }),
+});
+
+const PreviewAutomationOpenReused = Schema.Struct({
+  outcome: Schema.Literal("reused"),
+  tabId: PreviewTabId,
+  status: PreviewAutomationStatus,
+  message: Schema.String,
+});
+
+/**
+ * Current hosts return an explicit lifecycle outcome. PreviewAutomationStatus
+ * remains in the union so a newly updated server can still decode responses
+ * from desktop hosts that predate tab lifecycle reporting.
+ */
+export const PreviewAutomationOpenResult = Schema.Union([
+  PreviewAutomationOpenSelectionRequired,
+  PreviewAutomationOpenCreated,
+  PreviewAutomationOpenReused,
+  PreviewAutomationStatus,
+]);
+export type PreviewAutomationOpenResult = typeof PreviewAutomationOpenResult.Type;
 
 export const PreviewAutomationOpenInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -117,6 +187,29 @@ export const PreviewAutomationOpenInput = Schema.Struct({
       "Opens the collaborative browser for the current thread. Use preview_navigate afterward when readiness waiting matters.",
   });
 export type PreviewAutomationOpenInput = typeof PreviewAutomationOpenInput.Type;
+
+export const PreviewAutomationCloseInput = Schema.Struct({
+  tabId: Schema.String.check(Schema.isTrimmed())
+    .check(
+      Schema.isNonEmpty({
+        description:
+          "Exact collaborative browser tab to close. Only close a tab created for the current browsing task; never close a reused tab merely as cleanup.",
+      }),
+    )
+    .check(Schema.isMaxLength(128)),
+}).annotate({
+  description: "Closes one explicitly identified collaborative browser tab.",
+});
+export type PreviewAutomationCloseInput = typeof PreviewAutomationCloseInput.Type;
+
+export const PreviewAutomationCloseResult = Schema.Struct({
+  closedTabId: PreviewTabId,
+  /** The surviving active tab, including a blank replacement, or null. */
+  tabId: Schema.NullOr(PreviewTabId),
+  replacementCreated: Schema.Boolean,
+  message: Schema.String,
+});
+export type PreviewAutomationCloseResult = typeof PreviewAutomationCloseResult.Type;
 
 export const BrowserNavigationTarget = Schema.Union([
   Schema.Struct({

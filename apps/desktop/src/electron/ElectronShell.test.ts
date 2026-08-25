@@ -9,6 +9,7 @@ const {
   clipboardWriteMock,
   createFromBufferMock,
   openExternalMock,
+  showItemInFolderMock,
   writeTextMock,
 } = vi.hoisted(() => ({
   clipboardReadHtmlMock: vi.fn(),
@@ -17,12 +18,14 @@ const {
   clipboardWriteMock: vi.fn(),
   createFromBufferMock: vi.fn(),
   openExternalMock: vi.fn(),
+  showItemInFolderMock: vi.fn(),
   writeTextMock: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
   shell: {
     openExternal: openExternalMock,
+    showItemInFolder: showItemInFolderMock,
   },
   clipboard: {
     readHTML: clipboardReadHtmlMock,
@@ -46,6 +49,7 @@ describe("ElectronShell", () => {
     clipboardWriteMock.mockReset();
     createFromBufferMock.mockReset();
     openExternalMock.mockReset();
+    showItemInFolderMock.mockReset();
     writeTextMock.mockReset();
   });
 
@@ -79,6 +83,15 @@ describe("ElectronShell", () => {
       const result = yield* electronShell.openExternal("https://example.com/path");
 
       assert.equal(result, false);
+    }).pipe(Effect.provide(ElectronShell.layer)),
+  );
+
+  it.effect("reveals a validated file in the system file explorer", () =>
+    Effect.gen(function* () {
+      const electronShell = yield* ElectronShell.ElectronShell;
+      yield* electronShell.revealFile("/tmp/clip.mp4");
+
+      assert.deepEqual(showItemInFolderMock.mock.calls, [["/tmp/clip.mp4"]]);
     }).pipe(Effect.provide(ElectronShell.layer)),
   );
 

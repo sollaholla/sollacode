@@ -8,6 +8,15 @@ export type ExternalLinkContextMenuFailureOperation =
   | "open-link-external"
   | "copy-link";
 
+export interface ExternalLinkActivation {
+  readonly button: number;
+  readonly defaultPrevented: boolean;
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+}
+
 const FAILURE_OPERATION_BY_ACTION = {
   "open-in-preview": "open-link-in-preview",
   "open-external": "open-link-external",
@@ -44,6 +53,34 @@ export function resolveExternalWebLinkHost(href: string | undefined): string | n
     return url.hostname || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Handle an ordinary left click ourselves so embedded clients do not depend on
+ * their implementation of target=_blank. Modified clicks remain native so
+ * opening in a new tab/window keeps the platform's normal behavior.
+ */
+export function shouldOpenExternalLinkDirectly(event: ExternalLinkActivation): boolean {
+  return (
+    !event.defaultPrevented &&
+    event.button === 0 &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey
+  );
+}
+
+export async function openExternalLinkDirectly(input: {
+  readonly href: string;
+  readonly openExternal: (href: string) => Promise<void>;
+  readonly reportFailure: (cause: unknown) => void;
+}): Promise<void> {
+  try {
+    await input.openExternal(input.href);
+  } catch (cause) {
+    input.reportFailure(cause);
   }
 }
 

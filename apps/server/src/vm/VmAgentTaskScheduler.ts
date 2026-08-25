@@ -26,6 +26,7 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import { VM_AGENT_TASK_MESSAGE_ID_PREFIX } from "../orchestration/agentModeContinuation.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -132,6 +133,8 @@ export const taskPrompt = (
       criteria,
       "",
       `Requested capabilities: ${delegation.requestedCapabilities.join(", ") || "none"}`,
+      "",
+      T3_BROWSER_CONTROL_POLICY,
       "",
       "This is bounded delegated work. You may not create another agent or side chat. Use agent_collaboration to report notes or questions. Consequential external actions always require explicit human approval. Stay in this environment and use the inherited model; do not escalate to a paid model.",
     ].join("\n");

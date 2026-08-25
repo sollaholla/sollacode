@@ -6,6 +6,7 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -40,15 +41,30 @@ const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const mockAgentCommand = process.execPath;
 
+class SimulatedGrokFinalizationError extends Data.TaggedError("SimulatedGrokFinalizationError")<{
+  readonly message: string;
+}> {}
+
 async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-"));
   const wrapperPath = NodePath.join(dir, "fake-grok.sh");
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");
+  const childCommand = `${JSON.stringify(mockAgentCommand)} ${JSON.stringify(mockAgentPath)} "$@"`;
+  const captureWrapperPid = extraEnv?.T3_ACP_WRAPPER_PID_LOG_PATH
+    ? `echo "$$" > ${JSON.stringify(extraEnv.T3_ACP_WRAPPER_PID_LOG_PATH)}`
+    : "";
+  const launch =
+    extraEnv?.T3_ACP_WRAPPER_IGNORE_SIGTERM === "1"
+      ? `trap '' TERM
+${childCommand}
+while :; do sleep 1; done`
+      : `exec ${childCommand}`;
   const script = `#!/bin/sh
 ${envExports}
-exec ${JSON.stringify(mockAgentCommand)} ${JSON.stringify(mockAgentPath)} "$@"
+${captureWrapperPid}
+${launch}
 `;
   await NodeFSP.writeFile(wrapperPath, script, "utf8");
   await NodeFSP.chmod(wrapperPath, 0o755);
@@ -78,6 +94,16 @@ function waitForFileContent(
       return yield* readAttempt(remainingAttempts - 1);
     });
   return readAttempt(attempts);
+}
+
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 async function readJsonLines(filePath: string) {
@@ -135,7 +161,11 @@ it.effect("preserves ACP acceptance when later local finalization fails", () =>
     const turnId = TurnId.make("turn-post-acceptance-finalization-failure");
     const accepted = { threadId, turnId };
     const result = yield* preserveAcceptedGrokTurn(
-      Effect.fail(new Error("simulated local finalization failure after session/prompt succeeded")),
+      Effect.fail(
+        new SimulatedGrokFinalizationError({
+          message: "simulated local finalization failure after session/prompt succeeded",
+        }),
+      ),
       accepted,
       { threadId, turnId },
     );
@@ -718,9 +748,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }).pipe(TestClock.withLive),
   );
 
-  it.effect("sends two session/cancel notifications so Stop matches the CLI double-enter", () =>
+  it.effect("spaces two session/cancel notifications so Stop matches the CLI double-enter", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-double-cancel");
+      const cancelProtocolTimes: number[] = [];
       const tempDir = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-double-cancel-")),
       );
@@ -731,7 +762,38 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           T3_ACP_REQUEST_LOG_PATH: requestLogPath,
         }),
       );
-      const adapter = yield* makeTestAdapter(wrapperPath);
+      const adapter = yield* makeTestAdapter(wrapperPath, {
+        nativeEventLogger: {
+          filePath: "memory://grok-double-cancel-native-events",
+          write: (record: unknown) =>
+            Effect.sync(() => {
+              const protocolEvent = (
+                record as {
+                  event?: {
+                    kind?: unknown;
+                    payload?: {
+                      direction?: unknown;
+                      stage?: unknown;
+                      payload?: unknown;
+                    };
+                  };
+                }
+              ).event;
+              if (
+                protocolEvent?.kind === "protocol" &&
+                protocolEvent.payload?.direction === "outgoing" &&
+                protocolEvent.payload.stage === "decoded" &&
+                typeof protocolEvent.payload.payload === "object" &&
+                protocolEvent.payload.payload !== null &&
+                "method" in protocolEvent.payload.payload &&
+                protocolEvent.payload.payload.method === "session/cancel"
+              ) {
+                cancelProtocolTimes.push(performance.now());
+              }
+            }),
+          close: () => Effect.void,
+        },
+      });
 
       const firstTurnStarted = yield* Deferred.make<TurnId>();
       const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
@@ -772,9 +834,115 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         );
       });
       assert.isAtLeast(cancelCount, 2);
+      assert.lengthOf(cancelProtocolTimes, 2);
+      assert.isAtLeast(cancelProtocolTimes[1]! - cancelProtocolTimes[0]!, 30);
 
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("finishes interrupted teardown before replacing the Grok session", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-stop-interrupted-during-teardown");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-stop-teardown-")),
+      );
+      const exitLogPath = NodePath.join(tempDir, "exit.log");
+      const wrapperPidPath = NodePath.join(tempDir, "wrapper.pid");
+      const agentPidPath = NodePath.join(tempDir, "agent.pid");
+      const detachedChildPidPath = NodePath.join(tempDir, "detached-child.pid");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          T3_ACP_WRAPPER_PID_LOG_PATH: wrapperPidPath,
+          T3_ACP_PID_LOG_PATH: agentPidPath,
+          T3_ACP_DETACHED_CHILD_PID_LOG_PATH: detachedChildPidPath,
+          T3_ACP_DISABLE_CLOSE_CAPABILITY: "1",
+          T3_ACP_WRAPPER_IGNORE_SIGTERM: "1",
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const wrapperPid = Number((yield* waitForFileContent(wrapperPidPath)).trim());
+      const agentPid = Number((yield* waitForFileContent(agentPidPath)).trim());
+      const detachedChildPid = Number((yield* waitForFileContent(detachedChildPidPath)).trim());
+      assert.isTrue(processIsRunning(wrapperPid));
+      assert.isTrue(processIsRunning(agentPid));
+      assert.isTrue(processIsRunning(detachedChildPid));
+
+      const stoppedSessionExited = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "session.exited" && String(event.threadId) === String(threadId)
+          ? Deferred.succeed(stoppedSessionExited, undefined).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+      yield* waitForFileContent(exitLogPath, 80, "SIGTERM");
+      yield* Fiber.interrupt(stopFiber);
+
+      // Restart while the detached teardown is still waiting to escalate from
+      // SIGTERM. It must join that teardown before installing its replacement;
+      // otherwise the old cleanup can delete the new context by thread id.
+      const restartFiber = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(stoppedSessionExited).pipe(Effect.timeout("4 seconds"));
+      yield* Fiber.join(restartFiber).pipe(Effect.timeout("4 seconds"));
+
+      assert.isFalse(processIsRunning(wrapperPid));
+      assert.isFalse(processIsRunning(agentPid));
+      assert.isFalse(processIsRunning(detachedChildPid));
+      assert.isTrue(yield* adapter.hasSession(threadId));
+      assert.lengthOf(yield* adapter.listSessions(), 1);
+
+      yield* adapter.stopSession(threadId).pipe(Effect.timeout("4 seconds"));
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("closes an advertised ACP session before shutting down its host", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-stop-closes-acp-session");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-session-close-")),
+      );
+      const closeLogPath = NodePath.join(tempDir, "close.log");
+      const detachedChildPidPath = NodePath.join(tempDir, "detached-child.pid");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_CLOSE_SESSION_LOG_PATH: closeLogPath,
+          T3_ACP_DETACHED_CHILD_PID_LOG_PATH: detachedChildPidPath,
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const detachedChildPid = Number((yield* waitForFileContent(detachedChildPidPath)).trim());
+      assert.isTrue(processIsRunning(detachedChildPid));
+
+      yield* adapter.stopSession(threadId).pipe(Effect.timeout("4 seconds"));
+
+      assert.include(yield* waitForFileContent(closeLogPath), "session/close");
+      assert.isFalse(processIsRunning(detachedChildPid));
+      assert.isFalse(yield* adapter.hasSession(threadId));
     }).pipe(TestClock.withLive),
   );
 
@@ -928,7 +1096,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
 
       yield* Fiber.interrupt(runtimeEventsFiber);
       yield* adapter.stopSession(threadId);
-    }),
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("settles the in-flight prompt before emitting completion", () =>

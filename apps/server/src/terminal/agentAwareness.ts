@@ -1,3 +1,5 @@
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
+
 export const SOLLA_TERMINAL_MCP_ENDPOINT_ENV = "SOLLA_TERMINAL_MCP_ENDPOINT";
 export const SOLLA_TERMINAL_MCP_BEARER_TOKEN_ENV = "SOLLA_TERMINAL_MCP_BEARER_TOKEN";
 export const SOLLA_TERMINAL_AGENT_CONTEXT_ENV = "SOLLA_TERMINAL_AGENT_CONTEXT";
@@ -146,7 +148,7 @@ export function terminalAgentContext(input: {
   readonly threadId: string;
   readonly terminalId: string;
 }): string {
-  return `You are running inside Solla Code's integrated terminal, attached to Solla thread ${input.threadId} and terminal ${input.terminalId}. Solla injects a credential-bound t3-code MCP server in memory. Use its collaboration and history tools for parent or sibling chats and persisted transcripts, its terminal tools for live panes, and its preview tools for attached browser surfaces. The server is not expected in filesystem MCP configuration; use the provider-qualified tool names your client exposes and query live state when needed.`;
+  return `You are running inside Solla Code's integrated terminal, attached to Solla thread ${input.threadId} and terminal ${input.terminalId}. Solla injects a credential-bound t3-code MCP server in memory. Use its collaboration and history tools for parent or sibling chats and persisted transcripts, its terminal tools for live panes, and its preview tools for attached browser surfaces. ${T3_BROWSER_CONTROL_POLICY} The server is not expected in filesystem MCP configuration; use the provider-qualified tool names your client exposes and query live state when needed.`;
 }
 
 function terminalPathKey(environment: NodeJS.ProcessEnv): string {

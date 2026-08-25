@@ -1,7 +1,11 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
+import {
+  type AtomCommandConcurrency,
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+} from "./runtime.ts";
 import {
   type ArchiveThreadInput,
   type CreateThreadInput,
@@ -72,6 +76,20 @@ export type {
   UnsnoozeThreadInput,
   UpdateThreadMetadataInput,
 } from "../operations/commands.ts";
+
+type ThreadCommandTarget = {
+  readonly environmentId: string;
+  readonly input: { readonly threadId: string };
+};
+
+/**
+ * Stop commands must be able to overtake a hung command for the same thread.
+ * Putting them in the normal serial lane can strand Stop behind the turn it is
+ * supposed to release, so these control commands intentionally bypass it.
+ */
+export const threadControlCommandConcurrency = {
+  mode: "parallel",
+} as const satisfies AtomCommandConcurrency<ThreadCommandTarget>;
 
 export function createThreadEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<
@@ -174,13 +192,13 @@ export function createThreadEnvironmentAtoms<R, E>(
       label: "environment-data:commands:thread:interrupt-turn",
       execute: (input: InterruptThreadTurnInput) => interruptThreadTurn(input),
       scheduler,
-      concurrency,
+      concurrency: threadControlCommandConcurrency,
     }),
     stopTask: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-task",
       execute: (input: StopThreadTaskInput) => stopThreadTask(input),
       scheduler,
-      concurrency,
+      concurrency: threadControlCommandConcurrency,
     }),
     respondToApproval: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-approval",
@@ -204,7 +222,7 @@ export function createThreadEnvironmentAtoms<R, E>(
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),
       scheduler,
-      concurrency,
+      concurrency: threadControlCommandConcurrency,
     }),
     refreshPlan: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:refresh-plan",

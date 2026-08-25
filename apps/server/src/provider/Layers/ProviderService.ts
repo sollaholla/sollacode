@@ -745,10 +745,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       payload: rawInput,
     });
 
-    // A VM agent's thread gets its identity + "you own a computer" context so the
-    // model knows who it is and to drive its VM with `vm_computer` (mutually
-    // exclusive with side chat). VmAgentStore is optional: absent in unit tests,
-    // where no thread is a VM agent anyway.
+    // A VM agent's thread gets its identity and collaborative-browser context
+    // (mutually exclusive with side chat). VmAgentStore is optional: absent in
+    // unit tests, where no thread is a VM agent anyway.
     const vmAgentIdentity =
       parsed.isSideChat === true
         ? null
@@ -906,7 +905,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
           operation: "ProviderService.interruptTurn",
-          allowRecovery: true,
+          // A control-plane cancel must never spawn or recover a provider just
+          // to stop it. If the binding is gone, the reactor still releases the
+          // local turn authoritatively.
+          allowRecovery: false,
         });
         metricProvider = routed.adapter.provider;
         yield* Effect.annotateCurrentSpan({
@@ -940,7 +942,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.stopTask",
-      allowRecovery: true,
+      allowRecovery: false,
     });
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "stop-task",

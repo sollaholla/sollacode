@@ -41,6 +41,22 @@ const waitForHangingPromptAnnouncement = (
     Stream.runDrain,
   );
 
+describe("descendantProcessGroupsFromPs", () => {
+  it("finds detached descendant groups without targeting the host group", () => {
+    const psOutput = `
+      500 1 500
+      100 500 100
+      101 100 100
+      102 101 102
+      103 102 103
+      104 101 500
+      200 1 200
+    `;
+
+    expect(AcpSessionRuntime.descendantProcessGroupsFromPs(100, 500, psOutput)).toEqual([102, 103]);
+  });
+});
+
 describe("AcpSessionRuntime concurrent prompts", () => {
   it.effect("sends a second prompt while the first is still in flight", () =>
     Effect.gen(function* () {

@@ -172,6 +172,7 @@ interface GrokSessionContext {
   capturedProposedPlanKeys: Set<string>;
   sessionSetupResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["sessionSetupResult"];
   stopped: boolean;
+  stopCompletion: Deferred.Deferred<void> | undefined;
   /** Dedupes task.started/task.completed if Grok emits both session/update and dedicated methods. */
   seenBackgroundTaskKeys: Set<string>;
 }
@@ -298,6 +299,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const makeAcpNativeLoggers = yield* makeAcpNativeLoggerFactory();
 
     const sessions = new Map<ThreadId, GrokSessionContext>();
+    // Session teardown must outlive an interrupted Stop caller. This dedicated
+    // scope stays open until the adapter finalizer has awaited stopAll.
+    const sessionTeardownScope = yield* Scope.make("sequential");
+    yield* Effect.addFinalizer(() => Scope.close(sessionTeardownScope, Exit.void));
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -670,24 +675,59 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     };
 
     const stopSessionInternal = (ctx: GrokSessionContext) =>
-      Effect.gen(function* () {
-        if (ctx.stopped) return;
-        ctx.stopped = true;
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
-        if (ctx.notificationFiber) {
-          yield* Fiber.interrupt(ctx.notificationFiber);
-        }
-        yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
-        sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
-          type: "session.exited",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
-      });
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const teardown = yield* Effect.sync(() => {
+            if (ctx.stopCompletion !== undefined) {
+              return { completion: ctx.stopCompletion, shouldStart: false } as const;
+            }
+            const completion = Deferred.makeUnsafe<void>();
+            // This update is atomic, before the first yield: concurrent callers
+            // all await the same teardown instead of returning early from a
+            // half-stopped context.
+            ctx.stopped = true;
+            ctx.stopCompletion = completion;
+            return { completion, shouldStart: true } as const;
+          });
+          if (teardown.shouldStart) {
+            yield* Effect.gen(function* () {
+              yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
+              yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
+              // `session/close` is the ACP-owned whole-session stop. When Grok
+              // advertises it, the protocol requires all ongoing session work
+              // to be cancelled, including tool shells in their own PGIDs.
+              yield* ctx.acp.closeSession.pipe(Effect.timeout("2 seconds"), Effect.ignore);
+              // Closing the protocol layers alone can wait behind their streams.
+              // Kill the detached provider process group first so teardown is
+              // bounded even when Grok or one of its children ignores SIGTERM.
+              yield* ctx.acp.shutdown;
+              if (ctx.notificationFiber) {
+                yield* Fiber.interrupt(ctx.notificationFiber);
+              }
+              yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
+              if (sessions.get(ctx.threadId) === ctx) {
+                sessions.delete(ctx.threadId);
+              }
+              yield* offerRuntimeEvent({
+                type: "session.exited",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                payload: { exitKind: "graceful" },
+              });
+            }).pipe(
+              Effect.ensuring(Deferred.succeed(teardown.completion, undefined)),
+              Effect.interruptible,
+              Effect.forkIn(sessionTeardownScope),
+            );
+          }
+          // Publishing `stopCompletion` and starting its teardown fiber are one
+          // uninterruptible handoff. Only the caller's wait is interruptible;
+          // otherwise a Stop cancelled between those steps strands every later
+          // Stop/restart on a Deferred no fiber can complete.
+          yield* restore(Deferred.await(teardown.completion));
+        }),
+      );
 
     const startSession: GrokAdapterShape["startSession"] = (input) =>
       withThreadLock(
@@ -712,7 +752,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const grokModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
-          if (existing && !existing.stopped) {
+          if (existing) {
             yield* stopSessionInternal(existing);
           }
 
@@ -999,6 +1039,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             capturedProposedPlanKeys: new Set(),
             sessionSetupResult: started.sessionSetupResult,
             stopped: false,
+            stopCompletion: undefined,
             seenBackgroundTaskKeys: new Set(),
           };
 
@@ -1007,6 +1048,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               Effect.gen(function* () {
                 if (event._tag === "EventStreamBarrier") {
                   yield* Deferred.succeed(event.acknowledge, undefined);
+                  return;
+                }
+                // Stop publishes `ctx.stopped` before its bounded ACP close and
+                // process teardown. Do not let notifications already buffered
+                // on that transport resurrect output or tasks during the gap,
+                // or let an obsolete context write into a replacement thread.
+                // Barriers stay above this gate so teardown drains can finish.
+                const liveContext = sessions.get(ctx.threadId);
+                if (ctx.stopped || (liveContext !== undefined && liveContext !== ctx)) {
                   return;
                 }
                 if (
@@ -1778,7 +1828,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         // Do not wait for the turn lock. sendTurn holds it while draining, and
         // Stop must still be able to kill the ACP process.
         const ctx = sessions.get(threadId);
-        if (!ctx || ctx.stopped) {
+        if (!ctx) {
           return;
         }
         yield* stopSessionInternal(ctx);

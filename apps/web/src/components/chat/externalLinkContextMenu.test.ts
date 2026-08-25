@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { resolveExternalWebLinkHost, showExternalLinkContextMenu } from "./externalLinkContextMenu";
+import {
+  openExternalLinkDirectly,
+  resolveExternalWebLinkHost,
+  shouldOpenExternalLinkDirectly,
+  showExternalLinkContextMenu,
+} from "./externalLinkContextMenu";
 
 function createHarness(selection: "open-in-preview" | "open-external" | "copy-link" | null) {
   const showContextMenu = vi.fn().mockResolvedValue(selection);
@@ -124,5 +129,61 @@ describe("external chat link context menu", () => {
     [undefined, null],
   ])("resolves the external web-link host for %s as %s", (href, expected) => {
     expect(resolveExternalWebLinkHost(href)).toBe(expected);
+  });
+});
+
+describe("external chat link activation", () => {
+  const click = (
+    overrides: Partial<Parameters<typeof shouldOpenExternalLinkDirectly>[0]> = {},
+  ) => ({
+    button: 0,
+    defaultPrevented: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    ...overrides,
+  });
+
+  it("handles an unmodified primary click explicitly", () => {
+    expect(shouldOpenExternalLinkDirectly(click())).toBe(true);
+  });
+
+  it.each([
+    { defaultPrevented: true },
+    { button: 1 },
+    { altKey: true },
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+  ])("leaves modified or already-handled clicks to the platform: %o", (overrides) => {
+    expect(shouldOpenExternalLinkDirectly(click(overrides))).toBe(false);
+  });
+
+  it("dispatches through the app shell instead of relying on target=_blank", async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    const reportFailure = vi.fn();
+
+    await openExternalLinkDirectly({
+      href: "https://example.com/docs",
+      openExternal,
+      reportFailure,
+    });
+
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith("https://example.com/docs");
+    expect(reportFailure).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failed app-shell open", async () => {
+    const cause = new Error("shell rejected link");
+    const reportFailure = vi.fn();
+
+    await openExternalLinkDirectly({
+      href: "https://example.com/docs",
+      openExternal: vi.fn().mockRejectedValue(cause),
+      reportFailure,
+    });
+
+    expect(reportFailure).toHaveBeenCalledExactlyOnceWith(cause);
   });
 });

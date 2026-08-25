@@ -3,6 +3,7 @@ import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
 import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
+import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import { SymbolView } from "../../components/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -898,6 +899,21 @@ function renderFeedEntry(
 
     if (isUser) {
       const enterAnimated = isFreshTimestamp(message.createdAt);
+      if (isBrowserTabCleanupMessageId(message.id)) {
+        return (
+          <Animated.View
+            className="mb-4 items-end"
+            {...(enterAnimated ? { entering: FadeInUp.duration(220) } : {})}
+          >
+            <View className="flex-row items-center gap-1.5 rounded-full border border-neutral-200 bg-neutral-100 px-3 py-1.5 dark:border-white/10 dark:bg-white/[0.06]">
+              <Text className="font-t3-medium text-xs text-foreground-muted">
+                Browser tab cleanup
+              </Text>
+              <SymbolView name="safari" size={13} tintColor={iconSubtleColor} type="monochrome" />
+            </View>
+          </Animated.View>
+        );
+      }
       return (
         <Animated.View
           className="mb-5 items-end"

@@ -55,6 +55,7 @@ import {
 import type {
   DiscoveredLocalServerList,
   PreviewCloseInput,
+  PreviewCloseResult,
   PreviewEvent,
   PreviewListInput,
   PreviewListResult,
@@ -553,6 +554,17 @@ export interface DesktopPreviewTabState {
 export const DesktopPreviewTabIdSchema = Schema.String.check(Schema.isTrimmed()).check(
   Schema.isNonEmpty(),
 );
+
+/**
+ * Desktop preview automation addresses a renderer-local runtime tab id. That
+ * id includes the environment, thread, server epoch, and public preview tab
+ * id, so it can legitimately exceed the public PreviewTabId length bound.
+ */
+export const DesktopPreviewAutomationStatusSchema = Schema.Struct({
+  ...PreviewAutomationStatus.fields,
+  tabId: Schema.NullOr(DesktopPreviewTabIdSchema),
+});
+export type DesktopPreviewAutomationStatus = typeof DesktopPreviewAutomationStatusSchema.Type;
 
 export const DesktopPreviewNavStatusSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("Idle") }),
@@ -1157,7 +1169,8 @@ export interface DesktopBridge {
     readonly filename: string;
     readonly contents: string;
   }) => Promise<string>;
-  revealFile: (path: string) => Promise<void>;
+  /** Returns false when the path is missing or is not absolute on this desktop host. */
+  revealFile: (path: string) => Promise<boolean>;
   writeComposerClipboard: (input: DesktopComposerClipboardInput) => Promise<boolean>;
   setPushToTalkSystemAudioMuted: (muted: boolean) => Promise<boolean>;
   captureRemoteControlFrame: (
@@ -1311,7 +1324,7 @@ export interface DesktopPreviewBridge {
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
   automation: {
-    status: (tabId: string) => Promise<PreviewAutomationStatus>;
+    status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
@@ -1462,7 +1475,7 @@ export interface EnvironmentApi {
     navigate: (input: typeof PreviewNavigateInput.Encoded) => Promise<PreviewSessionSnapshot>;
     resize: (input: typeof PreviewResizeInput.Encoded) => Promise<PreviewSessionSnapshot>;
     refresh: (input: typeof PreviewRefreshInput.Encoded) => Promise<void>;
-    close: (input: typeof PreviewCloseInput.Encoded) => Promise<void>;
+    close: (input: typeof PreviewCloseInput.Encoded) => Promise<PreviewCloseResult | undefined>;
     list: (input: typeof PreviewListInput.Encoded) => Promise<PreviewListResult>;
     reportStatus: (input: typeof PreviewReportStatusInput.Encoded) => Promise<void>;
     automation: {

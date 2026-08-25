@@ -44,9 +44,16 @@ interface Props {
   readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
   readonly bottomInset: number;
+  /** The sidebar tab currently presenting this guest, when one is visible. */
+  readonly activePanelTabId?: string | null;
 }
 
-export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props) {
+export function ThreadPreviewMiniPlayer({
+  threadRef,
+  tabId,
+  bottomInset,
+  activePanelTabId = null,
+}: Props) {
   const rootRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
@@ -220,7 +227,10 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
     }
   };
 
-  if (!snapshot || miniPlayer?.tabId !== tabId) return null;
+  // Automation may request a floating presentation for the tab that is
+  // already open in the sidebar. Do not mount a second surface owner during
+  // the effect that clears that redundant mini-player state.
+  if (!snapshot || miniPlayer?.tabId !== tabId || activePanelTabId === tabId) return null;
 
   return (
     <section
@@ -248,6 +258,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, tabId, bottomInset }: Props
         <BrowserSurfaceSlot
           tabId={runtimeTabId}
           visible={Boolean(desktopOverlay?.hasWebContents)}
+          audible={false}
           cornerRadius={12}
           fitSourceContent
           interactive={false}

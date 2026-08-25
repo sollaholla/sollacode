@@ -12,6 +12,11 @@ export function BrowserSurfaceSlot(props: {
   readonly className?: string;
   readonly fitSourceContent?: boolean;
   /**
+   * Whether this owner may play guest audio. Only the selected, visible browser
+   * tab opts in; floating thumbnails deliberately keep the default false.
+   */
+  readonly audible?: boolean;
+  /**
    * Whether the presented guest accepts pointer input. Defaults to true; the
    * floating mini player passes false so the surface reads as a thumbnail that
    * drags, rather than a live page that swallows the drag.
@@ -26,19 +31,20 @@ export function BrowserSurfaceSlot(props: {
     className,
     fitSourceContent = false,
     interactive = true,
+    audible = false,
   } = props;
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const presentationRef = useRef({ visible, cornerRadius, interactive });
+  const presentationRef = useRef({ visible, cornerRadius, interactive, audible });
   const updateRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element) return;
-    let lease = acquireBrowserSurface(tabId, fitSourceContent);
+    const lease = acquireBrowserSurface(tabId, fitSourceContent);
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
-      const presented = lease.present(
+      lease.present(
         {
           x: Math.round(rect.x),
           y: Math.round(rect.y),
@@ -48,22 +54,8 @@ export function BrowserSurfaceSlot(props: {
         presentation.visible && rect.width > 0 && rect.height > 0,
         presentation.cornerRadius,
         presentation.interactive,
+        presentation.audible,
       );
-      if (presentation.visible && !presented) {
-        lease.release();
-        lease = acquireBrowserSurface(tabId, fitSourceContent);
-        lease.present(
-          {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.max(1, Math.round(rect.width)),
-            height: Math.max(1, Math.round(rect.height)),
-          },
-          rect.width > 0 && rect.height > 0,
-          presentation.cornerRadius,
-          presentation.interactive,
-        );
-      }
     };
     updateRef.current = update;
     update();
@@ -81,9 +73,9 @@ export function BrowserSurfaceSlot(props: {
   }, [fitSourceContent, tabId]);
 
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius, interactive };
+    presentationRef.current = { visible, cornerRadius, interactive, audible };
     updateRef.current?.();
-  }, [cornerRadius, interactive, layoutVersion, visible]);
+  }, [audible, cornerRadius, interactive, layoutVersion, visible]);
 
   return <div ref={elementRef} className={className} data-browser-surface-slot={tabId} />;
 }

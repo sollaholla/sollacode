@@ -42,7 +42,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
@@ -96,6 +96,7 @@ import {
   startupAutoResumeIds,
   STARTUP_RESUME_SIGNED_OFF_REASON,
 } from "../agentModeContinuation.ts";
+import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -358,7 +359,12 @@ export const countContinuationsSinceUserIntent = (
   );
   return messages
     .slice(lastUserIntentIndex + 1)
-    .filter((message) => message.role === "user" && message.inputOrigin === "agent-loop").length;
+    .filter(
+      (message) =>
+        message.role === "user" &&
+        message.inputOrigin === "agent-loop" &&
+        !isBrowserTabCleanupMessageId(message.id),
+    ).length;
 };
 
 /**
@@ -1645,6 +1651,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       }
 
       yield* providerService.stopTask({ threadId, taskId }).pipe(
+        // A provider task RPC is advisory and must not monopolize the ordinary
+        // event worker forever. The task remains visible with a failure if the
+        // provider does not acknowledge it in time.
+        Effect.timeout("5 seconds"),
         Effect.flatMap(() => appendTaskStoppedActivity({ threadId, taskId, createdAt })),
         Effect.catchCause((cause) =>
           appendProviderFailureActivity({
@@ -2134,7 +2144,18 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // a session—not its projected status—is the signal that the provider
       // process still needs the requested stop side effect.
       if (thread.session) {
-        yield* providerService.stopSession({ threadId: thread.id });
+        yield* providerService.stopSession({ threadId: thread.id }).pipe(
+          // A provider stop is best-effort from this reactor: the projection
+          // has already made the session locally stopped. Never let a provider
+          // that ignores cancellation pin this thread's control lane forever.
+          Effect.timeout("5 seconds"),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider session stop did not settle before the deadline", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
       }
 
       yield* setThreadSession({
@@ -3649,6 +3670,27 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
 
     const worker = yield* makeDrainableWorker(processDomainEventSafely);
+    // Cancellation is a control plane. It must not sit behind ordinary work,
+    // and one provider/thread that ignores Stop must not block every other
+    // thread's interrupt. A small serial lane per thread preserves local event
+    // order while allowing independent threads to cancel concurrently.
+    const controlWorkers = new Map<string, DrainableWorker<ProviderIntentEvent>>();
+    const controlWorkerForThread = Effect.fn("controlWorkerForThread")(function* (
+      threadId: ThreadId,
+    ) {
+      const key = String(threadId);
+      const existing = controlWorkers.get(key);
+      if (existing) return existing;
+      const created = yield* makeDrainableWorker(processDomainEventSafely);
+      controlWorkers.set(key, created);
+      return created;
+    });
+    const controlDispatcher = yield* makeDrainableWorker(
+      Effect.fn("dispatchControlEvent")(function* (event: ProviderIntentEvent) {
+        const controlWorker = yield* controlWorkerForThread(event.payload.threadId);
+        yield* controlWorker.enqueue(event);
+      }),
+    );
 
     const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
       yield* threadWorkScheduler.registerHandler("active-turn-recovery", executeActiveTurnRecovery);
@@ -3669,17 +3711,21 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
       const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
         if (
+          event.type === "thread.turn-interrupt-requested" ||
+          event.type === "thread.session-stop-requested"
+        ) {
+          return yield* controlDispatcher.enqueue(event);
+        }
+        if (
           event.type === "thread.runtime-mode-set" ||
           event.type === "thread.meta-updated" ||
           event.type === "thread.forked" ||
           event.type === "thread.message-sent" ||
           event.type === "thread.session-set" ||
           event.type === "thread.turn-start-requested" ||
-          event.type === "thread.turn-interrupt-requested" ||
           event.type === "thread.task-stop-requested" ||
           event.type === "thread.approval-response-requested" ||
           event.type === "thread.user-input-response-requested" ||
-          event.type === "thread.session-stop-requested" ||
           event.type === "thread.plan-refresh-requested"
         ) {
           return yield* worker.enqueue(event);
@@ -3704,7 +3750,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
     return {
       start,
-      drain: worker.drain,
+      drain: Effect.gen(function* () {
+        yield* Effect.all([worker.drain, controlDispatcher.drain], {
+          concurrency: "unbounded",
+        });
+        yield* Effect.forEach(
+          Array.from(controlWorkers.values()),
+          (controlWorker) => controlWorker.drain,
+          { concurrency: "unbounded", discard: true },
+        );
+      }),
     } satisfies ProviderCommandReactorShape;
   });
 

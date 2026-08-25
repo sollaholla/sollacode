@@ -1,7 +1,9 @@
 import * as Effect from "effect/Effect";
 import type {
+  PreviewAutomationCloseResult,
   PreviewAutomationOperation,
   PreviewAutomationOpenInput,
+  PreviewAutomationOpenResult,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeResult,
@@ -63,7 +65,7 @@ const invokeTargeted = <A>(
 const handlers = {
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   preview_open: (input) =>
-    invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+    invokeTargeted<PreviewAutomationOpenResult>("open", normalizePreviewOpenInput(input)),
   preview_navigate: (input) =>
     invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
   preview_resize: (input) =>
@@ -81,6 +83,7 @@ const handlers = {
     invokeTargeted<unknown>("evaluate", input).pipe(Effect.map((result) => result ?? null)),
   preview_wait_for: (input) =>
     invokeTargeted<void>("waitFor", input, input.timeoutMs).pipe(Effect.as(null)),
+  preview_close: (input) => invokeTargeted<PreviewAutomationCloseResult>("close", input),
   preview_recording_start: (input) =>
     invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
   preview_recording_stop: (input) =>

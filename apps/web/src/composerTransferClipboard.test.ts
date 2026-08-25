@@ -8,7 +8,7 @@ import {
   hasTransferableComposerContent,
   persistComposerTransfer,
   planComposerPaste,
-  readClipboardImageFiles,
+  readClipboardFiles,
   readComposerTransferFromClipboard,
   resolveComposerTransferFromClipboard,
   setComposerTransferPersistenceForTest,
@@ -435,13 +435,14 @@ describe("writeComposerTransferToClipboard image bytes", () => {
   });
 });
 
-describe("readClipboardImageFiles", () => {
+describe("readClipboardFiles", () => {
   it("reads a native clipboard bitmap exposed only through DataTransfer.items", () => {
     const png = new File([new Uint8Array([1, 2])], "clipboard.png", { type: "image/png" });
-    const files = readClipboardImageFiles({
+    const files = readClipboardFiles({
       files: [] as unknown as FileList,
       items: [
         {
+          kind: "file",
           type: "image/png",
           getAsFile: () => png,
         },
@@ -453,10 +454,11 @@ describe("readClipboardImageFiles", () => {
 
   it("does not duplicate images represented in both clipboard collections", () => {
     const png = new File([new Uint8Array([1])], "clipboard.png", { type: "image/png" });
-    const files = readClipboardImageFiles({
+    const files = readClipboardFiles({
       files: [png] as unknown as FileList,
       items: [
         {
+          kind: "file",
           type: "image/png",
           getAsFile: () => png,
         },
@@ -464,6 +466,34 @@ describe("readClipboardImageFiles", () => {
     });
 
     expect(files).toEqual([png]);
+  });
+
+  it("preserves a disk-backed non-image exposed through DataTransfer.files", () => {
+    const video = new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" });
+
+    expect(
+      readClipboardFiles({
+        files: [video] as unknown as FileList,
+        items: [] as unknown as DataTransferItemList,
+      }),
+    ).toEqual([video]);
+  });
+
+  it("preserves a non-image exposed only as a file-kind clipboard item", () => {
+    const video = new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" });
+
+    expect(
+      readClipboardFiles({
+        files: [] as unknown as FileList,
+        items: [
+          {
+            kind: "file",
+            type: "video/mp4",
+            getAsFile: () => video,
+          },
+        ] as unknown as DataTransferItemList,
+      }),
+    ).toEqual([video]);
   });
 });
 
@@ -511,10 +541,14 @@ describe("planComposerPaste", () => {
     expect(plan.files).toHaveLength(1);
   });
 
-  it("ignores non-image files so document pastes fall through", () => {
-    const pdf = new File([new Uint8Array([1])], "a.pdf", { type: "application/pdf" });
-    expect(
-      planComposerPaste({ transfer: null, clipboardText: "", clipboardFiles: [pdf] }).handled,
-    ).toBe(false);
+  it("routes non-image files through intake so desktop can turn them into path references", () => {
+    const video = new File([new Uint8Array([1])], "clip.mp4", { type: "video/mp4" });
+    const plan = planComposerPaste({
+      transfer: null,
+      clipboardText: "use this clip",
+      clipboardFiles: [video],
+    });
+
+    expect(plan).toEqual({ handled: true, prompt: "use this clip", files: [video] });
   });
 });

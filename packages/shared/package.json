@@ -199,6 +199,10 @@
       "types": "./src/preview.ts",
       "import": "./src/preview.ts"
     },
+    "./browserTabCleanup": {
+      "types": "./src/browserTabCleanup.ts",
+      "import": "./src/browserTabCleanup.ts"
+    },
     "./previewViewport": {
       "types": "./src/previewViewport.ts",
       "import": "./src/previewViewport.ts"

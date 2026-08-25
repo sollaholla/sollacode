@@ -50,6 +50,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   lazy,
   memo,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
   Suspense,
   useCallback,
@@ -74,6 +75,7 @@ import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
+  canReferenceLocalComposerFiles,
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
@@ -180,6 +182,7 @@ import {
   useThreadPreviewState,
 } from "../previewStateStore";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
+import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInvariant";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { subscribePreviewAction } from "./preview/previewActionBus";
@@ -1854,6 +1857,7 @@ function ChatViewContent(props: ChatViewProps) {
   // Reusing that ref in the recursively mounted side chat lets the last
   // composer to mount steal focus/reset/transcription calls from the other.
   const composerRef = embeddedSideChat ? localComposerRef : (sharedComposerRef ?? localComposerRef);
+  const [isFileDragOverTimeline, setIsFileDragOverTimeline] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -2327,6 +2331,14 @@ function ChatViewContent(props: ChatViewProps) {
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef),
   );
+  const floatingPreviewTabIds = useMemo(() => {
+    const tabIds = new Set<string>();
+    if (activePreviewMiniPlayer) tabIds.add(activePreviewMiniPlayer.tabId);
+    for (const [tabId, desktop] of Object.entries(activePreviewState.desktopByTabId)) {
+      if (desktop.pictureInPicture) tabIds.add(tabId);
+    }
+    return tabIds;
+  }, [activePreviewMiniPlayer, activePreviewState.desktopByTabId]);
   const panelTerminalIds = useMemo(
     () =>
       new Set(
@@ -2370,6 +2382,22 @@ function ChatViewContent(props: ChatViewProps) {
       sessions: activePreviewState.sessions,
     });
   }, [activePreviewState.serverEpoch, activePreviewState.sessions, activeThreadRef]);
+
+  useLayoutEffect(() => {
+    if (!activeThreadRef) return;
+    if (
+      !shouldEnsureBrowserOnlySurface({
+        browserOnly: browserOnlySurfaces,
+        browserAvailable: isPreviewSupportedInRuntime(),
+        panelOpen: rightPanelState.isOpen,
+        surfaceCount: rightPanelState.surfaces.length,
+      })
+    )
+      return;
+    // Agent chats own a browser-only sidebar. Keep a real blank Browser tab in
+    // that column instead of exposing the general-purpose surface chooser.
+    useRightPanelStore.getState().open(activeThreadRef, "preview");
+  }, [activeThreadRef, browserOnlySurfaces, rightPanelState.isOpen, rightPanelState.surfaces]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
@@ -2643,6 +2671,14 @@ function ChatViewContent(props: ChatViewProps) {
   const activeEnvironment =
     activeThread == null ? null : (environmentById.get(activeThread.environmentId) ?? null);
   const activeEnvironmentConnectionPhase = activeEnvironment?.connection.phase ?? "available";
+  const composerEnvironment = environmentById.get(environmentId) ?? null;
+  const canReferenceLocalFiles = canReferenceLocalComposerFiles({
+    hasDesktopPathResolver:
+      typeof window !== "undefined" && typeof window.desktopBridge?.getPathForFile === "function",
+    // Drafts do not have an active thread yet, so resolve against the route's
+    // environment instead of the thread-derived environment.
+    environmentTargetKind: composerEnvironment?.entry.target._tag ?? null,
+  });
   const activeEnvironmentUnavailable =
     activeEnvironment !== null && activeEnvironmentConnectionPhase !== "connected";
   const canQueueLocalMessage = canQueueLocalMessageDuringReconnect({
@@ -4076,6 +4112,33 @@ function ChatViewContent(props: ChatViewProps) {
       focusComposer();
     });
   }, [focusComposer]);
+  const onTimelineFileDragEnter = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    setIsFileDragOverTimeline(true);
+  }, []);
+  const onTimelineFileDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsFileDragOverTimeline(true);
+  }, []);
+  const onTimelineFileDragLeave = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setIsFileDragOverTimeline(false);
+  }, []);
+  const onTimelineFileDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer.types.includes("Files")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setIsFileDragOverTimeline(false);
+      composerRef.current?.addFiles(Array.from(event.dataTransfer.files));
+    },
+    [composerRef],
+  );
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       composerRef.current?.addTerminalContext(selection);
@@ -8330,10 +8393,16 @@ function ChatViewContent(props: ChatViewProps) {
             {/* Messages Wrapper */}
             <div
               aria-busy={showThreadSyncOverlay}
+              data-chat-file-drop-active={isFileDragOverTimeline ? "true" : "false"}
               className={cn(
                 "relative flex min-h-0 flex-1 flex-col",
                 terminalMainSurfaceActive && "hidden",
+                isFileDragOverTimeline && "ring-1 ring-inset ring-primary/70",
               )}
+              onDragEnter={onTimelineFileDragEnter}
+              onDragLeave={onTimelineFileDragLeave}
+              onDragOver={onTimelineFileDragOver}
+              onDrop={onTimelineFileDrop}
             >
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
@@ -8610,6 +8679,7 @@ function ChatViewContent(props: ChatViewProps) {
                             isLocalDraftThread={isLocalDraftThread}
                             forceExpandedOnMobile={forceExpandedMobileComposer && isDraftHeroState}
                             projectSelectionRequired={isLocalDraftThread && activeProject === null}
+                            canReferenceLocalFiles={canReferenceLocalFiles}
                             phase={phase}
                             isInterruptible={isThreadInterruptible}
                             isConnecting={isConnecting}
@@ -8694,7 +8764,6 @@ function ChatViewContent(props: ChatViewProps) {
                             handleRuntimeModeChange={handleRuntimeModeChange}
                             handleInteractionModeChange={handleInteractionModeChange}
                             togglePlanSidebar={togglePlanSidebar}
-                            focusComposer={focusComposer}
                             scheduleComposerFocus={scheduleComposerFocus}
                             setThreadError={setThreadError}
                             onExpandImage={onExpandTimelineImage}
@@ -8753,6 +8822,11 @@ function ChatViewContent(props: ChatViewProps) {
                 threadRef={activeThreadRef}
                 tabId={activePreviewMiniPlayer.tabId}
                 bottomInset={isDraftHeroState ? 0 : floatingFooterBottomInset}
+                activePanelTabId={
+                  previewPanelOpen && activeRightPanelSurface?.kind === "preview"
+                    ? activeRightPanelSurface.resourceId
+                    : null
+                }
               />
             ) : null}
 
@@ -8889,6 +8963,7 @@ function ChatViewContent(props: ChatViewProps) {
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}
           previewSessions={activePreviewState.sessions}
+          floatingPreviewTabIds={floatingPreviewTabIds}
           terminalLabelsById={activeTerminalLabelsById}
           sideChatStatusByThreadId={sideChatStatusByThreadId}
           onActivate={activateRightPanelSurface}
@@ -8927,6 +9002,7 @@ function ChatViewContent(props: ChatViewProps) {
             activeSurfaceId={activeRightPanelSurface?.id ?? null}
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
+            floatingPreviewTabIds={floatingPreviewTabIds}
             terminalLabelsById={activeTerminalLabelsById}
             sideChatStatusByThreadId={sideChatStatusByThreadId}
             onActivate={activateRightPanelSurface}

@@ -254,6 +254,11 @@ describe("ProviderCommandReactor", () => {
       role: "user",
       inputOrigin: "agent-loop",
     });
+    const browserCleanup = (id: string) => ({
+      id: `browser-tab-cleanup-message:${id}`,
+      role: "user",
+      inputOrigin: "agent-loop",
+    });
     const assistant = (id: string) => ({ id, role: "assistant", inputOrigin: null });
 
     it("counts resumes since the last typed message", () => {
@@ -285,6 +290,18 @@ describe("ProviderCommandReactor", () => {
           assistant("a2"),
           resume("r2"),
           resume("r3"),
+        ]),
+      ).toBe(2);
+    });
+
+    it("does not charge browser housekeeping against the continuation budget", () => {
+      expect(
+        countContinuationsSinceUserIntent([
+          typed("m1"),
+          resume("r1"),
+          browserCleanup("thread-1:turn-1"),
+          assistant("cleanup-reply"),
+          resume("r2"),
         ]),
       ).toBe(2);
     });
@@ -363,6 +380,12 @@ describe("ProviderCommandReactor", () => {
     readonly startReactor?: boolean;
     readonly providerSilenceRestartMs?: number;
     readonly providerMidTurnSilenceRestartMs?: number;
+    readonly stopTaskEffect?: (input: {
+      readonly threadId: ThreadId;
+      readonly taskId: RuntimeTaskId;
+    }) => Effect.Effect<void>;
+    readonly interruptTurnEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+    readonly stopSessionEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError | ProviderAdapterProcessError>;
@@ -448,25 +471,36 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
-    const interruptTurn = vi.fn((_: unknown) => Effect.void);
-    const stopTask = vi.fn((_: unknown) => Effect.void);
+    const interruptTurn = vi.fn((rawInput: unknown) => {
+      const interruptInput = rawInput as { readonly threadId: ThreadId };
+      return input?.interruptTurnEffect?.(interruptInput) ?? Effect.void;
+    });
+    const stopTask = vi.fn((rawInput: unknown) => {
+      const stopInput = rawInput as {
+        readonly threadId: ThreadId;
+        readonly taskId: RuntimeTaskId;
+      };
+      return input?.stopTaskEffect?.(stopInput) ?? Effect.void;
+    });
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
-    const stopSession = vi.fn((input: unknown) =>
-      Effect.sync(() => {
-        const threadId =
-          typeof input === "object" && input !== null && "threadId" in input
-            ? (input as { threadId?: ThreadId }).threadId
-            : undefined;
-        if (!threadId) {
-          return;
-        }
-        const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
-        if (index >= 0) {
-          runtimeSessions.splice(index, 1);
-        }
-      }),
-    );
+    const stopSession = vi.fn((rawInput: unknown) => {
+      const threadId =
+        typeof rawInput === "object" && rawInput !== null && "threadId" in rawInput
+          ? (rawInput as { threadId?: ThreadId }).threadId
+          : undefined;
+      if (!threadId) return Effect.void;
+      return (input?.stopSessionEffect?.({ threadId }) ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+            if (index >= 0) {
+              runtimeSessions.splice(index, 1);
+            }
+          }),
+        ),
+      );
+    });
     const forkSessionBinding = vi.fn<NonNullable<ProviderServiceShape["forkSessionBinding"]>>(
       (forkInput) =>
         Effect.succeed({
@@ -4922,6 +4956,170 @@ describe("ProviderCommandReactor", () => {
           (entry.payload as { status?: string } | null)?.status === "stopped",
       ),
     ).toBe(true);
+  });
+
+  it("does not queue a turn interrupt behind a blocked task kill", async () => {
+    const taskStopStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseTaskStop = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      stopTaskEffect: () =>
+        Deferred.succeed(taskStopStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseTaskStop)),
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-control-plane");
+    harness.runtimeSessions.push({
+      threadId,
+      provider: ProviderDriverKind.make("grok"),
+      providerInstanceId: ProviderInstanceId.make("grok"),
+      status: "running",
+      runtimeMode: "approval-required",
+      activeTurnId: turnId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-control-plane-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          providerInstanceId: ProviderInstanceId.make("grok"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.task.stop",
+        commandId: CommandId.make("cmd-control-plane-task-stop"),
+        threadId,
+        taskId: RuntimeTaskId.make("task-blocked"),
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(Deferred.await(taskStopStarted).pipe(Effect.timeout("2 seconds")));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-control-plane-turn-interrupt"),
+        threadId,
+        turnId,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1, 2_000);
+    expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId });
+    expect(harness.stopTask.mock.calls.length).toBe(1);
+
+    await Effect.runPromise(Deferred.succeed(releaseTaskStop, undefined));
+    await harness.drain();
+  });
+
+  it("does not queue one thread's interrupt behind another thread's blocked session stop", async () => {
+    const sessionStopStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseSessionStop = await Effect.runPromise(Deferred.make<void>());
+    const stoppedThreadId = ThreadId.make("thread-1");
+    const interruptedThreadId = ThreadId.make("thread-2");
+    const harness = await createHarness({
+      stopSessionEffect: ({ threadId }) =>
+        threadId === stoppedThreadId
+          ? Deferred.succeed(sessionStopStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseSessionStop)),
+            )
+          : Effect.void,
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const interruptedTurnId = asTurnId("turn-other-control-lane");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-create-other-control-thread"),
+        threadId: interruptedThreadId,
+        projectId: asProjectId("project-1"),
+        title: "Other control thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-code-fast-1",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    for (const [threadId, activeTurnId] of [
+      [stoppedThreadId, null],
+      [interruptedThreadId, interruptedTurnId],
+    ] as const) {
+      harness.runtimeSessions.push({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        providerInstanceId: ProviderInstanceId.make("grok"),
+        status: activeTurnId === null ? "ready" : "running",
+        runtimeMode: "approval-required",
+        ...(activeTurnId === null ? {} : { activeTurnId }),
+        createdAt: now,
+        updatedAt: now,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-set-control-session-${String(threadId)}`),
+          threadId,
+          session: {
+            threadId,
+            status: activeTurnId === null ? "ready" : "running",
+            providerName: "grok",
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            runtimeMode: "approval-required",
+            activeTurnId,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-block-first-control-lane"),
+        threadId: stoppedThreadId,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(Deferred.await(sessionStopStarted).pipe(Effect.timeout("2 seconds")));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-interrupt-other-control-lane"),
+        threadId: interruptedThreadId,
+        turnId: interruptedTurnId,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1, 2_000);
+    expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId: interruptedThreadId });
+
+    await Effect.runPromise(Deferred.succeed(releaseSessionStop, undefined));
+    await harness.drain();
   });
 
   it("settles the task row without calling the provider when no session is live", async () => {

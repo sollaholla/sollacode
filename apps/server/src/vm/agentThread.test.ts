@@ -43,10 +43,7 @@ const makeEngine = () => {
 it.effect("opens one persistent builder thread, greeting exactly once", () =>
   Effect.gen(function* () {
     const engine = makeEngine();
-    const run = openAgentBuilderThread.pipe(
-      Effect.provide(engine.layer),
-      Effect.provide(configLayer),
-    );
+    const run = openAgentBuilderThread.pipe(Effect.provide(Layer.merge(engine.layer, configLayer)));
 
     const first = yield* run;
     assert.strictEqual(first, AGENT_BUILDER_THREAD_ID);

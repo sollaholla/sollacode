@@ -9,6 +9,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../../browserControlPolicy.ts";
 import {
   buildCodexDeveloperInstructions,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
@@ -299,7 +300,7 @@ describe("buildCodexDeveloperInstructions", () => {
 });
 
 describe("T3 browser developer instructions", () => {
-  it("prefers the product-native preview tools in both collaboration modes", () => {
+  it("requires the product-native preview tools in both collaboration modes", () => {
     for (const instructions of [
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
@@ -307,7 +308,9 @@ describe("T3 browser developer instructions", () => {
       NodeAssert.match(instructions, /t3-code/);
       NodeAssert.match(instructions, /preview_status/);
       NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
+      NodeAssert.match(instructions, /selection-required/);
+      NodeAssert.match(instructions, /preview_close/);
+      NodeAssert.ok(instructions.includes(T3_BROWSER_CONTROL_POLICY));
     }
   });
 });

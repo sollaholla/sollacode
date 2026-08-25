@@ -1,5 +1,6 @@
 import type {
   PreviewCloseInput,
+  PreviewCloseResult,
   PreviewSessionSnapshot,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -13,7 +14,7 @@ import {
   resetPreviewStateForTests,
 } from "~/previewStateStore";
 
-import { closePreviewSession } from "./closePreviewSession";
+import { closePreviewSession, reconcileLegacyPreviewClose } from "./closePreviewSession";
 
 const threadRef = {
   environmentId: "local" as ScopedThreadRef["environmentId"],
@@ -41,9 +42,11 @@ describe("closePreviewSession", () => {
     let finishClose: (() => void) | undefined;
     const closePreview = vi.fn(
       (_input: PreviewCloseInput) =>
-        new Promise<ReturnType<typeof AsyncResult.success<void>>>((resolve) => {
-          finishClose = () => resolve(AsyncResult.success(undefined));
-        }),
+        new Promise<ReturnType<typeof AsyncResult.success<PreviewCloseResult | undefined>>>(
+          (resolve) => {
+            finishClose = () => resolve(AsyncResult.success(undefined));
+          },
+        ),
     );
 
     const closing = closePreviewSession({
@@ -75,5 +78,75 @@ describe("closePreviewSession", () => {
     expect(result._tag).toBe("Failure");
     expect(readThreadPreviewState(threadRef).snapshot).toEqual(snapshot);
     expect(readThreadPreviewState(threadRef).sessions).toEqual({ [snapshot.tabId]: snapshot });
+  });
+
+  it("applies the authoritative replacement returned by close", async () => {
+    applyPreviewServerSnapshot(threadRef, snapshot);
+    const replacement: PreviewSessionSnapshot = {
+      ...snapshot,
+      tabId: "tab-replacement",
+      navStatus: { _tag: "Idle" },
+      updatedAt: "2026-06-18T19:01:00.000Z",
+    };
+
+    const result = await closePreviewSession({
+      closePreview: async () =>
+        AsyncResult.success({
+          sessions: [replacement],
+          closedTabIds: [snapshot.tabId],
+          serverEpoch: "epoch-1",
+          revision: 2,
+        }),
+      snapshot,
+      tabId: snapshot.tabId,
+      threadRef,
+    });
+
+    expect(result._tag).toBe("Success");
+    expect(readThreadPreviewState(threadRef).snapshot).toEqual(replacement);
+    expect(readThreadPreviewState(threadRef).sessions).toEqual({
+      [replacement.tabId]: replacement,
+    });
+  });
+
+  it("opens a blank replacement when a legacy void close leaves no server tabs", async () => {
+    applyPreviewServerSnapshot(threadRef, snapshot);
+    const closeResult = await closePreviewSession({
+      closePreview: async () => AsyncResult.success(undefined),
+      snapshot,
+      tabId: snapshot.tabId,
+      threadRef,
+    });
+    expect(closeResult).toEqual(AsyncResult.success(undefined));
+    if (closeResult._tag === "Failure") throw new Error("Expected legacy close success");
+
+    const replacement: PreviewSessionSnapshot = {
+      ...snapshot,
+      tabId: "tab-legacy-replacement",
+      navStatus: { _tag: "Idle" },
+      updatedAt: "2026-06-18T19:02:00.000Z",
+    };
+    const listPreviews = vi.fn(async () =>
+      AsyncResult.success({
+        sessions: [],
+        serverEpoch: "legacy-epoch",
+        revision: 2,
+      }),
+    );
+    const openBlankPreview = vi.fn(async () => AsyncResult.success(replacement));
+
+    await expect(
+      reconcileLegacyPreviewClose({
+        closeResult: closeResult.value,
+        listPreviews,
+        openBlankPreview,
+        threadRef,
+      }),
+    ).resolves.toBe(true);
+    expect(listPreviews).toHaveBeenCalledOnce();
+    expect(openBlankPreview).toHaveBeenCalledOnce();
+    expect(readThreadPreviewState(threadRef).sessions).toEqual({
+      [replacement.tabId]: replacement,
+    });
   });
 });

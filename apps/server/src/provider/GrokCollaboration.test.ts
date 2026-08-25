@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import {
   buildGrokCollaborationInstructions,
   extractCompletedProposedPlans,
@@ -9,10 +10,18 @@ import {
 
 describe("buildGrokCollaborationInstructions", () => {
   it("uses plan instructions only for plan mode", () => {
-    expect(buildGrokCollaborationInstructions("plan")).toContain("Plan Mode");
-    expect(buildGrokCollaborationInstructions("plan")).toContain("<proposed_plan>");
-    expect(buildGrokCollaborationInstructions("default")).toContain("Default Mode");
-    expect(buildGrokCollaborationInstructions("agent")).toContain("Default Mode");
+    const plan = buildGrokCollaborationInstructions("plan");
+    const defaultMode = buildGrokCollaborationInstructions("default");
+    const agent = buildGrokCollaborationInstructions("agent");
+    expect(plan).toContain("Plan Mode");
+    expect(plan).toContain("<proposed_plan>");
+    expect(defaultMode).toContain("Default Mode");
+    expect(agent).toContain("Default Mode");
+    for (const instructions of [plan, defaultMode, agent]) {
+      expect(instructions).toContain(T3_BROWSER_CONTROL_POLICY);
+      expect(instructions).toContain("selection-required");
+      expect(instructions).toContain("preview_close");
+    }
   });
 });
 

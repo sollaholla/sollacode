@@ -23,6 +23,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   ClipboardList,
+  Cast,
   FileDiff,
   Files,
   Globe2,
@@ -95,6 +96,7 @@ interface RightPanelTabsProps {
   activeSurfaceId: string | null;
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  floatingPreviewTabIds: ReadonlySet<string> | undefined;
   terminalLabelsById: ReadonlyMap<string, string>;
   terminalStatusById?: ReadonlyMap<string, TerminalTabStatus>;
   sideChatStatusByThreadId: ReadonlyMap<string, SideChatTabStatus>;
@@ -579,18 +581,28 @@ function PreviewFavicon({ url }: { url: string | null }) {
 function SurfaceIcon({
   surface,
   sessions,
+  floatingPreview,
   sideChatStatus,
   terminalStatus = null,
   theme,
 }: {
   surface: RightPanelSurface;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  floatingPreview: boolean;
   sideChatStatus: SideChatTabStatus | null;
   terminalStatus?: TerminalTabStatus | null;
   theme: "light" | "dark";
 }) {
   switch (surface.kind) {
     case "preview": {
+      if (floatingPreview) {
+        return (
+          <Cast
+            aria-label="Floating browser preview"
+            className="size-3.5 shrink-0 text-sky-500 dark:text-sky-400"
+          />
+        );
+      }
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       const url = !snapshot || snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
       return <PreviewFavicon url={url} />;
@@ -653,6 +665,19 @@ function SurfaceIcon({
   }
 }
 
+export function shouldShowFloatingPreviewIcon(
+  surface: RightPanelSurface,
+  active: boolean,
+  floatingPreviewTabIds: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    !active &&
+    surface.kind === "preview" &&
+    surface.resourceId !== null &&
+    floatingPreviewTabIds?.has(surface.resourceId) === true
+  );
+}
+
 /**
  * One tab, draggable by its label. The close button is deliberately not a drag
  * handle: it is a 16px target whose only job is closing the tab.
@@ -664,6 +689,7 @@ function SortableTab(props: {
   title: string;
   sideChatStatus: SideChatTabStatus | null;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  floatingPreviewTabIds: ReadonlySet<string> | undefined;
   theme: "light" | "dark";
   /** Set while a drag is settling so the trailing click cannot activate a tab. */
   dragSuppressedRef: RefObject<boolean>;
@@ -676,6 +702,11 @@ function SortableTab(props: {
   onRename: (surface: RightPanelSurface, title: string) => void;
   onCancelRename: () => void;
 }) {
+  const floatingPreview = shouldShowFloatingPreviewIcon(
+    props.surface,
+    props.active,
+    props.floatingPreviewTabIds,
+  );
   const {
     attributes,
     listeners,
@@ -714,6 +745,7 @@ function SortableTab(props: {
           <SurfaceIcon
             surface={props.surface}
             sessions={props.sessions}
+            floatingPreview={floatingPreview}
             sideChatStatus={props.sideChatStatus}
             theme={props.theme}
           />
@@ -744,6 +776,7 @@ function SortableTab(props: {
                 <SurfaceIcon
                   surface={props.surface}
                   sessions={props.sessions}
+                  floatingPreview={floatingPreview}
                   sideChatStatus={props.sideChatStatus}
                   theme={props.theme}
                 />
@@ -759,6 +792,11 @@ function SortableTab(props: {
               // signal that it is not an ordinary thread is which panel it
               // happens to be docked in.
               <span className="block text-xs opacity-70">Side chat</span>
+            ) : null}
+            {floatingPreview ? (
+              <span className="block text-xs text-sky-500 dark:text-sky-400">
+                Floating browser preview
+              </span>
             ) : null}
           </TooltipPopup>
         </Tooltip>
@@ -970,6 +1008,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                         : null
                     }
                     sessions={props.previewSessions}
+                    floatingPreviewTabIds={props.floatingPreviewTabIds}
                     theme={resolvedTheme}
                     dragSuppressedRef={dragSuppressedRef}
                     onActivate={props.onActivate}

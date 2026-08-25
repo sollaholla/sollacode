@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
 
 import * as Effect from "effect/Effect";
 
@@ -13,6 +14,10 @@ import type * as AcpSchema from "effect-acp/schema";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
+const pidLogPath = process.env.T3_ACP_PID_LOG_PATH;
+const detachedChildPidLogPath = process.env.T3_ACP_DETACHED_CHILD_PID_LOG_PATH;
+const closeSessionLogPath = process.env.T3_ACP_CLOSE_SESSION_LOG_PATH;
+const disableCloseCapability = process.env.T3_ACP_DISABLE_CLOSE_CAPABILITY === "1";
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
@@ -48,6 +53,21 @@ const permissionOptionIds = {
   rejectOnce: process.env.T3_ACP_REJECT_ONCE_OPTION_ID ?? "reject-once",
 };
 const sessionId = "mock-session-1";
+
+if (pidLogPath) {
+  NodeFS.writeFileSync(pidLogPath, String(process.pid), "utf8");
+}
+let detachedChildPid: number | undefined;
+if (detachedChildPidLogPath) {
+  const detachedChild = NodeChildProcess.spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { detached: true, stdio: "ignore" },
+  );
+  detachedChild.unref();
+  detachedChildPid = detachedChild.pid;
+  NodeFS.writeFileSync(detachedChildPidLogPath, String(detachedChild.pid), "utf8");
+}
 
 const grokAcpModels: ReadonlyArray<AcpSchema.ModelInfo> = [
   { modelId: "grok-build", name: "Grok Build" },
@@ -371,7 +391,7 @@ const program = Effect.gen(function* () {
         protocolVersion: 1,
         agentCapabilities: {
           loadSession: true,
-          sessionCapabilities: { fork: {} },
+          sessionCapabilities: { ...(disableCloseCapability ? {} : { close: {} }), fork: {} },
         },
       };
     }),
@@ -394,6 +414,22 @@ const program = Effect.gen(function* () {
       modes: modeState(),
       models: modelState(),
       configOptions: configOptions(),
+    }),
+  );
+
+  yield* agent.handleCloseSession(() =>
+    Effect.sync(() => {
+      if (closeSessionLogPath) {
+        NodeFS.appendFileSync(closeSessionLogPath, "session/close\n", "utf8");
+      }
+      if (detachedChildPid !== undefined) {
+        try {
+          process.kill(-detachedChildPid, "SIGKILL");
+        } catch {
+          // It already exited; session close has still achieved its contract.
+        }
+      }
+      return {};
     }),
   );
 

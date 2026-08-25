@@ -9,13 +9,19 @@ import {
   PreviewViewportSetting,
 } from "./preview.ts";
 import {
+  PREVIEW_AUTOMATION_OPERATIONS,
+  PREVIEW_AUTOMATION_V1_OPERATIONS,
+  PreviewAutomationCloseInput,
+  PreviewAutomationCloseResult,
   PreviewAutomationHost,
   PreviewAutomationError,
   PreviewAutomationOpenInput,
+  PreviewAutomationOpenResult,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
 } from "./previewAutomation.ts";
+import { WsPreviewCloseRpc } from "./rpc.ts";
 
 const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
 const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
@@ -24,10 +30,43 @@ const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
+const decodeOpenResult = Schema.decodeUnknownSync(PreviewAutomationOpenResult);
+const decodeCloseInput = Schema.decodeUnknownSync(PreviewAutomationCloseInput);
+const decodeCloseResult = Schema.decodeUnknownSync(PreviewAutomationCloseResult);
 const decodeResizeResult = Schema.decodeUnknownSync(PreviewAutomationResizeResult);
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
+
+describe("preview close RPC compatibility", () => {
+  it("proves a legacy Schema.Void client erases the authoritative result", () => {
+    const decodeLegacySuccess = Schema.decodeUnknownSync(Schema.Void);
+
+    expect(decodeLegacySuccess(undefined)).toBeUndefined();
+    expect(
+      decodeLegacySuccess({
+        sessions: [],
+        closedTabIds: [],
+        serverEpoch: "epoch-1",
+        revision: 1,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("lets the current preview.close client accept old void and new results", () => {
+    const decodeCurrentSuccess = Schema.decodeUnknownSync(WsPreviewCloseRpc.successSchema);
+
+    expect(decodeCurrentSuccess(undefined)).toBeUndefined();
+    expect(
+      decodeCurrentSuccess({
+        sessions: [],
+        closedTabIds: ["tab-1"],
+        serverEpoch: "epoch-1",
+        revision: 1,
+      }),
+    ).toMatchObject({ closedTabIds: ["tab-1"], revision: 1 });
+  });
+});
 
 describe("PreviewAutomationOpenInput", () => {
   it("accepts the inline preview visibility flag", () => {
@@ -36,6 +75,103 @@ describe("PreviewAutomationOpenInput", () => {
 
   it("retains the legacy show visibility alias", () => {
     expect(decodeOpenInput({ show: false })).toEqual({ show: false });
+  });
+});
+
+describe("PreviewAutomationOpenResult", () => {
+  const status = {
+    available: true,
+    visible: false,
+    tabId: "tab-youtube",
+    url: "https://www.youtube.com/",
+    title: "YouTube",
+    loading: false,
+  } as const;
+
+  it("describes an existing-domain choice without claiming a selected tab", () => {
+    const result = decodeOpenResult({
+      outcome: "selection-required",
+      requestedUrl: "https://youtube.com/results?q=oldies",
+      domain: "youtube.com",
+      matchingTabs: [
+        {
+          tabId: "tab-youtube",
+          url: "https://www.youtube.com/",
+          title: "YouTube",
+          loading: false,
+          activeForUser: true,
+          currentForAgent: false,
+          reuseCall: {
+            tool: "preview_open",
+            arguments: {
+              tabId: "tab-youtube",
+              url: "https://youtube.com/results?q=oldies",
+              open: false,
+            },
+          },
+        },
+      ],
+      newTabCall: {
+        tool: "preview_open",
+        arguments: {
+          url: "https://youtube.com/results?q=oldies",
+          reuseExistingTab: false,
+          open: false,
+        },
+      },
+      message: "Choose an existing tab or explicitly create a new one.",
+    });
+
+    expect("outcome" in result && result.outcome).toBe("selection-required");
+    if (!("outcome" in result) || result.outcome !== "selection-required") return;
+    expect(result.matchingTabs[0]?.reuseCall.arguments.tabId).toBe("tab-youtube");
+    expect(result.newTabCall.arguments.reuseExistingTab).toBe(false);
+  });
+
+  it("makes cleanup explicit only for a newly created tab", () => {
+    const created = decodeOpenResult({
+      outcome: "created",
+      tabId: "tab-youtube",
+      status,
+      message: "Created tab-youtube; close it when finished.",
+      cleanup: { tool: "preview_close", arguments: { tabId: "tab-youtube" } },
+    });
+    const reused = decodeOpenResult({
+      outcome: "reused",
+      tabId: "tab-youtube",
+      status,
+      message: "Reused tab-youtube; leave it open.",
+    });
+
+    expect(created).toMatchObject({
+      outcome: "created",
+      cleanup: { tool: "preview_close", arguments: { tabId: "tab-youtube" } },
+    });
+    expect(reused).toMatchObject({ outcome: "reused", tabId: "tab-youtube" });
+    expect(reused).not.toHaveProperty("cleanup");
+  });
+
+  it("retains legacy status-only responses for mixed-version desktop hosts", () => {
+    expect(decodeOpenResult(status)).toEqual(status);
+  });
+});
+
+describe("PreviewAutomationCloseInput", () => {
+  it("requires an exact tab and reports the surviving browser tab", () => {
+    expect(decodeCloseInput({ tabId: "tab-created" })).toEqual({ tabId: "tab-created" });
+    expect(() => decodeCloseInput({})).toThrow();
+    expect(
+      decodeCloseResult({
+        closedTabId: "tab-created",
+        tabId: "tab-blank",
+        replacementCreated: true,
+        message: "Closed tab-created and retained blank tab-blank.",
+      }),
+    ).toMatchObject({
+      closedTabId: "tab-created",
+      tabId: "tab-blank",
+      replacementCreated: true,
+    });
   });
 });
 
@@ -167,6 +303,8 @@ describe("PreviewAutomationHost", () => {
         supportedOperations: ["status", "resize"],
       }).supportedOperations,
     ).toEqual(["status", "resize"]);
+    expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("close");
+    expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("close");
   });
 });
 

@@ -842,6 +842,112 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("retries only bounded hidden-tab snapshot capture failures", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const png = Buffer.from("automation-snapshot");
+        const capturePage = vi.fn(async () => ({
+          getSize: () => ({ width: 800, height: 600 }),
+          toPNG: () => png,
+        }));
+        capturePage.mockRejectedValueOnce(new Error("UnknownVizError"));
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: {
+                  url: "https://example.com",
+                  title: "Example",
+                  loading: false,
+                  visibleText: "Example",
+                  interactiveElements: [],
+                },
+              },
+            };
+          }
+          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+          return {};
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          capturePage,
+        } as never);
+
+        yield* manager.createTab("tab_hidden_snapshot");
+        yield* manager.registerWebview("tab_hidden_snapshot", 42);
+        const fiber = yield* manager
+          .automationSnapshot("tab_hidden_snapshot")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+
+        expect(capturePage).toHaveBeenCalledOnce();
+        yield* TestClock.adjust(50);
+        const snapshot = yield* Fiber.join(fiber);
+
+        expect(capturePage).toHaveBeenCalledTimes(2);
+        expect(snapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: png.toString("base64"),
+          width: 800,
+          height: 600,
+        });
+
+        const permanentCause = new Error("UnknownVizError");
+        capturePage.mockRejectedValue(permanentCause);
+        const permanentFiber = yield* manager
+          .automationSnapshot("tab_hidden_snapshot")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(100);
+        const permanentExit = yield* Effect.exit(Fiber.join(permanentFiber));
+
+        expect(capturePage).toHaveBeenCalledTimes(5);
+        expect(Exit.isFailure(permanentExit)).toBe(true);
+        if (Exit.isSuccess(permanentExit)) return;
+        expect(Option.getOrThrow(Cause.findErrorOption(permanentExit.cause))).toMatchObject({
+          _tag: "PreviewOperationError",
+          operation: "automationSnapshot.capturePage",
+          cause: permanentCause,
+        });
+
+        const unrelatedCause = new Error("capture failed");
+        capturePage.mockRejectedValue(unrelatedCause);
+        const unrelatedExit = yield* Effect.exit(manager.automationSnapshot("tab_hidden_snapshot"));
+
+        expect(capturePage).toHaveBeenCalledTimes(6);
+        expect(Exit.isFailure(unrelatedExit)).toBe(true);
+        if (Exit.isSuccess(unrelatedExit)) return;
+        expect(Option.getOrThrow(Cause.findErrorOption(unrelatedExit.cause))).toMatchObject({
+          _tag: "PreviewOperationError",
+          operation: "automationSnapshot.capturePage",
+          cause: unrelatedCause,
+        });
+      }),
+    ),
+  );
+
   effectIt.effect("captures hidden preview recordings independently for concurrent tabs", () =>
     withManager((manager) =>
       Effect.gen(function* () {

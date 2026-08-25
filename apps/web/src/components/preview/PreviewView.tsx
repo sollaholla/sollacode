@@ -663,6 +663,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             key={runtimeTabId}
             tabId={runtimeTabId}
             visible={visible && !isUnreachable}
+            audible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}

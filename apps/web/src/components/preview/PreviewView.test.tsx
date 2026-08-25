@@ -19,11 +19,18 @@ const mocks = vi.hoisted(() => ({
   closePictureInPicture: vi.fn(async (_tabId: string): Promise<void> => undefined),
   pictureInPicture: false,
   showEmptyState: false,
+  surfaceProps: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("~/state/session", () => ({
-  readPreparedConnection: mocks.readPreparedConnection,
-}));
+vi.mock("~/state/session", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    environmentSession: {
+      initialConfigValueAtom: () => Atom.make(null),
+    },
+    readPreparedConnection: mocks.readPreparedConnection,
+  };
+});
 
 vi.mock("~/composerDraftStore", () => ({
   useComposerDraftStore: (
@@ -184,7 +191,12 @@ vi.mock("./PreviewMoreMenu", () => ({
 vi.mock("./PreviewUnreachable", () => ({ PreviewUnreachable: () => null }));
 vi.mock("./ZoomIndicator", () => ({ ZoomIndicator: () => null }));
 vi.mock("./AgentBrowserCursor", () => ({ AgentBrowserCursor: () => null }));
-vi.mock("~/browser/BrowserSurfaceSlot", () => ({ BrowserSurfaceSlot: () => null }));
+vi.mock("~/browser/BrowserSurfaceSlot", () => ({
+  BrowserSurfaceSlot: (props: Record<string, unknown>) => {
+    mocks.surfaceProps.push(props);
+    return null;
+  },
+}));
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
@@ -215,6 +227,7 @@ describe("PreviewView navigation", () => {
     mocks.closePictureInPicture.mockClear();
     mocks.pictureInPicture = false;
     mocks.showEmptyState = false;
+    mocks.surfaceProps.length = 0;
   });
 
   it.each([
@@ -326,5 +339,13 @@ describe("PreviewView navigation", () => {
     await vi.waitFor(() =>
       expect(mocks.closePictureInPicture).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID),
     );
+  });
+
+  it("grants audio only while this browser is the visible sidebar surface", () => {
+    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible={false} />);
+    expect(mocks.surfaceProps.at(-1)?.audible).toBe(false);
+
+    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
+    expect(mocks.surfaceProps.at(-1)?.audible).toBe(true);
   });
 });

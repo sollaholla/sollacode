@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import { buildVmAgentContext, withVmAgentContext } from "./vmAgentContext.ts";
 
 const agent = { name: "Scout", purpose: "Watch the Okta tenant thread" };
@@ -20,6 +21,14 @@ describe("buildVmAgentContext", () => {
     const context = buildVmAgentContext(agent);
     expect(context).toContain("You are Scout");
     expect(context).toContain("Watch the Okta tenant thread");
+  });
+
+  it("requires explicit browser tab reuse and cleanup decisions", () => {
+    const context = buildVmAgentContext(agent);
+    expect(context).toContain(T3_BROWSER_CONTROL_POLICY);
+    expect(context).toContain("selection-required");
+    expect(context).toContain("preview_close");
+    expect(context).toContain("Never close a reused tab merely as cleanup");
   });
 
   it("asks for direction when no purpose is set", () => {

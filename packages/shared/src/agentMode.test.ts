@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  appendAgentStreamText,
   containsAgentStopToken,
   emittedAgentStop,
   extractAgentStopSignoff,
@@ -9,6 +10,38 @@ import {
   sessionNeedsProviderReset,
   shouldAgentContinueAfterReply,
 } from "./agentMode.ts";
+
+describe("appendAgentStreamText", () => {
+  it("separates prose that resumes after a terminal stop token", () => {
+    const text = appendAgentStreamText(
+      "Please test the garment.\n\nAGENT_STOP",
+      "Pinch is working, so I’ll inspect the doors next.",
+    );
+
+    expect(text).toBe(
+      "Please test the garment.\n\nAGENT_STOP\n\nPinch is working, so I’ll inspect the doors next.",
+    );
+    expect(extractAgentStopSignoff(text)).toEqual({
+      hasStop: true,
+      text: "Please test the garment.\n\nPinch is working, so I’ll inspect the doors next.",
+    });
+  });
+
+  it("does not add spacing to ordinary chunks or an existing line break", () => {
+    expect(appendAgentStreamText("Ordinary ", "prose")).toBe("Ordinary prose");
+    expect(appendAgentStreamText("Done. AGENT_STOP", "\nNext line")).toBe(
+      "Done. AGENT_STOP\nNext line",
+    );
+  });
+
+  it("adds the resumed-output boundary only once across later stream chunks", () => {
+    const firstChunk = appendAgentStreamText("Done. AGENT_STOP", "Pinch");
+
+    expect(appendAgentStreamText(firstChunk, " is working.")).toBe(
+      "Done. AGENT_STOP\n\nPinch is working.",
+    );
+  });
+});
 
 describe("extractAgentStopSignoff", () => {
   it.each([

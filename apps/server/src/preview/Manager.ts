@@ -2,8 +2,9 @@
  * In-memory PreviewManager implementation.
  *
  * Sessions are keyed by `(threadId, tabId)`; a single thread can host
- * multiple tabs (browser-style). `open` always creates a new tab — tab
- * lifecycle is owned by the renderer.
+ * multiple tabs (browser-style). `open` always creates a new tab, while
+ * closing the final tab replaces it with a fresh blank tab so an established
+ * thread never loses its browser surface entirely.
  *
  * Events are published via Effect's `PubSub`, so subscriber failures are
  * isolated from the publishing call (a closed WS subscriber queue cannot
@@ -11,6 +12,7 @@
  */
 import {
   type PreviewCloseInput,
+  type PreviewCloseResult,
   type PreviewEvent,
   type PreviewError,
   PreviewInvalidUrlError,
@@ -50,7 +52,9 @@ export class PreviewManager extends Context.Service<
       input: PreviewResizeInput,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly refresh: (input: PreviewRefreshInput) => Effect.Effect<void, PreviewError>;
-    readonly close: (input: PreviewCloseInput) => Effect.Effect<void, PreviewError>;
+    readonly close: (
+      input: PreviewCloseInput,
+    ) => Effect.Effect<PreviewCloseResult | undefined, PreviewError>;
     readonly list: (input: PreviewListInput) => Effect.Effect<PreviewListResult>;
     readonly events: Stream.Stream<PreviewEvent>;
     readonly subscribeEvents: Effect.Effect<PubSub.Subscription<PreviewEvent>, never, Scope.Scope>;
@@ -91,25 +95,10 @@ const sessionsForThread = (
   return out;
 };
 
-const TAB_ID_PATTERN = /^tab_([0-9a-z]+)$/;
-
-/**
- * Next tab id for a thread, derived from the sessions that exist right now —
- * including ones rehydrated from SQLite after a restart. Ids only need to be
- * unique within a thread, and deriving them from live state is the property a
- * process-global counter cannot give across restarts.
- */
-const nextTabIdForThread = (state: ManagerState, threadId: string): string => {
-  let max = 0;
-  for (const session of state.sessions.values()) {
-    if (session.threadId !== threadId) continue;
-    const match = TAB_ID_PATTERN.exec(session.tabId);
-    if (!match) continue;
-    const value = Number.parseInt(match[1] as string, 36);
-    if (Number.isFinite(value) && value > max) max = value;
-  }
-  return `tab_${(max + 1).toString(36)}`;
-};
+// A tab identity is also a cleanup capability. Never derive it from the live
+// set: otherwise closing tab_2 and opening again can reuse tab_2, allowing a
+// delayed close for the old page to destroy the unrelated replacement.
+const createPreviewTabId = (): string => `tab_${NodeCrypto.randomUUID()}`;
 
 const normalizeUrl = (rawUrl: string): Effect.Effect<string, PreviewInvalidUrlError> =>
   Effect.try({
@@ -169,8 +158,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const sessionStore = yield* PreviewSessionStore;
   // Rehydrate tabs persisted by the previous process so a restart does not
   // silently drop every open tab (clients keep their browser surfaces across
-  // restarts and would otherwise render dead webviews). Restored snapshots
-  // keep their stored URL; the renderer re-attaches and reloads the page.
+  // restarts and would otherwise render dead webviews). Restored snapshots,
+  // including blank Idle tabs, keep their stored state; the renderer
+  // re-attaches and reloads pages that have a URL.
   const restoredSessions = yield* sessionStore
     .listAll()
     .pipe(
@@ -180,38 +170,50 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     );
   const restoredState: ManagerState = {
     sessions: new Map(
-      restoredSessions
-        .filter((session) => session.snapshot.navStatus._tag !== "Idle")
-        .map((session) => [
-          compositeKey(session.threadId, session.tabId),
-          {
-            threadId: session.threadId,
-            tabId: session.tabId,
-            snapshot: session.snapshot,
-          } satisfies PreviewSessionState,
-        ]),
+      restoredSessions.map((session) => [
+        compositeKey(session.threadId, session.tabId),
+        {
+          threadId: session.threadId,
+          tabId: session.tabId,
+          snapshot: session.snapshot,
+        } satisfies PreviewSessionState,
+      ]),
     ),
     revision: 0,
   };
   const stateRef = yield* SynchronizedRef.make<ManagerState>(restoredState);
 
+  const listResultForState = (state: ManagerState, threadId: string) => ({
+    sessions: sessionsForThread(state, threadId)
+      .map((session) => session.snapshot)
+      .toSorted((left, right) => left.updatedAt.localeCompare(right.updatedAt)),
+    serverEpoch,
+    revision: state.revision,
+  });
+  const closeResultForState = (
+    state: ManagerState,
+    threadId: string,
+    closedTabIds: ReadonlyArray<string>,
+  ): PreviewCloseResult => ({
+    ...listResultForState(state, threadId),
+    closedTabIds,
+  });
+
   // Durability is best-effort decoration: a persistence hiccup may never fail
   // the live operation that triggered it.
   const persistSnapshot = (snapshot: PreviewSessionSnapshot) =>
-    snapshot.navStatus._tag === "Idle"
-      ? Effect.void
-      : sessionStore
-          .upsert({
-            threadId: snapshot.threadId,
-            tabId: snapshot.tabId,
-            snapshot,
-            updatedAt: snapshot.updatedAt,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("preview.session-persist-failed", { cause }),
-            ),
-          );
+    sessionStore
+      .upsert({
+        threadId: snapshot.threadId,
+        tabId: snapshot.tabId,
+        snapshot,
+        updatedAt: snapshot.updatedAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("preview.session-persist-failed", { cause }),
+        ),
+      );
   const unpersistSession = (threadId: string, tabId: string) =>
     sessionStore
       .deleteSession({ threadId, tabId })
@@ -239,9 +241,15 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const mutateExistingSession = <R, E>(
     threadId: string,
     tabId: string,
-    mutator: (
-      session: PreviewSessionState,
-    ) => Effect.Effect<{ next: PreviewSessionState; emit: PreviewEventDraft | null; result: R }, E>,
+    mutator: (session: PreviewSessionState) => Effect.Effect<
+      {
+        next: PreviewSessionState;
+        emit: PreviewEventDraft | null;
+        persist: boolean;
+        result: R;
+      },
+      E
+    >,
   ): Effect.Effect<R, E | PreviewSessionLookupError> => {
     type ModifyResult =
       | { kind: "fail"; error: PreviewSessionLookupError }
@@ -257,8 +265,14 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       }
       return mutator(session).pipe(
         Effect.flatMap(
-          Effect.fn("PreviewManager.commitMutation")(function* ({ next, emit, result }) {
+          Effect.fn("PreviewManager.commitMutation")(function* ({ next, emit, persist, result }) {
             const revision = emit ? state.revision + 1 : state.revision;
+            // Persistence shares the state mutation's ordering boundary. If a
+            // delayed status write escapes this lock, it can land after close
+            // deletes the row and resurrect that tab on the next restart.
+            if (persist) {
+              yield* persistSnapshot(next.snapshot);
+            }
             if (emit) {
               yield* PubSub.publish(eventsPubSub, {
                 ...emit,
@@ -286,14 +300,13 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     function* (input) {
       const updatedAt = yield* currentIsoTimestamp;
       const url = input.url ? yield* normalizeUrl(input.url) : null;
-      // The tab id is allocated INSIDE the lock, from the thread's live
-      // sessions. A process-global counter here once reset on every server
-      // restart and handed out "tab_1" again, silently replacing the sessions
-      // just rehydrated from SQLite — the user watched restored tabs vanish
-      // one by one as new opens landed on their ids.
+      // Allocate a non-reused identity inside the ordered mutation. A
+      // process-global counter here once reset on every server restart and
+      // handed out "tab_1" again, silently replacing sessions rehydrated from
+      // SQLite.
       const snapshot = yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
         Effect.gen(function* () {
-          const tabId = nextTabIdForThread(state, input.threadId);
+          const tabId = createPreviewTabId();
           const snapshot = url
             ? buildLoadingSnapshot({ threadId: input.threadId, tabId, url, title: "", updatedAt })
             : buildIdleSnapshot({ threadId: input.threadId, tabId, updatedAt });
@@ -304,6 +317,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             tabId,
             snapshot,
           });
+          yield* persistSnapshot(snapshot);
           yield* PubSub.publish(eventsPubSub, {
             type: "opened",
             threadId: input.threadId,
@@ -316,7 +330,6 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           return [snapshot, { sessions, revision }] as const;
         }),
       );
-      yield* persistSnapshot(snapshot);
       return snapshot;
     },
   );
@@ -350,10 +363,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               createdAt: snapshot.updatedAt,
               snapshot,
             },
+            persist: true,
             result: snapshot,
           };
         }),
-      ).pipe(Effect.tap((snapshot) => persistSnapshot(snapshot)));
+      );
     },
   );
 
@@ -396,15 +410,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         return {
           next: { ...session, snapshot },
           emit,
+          persist: snapshot.navStatus._tag === "Success",
           result: snapshot,
         };
       }),
-    ).pipe(
-      Effect.tap((snapshot) =>
-        snapshot.navStatus._tag === "Success" ? persistSnapshot(snapshot) : Effect.void,
-      ),
-      Effect.asVoid,
-    );
+    ).pipe(Effect.asVoid);
   });
 
   const resize: PreviewManager["Service"]["resize"] = Effect.fn("PreviewManager.resize")(
@@ -428,10 +438,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               createdAt: snapshot.updatedAt,
               snapshot,
             },
+            persist: true,
             result: snapshot,
           };
         }),
-      ).pipe(Effect.tap((snapshot) => persistSnapshot(snapshot)));
+      );
     },
   );
 
@@ -440,7 +451,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       // Verify the session exists; the desktop bridge handles the actual reload
       // and will report progress back via `reportStatus`. No event emitted.
       yield* mutateExistingSession(input.threadId, input.tabId, (session) =>
-        Effect.succeed({ next: session, emit: null, result: undefined as void }),
+        Effect.succeed({ next: session, emit: null, persist: false, result: undefined as void }),
       );
     },
   );
@@ -448,7 +459,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const close: PreviewManager["Service"]["close"] = Effect.fn("PreviewManager.close")(
     function* (input) {
       const createdAt = yield* currentIsoTimestamp;
-      const closed = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
+      return yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
         const eventsToEmit: PreviewEvent[] = [];
         const sessions = new Map(state.sessions);
         const targets = input.tabId
@@ -456,6 +467,15 @@ export const make = Effect.gen(function* PreviewManagerMake() {
               (entry): entry is PreviewSessionState => entry !== undefined,
             )
           : sessionsForThread(state, input.threadId);
+        if (targets.length === 0) {
+          if (input.tabId) {
+            return Effect.fail(
+              new PreviewSessionLookupError({ threadId: input.threadId, tabId: input.tabId }),
+            );
+          }
+          return Effect.succeed([closeResultForState(state, input.threadId, []), state] as const);
+        }
+
         let revision = state.revision;
         for (const target of targets) {
           revision += 1;
@@ -469,18 +489,63 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             revision,
           });
         }
-        if (eventsToEmit.length === 0) {
-          return Effect.succeed([targets, state] as const);
-        }
-        return Effect.as(
-          Effect.forEach(eventsToEmit, (event) => PubSub.publish(eventsPubSub, event), {
-            discard: true,
-          }),
-          [targets, { sessions, revision }] as const,
+
+        let replacement: PreviewSessionSnapshot | null = null;
+        const threadStillHasTab = Array.from(sessions.values()).some(
+          (session) => session.threadId === input.threadId,
         );
-      });
-      yield* Effect.forEach(closed, (target) => unpersistSession(target.threadId, target.tabId), {
-        discard: true,
+        if (!threadStillHasTab) {
+          // Allocate from the pre-close state so the replacement can never
+          // reuse the identity of the tab that was just closed.
+          const tabId = createPreviewTabId();
+          replacement = buildIdleSnapshot({
+            threadId: input.threadId,
+            tabId,
+            updatedAt: createdAt,
+          });
+          sessions.set(compositeKey(input.threadId, tabId), {
+            threadId: input.threadId,
+            tabId,
+            snapshot: replacement,
+          });
+          revision += 1;
+          eventsToEmit.push({
+            type: "opened",
+            threadId: input.threadId,
+            tabId,
+            createdAt,
+            serverEpoch,
+            revision,
+            snapshot: replacement,
+          });
+        }
+
+        return Effect.gen(function* () {
+          // Persist close in the same serialized order as the live state.
+          // Besides keeping the blank-tab invariant durable, this prevents a
+          // concurrent older status write or close from re-inserting a row we
+          // have already removed.
+          if (replacement) {
+            yield* persistSnapshot(replacement);
+          }
+          yield* Effect.forEach(
+            targets,
+            (target) => unpersistSession(target.threadId, target.tabId),
+            { discard: true },
+          );
+          yield* Effect.forEach(eventsToEmit, (event) => PubSub.publish(eventsPubSub, event), {
+            discard: true,
+          });
+          const nextState = { sessions, revision };
+          return [
+            closeResultForState(
+              nextState,
+              input.threadId,
+              targets.map((target) => target.tabId),
+            ),
+            nextState,
+          ] as const;
+        });
       });
     },
   );
@@ -488,15 +553,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const list: PreviewManager["Service"]["list"] = Effect.fn("PreviewManager.list")(
     function* (input) {
       return yield* SynchronizedRef.get(stateRef).pipe(
-        Effect.map(
-          (state): PreviewListResult => ({
-            sessions: sessionsForThread(state, input.threadId)
-              .map((s) => s.snapshot)
-              .toSorted((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
-            serverEpoch,
-            revision: state.revision,
-          }),
-        ),
+        Effect.map((state): PreviewListResult => listResultForState(state, input.threadId)),
       );
     },
   );

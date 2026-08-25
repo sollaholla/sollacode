@@ -4406,6 +4406,130 @@ const engineLayer = it.layer(
 );
 
 engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
+  const createAgentThread = (input: {
+    readonly projectId: ProjectId;
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly suffix: string;
+  }) =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make(`cmd-${input.suffix}-project`),
+        projectId: input.projectId,
+        title: `Agent cleanup ${input.suffix}`,
+        workspaceRoot: `/tmp/project-${input.suffix}`,
+        defaultModelSelection: {
+          instanceId: input.providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-${input.suffix}-thread`),
+        threadId: input.threadId,
+        projectId: input.projectId,
+        title: `Agent cleanup ${input.suffix}`,
+        modelSelection: {
+          instanceId: input.providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
+
+  const queueCleanupAfterContinuableTurn = (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly sourceTurnId: TurnId;
+    readonly cleanupMessageId: MessageId;
+    readonly suffix: string;
+  }) =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sourceMessageId = MessageId.make(`message-${input.suffix}-source`);
+      const assistantMessageId = MessageId.make(`assistant-${input.suffix}-source`);
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${input.suffix}-source-start`),
+        threadId: input.threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Continue autonomously.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${input.suffix}-source-running`),
+        threadId: input.threadId,
+        session: {
+          threadId: input.threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: input.providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: input.sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-${input.suffix}-source-delta`),
+        threadId: input.threadId,
+        messageId: assistantMessageId,
+        delta: "This phase is complete and autonomous work remains.",
+        turnId: input.sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`cmd-${input.suffix}-source-complete`),
+        threadId: input.threadId,
+        messageId: assistantMessageId,
+        turnId: input.sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.500Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`browser-tab-cleanup-command:${input.suffix}`),
+        threadId: input.threadId,
+        session: {
+          threadId: input.threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: input.providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        atomicFollowupTurn: {
+          sourceTurnId: input.sourceTurnId,
+          message: {
+            messageId: input.cleanupMessageId,
+            role: "user",
+            text: "Browser tab check: 2 tabs are open.",
+            inputOrigin: "agent-loop",
+            attachments: [],
+          },
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+    });
+
   it.effect("projects dispatched engine events immediately", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;
@@ -4940,6 +5064,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         readonly turnId: TurnId;
         readonly sourceText: string;
         readonly laterUserText?: string;
+        readonly laterUserBeforeAssistant?: boolean;
       }) =>
         Effect.gen(function* () {
           yield* engine.dispatch({
@@ -4972,6 +5097,26 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
             },
             createdAt: "2026-01-01T00:00:02.000Z",
           });
+          const enqueueLaterUser = (text: string) =>
+            engine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make(`cmd-agent-guards-later-user-${input.suffix}`),
+              threadId: input.threadId,
+              message: {
+                messageId: MessageId.make(`message-agent-guards-later-user-${input.suffix}`),
+                role: "user",
+                text,
+                attachments: [],
+              },
+              interactionMode: "agent",
+              runtimeMode: "full-access",
+              createdAt: input.laterUserBeforeAssistant
+                ? "2026-01-01T00:00:02.500Z"
+                : "2026-01-01T00:00:04.000Z",
+            });
+          if (input.laterUserText !== undefined && input.laterUserBeforeAssistant === true) {
+            yield* enqueueLaterUser(input.laterUserText);
+          }
           yield* engine.dispatch({
             type: "thread.message.assistant.delta",
             commandId: CommandId.make(`cmd-agent-guards-delta-${input.suffix}`),
@@ -4989,21 +5134,8 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
             turnId: input.turnId,
             createdAt: "2026-01-01T00:00:03.000Z",
           });
-          if (input.laterUserText !== undefined) {
-            yield* engine.dispatch({
-              type: "thread.turn.start",
-              commandId: CommandId.make(`cmd-agent-guards-later-user-${input.suffix}`),
-              threadId: input.threadId,
-              message: {
-                messageId: MessageId.make(`message-agent-guards-later-user-${input.suffix}`),
-                role: "user",
-                text: input.laterUserText,
-                attachments: [],
-              },
-              interactionMode: "agent",
-              runtimeMode: "full-access",
-              createdAt: "2026-01-01T00:00:04.000Z",
-            });
+          if (input.laterUserText !== undefined && input.laterUserBeforeAssistant !== true) {
+            yield* enqueueLaterUser(input.laterUserText);
           }
           yield* engine.dispatch({
             type: "thread.session.set",
@@ -5039,6 +5171,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         turnId: TurnId.make("turn-agent-user-race-guard"),
         sourceText: "Continue autonomously.",
         laterUserText: "Use this newer direction instead.",
+        laterUserBeforeAssistant: true,
       });
 
       const continuationRows = yield* sql<{ readonly threadId: string }>`
@@ -5049,6 +5182,1193 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       `;
       assert.deepEqual(continuationRows, []);
     }),
+  );
+
+  it.effect(
+    "atomically replaces the completed turn continuation with a housekeeping follow-up",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project-agent-atomic-followup");
+        const threadId = ThreadId.make("thread-agent-atomic-followup");
+        const turnId = TurnId.make("turn-agent-atomic-followup");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const cleanupMessageId = MessageId.make(
+          `browser-tab-cleanup-message:${threadId}:${turnId}`,
+        );
+
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-agent-atomic-followup-project"),
+          projectId,
+          title: "Atomic Agent follow-up",
+          workspaceRoot: "/tmp/project-agent-atomic-followup",
+          defaultModelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-agent-atomic-followup-thread"),
+          threadId,
+          projectId,
+          title: "Atomic Agent follow-up",
+          modelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-agent-atomic-followup-start"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-agent-atomic-followup"),
+            role: "user",
+            text: "Continue autonomously.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-atomic-followup-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-agent-atomic-followup-delta"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-atomic-followup"),
+          delta: "The work continues after this phase.",
+          turnId,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.make("cmd-agent-atomic-followup-complete"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-atomic-followup"),
+          turnId,
+          createdAt: "2026-01-01T00:00:03.500Z",
+        });
+
+        // Settlement and the cleanup turn are one command/transaction. The
+        // projector may briefly insert the ordinary Agent continuation while
+        // applying session-set, but the following turn-start cancels it before
+        // any committed state can be claimed by the scheduler.
+        const cleanupCommand = {
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-atomic-followup-ready"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:04.000Z",
+          },
+          atomicFollowupTurn: {
+            sourceTurnId: turnId,
+            message: {
+              messageId: cleanupMessageId,
+              role: "user",
+              text: "Browser tab check: 2 tabs are open.",
+              inputOrigin: "agent-loop",
+              attachments: [],
+            },
+          },
+          createdAt: "2026-01-01T00:00:04.000Z",
+        } as const;
+        yield* engine.dispatch(cleanupCommand);
+
+        const rows = yield* sql<{
+          readonly kind: string;
+          readonly sourceTurnId: string;
+          readonly state: string;
+        }>`
+          SELECT
+            kind,
+            source_turn_id AS "sourceTurnId",
+            state
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+            AND kind IN ('agent-continuation', 'active-turn-recovery')
+          ORDER BY kind ASC, source_turn_id ASC
+        `;
+        assert.deepEqual(rows, [
+          {
+            kind: "active-turn-recovery",
+            sourceTurnId: `turn-start:${cleanupMessageId}`,
+            state: "pending",
+          },
+          {
+            kind: "active-turn-recovery",
+            sourceTurnId: "turn-start:message-agent-atomic-followup",
+            state: "pending",
+          },
+          {
+            kind: "agent-continuation",
+            sourceTurnId: String(turnId),
+            state: "cancelled",
+          },
+        ]);
+
+        // A crash after the atomic command but before its cleanup receipt is
+        // committed can replay the same provider completion. The deterministic
+        // parent command id must make that replay a no-op, even after the
+        // cleanup turn itself has started.
+        const cleanupTurnId = TurnId.make("turn-agent-atomic-followup-cleanup");
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-atomic-followup-cleanup-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: cleanupTurnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:05.000Z",
+          },
+          createdAt: "2026-01-01T00:00:05.000Z",
+        });
+        yield* engine.dispatch(cleanupCommand);
+
+        const [replayedSession] = yield* sql<{
+          readonly status: string;
+          readonly activeTurnId: string | null;
+        }>`
+          SELECT status, active_turn_id AS "activeTurnId"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(replayedSession, {
+          status: "running",
+          activeTurnId: cleanupTurnId,
+        });
+        const cleanupMessages = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count
+          FROM projection_thread_messages
+          WHERE message_id = ${cleanupMessageId}
+        `;
+        assert.deepEqual(cleanupMessages, [{ count: 1 }]);
+
+        // Stop can land after ingestion planned cleanup but before this atomic
+        // command reaches the decider. The source-turn guard lets lifecycle
+        // settlement through while suppressing the now-stale reminder.
+        const stoppedThreadId = ThreadId.make("thread-agent-atomic-followup-stopped");
+        const stoppedTurnId = TurnId.make("turn-agent-atomic-followup-stopped");
+        const stoppedCleanupMessageId = MessageId.make(
+          `browser-tab-cleanup-message:${stoppedThreadId}:${stoppedTurnId}`,
+        );
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-agent-atomic-followup-stopped-thread"),
+          threadId: stoppedThreadId,
+          projectId,
+          title: "Stopped atomic Agent follow-up",
+          modelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:06.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-agent-atomic-followup-stopped-start"),
+          threadId: stoppedThreadId,
+          message: {
+            messageId: MessageId.make("message-agent-atomic-followup-stopped"),
+            role: "user",
+            text: "Continue autonomously.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:07.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-atomic-followup-stopped-running"),
+          threadId: stoppedThreadId,
+          session: {
+            threadId: stoppedThreadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: stoppedTurnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:08.000Z",
+          },
+          createdAt: "2026-01-01T00:00:08.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-agent-atomic-followup-stopped-interrupt"),
+          threadId: stoppedThreadId,
+          turnId: stoppedTurnId,
+          createdAt: "2026-01-01T00:00:09.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("browser-tab-cleanup-command:stopped-race"),
+          threadId: stoppedThreadId,
+          session: {
+            threadId: stoppedThreadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:10.000Z",
+          },
+          atomicFollowupTurn: {
+            sourceTurnId: stoppedTurnId,
+            message: {
+              messageId: stoppedCleanupMessageId,
+              role: "user",
+              text: "Browser tab check: 2 tabs are open.",
+              inputOrigin: "agent-loop",
+              attachments: [],
+            },
+          },
+          createdAt: "2026-01-01T00:00:10.000Z",
+        });
+
+        const stoppedCleanupMessages = yield* sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count
+          FROM projection_thread_messages
+          WHERE message_id = ${stoppedCleanupMessageId}
+        `;
+        assert.deepEqual(stoppedCleanupMessages, [{ count: 0 }]);
+        const [stoppedSession] = yield* sql<{ readonly status: string }>`
+          SELECT status
+          FROM projection_thread_sessions
+          WHERE thread_id = ${stoppedThreadId}
+        `;
+        assert.deepEqual(stoppedSession, { status: "ready" });
+      }),
+  );
+
+  it.effect("continues exactly once after a successful cleanup turn", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const suffix = "agent-cleanup-positive";
+      const projectId = ProjectId.make(`project-${suffix}`);
+      const threadId = ThreadId.make(`thread-${suffix}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const sourceTurnId = TurnId.make(`turn-${suffix}-source`);
+      const cleanupTurnId = TurnId.make(`turn-${suffix}-cleanup`);
+      const cleanupMessageId = MessageId.make(
+        `browser-tab-cleanup-message:${threadId}:${sourceTurnId}`,
+      );
+      const cleanupAssistantMessageId = MessageId.make(`assistant-${suffix}-cleanup`);
+
+      yield* createAgentThread({
+        projectId,
+        threadId,
+        providerInstanceId,
+        suffix,
+      });
+      yield* queueCleanupAfterContinuableTurn({
+        threadId,
+        providerInstanceId,
+        sourceTurnId,
+        cleanupMessageId,
+        suffix,
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-running`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: cleanupTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-delta`),
+        threadId,
+        messageId: cleanupAssistantMessageId,
+        delta: "Closed the unused browser tabs.",
+        turnId: cleanupTurnId,
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-complete`),
+        threadId,
+        messageId: cleanupAssistantMessageId,
+        turnId: cleanupTurnId,
+        createdAt: "2026-01-01T00:00:06.500Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-ready`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:07.000Z",
+        },
+        createdAt: "2026-01-01T00:00:07.000Z",
+      });
+
+      const pendingContinuations = yield* sql<{ readonly sourceTurnId: string }>`
+        SELECT source_turn_id AS "sourceTurnId"
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+          AND kind = 'agent-continuation'
+          AND state = 'pending'
+      `;
+      assert.deepEqual(pendingContinuations, [{ sourceTurnId: cleanupTurnId }]);
+    }),
+  );
+
+  it.effect("does not continue cleanup behind a real user turn queued before its reply", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const suffix = "agent-cleanup-user-race";
+      const projectId = ProjectId.make(`project-${suffix}`);
+      const threadId = ThreadId.make(`thread-${suffix}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const sourceTurnId = TurnId.make(`turn-${suffix}-source`);
+      const cleanupTurnId = TurnId.make(`turn-${suffix}-cleanup`);
+      const cleanupMessageId = MessageId.make(
+        `browser-tab-cleanup-message:${threadId}:${sourceTurnId}`,
+      );
+      const queuedUserMessageId = MessageId.make(`message-${suffix}-queued-user`);
+      const cleanupAssistantMessageId = MessageId.make(`assistant-${suffix}-cleanup`);
+
+      yield* createAgentThread({
+        projectId,
+        threadId,
+        providerInstanceId,
+        suffix,
+      });
+      yield* queueCleanupAfterContinuableTurn({
+        threadId,
+        providerInstanceId,
+        sourceTurnId,
+        cleanupMessageId,
+        suffix,
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-running`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: cleanupTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+
+      // B is persisted after cleanup C's source, but before C's assistant.
+      // The source-order guard, not the later-than-assistant guard, must win.
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${suffix}-queued-user-start`),
+        threadId,
+        message: {
+          messageId: queuedUserMessageId,
+          role: "user",
+          text: "Use this newer direction next.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:05.500Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-delta`),
+        threadId,
+        messageId: cleanupAssistantMessageId,
+        delta: "Closed the unused browser tabs.",
+        turnId: cleanupTurnId,
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-complete`),
+        threadId,
+        messageId: cleanupAssistantMessageId,
+        turnId: cleanupTurnId,
+        createdAt: "2026-01-01T00:00:06.500Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-cleanup-ready`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:07.000Z",
+        },
+        createdAt: "2026-01-01T00:00:07.000Z",
+      });
+
+      const staleCleanupContinuations = yield* sql<{ readonly state: string }>`
+        SELECT state
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+          AND source_turn_id = ${cleanupTurnId}
+          AND kind = 'agent-continuation'
+      `;
+      assert.deepEqual(staleCleanupContinuations, []);
+      const queuedUserDelivery = yield* sql<{ readonly state: string }>`
+        SELECT state
+        FROM thread_work_obligations
+        WHERE thread_id = ${threadId}
+          AND source_turn_id = ${`turn-start:${queuedUserMessageId}`}
+          AND kind = 'active-turn-recovery'
+      `;
+      assert.deepEqual(queuedUserDelivery, [{ state: "pending" }]);
+    }),
+  );
+
+  it.effect("settles without cleanup when a newer turn becomes active after planning", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const suffix = "agent-cleanup-newer-active";
+      const projectId = ProjectId.make(`project-${suffix}`);
+      const threadId = ThreadId.make(`thread-${suffix}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const sourceTurnId = TurnId.make(`turn-${suffix}-source`);
+      const newerTurnId = TurnId.make(`turn-${suffix}-newer`);
+      const cleanupMessageId = MessageId.make(
+        `browser-tab-cleanup-message:${threadId}:${sourceTurnId}`,
+      );
+
+      yield* createAgentThread({
+        projectId,
+        threadId,
+        providerInstanceId,
+        suffix,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${suffix}-source-start`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`message-${suffix}-source`),
+          role: "user",
+          text: "Begin the source turn.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-source-running`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+
+      const plannedCleanup = {
+        type: "thread.session.set",
+        commandId: CommandId.make(`browser-tab-cleanup-command:${suffix}`),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        atomicFollowupTurn: {
+          sourceTurnId,
+          message: {
+            messageId: cleanupMessageId,
+            role: "user",
+            text: "Browser tab check: 2 tabs are open.",
+            inputOrigin: "agent-loop",
+            attachments: [],
+          },
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      } as const;
+
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${suffix}-newer-start`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`message-${suffix}-newer`),
+          role: "user",
+          text: "A newer turn is now active.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${suffix}-newer-running`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: newerTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      yield* engine.dispatch(plannedCleanup);
+
+      const sessions = yield* sql<{
+        readonly status: string;
+        readonly activeTurnId: string | null;
+      }>`
+        SELECT status, active_turn_id AS "activeTurnId"
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(sessions, [{ status: "ready", activeTurnId: null }]);
+      const cleanupMessages = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM projection_thread_messages
+        WHERE message_id = ${cleanupMessageId}
+      `;
+      assert.deepEqual(cleanupMessages, [{ count: 0 }]);
+    }),
+  );
+
+  it.effect("rejects an atomic follow-up on a non-ready active session", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const suffix = "agent-cleanup-invalid-session";
+      const projectId = ProjectId.make(`project-${suffix}`);
+      const threadId = ThreadId.make(`thread-${suffix}`);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const turnId = TurnId.make(`turn-${suffix}`);
+      const cleanupMessageId = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnId}`);
+
+      yield* createAgentThread({
+        projectId,
+        threadId,
+        providerInstanceId,
+        suffix,
+      });
+      const error = yield* Effect.flip(
+        engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`browser-tab-cleanup-command:${suffix}`),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+          atomicFollowupTurn: {
+            sourceTurnId: turnId,
+            message: {
+              messageId: cleanupMessageId,
+              role: "user",
+              text: "Browser tab check: 2 tabs are open.",
+              inputOrigin: "agent-loop",
+              attachments: [],
+            },
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      assert.strictEqual(error._tag, "OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        assert.include(error.detail, "requires a ready session with no active turn");
+      }
+
+      const projectionRows = yield* sql<{
+        readonly sessionCount: number;
+        readonly messageCount: number;
+      }>`
+        SELECT
+          (SELECT COUNT(*) FROM projection_thread_sessions WHERE thread_id = ${threadId})
+            AS "sessionCount",
+          (SELECT COUNT(*) FROM projection_thread_messages WHERE message_id = ${cleanupMessageId})
+            AS "messageCount"
+      `;
+      assert.deepEqual(projectionRows, [{ sessionCount: 0, messageCount: 0 }]);
+    }),
+  );
+
+  it.effect("does not queue a continuation behind cleanup when an older user turn runs first", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-agent-cleanup-fifo");
+      const threadId = ThreadId.make("thread-agent-cleanup-fifo");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const turnA = TurnId.make("turn-agent-cleanup-fifo-a");
+      const turnB = TurnId.make("turn-agent-cleanup-fifo-b");
+      const messageB = MessageId.make("message-agent-cleanup-fifo-b");
+      const cleanupMessage = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnA}`);
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-project"),
+        projectId,
+        title: "Agent cleanup FIFO",
+        workspaceRoot: "/tmp/project-agent-cleanup-fifo",
+        defaultModelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-thread"),
+        threadId,
+        projectId,
+        title: "Agent cleanup FIFO",
+        modelSelection: {
+          instanceId: providerInstanceId,
+          model: "gpt-5.6-sol",
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-a-start"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-agent-cleanup-fifo-a"),
+          role: "user",
+          text: "Begin A and continue autonomously.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-a-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: turnA,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+
+      // B is a real user turn already waiting while A is still running.
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-b-start"),
+        threadId,
+        message: {
+          messageId: messageB,
+          role: "user",
+          text: "Do B next.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-a-delta"),
+        threadId,
+        messageId: MessageId.make("assistant-agent-cleanup-fifo-a"),
+        delta: "A is complete and autonomous work remains.",
+        turnId: turnA,
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-a-complete"),
+        threadId,
+        messageId: MessageId.make("assistant-agent-cleanup-fifo-a"),
+        turnId: turnA,
+        createdAt: "2026-01-01T00:00:04.500Z",
+      });
+
+      // A's successful settle queues cleanup C atomically. B remains ahead
+      // of C because both are durable real/synthetic turn deliveries.
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("browser-tab-cleanup-command:agent-cleanup-fifo-a"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        atomicFollowupTurn: {
+          sourceTurnId: turnA,
+          message: {
+            messageId: cleanupMessage,
+            role: "user",
+            text: "Browser tab check: 2 tabs are open.",
+            inputOrigin: "agent-loop",
+            attachments: [],
+          },
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      });
+
+      const queuedDeliveries = yield* sql<{
+        readonly sourceTurnId: string;
+        readonly state: string;
+      }>`
+          SELECT source_turn_id AS "sourceTurnId", state
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+            AND kind = 'active-turn-recovery'
+            AND source_turn_id IN (
+              ${`turn-start:${messageB}`},
+              ${`turn-start:${cleanupMessage}`}
+            )
+          ORDER BY created_at ASC
+        `;
+      assert.deepEqual(queuedDeliveries, [
+        { sourceTurnId: `turn-start:${messageB}`, state: "pending" },
+        { sourceTurnId: `turn-start:${cleanupMessage}`, state: "pending" },
+      ]);
+
+      // B runs first and finishes successfully. C's prompt is older than B's
+      // assistant message, so only the durable-work guard can keep a stale B
+      // continuation from being appended behind C.
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-b-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: turnB,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:06.000Z",
+        },
+        createdAt: "2026-01-01T00:00:06.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-b-delta"),
+        threadId,
+        messageId: MessageId.make("assistant-agent-cleanup-fifo-b"),
+        delta: "B is complete and autonomous work remains.",
+        turnId: turnB,
+        createdAt: "2026-01-01T00:00:07.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-b-complete"),
+        threadId,
+        messageId: MessageId.make("assistant-agent-cleanup-fifo-b"),
+        turnId: turnB,
+        createdAt: "2026-01-01T00:00:07.500Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agent-cleanup-fifo-b-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:08.000Z",
+        },
+        createdAt: "2026-01-01T00:00:08.000Z",
+      });
+
+      const staleContinuation = yield* sql<{ readonly state: string }>`
+          SELECT state
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+            AND kind = 'agent-continuation'
+            AND source_turn_id = ${turnB}
+        `;
+      assert.deepEqual(staleContinuation, []);
+    }),
+  );
+
+  it.effect(
+    "does not let interleaved cleanup replies restart an Agent after the latest real turn stops",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const sql = yield* SqlClient.SqlClient;
+        const projectId = ProjectId.make("project-agent-cleanup-stop-chain");
+        const threadId = ThreadId.make("thread-agent-cleanup-stop-chain");
+        const providerInstanceId = ProviderInstanceId.make("codex");
+        const turnA = TurnId.make("turn-agent-cleanup-stop-chain-a");
+        const turnB = TurnId.make("turn-agent-cleanup-stop-chain-b");
+        const cleanupTurnC = TurnId.make("turn-agent-cleanup-stop-chain-c");
+        const cleanupTurnD = TurnId.make("turn-agent-cleanup-stop-chain-d");
+        const messageA = MessageId.make("message-agent-cleanup-stop-chain-a");
+        const messageB = MessageId.make("message-agent-cleanup-stop-chain-b");
+        const cleanupMessageC = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnA}`);
+        const cleanupMessageD = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnB}`);
+
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-project"),
+          projectId,
+          title: "Agent cleanup stop chain",
+          workspaceRoot: "/tmp/project-agent-cleanup-stop-chain",
+          defaultModelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-thread"),
+          threadId,
+          projectId,
+          title: "Agent cleanup stop chain",
+          modelSelection: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.6-sol",
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-a-start"),
+          threadId,
+          message: {
+            messageId: messageA,
+            role: "user",
+            text: "Start A and continue autonomously.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-a-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: turnA,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-start"),
+          threadId,
+          message: {
+            messageId: messageB,
+            role: "user",
+            text: "Do B next.",
+            attachments: [],
+          },
+          interactionMode: "agent",
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-a-delta"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-a"),
+          delta: "A is done and the loop should continue.",
+          turnId: turnA,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-a-complete"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-a"),
+          turnId: turnA,
+          createdAt: "2026-01-01T00:00:04.500Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("browser-tab-cleanup-command:agent-cleanup-stop-chain-a"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:05.000Z",
+          },
+          atomicFollowupTurn: {
+            sourceTurnId: turnA,
+            message: {
+              messageId: cleanupMessageC,
+              role: "user",
+              text: "Browser tab check: 3 tabs are open.",
+              inputOrigin: "agent-loop",
+              attachments: [],
+            },
+          },
+          createdAt: "2026-01-01T00:00:05.000Z",
+        });
+
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: turnB,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:06.000Z",
+          },
+          createdAt: "2026-01-01T00:00:06.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-delta"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-b"),
+          delta: "B is complete.\n\nAGENT_STOP",
+          turnId: turnB,
+          createdAt: "2026-01-01T00:00:07.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-complete"),
+          threadId,
+          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-b"),
+          turnId: turnB,
+          createdAt: "2026-01-01T00:00:07.500Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("browser-tab-cleanup-command:agent-cleanup-stop-chain-b"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:08.000Z",
+          },
+          atomicFollowupTurn: {
+            sourceTurnId: turnB,
+            message: {
+              messageId: cleanupMessageD,
+              role: "user",
+              text: "Browser tab check: 2 tabs are open.",
+              inputOrigin: "agent-loop",
+              attachments: [],
+            },
+          },
+          createdAt: "2026-01-01T00:00:08.000Z",
+        });
+
+        for (const cleanup of [
+          {
+            suffix: "c",
+            turnId: cleanupTurnC,
+            assistantMessageId: MessageId.make("assistant-agent-cleanup-stop-chain-c"),
+            runningAt: "2026-01-01T00:00:09.000Z",
+            replyAt: "2026-01-01T00:00:10.000Z",
+            completeAt: "2026-01-01T00:00:10.500Z",
+            readyAt: "2026-01-01T00:00:11.000Z",
+          },
+          {
+            suffix: "d",
+            turnId: cleanupTurnD,
+            assistantMessageId: MessageId.make("assistant-agent-cleanup-stop-chain-d"),
+            runningAt: "2026-01-01T00:00:12.000Z",
+            replyAt: "2026-01-01T00:00:13.000Z",
+            completeAt: "2026-01-01T00:00:13.500Z",
+            readyAt: "2026-01-01T00:00:14.000Z",
+          },
+        ] as const) {
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-agent-cleanup-stop-chain-${cleanup.suffix}-running`),
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "codex",
+              providerInstanceId,
+              runtimeMode: "full-access",
+              activeTurnId: cleanup.turnId,
+              lastError: null,
+              updatedAt: cleanup.runningAt,
+            },
+            createdAt: cleanup.runningAt,
+          });
+          yield* engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: CommandId.make(`cmd-agent-cleanup-stop-chain-${cleanup.suffix}-delta`),
+            threadId,
+            messageId: cleanup.assistantMessageId,
+            delta: "Closed the unused browser tabs.",
+            turnId: cleanup.turnId,
+            createdAt: cleanup.replyAt,
+          });
+          yield* engine.dispatch({
+            type: "thread.message.assistant.complete",
+            commandId: CommandId.make(`cmd-agent-cleanup-stop-chain-${cleanup.suffix}-complete`),
+            threadId,
+            messageId: cleanup.assistantMessageId,
+            turnId: cleanup.turnId,
+            createdAt: cleanup.completeAt,
+          });
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-agent-cleanup-stop-chain-${cleanup.suffix}-ready`),
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "codex",
+              providerInstanceId,
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: cleanup.readyAt,
+            },
+            createdAt: cleanup.readyAt,
+          });
+        }
+
+        const pendingContinuations = yield* sql<{ readonly sourceTurnId: string }>`
+          SELECT source_turn_id AS "sourceTurnId"
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+            AND kind = 'agent-continuation'
+            AND state = 'pending'
+        `;
+        assert.deepEqual(pendingContinuations, []);
+      }),
   );
 
   it.effect(
@@ -6206,6 +7526,55 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           WHERE thread_id = ${threadId}
         `;
         assert.deepEqual(pendingWork, [{ kind: null, state: null }]);
+      }),
+    );
+
+    it.effect("does not synthesize Agent continuation from a completed cleanup turn at boot", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-completed-browser-cleanup";
+        const turnId = "turn-completed-browser-cleanup";
+        const cleanupMessageId = `browser-tab-cleanup-message:${threadId}:source-turn`;
+
+        yield* seedThread({
+          threadId,
+          turnId,
+          assistantMessageId: "assistant-completed-browser-cleanup",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "ready",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "Closed the unused browser tabs.",
+          pendingMessageId: cleanupMessageId,
+        });
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, input_origin,
+            is_streaming, created_at, updated_at
+          ) VALUES (
+            ${cleanupMessageId}, ${threadId}, ${turnId}, 'user',
+            'Browser tab check: 2 tabs are open.', 'agent-loop',
+            0, '2026-03-02T10:00:01.000Z', '2026-03-02T10:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET updated_at = '2026-03-02T10:00:04.000Z'
+          WHERE thread_id = ${threadId}
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const continuations = yield* sql<{ readonly state: string }>`
+          SELECT state
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+            AND kind = 'agent-continuation'
+        `;
+        assert.deepEqual(continuations, []);
       }),
     );
 

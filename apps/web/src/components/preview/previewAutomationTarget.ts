@@ -5,6 +5,68 @@ interface PreviewAutomationSessionIndex {
   readonly sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
 }
 
+export interface PreviewAutomationDomainTab {
+  readonly tabId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly loading: boolean;
+}
+
+export type PreviewAutomationClosePlan =
+  | {
+      readonly outcome: "already-closed";
+      readonly activeTabId: string | null;
+    }
+  | {
+      readonly outcome: "close";
+      readonly snapshot: PreviewSessionSnapshot;
+      readonly previousSessionCount: number;
+    };
+
+const isLoopbackHostname = (hostname: string): boolean =>
+  hostname === "localhost" ||
+  hostname.endsWith(".localhost") ||
+  hostname.startsWith("127.") ||
+  hostname === "[::1]";
+
+export function previewAutomationDomainKey(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    const normalizedHostname = parsed.hostname
+      .toLowerCase()
+      .replace(/\.$/, "")
+      .replace(/^www\./, "");
+    return isLoopbackHostname(normalizedHostname) && parsed.port
+      ? `${normalizedHostname}:${parsed.port}`
+      : normalizedHostname;
+  } catch {
+    return null;
+  }
+}
+
+export function findPreviewAutomationDomainTabs(
+  state: PreviewAutomationSessionIndex,
+  requestedUrl: string,
+): readonly PreviewAutomationDomainTab[] {
+  const requestedDomain = previewAutomationDomainKey(requestedUrl);
+  if (!requestedDomain) return [];
+  return Object.values(state.sessions)
+    .flatMap((session): PreviewAutomationDomainTab[] => {
+      if (session.navStatus._tag === "Idle") return [];
+      if (previewAutomationDomainKey(session.navStatus.url) !== requestedDomain) return [];
+      return [
+        {
+          tabId: session.tabId,
+          url: session.navStatus.url,
+          title: session.navStatus.title,
+          loading: session.navStatus._tag === "Loading",
+        },
+      ];
+    })
+    .toSorted((left, right) => left.tabId.localeCompare(right.tabId));
+}
+
 export function needsPreviewAutomationSessionSync(
   state: PreviewAutomationSessionIndex,
   requestedTabId: string | undefined,
@@ -22,6 +84,21 @@ export function resolvePreviewAutomationTarget(
 ): { readonly tabId: string | null; readonly snapshot: PreviewSessionSnapshot | null } {
   const snapshot = requestedTabId ? (state.sessions[requestedTabId] ?? null) : state.snapshot;
   return { tabId: snapshot?.tabId ?? null, snapshot };
+}
+
+/** Resolve a close only after the caller has reconciled an authoritative list. */
+export function resolvePreviewAutomationClosePlan(
+  state: PreviewAutomationSessionIndex,
+  tabId: string,
+): PreviewAutomationClosePlan {
+  const snapshot = state.sessions[tabId];
+  return snapshot
+    ? {
+        outcome: "close",
+        snapshot,
+        previousSessionCount: Object.keys(state.sessions).length,
+      }
+    : { outcome: "already-closed", activeTabId: state.snapshot?.tabId ?? null };
 }
 
 export function resolvePreviewAutomationOpenTab(

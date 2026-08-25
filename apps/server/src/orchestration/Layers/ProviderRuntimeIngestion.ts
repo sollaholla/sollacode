@@ -7,6 +7,7 @@ import {
   MessageId,
   type OrchestrationEvent,
   type OrchestrationMessage,
+  type OrchestrationThreadShell,
   type OrchestrationProposedPlanId,
   CheckpointRef,
   isToolLifecycleItemType,
@@ -28,11 +29,19 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import {
+  browserTabCleanupIds,
+  browserTabCleanupPrompt,
+  decideBrowserTabCleanup,
+  normalizeBrowserTabSet,
+} from "@t3tools/shared/browserTabCleanup";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { BrowserTabCleanupStateStoreLive } from "../../persistence/Layers/BrowserTabCleanupState.ts";
+import { BrowserTabCleanupStateStore } from "../../persistence/Services/BrowserTabCleanupState.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -55,6 +64,7 @@ import {
   backgroundContextCompactionDuration,
   metricAttributes,
 } from "../../observability/Metrics.ts";
+import { PreviewManager } from "../../preview/Manager.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -884,6 +894,8 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const threadWorkScheduler = yield* ThreadWorkScheduler;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const browserTabCleanupStateStore = yield* BrowserTabCleanupStateStore;
+  const previewManager = yield* PreviewManager;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -939,6 +951,94 @@ const make = Effect.gen(function* () {
 
   const contextCompactionMetricKey = (event: ProviderRuntimeEvent) =>
     `${event.threadId}:${event.turnId ?? "session"}`;
+
+  const listBrowserTabIds = Effect.fn("ProviderRuntimeIngestion.listBrowserTabIds")(function* (
+    threadId: ThreadId,
+  ) {
+    const result = yield* previewManager.list({ threadId });
+    return normalizeBrowserTabSet(result.sessions.map((session) => session.tabId));
+  });
+
+  const registerBrowserTabCleanupTurn = Effect.fn(
+    "ProviderRuntimeIngestion.registerBrowserTabCleanupTurn",
+  )(function* (threadId: ThreadId, turnId: TurnId, createdAt: string) {
+    const tabIds = yield* listBrowserTabIds(threadId);
+    yield* browserTabCleanupStateStore.registerTurn({
+      threadId,
+      turnId,
+      tabIds,
+      createdAt,
+    });
+  });
+
+  const planBrowserTabCleanup = Effect.fn("ProviderRuntimeIngestion.planBrowserTabCleanup")(
+    function* (input: {
+      readonly thread: OrchestrationThreadShell;
+      readonly turnId: TurnId;
+      readonly updatedAt: string;
+    }) {
+      // Plan before the ready session is committed so an Agent continuation and
+      // its housekeeping follow-up can settle atomically. The projected row is
+      // still authoritative: a late raw success after Stop sees interrupted
+      // state here and cannot manufacture a cleanup turn.
+      const projectedTurn = yield* projectionTurnRepository.getByTurnId({
+        threadId: input.thread.id,
+        turnId: input.turnId,
+      });
+      if (
+        Option.isNone(projectedTurn) ||
+        (projectedTurn.value.state !== "running" &&
+          !(projectedTurn.value.state === "completed" && projectedTurn.value.completedAt !== null))
+      ) {
+        return { _tag: "None" } as const;
+      }
+
+      const currentTabIds = yield* listBrowserTabIds(input.thread.id);
+      const preparation = yield* browserTabCleanupStateStore.prepareCompletion({
+        threadId: input.thread.id,
+        turnId: input.turnId,
+        currentTabIds,
+        observedAt: input.updatedAt,
+      });
+      if (preparation._tag !== "Ready") return { _tag: "None" } as const;
+
+      const decision = decideBrowserTabCleanup({
+        baseline: { tabIds: preparation.baseline.tabIds },
+        currentTabIds,
+        sourceMessageId: projectedTurn.value.pendingMessageId,
+      });
+
+      const completion = {
+        threadId: input.thread.id,
+        turnId: input.turnId,
+        tabIds: currentTabIds,
+        processedAt: input.updatedAt,
+      } as const;
+      if (decision._tag === "RecordCurrent") {
+        return { _tag: "RecordCurrent", completion } as const;
+      }
+
+      const ids = browserTabCleanupIds({
+        threadId: input.thread.id,
+        completedTurnId: input.turnId,
+      });
+      return {
+        _tag: "SendReminder",
+        commandId: ids.commandId,
+        completion,
+        atomicFollowupTurn: {
+          sourceTurnId: input.turnId,
+          message: {
+            messageId: ids.messageId,
+            role: "user" as const,
+            text: browserTabCleanupPrompt(decision.tabCount),
+            inputOrigin: "agent-loop" as const,
+            attachments: [],
+          },
+        },
+      } as const;
+    },
+  );
 
   const observeContextCompactionMetric = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
@@ -1941,6 +2041,25 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      const browserTabCleanupPlan =
+        event.type === "turn.completed" &&
+        shouldApplyThreadLifecycle &&
+        normalizeRuntimeTurnState(event.payload.state) === "completed" &&
+        eventTurnId !== undefined
+          ? yield* planBrowserTabCleanup({
+              thread,
+              turnId: eventTurnId,
+              updatedAt: now,
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("browser-tab-cleanup.plan-failed", {
+                  threadId: thread.id,
+                  turnId: eventTurnId,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as({ _tag: "None" } as const)),
+              ),
+            )
+          : ({ _tag: "None" } as const);
 
       const runtimeObservation = runtimeEventWorkObservation(event);
       const observationMatchesActiveTurn =
@@ -2036,9 +2155,13 @@ const make = Effect.gen(function* () {
             );
           }
 
+          const sessionSetCommandId =
+            browserTabCleanupPlan._tag === "SendReminder"
+              ? browserTabCleanupPlan.commandId
+              : yield* providerCommandId(event, "thread-session-set");
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
-            commandId: yield* providerCommandId(event, "thread-session-set"),
+            commandId: sessionSetCommandId,
             threadId: thread.id,
             session: {
               threadId: thread.id,
@@ -2053,8 +2176,24 @@ const make = Effect.gen(function* () {
               failureKind,
               updatedAt: now,
             },
+            ...(browserTabCleanupPlan._tag === "SendReminder"
+              ? { atomicFollowupTurn: browserTabCleanupPlan.atomicFollowupTurn }
+              : {}),
             createdAt: now,
           });
+          if (browserTabCleanupPlan._tag !== "None") {
+            yield* browserTabCleanupStateStore
+              .commitCompletion(browserTabCleanupPlan.completion)
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("browser-tab-cleanup.record-failed", {
+                    threadId: thread.id,
+                    turnId: eventTurnId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              );
+          }
         }
       }
 
@@ -2385,6 +2524,22 @@ const make = Effect.gen(function* () {
         ),
       ).pipe(Effect.asVoid);
 
+      if (
+        event.type === "turn.started" &&
+        shouldApplyThreadLifecycle &&
+        eventTurnId !== undefined
+      ) {
+        yield* registerBrowserTabCleanupTurn(thread.id, eventTurnId, now).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("browser-tab-cleanup.turn-register-failed", {
+              threadId: thread.id,
+              turnId: eventTurnId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
+
       if (event.type === "account.rate-limits.updated") {
         yield* providerRegistry.recordAccountUsage({
           instanceId: event.providerInstanceId ?? defaultInstanceIdForDriver(event.provider),
@@ -2444,4 +2599,6 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(Layer.mergeAll(ProjectionTurnRepositoryLive, BrowserTabCleanupStateStoreLive)),
+);

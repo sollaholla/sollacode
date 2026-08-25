@@ -149,6 +149,7 @@ import {
 import {
   DiscoveredLocalServerList,
   PreviewCloseInput,
+  PreviewCloseResult,
   PreviewError,
   PreviewEvent,
   PreviewListInput,
@@ -826,6 +827,10 @@ export const WsPreviewRefreshRpc = Rpc.make(WS_METHODS.previewRefresh, {
 
 export const WsPreviewCloseRpc = Rpc.make(WS_METHODS.previewClose, {
   payload: PreviewCloseInput,
+  // Schema.Void erases a newer result object, while this union accepts the
+  // undefined response from older servers. That makes the same RPC tag safe
+  // in both rolling-upgrade directions.
+  success: Schema.UndefinedOr(PreviewCloseResult),
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
 });
 

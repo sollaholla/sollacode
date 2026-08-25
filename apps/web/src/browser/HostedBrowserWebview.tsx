@@ -2,7 +2,7 @@
 
 import type { PreviewViewportSetting, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
@@ -17,6 +17,10 @@ import {
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime";
+import {
+  applyHostedBrowserWebviewAudio,
+  type AudioMutableBrowserWebview,
+} from "./hostedBrowserWebviewAudio";
 import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserViewportResize } from "./useBrowserViewportResize";
@@ -26,7 +30,7 @@ import {
   type WebviewCrashRecoveryState,
 } from "./webviewCrashRecovery";
 
-interface ElectronWebview extends HTMLElement {
+interface ElectronWebview extends HTMLElement, AudioMutableBrowserWebview {
   src: string;
   partition: string;
   preload?: string;
@@ -81,10 +85,19 @@ export function HostedBrowserWebview(props: {
         interactive: current?.interactive ?? true,
         rect: resolveBrowserSurfacePanelRect(state.byTabId, runtimeTabId),
         visible: current?.visible ?? false,
+        audible: current?.audible ?? false,
       };
     }),
   );
   usePreviewBridge({ threadRef, tabId, runtimeTabId });
+  const active = presentation.visible && presentation.rect !== null;
+  const [documentVisible, setDocumentVisible] = useState(
+    () => typeof document !== "undefined" && document.visibilityState !== "hidden",
+  );
+  const audible = active && presentation.audible && documentVisible;
+  const audibleRef = useRef(audible);
+  audibleRef.current = audible;
+  const lastRect = presentation.rect;
 
   useEffect(() => {
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
@@ -105,8 +118,20 @@ export function HostedBrowserWebview(props: {
   }, [initialUrl]);
 
   const setWebviewRef = useCallback((node: HTMLElement | null) => {
-    webviewRef.current = node as ElectronWebview | null;
+    const webview = node as ElectronWebview | null;
+    webviewRef.current = webview;
+    applyHostedBrowserWebviewAudio(webview, audibleRef.current);
     if (node && !node.hasAttribute("allowpopups")) node.setAttribute("allowpopups", "true");
+  }, []);
+
+  useLayoutEffect(() => {
+    applyHostedBrowserWebviewAudio(webviewRef.current, audible);
+  }, [audible]);
+
+  useEffect(() => {
+    const updateVisibility = () => setDocumentVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
 
   useEffect(() => {
@@ -116,6 +141,7 @@ export function HostedBrowserWebview(props: {
     let disposed = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
+      applyHostedBrowserWebviewAudio(webview, audibleRef.current);
       const lease = tabLeaseRef.current;
       if (!lease) return;
       void (async () => {
@@ -159,9 +185,6 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("render-process-gone", recoverGuest);
     };
   }, [config, initialSrc, runtimeTabId, webviewGeneration]);
-
-  const active = presentation.visible && presentation.rect !== null;
-  const lastRect = presentation.rect;
 
   useEffect(() => {
     const bridge = previewBridge;

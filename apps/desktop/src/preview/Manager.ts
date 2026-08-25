@@ -14,6 +14,7 @@ import type {
   DesktopPreviewRecordingArtifact,
   DesktopPreviewRecordingFrame,
   DesktopPreviewScreenshotArtifact,
+  DesktopPreviewAutomationStatus,
   PreviewAutomationClickInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
@@ -22,7 +23,6 @@ import type {
   PreviewAutomationNetworkEntry,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
-  PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
@@ -44,6 +44,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -111,9 +112,20 @@ const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
+const AUTOMATION_SNAPSHOT_CAPTURE_RETRY_MS = 50;
+const AUTOMATION_SNAPSHOT_CAPTURE_RETRIES = 2;
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
+
+const isUnknownVizCaptureFailure = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null || !("cause" in error)) return false;
+  const cause = (error as { readonly cause: unknown }).cause;
+  return (
+    cause instanceof Error &&
+    (cause.name === "UnknownVizError" || cause.message.includes("UnknownVizError"))
+  );
+};
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
   colorScheme: "light",
@@ -2770,6 +2782,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
           },
           () => wc.capturePage(),
+        ).pipe(
+          Effect.retry({
+            times: AUTOMATION_SNAPSHOT_CAPTURE_RETRIES,
+            schedule: Schedule.spaced(AUTOMATION_SNAPSHOT_CAPTURE_RETRY_MS),
+            while: isUnknownVizCaptureFailure,
+          }),
         ),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
@@ -3703,7 +3721,7 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<DesktopPreviewRecordingArtifact, PreviewManagerError>;
     readonly automationStatus: (
       tabId: string,
-    ) => Effect.Effect<PreviewAutomationStatus, PreviewManagerError>;
+    ) => Effect.Effect<DesktopPreviewAutomationStatus, PreviewManagerError>;
     readonly automationSnapshot: (
       tabId: string,
     ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;

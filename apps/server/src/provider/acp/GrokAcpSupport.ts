@@ -18,6 +18,7 @@ const T3_CODE_OAUTH_REFERRER = "t3code";
 /** Bound MCP plugin startup so `session/new` cannot hang the GUI forever. */
 const GROK_MCP_STARTUP_TIMEOUT_SECS = "8";
 const GROK_MCP_TIMEOUT_MS = "8000";
+const GROK_ACP_FORCE_KILL_AFTER = "2 seconds" as const;
 const GROK_AUTH_METHOD_API_KEY = "xai.api_key";
 const GROK_AUTH_METHOD_CACHED_TOKEN = "cached_token";
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
@@ -57,6 +58,7 @@ export function buildGrokAcpSpawnInput(
     args: ["agent", "stdio"],
     cwd,
     env: grokAcpSpawnEnv(environment),
+    forceKillAfter: GROK_ACP_FORCE_KILL_AFTER,
   };
 }
 
@@ -100,8 +102,10 @@ export const makeGrokAcpRuntime = (
         filterMcpServers: input.filterMcpServers ?? filterGrokAcpMcpServers,
         // Grok's TTY CLI often needs a second confirm (Enter / Esc while
         // already cancelling) before the turn actually stops. Repeat the ACP
-        // cancel so Stop in the GUI matches that.
+        // cancel after Grok has had a chance to enter that state so Stop in the
+        // GUI matches that gesture instead of sending two same-tick duplicates.
         extraCancelNotifications: 1,
+        extraCancelNotificationDelay: "50 millis",
         cancelNotificationMeta: { cancelTrigger: "esc" },
         sessionCreateTimeout: "45 seconds",
         // Grok queues concurrent session/prompt requests itself and runs them

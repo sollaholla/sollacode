@@ -9,6 +9,8 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  FILL_PREVIEW_VIEWPORT,
+  type PreviewSessionSnapshot,
   type ProviderSendTurnInput,
   type ProviderSessionStartInput,
   type ServerProvider,
@@ -36,6 +38,7 @@ import * as Metric from "effect/Metric";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -67,6 +70,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as PreviewManager from "../../preview/Manager.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -576,7 +580,10 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | SqlClient.SqlClient,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -605,6 +612,7 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     providers?: ReadonlyArray<ServerProvider>;
+    interactionMode?: "default" | "plan" | "agent";
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
@@ -644,6 +652,30 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const previewSessions: PreviewSessionSnapshot[] = [];
+    let previewSequence = 0;
+    const openPreviewTab = (threadId: ThreadId) => {
+      previewSequence += 1;
+      const snapshot: PreviewSessionSnapshot = {
+        threadId,
+        tabId: `tab-test-${previewSequence}`,
+        navStatus: { _tag: "Idle" },
+        canGoBack: false,
+        canGoForward: false,
+        viewport: FILL_PREVIEW_VIEWPORT,
+        updatedAt: `2026-08-25T12:00:${String(previewSequence).padStart(2, "0")}.000Z`,
+      };
+      previewSessions.push(snapshot);
+      return snapshot;
+    };
+    const previewLayer = Layer.mock(PreviewManager.PreviewManager)({
+      list: ({ threadId }) =>
+        Effect.succeed({
+          sessions: previewSessions.filter((session) => session.threadId === threadId),
+          serverEpoch: "provider-runtime-ingestion-test",
+          revision: previewSequence,
+        }),
+    });
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
@@ -652,13 +684,18 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeProviderRegistryLayer(options?.providers)),
       Layer.provideMerge(threadWorkSchedulerLayer),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
+      Layer.provideMerge(previewLayer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
-    runtime = ManagedRuntime.make(layer);
-    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
-    const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
-    const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const managedRuntime = ManagedRuntime.make(layer);
+    runtime = managedRuntime;
+    const engine = await managedRuntime.runPromise(Effect.service(OrchestrationEngineService));
+    const snapshotQuery = await managedRuntime.runPromise(Effect.service(ProjectionSnapshotQuery));
+    const ingestion = await managedRuntime.runPromise(
+      Effect.service(ProviderRuntimeIngestionService),
+    );
+    const sql = await managedRuntime.runPromise(Effect.service(SqlClient.SqlClient));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -689,7 +726,7 @@ describe("ProviderRuntimeIngestion", () => {
           instanceId: ProviderInstanceId.make("codex"),
           model: "gpt-5-codex",
         },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        interactionMode: options?.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
         worktreePath: null,
@@ -731,6 +768,38 @@ describe("ProviderRuntimeIngestion", () => {
       sendTurnCalls: provider.sendTurnCalls,
       failNextSendTurn: provider.failNextSendTurn,
       runtimeObservations,
+      openPreviewTab,
+      readBrowserTabCleanupState: (threadId: ThreadId) =>
+        managedRuntime.runPromise(
+          sql<{
+            readonly tabSetJson: string;
+            readonly lastProcessedTurnId: string | null;
+            readonly lastProcessedStartSequence: number;
+          }>`
+            SELECT
+              tab_set_json AS "tabSetJson",
+              last_processed_turn_id AS "lastProcessedTurnId",
+              last_processed_start_sequence AS "lastProcessedStartSequence"
+            FROM browser_tab_cleanup_state
+            WHERE thread_id = ${threadId}
+          `,
+        ),
+      readThreadWork: (threadId: ThreadId) =>
+        managedRuntime.runPromise(
+          sql<{
+            readonly kind: string;
+            readonly sourceTurnId: string;
+            readonly state: string;
+          }>`
+            SELECT
+              kind,
+              source_turn_id AS "sourceTurnId",
+              state
+            FROM thread_work_obligations
+            WHERE thread_id = ${threadId}
+            ORDER BY kind ASC, source_turn_id ASC
+          `,
+        ),
       drain,
     };
   }
@@ -780,6 +849,345 @@ describe("ProviderRuntimeIngestion", () => {
       activeTurnId: asTurnId("turn-1"),
       phase: "provider-running",
     });
+  });
+
+  it("queues one changed-tab cleanup turn and suppresses its own completion", async () => {
+    const harness = await createHarness({ interactionMode: "agent" });
+    const threadId = asThreadId("thread-1");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-work-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:00:00.000Z",
+      turnId: asTurnId("turn-browser-work"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-browser-work",
+    );
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-browser-work-assistant-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:00:30.000Z",
+      turnId: asTurnId("turn-browser-work"),
+      itemId: asItemId("item-browser-work-assistant"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "This phase is complete and more work remains.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-browser-work-assistant-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:00:31.000Z",
+      turnId: asTurnId("turn-browser-work"),
+      itemId: asItemId("item-browser-work-assistant"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-work-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:01:00.000Z",
+      turnId: asTurnId("turn-browser-work"),
+      payload: { state: "completed" },
+    });
+
+    const reminded = await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:thread-1:turn-browser-work"),
+      ),
+    );
+    const reminder = reminded.messages.find((message) =>
+      String(message.id).startsWith("browser-tab-cleanup-message:"),
+    );
+    expect(reminder).toMatchObject({ role: "user", inputOrigin: "agent-loop" });
+    expect(reminder?.text).toContain("2 tabs are open");
+    expect(reminder?.text).not.toContain("tab_");
+    expect(await harness.readThreadWork(threadId)).toEqual([
+      {
+        kind: "active-turn-recovery",
+        sourceTurnId: "turn-start:browser-tab-cleanup-message:thread-1:turn-browser-work",
+        state: "pending",
+      },
+      {
+        kind: "agent-continuation",
+        sourceTurnId: "turn-browser-work",
+        state: "cancelled",
+      },
+    ]);
+    expect(await harness.readBrowserTabCleanupState(threadId)).toEqual([
+      {
+        tabSetJson: '["tab-test-1","tab-test-2"]',
+        lastProcessedTurnId: "turn-browser-work",
+        lastProcessedStartSequence: 1,
+      },
+    ]);
+
+    // A provider replay cannot enqueue a second message: the durable receipt
+    // and deterministic command/message IDs both identify the source turn.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-work-completed-replay"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:01:01.000Z",
+      turnId: asTurnId("turn-browser-work"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(
+      (await harness.readModel())?.threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.filter((message) =>
+          String(message.id).startsWith("browser-tab-cleanup-message:"),
+        ),
+    ).toHaveLength(1);
+
+    // Even if the set changes during the housekeeping turn, that turn records
+    // the new baseline instead of recursively creating another reminder.
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-cleanup-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:02:00.000Z",
+      turnId: asTurnId("turn-browser-cleanup"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-browser-cleanup",
+    );
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-cleanup-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T12:03:00.000Z",
+      turnId: asTurnId("turn-browser-cleanup"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(
+      (await harness.readModel())?.threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.filter((message) =>
+          String(message.id).startsWith("browser-tab-cleanup-message:"),
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("durably ignores an older completion replay after a newer turn", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-older-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T15:00:00.000Z",
+      turnId: asTurnId("turn-browser-older"),
+    });
+    await harness.drain();
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-older-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T15:01:00.000Z",
+      turnId: asTurnId("turn-browser-older"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-newer-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T15:02:00.000Z",
+      turnId: asTurnId("turn-browser-newer"),
+    });
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-newer-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T15:03:00.000Z",
+      turnId: asTurnId("turn-browser-newer"),
+      payload: { state: "completed" },
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message) => message.id === "browser-tab-cleanup-message:thread-1:turn-browser-newer",
+      ),
+    );
+    await harness.drain();
+
+    // The replay arrives later in wall-clock order and the live tab set has
+    // changed again. Its durable start sequence still identifies it as older.
+    harness.openPreviewTab(threadId);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-older-completed-late-replay"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T15:04:00.000Z",
+      turnId: asTurnId("turn-browser-older"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.messages.filter((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:"),
+      ),
+    ).toHaveLength(1);
+    expect(await harness.readBrowserTabCleanupState(threadId)).toEqual([
+      {
+        tabSetJson: '["tab-test-1","tab-test-2"]',
+        lastProcessedTurnId: "turn-browser-newer",
+        lastProcessedStartSequence: 2,
+      },
+    ]);
+  });
+
+  it("does not remind after accepted started turns fail, cancel, or interrupt", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    harness.openPreviewTab(threadId);
+
+    // Auxiliary/recovered completion with no accepted start establishes a
+    // baseline only; older tabs cannot be attributed to this turn.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-unknown-baseline"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T13:00:00.000Z",
+      turnId: asTurnId("turn-browser-unknown"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-unchanged-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T13:01:00.000Z",
+      turnId: asTurnId("turn-browser-unchanged"),
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-unchanged-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T13:02:00.000Z",
+      turnId: asTurnId("turn-browser-unchanged"),
+      payload: { state: "completed" },
+    });
+    for (const [index, state] of (["failed", "cancelled", "interrupted"] as const).entries()) {
+      const turnId = asTurnId(`turn-browser-${state}`);
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`evt-browser-${state}-started`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: `2026-08-25T13:0${index + 3}:00.000Z`,
+        turnId,
+      });
+      await harness.drain();
+      harness.openPreviewTab(threadId);
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId(`evt-browser-${state}-completed`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: `2026-08-25T13:0${index + 3}:30.000Z`,
+        turnId,
+        payload: state === "failed" ? { state, errorMessage: "failed" } : { state },
+      });
+      await harness.drain();
+    }
+    expect(
+      (await harness.readModel())?.threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.some((message) => String(message.id).startsWith("browser-tab-cleanup-message:")),
+    ).toBe(false);
+  });
+
+  it("suppresses a late successful completion after the user stopped the projected turn", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-browser-user-stopped");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-user-stopped-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T14:00:00.000Z",
+      turnId,
+    });
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-browser-user-stopped"),
+        threadId,
+        turnId,
+        createdAt: "2026-08-25T14:01:00.000Z",
+      }),
+    );
+    expect(
+      (await harness.readModel()).threads.find((thread) => thread.id === threadId)?.latestTurn
+        ?.state,
+    ).toBe("interrupted");
+
+    // Providers can race Stop and still emit a raw success. The cleanup hook
+    // must consult the projection after ingestion instead of trusting it.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-user-stopped-late-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T14:02:00.000Z",
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.latestTurn?.state).toBe("interrupted");
+    expect(
+      thread?.messages.some((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:"),
+      ),
+    ).toBe(false);
   });
 
   it("releases the thread when usage is exhausted and no failover target has quota", async () => {

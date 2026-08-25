@@ -125,7 +125,7 @@ import {
   hasTransferableComposerContent,
   persistComposerTransfer,
   planComposerPaste,
-  readClipboardImageFiles,
+  readClipboardFiles,
   readComposerTransferFromClipboard,
   resolveComposerTransferFromClipboard,
   stageComposerTransfer,
@@ -604,6 +604,7 @@ export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
   insertTextAtEnd: (text: string, options?: { ensureLeadingBoundary?: boolean }) => boolean;
+  addFiles: (files: readonly File[]) => void;
   applyVoiceTranscript: (transcript: string) => {
     readonly prompt: string;
     readonly target: VoiceTranscriptInputTarget;
@@ -662,6 +663,7 @@ export interface ChatComposerProps {
   isLocalDraftThread: boolean;
   forceExpandedOnMobile: boolean;
   projectSelectionRequired: boolean;
+  canReferenceLocalFiles: boolean;
 
   // Session phase
   phase: SessionPhase;
@@ -766,7 +768,6 @@ export interface ChatComposerProps {
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
   togglePlanSidebar: () => void;
 
-  focusComposer: () => void;
   scheduleComposerFocus: () => void;
   setThreadError: (threadId: ThreadId | null, error: string | null) => void;
   onExpandImage: (preview: ExpandedImagePreview) => void;
@@ -790,6 +791,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
+    canReferenceLocalFiles,
     phase,
     isInterruptible,
     isConnecting,
@@ -855,7 +857,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     handleRuntimeModeChange,
     handleInteractionModeChange,
     togglePlanSidebar,
-    focusComposer,
     scheduleComposerFocus,
     setThreadError,
     onExpandImage,
@@ -2693,19 +2694,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   // ------------------------------------------------------------------
-  // Callbacks: images
+  // Callbacks: file intake
   // ------------------------------------------------------------------
-  const addComposerImages = (files: File[]) => {
+  const addComposerFiles = (files: readonly File[]) => {
     if (files.length === 0) return;
     if (pendingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
-        title: "Attach images after answering plan questions.",
+        title: "Add files after answering plan questions.",
       });
       return;
     }
     const intake = classifyComposerFileIntake(files, {
-      resolvePath: (file) => resolveOsFilePath(file, window.desktopBridge?.getPathForFile),
+      resolvePath: canReferenceLocalFiles
+        ? (file) => resolveOsFilePath(file, window.desktopBridge?.getPathForFile)
+        : () => null,
       imageSlotsUsed: composerImagesRef.current.length,
       maxImages: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
     });
@@ -2735,6 +2738,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (!inserted) {
         error = "The composer is busy; drop the file again once it is ready.";
       }
+    }
+    if (error !== null) {
+      toastManager.add({
+        type: "error",
+        title: "Could not add file",
+        description: error,
+        data: { hideCopyButton: true },
+      });
     }
     setThreadError(activeThreadId, error);
   };
@@ -2820,7 +2831,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
     const clipboardText = event.clipboardData.getData("text/plain");
-    const clipboardFiles = readClipboardImageFiles(event.clipboardData);
+    const clipboardFiles = readClipboardFiles(event.clipboardData);
     const immediateTransfer = readComposerTransferFromClipboard(event.clipboardData);
     const needsDurableRestore =
       immediateTransfer === null && hasPersistedComposerTransfer(event.clipboardData);
@@ -2837,7 +2848,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         applyPromptReplacement(cursor, cursor, plan.prompt);
       }
       if (plan.files.length > 0) {
-        addComposerImages([...plan.files]);
+        addComposerFiles(plan.files);
       }
     };
 
@@ -2907,8 +2918,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
     const files = Array.from(event.dataTransfer.files);
-    addComposerImages(files);
-    focusComposer();
+    addComposerFiles(files);
+    // File references update the prompt before Lexical has reconciled. A
+    // synchronous focus can make its stale editor state overwrite that new
+    // chip, so restore focus only on the next frame.
+    scheduleComposerFocus();
   };
 
   const insertComposerTextAtEnd = (
@@ -3037,6 +3051,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         composerEditorRef.current?.focusAt(cursor);
       },
       insertTextAtEnd: insertComposerTextAtEnd,
+      addFiles: (files: readonly File[]) => {
+        addComposerFiles(files);
+        scheduleComposerFocus();
+      },
       applyVoiceTranscript: (transcript: string) => {
         const pendingQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
         const update = resolveVoiceTranscriptInputUpdate({
@@ -3149,6 +3167,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       activePendingProgress,
       activeThread,
+      addComposerFiles,
       composerDraftTarget,
       composerCursor,
       composerTerminalContexts,
@@ -3175,6 +3194,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
+      scheduleComposerFocus,
     ],
   );
 

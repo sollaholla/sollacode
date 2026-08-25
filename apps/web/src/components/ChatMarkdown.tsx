@@ -43,7 +43,9 @@ import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { CHAT_FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import {
+  openExternalLinkDirectly,
   resolveExternalWebLinkHost,
+  shouldOpenExternalLinkDirectly,
   showExternalLinkContextMenu,
 } from "./chat/externalLinkContextMenu";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
@@ -69,7 +71,9 @@ import {
 import { findLowContextWarningMatches } from "../lib/lowContextWarning";
 import { remarkNormalizeListItemIndentation } from "../markdown-list-indentation";
 import {
+  MARKDOWN_FILE_LINK_HREF_PROTOCOLS,
   normalizeMarkdownLinkDestination,
+  preserveMarkdownFileLinkHref,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
@@ -102,7 +106,7 @@ import {
   resolveImageReferenceAssetPath,
   shouldOpenImageReferenceInFullScreen,
 } from "./chat/mobileImageViewer";
-import { shouldRevealLinkedFileByDefault } from "./chat/linkedFileBehavior";
+import { resolveLinkedFilePrimaryAction } from "./chat/linkedFileBehavior";
 import { revealInFileExplorerLabel } from "./preview/fileExplorerLabel";
 
 interface ChatMarkdownProps {
@@ -169,7 +173,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file"],
+    href: [...(defaultSchema.protocols?.href ?? []), ...MARKDOWN_FILE_LINK_HREF_PROTOCOLS],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
 
@@ -845,6 +849,7 @@ interface MarkdownFileLinkProps {
   copyMarkdown: string;
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
+  canRevealOnThisDevice: boolean;
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
   onOpenImage?: (() => void) | undefined;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
@@ -1129,6 +1134,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   copyMarkdown,
   theme,
   threadRef,
+  canRevealOnThisDevice,
   onOpen,
   onOpenImage,
   onOpenInBrowser,
@@ -1179,24 +1185,36 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
   const handleRevealInFileExplorer = useCallback(() => {
     const bridge = window.desktopBridge;
-    if (!bridge) {
+    if (!canRevealOnThisDevice || !bridge) {
       handleOpenInEditor();
       return;
     }
-    void bridge.revealFile(iconPath).catch((cause) => {
-      reportMarkdownActionFailure(
-        { operation: "reveal-file-in-explorer", target: iconPath },
-        cause,
-      );
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to locate file",
-          description: cause instanceof Error ? cause.message : "An error occurred.",
-        }),
-      );
-    });
-  }, [handleOpenInEditor, iconPath]);
+    void bridge.revealFile(iconPath).then(
+      (revealed) => {
+        if (revealed) return;
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to locate file",
+            description: "The file no longer exists on this computer.",
+          }),
+        );
+      },
+      (cause) => {
+        reportMarkdownActionFailure(
+          { operation: "reveal-file-in-explorer", target: iconPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to locate file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      },
+    );
+  }, [canRevealOnThisDevice, handleOpenInEditor, iconPath]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1290,7 +1308,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
-            ...(window.desktopBridge
+            ...(canRevealOnThisDevice
               ? ([
                   {
                     id: "reveal",
@@ -1336,6 +1354,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       handleOpenInBrowser,
       handleOpenInEditor,
       handleRevealInFileExplorer,
+      canRevealOnThisDevice,
       onOpenInBrowser,
       targetPath,
     ],
@@ -1352,19 +1371,29 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              if (onOpenImage) {
-                onOpenImage();
-                return;
+              const action = resolveLinkedFilePrimaryAction({
+                filePath: iconPath,
+                workspaceRelativePath,
+                hasImageAction: onOpenImage !== undefined,
+                hasBrowserAction: onOpenInBrowser !== undefined,
+                canRevealOnThisDevice,
+              });
+              switch (action) {
+                case "image":
+                  onOpenImage?.();
+                  return;
+                case "browser":
+                  handleOpenInBrowser();
+                  return;
+                case "reveal":
+                  handleRevealInFileExplorer();
+                  return;
+                case "editor":
+                  handleOpenInEditor();
+                  return;
+                case "preview":
+                  handleOpenInFilePreview();
               }
-              if (onOpenInBrowser) {
-                handleOpenInBrowser();
-                return;
-              }
-              if (window.desktopBridge && shouldRevealLinkedFileByDefault(iconPath)) {
-                handleRevealInFileExplorer();
-                return;
-              }
-              handleOpenInFilePreview();
             }}
             onContextMenu={handleContextMenu}
           >
@@ -1399,6 +1428,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.copyMarkdown === next.copyMarkdown &&
     previous.theme === next.theme &&
     previous.threadRef === next.threadRef &&
+    previous.canRevealOnThisDevice === next.canRevealOnThisDevice &&
     previous.onOpen === next.onOpen &&
     previous.onOpenImage === next.onOpenImage &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
@@ -1428,9 +1458,11 @@ function ChatMarkdown({
     reportFailure: false,
   });
   const preparedConnection = usePreparedConnection(threadRef?.environmentId ?? null);
-  const environmentId = useActiveEnvironmentId();
+  const activeEnvironmentId = useActiveEnvironmentId();
+  const environmentId = threadRef?.environmentId ?? activeEnvironmentId;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const threadEnvironment = useEnvironment(threadRef?.environmentId ?? null);
+  const fileEnvironment = useEnvironment(environmentId);
   const threadEnvironmentTarget = threadEnvironment?.entry.target;
   const threadEnvironmentKind =
     threadEnvironmentTarget === undefined
@@ -1449,6 +1481,10 @@ function ChatMarkdown({
       primaryEnvironmentId !== null &&
       threadRef.environmentId !== primaryEnvironmentId,
   });
+  const canRevealFileOnThisDevice =
+    typeof window !== "undefined" &&
+    window.desktopBridge !== undefined &&
+    fileEnvironment?.entry.target._tag === "PrimaryConnectionTarget";
   const imageAssetRevision = assetRevision ?? String(fnv1a32(text));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
@@ -1489,9 +1525,13 @@ function ChatMarkdown({
     ];
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [inlineCodeFileLinkMetaByText, markdownFileLinkMetaByHref]);
-  const markdownUrlTransform = useCallback((href: string) => {
-    return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
-  }, []);
+  const markdownUrlTransform = useCallback(
+    (href: string) =>
+      rewriteMarkdownFileUriHref(href) ??
+      preserveMarkdownFileLinkHref(href, cwd) ??
+      defaultUrlTransform(href),
+    [cwd],
+  );
   const remarkPlugins = useMemo<NonNullable<ReactMarkdownOptions["remarkPlugins"]>>(() => {
     const base = lineBreaks
       ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS
@@ -1508,6 +1548,24 @@ function ChatMarkdown({
     event.preventDefault();
     event.clipboardData.setData("text/plain", payload.text);
     event.clipboardData.setData("text/html", payload.html);
+  }, []);
+  const openExternalMarkdownLink = useCallback((href: string) => {
+    const api = readLocalApi();
+    if (!api) return;
+    void openExternalLinkDirectly({
+      href,
+      openExternal: (target) => api.shell.openExternal(target),
+      reportFailure: (cause) => {
+        reportMarkdownActionFailure({ operation: "open-link-external", target: href }, cause);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open link",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      },
+    });
   }, []);
   const openExternalLinkInPreview = useCallback(
     (url: string) => {
@@ -1656,10 +1714,12 @@ function ChatMarkdown({
           copyMarkdown={copyMarkdown}
           theme={resolvedTheme}
           threadRef={threadRef}
+          canRevealOnThisDevice={canRevealFileOnThisDevice}
           onOpen={openInPreferredEditor}
           onOpenImage={onOpenImage}
           onOpenInBrowser={
             threadRef &&
+            fileLinkMeta.workspaceRelativePath !== null &&
             isPreviewSupportedInRuntime() &&
             isBrowserPreviewFile(fileLinkMeta.filePath)
               ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
@@ -1744,6 +1804,12 @@ function ChatMarkdown({
                 onClick?.(event);
                 if (isSameDocumentLink && href) {
                   handleMarkdownFragmentClick(event, href);
+                  return;
+                }
+                if (href && faviconHost && shouldOpenExternalLinkDirectly(event)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openExternalMarkdownLink(href);
                 }
               }}
               onContextMenu={(event) => {
@@ -1866,6 +1932,7 @@ function ChatMarkdown({
     markdownFileLinkMetaByHref,
     onTaskListChange,
     openInPreferredEditor,
+    openExternalMarkdownLink,
     openExternalLinkInPreview,
     openMarkdownImageInFullScreen,
     openMarkdownFileInPreview,
@@ -1873,6 +1940,7 @@ function ChatMarkdown({
     skills,
     text,
     threadRef,
+    canRevealFileOnThisDevice,
   ]);
 
   return (

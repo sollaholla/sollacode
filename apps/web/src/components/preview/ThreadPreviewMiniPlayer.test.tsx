@@ -74,6 +74,21 @@ describe("ThreadPreviewMiniPlayer", () => {
     // guest page; interactivity is what "Open" promotes you to.
     expect(mocks.surfaceProps).toHaveLength(1);
     expect(mocks.surfaceProps[0]?.interactive).toBe(false);
+    expect(mocks.surfaceProps[0]?.audible).toBe(false);
+  });
+
+  it("does not mount a redundant surface for the same visible sidebar tab", () => {
+    const html = renderToStaticMarkup(
+      <ThreadPreviewMiniPlayer
+        threadRef={threadRef}
+        tabId="tab-1"
+        bottomInset={0}
+        activePanelTabId="tab-1"
+      />,
+    );
+
+    expect(html).toBe("");
+    expect(mocks.surfaceProps).toHaveLength(0);
   });
 
   it("covers the whole player with a drag surface above the guest", () => {

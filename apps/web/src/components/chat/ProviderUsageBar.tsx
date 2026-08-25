@@ -521,8 +521,12 @@ function grokWindows(raw: unknown): ProviderUsageWindow[] {
   if (!config) return [];
 
   const windows: ProviderUsageWindow[] = [];
-  const usedPercent = finiteNumber(config.creditUsagePercent);
   const period = asRecord(config.currentPeriod);
+  const reportedUsedPercent = finiteNumber(config.creditUsagePercent);
+  // Grok omits protobuf scalar defaults from JSON. During a real current
+  // period, a missing percentage therefore means 0% used; treating it as no
+  // snapshot leaves the previous billing period stuck in persisted UI state.
+  const usedPercent = reportedUsedPercent ?? (period === null ? null : 0);
   const resetAt =
     epochMilliseconds(period?.end) ??
     epochMilliseconds(config.billingPeriodEnd) ??
