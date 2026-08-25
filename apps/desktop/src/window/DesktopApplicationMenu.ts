@@ -6,7 +6,10 @@ import * as Schema from "effect/Schema";
 import type * as Electron from "electron";
 
 import { makeComponentLogger } from "../app/DesktopObservability.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
@@ -29,7 +32,11 @@ export class DesktopApplicationMenu extends Context.Service<
   }
 >()("@t3tools/desktop/window/DesktopApplicationMenu") {}
 
-type DesktopApplicationMenuRuntimeServices = DesktopWindow.DesktopWindow;
+type DesktopApplicationMenuRuntimeServices =
+  | DesktopWindow.DesktopWindow
+  | ElectronApp.ElectronApp
+  | ElectronDialog.ElectronDialog
+  | ElectronWindow.ElectronWindow;
 
 const { logError: logMenuError } = makeComponentLogger("desktop-menu");
 
@@ -41,11 +48,15 @@ const dispatchMenuAction = Effect.fn("desktop.menu.dispatchMenuAction")(function
 });
 
 export const make = Effect.gen(function* () {
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const electronDialog = yield* ElectronDialog.ElectronDialog;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const appName = environment.displayName;
   const context = yield* Effect.context<DesktopApplicationMenuRuntimeServices>();
   const runPromise = Effect.runPromiseWith(context);
+  let quitConfirmationPending = false;
 
   const runMenuEffect = <E>(
     action: string,
@@ -67,6 +78,39 @@ export const make = Effect.gen(function* () {
     const settingsClick = () => {
       runMenuEffect("open-settings", dispatchMenuAction("open-settings"));
     };
+    const quitClick: NonNullable<Electron.MenuItemConstructorOptions["click"]> = (
+      _menuItem,
+      _window,
+      event,
+    ) => {
+      if (event.triggeredByAccelerator !== true) {
+        runMenuEffect("quit-menu", electronApp.quit);
+        return;
+      }
+      if (quitConfirmationPending) {
+        return;
+      }
+      quitConfirmationPending = true;
+      runMenuEffect(
+        "confirm-command-q",
+        Effect.gen(function* () {
+          const owner = yield* electronWindow.focusedMainOrFirst;
+          const confirmed = yield* electronDialog.confirm({
+            owner,
+            message: `Are you sure you want to quit ${appName}?`,
+          });
+          if (confirmed) {
+            yield* electronApp.quit;
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              quitConfirmationPending = false;
+            }),
+          ),
+        ),
+      );
+    };
     const template: Electron.MenuItemConstructorOptions[] = [];
 
     if (environment.platform === "darwin") {
@@ -87,7 +131,11 @@ export const make = Effect.gen(function* () {
           { role: "hideOthers" },
           { role: "unhide" },
           { type: "separator" },
-          { label: `Quit ${appName}`, role: "quit" },
+          {
+            label: `Quit ${appName}`,
+            accelerator: "Command+Q",
+            click: quitClick,
+          },
         ],
       });
     }

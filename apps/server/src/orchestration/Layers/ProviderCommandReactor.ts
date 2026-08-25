@@ -1466,8 +1466,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             // `completed` temporarily claims this parked row without creating
             // a second active scheduler owner for the already-running thread.
             // The provider's acceptance boundary clears the marker; if the
-            // process dies first, startup retires the ambiguous queue without
-            // replaying a potentially consequential steer.
+            // process dies first, startup re-arms the message only when no
+            // exact durable delivery receipt exists.
             blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
             updatedAt: yield* nowIso,
           });
