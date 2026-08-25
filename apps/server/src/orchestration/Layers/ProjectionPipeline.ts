@@ -2886,9 +2886,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       //      message's placeholder and never replay it;
       //   2. a pre-claimed row carrying an unconfirmed/unknown marker but no
       //      receipt never crossed the provider's durable acceptance boundary.
-      //      Re-arm it so the parked path can deliver it after restart. Older
-      //      builds converted the first marker to the second, so recognizing
-      //      both heals messages they already stranded.
+      //      Re-arm it so the parked path can deliver it after restart;
+      //   3. 0.1.236 briefly misclassified a later startup-resume prompt as
+      //      real user intent and cancelled the recovered message. Re-arm that
+      //      exact false cancellation only when no genuinely later user turn
+      //      exists. Real supersession remains terminal.
       const completedDeliveredSteerOwners = yield* sql<{ readonly threadId: string }>`
         UPDATE thread_work_obligations AS work
         SET state = 'completed',
@@ -2941,10 +2943,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE work.kind = 'active-turn-recovery'
-          AND work.state = 'completed'
-          AND work.blocked_reason IN (
-            ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
-            ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON}
+          AND (
+            (
+              work.state = 'completed'
+              AND work.blocked_reason IN (
+                ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+                ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON}
+              )
+            )
+            OR (
+              work.state = 'cancelled'
+              AND work.blocked_reason = 'turn-start was superseded'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM orchestration_events AS later
+                INNER JOIN projection_thread_messages AS later_message
+                  ON later_message.message_id = json_extract(later.payload_json, '$.messageId')
+                  AND later_message.thread_id = work.thread_id
+                  AND later_message.role = 'user'
+                  AND COALESCE(later_message.input_origin, '') != 'agent-loop'
+                  AND later_message.message_id NOT LIKE 'startup-auto-resume-message:%'
+                WHERE later.aggregate_kind = 'thread'
+                  AND later.stream_id = work.thread_id
+                  AND later.event_type = 'thread.turn-start-requested'
+                  AND later.sequence > COALESCE(
+                    (
+                      SELECT start.sequence
+                      FROM orchestration_events AS start
+                      WHERE start.aggregate_kind = 'thread'
+                        AND start.stream_id = work.thread_id
+                        AND start.event_type = 'thread.turn-start-requested'
+                        AND json_extract(start.payload_json, '$.messageId') =
+                          substr(work.source_turn_id, length('turn-start:') + 1)
+                      ORDER BY start.sequence DESC
+                      LIMIT 1
+                    ),
+                    0
+                  )
+              )
+            )
           )
           AND NOT EXISTS (
             SELECT 1

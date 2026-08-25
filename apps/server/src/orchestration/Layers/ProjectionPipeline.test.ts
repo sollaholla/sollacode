@@ -6941,7 +6941,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         `;
       });
 
-    it.effect("retires delivered steers and recovers every unconfirmed steer at boot", () =>
+    it.effect("retires delivered steers and recovers only falsely terminal steer owners", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
@@ -6954,25 +6954,46 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         const unconfirmedMessageId = "message-startup-unconfirmed-steer";
         const legacyUnknownThreadId = "thread-startup-legacy-unknown-steer";
         const legacyUnknownMessageId = "message-startup-legacy-unknown-steer";
+        const falseSupersededThreadId = "thread-startup-false-superseded-steer";
+        const falseSupersededMessageId = "message-startup-false-superseded-steer";
+        const trulySupersededThreadId = "thread-startup-truly-superseded-steer";
+        const trulySupersededMessageId = "message-startup-truly-superseded-steer";
         const seededAt = "2026-03-02T09:00:00.000Z";
 
-        for (const [threadId, messageId, blockedReason, hasPlaceholder] of [
+        for (const [threadId, messageId, state, blockedReason, hasPlaceholder] of [
           [
             deliveredThreadId,
             deliveredMessageId,
+            "completed",
             ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
             true,
           ],
           [
             unconfirmedThreadId,
             unconfirmedMessageId,
+            "completed",
             ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
             true,
           ],
           [
             legacyUnknownThreadId,
             legacyUnknownMessageId,
+            "completed",
             ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+            false,
+          ],
+          [
+            falseSupersededThreadId,
+            falseSupersededMessageId,
+            "cancelled",
+            "turn-start was superseded",
+            false,
+          ],
+          [
+            trulySupersededThreadId,
+            trulySupersededMessageId,
+            "cancelled",
+            "turn-start was superseded",
             false,
           ],
         ] as const) {
@@ -7014,7 +7035,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
               lease_expires_at, blocked_reason, created_at, updated_at
             ) VALUES (
               ${`work-${threadId}`}, ${threadId}, ${`turn-start:${messageId}`},
-              'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
+              'active-turn-recovery', ${state}, 'codex', 0, NULL, NULL, NULL,
               ${blockedReason},
               ${seededAt}, ${seededAt}
             )
@@ -7034,6 +7055,42 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
               messageId: MessageId.make(messageId),
               runtimeMode: "full-access",
               createdAt: seededAt,
+            },
+          });
+        }
+
+        for (const [threadId, messageId, inputOrigin] of [
+          [
+            falseSupersededThreadId,
+            `startup-auto-resume-message:${falseSupersededThreadId}:turn-interrupted`,
+            null,
+          ],
+          [trulySupersededThreadId, "message-startup-truly-later-user", null],
+        ] as const) {
+          yield* sql`
+            INSERT INTO projection_thread_messages (
+              message_id, thread_id, turn_id, role, text, input_origin,
+              is_streaming, created_at, updated_at
+            ) VALUES (
+              ${messageId}, ${threadId}, NULL, 'user', 'Later message', ${inputOrigin},
+              0, '2026-03-02T09:00:01.000Z', '2026-03-02T09:00:01.000Z'
+            )
+          `;
+          yield* eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`evt-startup-steer-later-${threadId}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: "2026-03-02T09:00:01.000Z",
+            commandId: CommandId.make(`cmd-startup-steer-later-${threadId}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-startup-steer-later-${threadId}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              messageId: MessageId.make(messageId),
+              runtimeMode: "full-access",
+              createdAt: "2026-03-02T09:00:01.000Z",
             },
           });
         }
@@ -7084,11 +7141,13 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           FROM projection_turns
           WHERE turn_id IS NULL AND state = 'pending'
             AND thread_id IN (
-              ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId}
+              ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId},
+              ${falseSupersededThreadId}, ${trulySupersededThreadId}
             )
           ORDER BY thread_id ASC
         `;
         assert.deepEqual(pendingRows, [
+          { threadId: falseSupersededThreadId, messageId: falseSupersededMessageId },
           { threadId: legacyUnknownThreadId, messageId: legacyUnknownMessageId },
           { threadId: unconfirmedThreadId, messageId: unconfirmedMessageId },
         ]);
@@ -7101,13 +7160,20 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           SELECT thread_id AS "threadId", state, blocked_reason AS "blockedReason"
           FROM thread_work_obligations
           WHERE thread_id IN (
-            ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId}
+            ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId},
+            ${falseSupersededThreadId}, ${trulySupersededThreadId}
           )
           ORDER BY thread_id ASC
         `;
         assert.deepEqual(obligations, [
           { threadId: deliveredThreadId, state: "completed", blockedReason: null },
+          { threadId: falseSupersededThreadId, state: "pending", blockedReason: null },
           { threadId: legacyUnknownThreadId, state: "pending", blockedReason: null },
+          {
+            threadId: trulySupersededThreadId,
+            state: "cancelled",
+            blockedReason: "turn-start was superseded",
+          },
           {
             threadId: unconfirmedThreadId,
             state: "pending",
