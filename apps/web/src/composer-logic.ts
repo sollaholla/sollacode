@@ -321,13 +321,27 @@ export interface ComposerFileIntake {
 }
 
 /**
+ * A path from Electron belongs to the desktop client's filesystem. It is only
+ * meaningful to the provider hosted by that same primary desktop environment;
+ * SSH, relay, and desktop-local secondary environments (including WSL) have a
+ * different path namespace.
+ */
+export function canReferenceLocalComposerFiles(input: {
+  readonly hasDesktopPathResolver: boolean;
+  readonly environmentTargetKind: string | null;
+}): boolean {
+  return input.hasDesktopPathResolver && input.environmentTargetKind === "PrimaryConnectionTarget";
+}
+
+/**
  * Splits dropped or picked files into what uploads and what attaches by
  * reference.
  *
  * Only images upload as attachments — providers accept nothing else. Any other
  * file attaches by reference instead: its OS path goes into the prompt as a
- * file link the agent opens from disk. That needs a resolvable path, which
- * browsers never expose — only the desktop app can.
+ * file link the agent opens from disk. That needs a resolvable path in the
+ * provider's filesystem namespace, which is only true for the same-machine
+ * desktop environment.
  */
 export function classifyComposerFileIntake(
   files: readonly File[],
@@ -347,7 +361,7 @@ export function classifyComposerFileIntake(
       if (path !== null) {
         referencedPaths.push(path);
       } else {
-        error = `'${file.name}' can't be uploaded — only images can. Other files attach as path references, which needs the desktop app.`;
+        error = `'${file.name}' can't be uploaded. It can only be added as a path reference from the desktop app when this chat runs on the same computer.`;
       }
       continue;
     }

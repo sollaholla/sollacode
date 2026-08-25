@@ -40,6 +40,14 @@ const POSIX_FILE_ROOT_PREFIXES = [
   "/workspaces/",
 ] as const;
 
+// rehype-sanitize treats a Windows drive letter as a URI protocol. Preserve
+// both cases through sanitization; the URL transform still accepts them only
+// when the complete destination resolves as a filesystem path.
+export const MARKDOWN_FILE_LINK_HREF_PROTOCOLS = [
+  "file",
+  ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+] as const;
+
 export interface MarkdownFileLinkMeta {
   filePath: string;
   targetPath: string;
@@ -186,6 +194,12 @@ export function resolveMarkdownFileLinkTarget(
 
   if (!cwd) return null;
   return resolvePathLinkTarget(pathWithPosition, cwd);
+}
+
+/** Keeps only link destinations that the file-link renderer can resolve. */
+export function preserveMarkdownFileLinkHref(href: string, cwd?: string): string | null {
+  const normalizedHref = normalizeMarkdownLinkDestination(href);
+  return resolveMarkdownFileLinkTarget(normalizedHref, cwd) === null ? null : normalizedHref;
 }
 
 const INLINE_CODE_DISQUALIFIER_PATTERN = /[\s`]/;

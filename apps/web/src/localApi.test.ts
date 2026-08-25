@@ -53,6 +53,10 @@ beforeEach(() => {
     configurable: true,
     value: createLocalStorageStub(),
   });
+  Object.defineProperty(testWindow(), "open", {
+    configurable: true,
+    value: vi.fn().mockReturnValue({ opener: testWindow() }),
+  });
 });
 
 afterEach(() => {
@@ -75,6 +79,25 @@ describe("LocalApi", () => {
 
     await expect(createLocalApi().contextMenu.show(items, { x: 4, y: 5 })).resolves.toBe("rename");
     expect(showContextMenuFallbackMock).toHaveBeenCalledWith(items, { x: 4, y: 5 });
+  });
+
+  it("opens external links in a browser tab without a desktop bridge", async () => {
+    const { createLocalApi } = await import("./localApi");
+
+    await expect(createLocalApi().shell.openExternal("https://example.com/docs")).resolves.toBe(
+      undefined,
+    );
+    expect(testWindow().open).toHaveBeenCalledExactlyOnceWith("https://example.com/docs", "_blank");
+    expect(vi.mocked(testWindow().open).mock.results[0]?.value?.opener).toBeNull();
+  });
+
+  it("reports when the browser blocks an external link", async () => {
+    vi.mocked(testWindow().open).mockReturnValue(null);
+    const { createLocalApi } = await import("./localApi");
+
+    await expect(createLocalApi().shell.openExternal("https://example.com/docs")).rejects.toThrow(
+      "Unable to open link.",
+    );
   });
 
   it("delegates host capabilities and persistence to the desktop bridge", async () => {

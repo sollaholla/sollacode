@@ -50,11 +50,62 @@ export type AcpSessionRuntimeEvent = AcpParsedSessionEvent | AcpSessionEventStre
 const defaultSessionLoadTimeout = Duration.seconds(90);
 const defaultSessionLoadReplayIdleGap = Duration.seconds(2);
 
+interface ProcessTableEntry {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly processGroupId: number;
+}
+
+/**
+ * Finds process groups descended from the ACP host but detached from its own
+ * group. Grok deliberately starts tool shells in separate groups; killing
+ * only the `grok agent stdio` group otherwise leaves those tools orphaned.
+ */
+export function descendantProcessGroupsFromPs(
+  rootPid: number,
+  protectedPid: number,
+  psOutput: string,
+): ReadonlyArray<number> {
+  const entries = psOutput
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/u).map(Number))
+    .flatMap(([pid, parentPid, processGroupId]) =>
+      Number.isSafeInteger(pid) &&
+      Number.isSafeInteger(parentPid) &&
+      Number.isSafeInteger(processGroupId)
+        ? [{ pid: pid!, parentPid: parentPid!, processGroupId: processGroupId! }]
+        : [],
+    ) satisfies ReadonlyArray<ProcessTableEntry>;
+  const descendantPids = new Set([rootPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const entry of entries) {
+      if (!descendantPids.has(entry.parentPid) || descendantPids.has(entry.pid)) continue;
+      descendantPids.add(entry.pid);
+      changed = true;
+    }
+  }
+  const protectedGroupId = entries.find((entry) => entry.pid === protectedPid)?.processGroupId;
+  return Array.from(
+    new Set(
+      entries
+        .filter((entry) => entry.pid !== rootPid && descendantPids.has(entry.pid))
+        .map((entry) => entry.processGroupId)
+        .filter(
+          (processGroupId) =>
+            processGroupId > 0 && processGroupId !== rootPid && processGroupId !== protectedGroupId,
+        ),
+    ),
+  );
+}
+
 export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly forceKillAfter?: Duration.Input;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -94,6 +145,8 @@ export interface AcpSessionRuntimeOptions {
    * turn actually stops; ACP clients can emulate that by repeating cancel.
    */
   readonly extraCancelNotifications?: number;
+  /** Delay before each extra cancel so the provider can enter its cancelling state. */
+  readonly extraCancelNotificationDelay?: Duration.Input;
   readonly cancelNotificationMeta?: Record<string, unknown>;
   /**
    * When true, `prompt` sends each `session/prompt` immediately instead of
@@ -233,6 +286,10 @@ export class AcpSessionRuntime extends Context.Service<
      * @see https://agentclientprotocol.com/protocol/schema#session/cancel
      */
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+    /** Terminates the ACP child process, escalating to SIGKILL after the configured bound. */
+    readonly shutdown: Effect.Effect<void>;
+    /** Closes a supported ACP session, cancelling all work owned by that session. */
+    readonly closeSession: Effect.Effect<void, EffectAcpErrors.AcpError>;
     /**
      * Selects the active mode through the negotiated `mode` configuration option.
      * This is a no-op when the requested mode is already active.
@@ -401,6 +458,9 @@ export const make = (
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
           ...(options.spawn.env ? { env: options.spawn.env, extendEnv: true } : {}),
+          ...(options.spawn.forceKillAfter !== undefined
+            ? { forceKillAfter: options.spawn.forceKillAfter }
+            : {}),
           shell: spawnCommand.shell,
         }),
       )
@@ -414,6 +474,62 @@ export const make = (
             }),
         ),
       );
+
+    const discoveredDescendantProcessGroups =
+      globalThis.process.platform === "win32"
+        ? Effect.succeed<ReadonlyArray<number>>([])
+        : spawner
+            .string(
+              ChildProcess.make("ps", ["-axo", "pid=,ppid=,pgid="], {
+                stdout: "pipe",
+                stderr: "ignore",
+              }),
+            )
+            .pipe(
+              Effect.map((output) =>
+                descendantProcessGroupsFromPs(Number(child.pid), globalThis.process.pid, output),
+              ),
+              Effect.timeout("500 millis"),
+              // Process enumeration is defense in depth. The normal process
+              // group teardown still runs if `ps` is unavailable or wedged.
+              Effect.orElseSucceed(() => []),
+            );
+    const knownDetachedProcessGroupsRef = yield* Ref.make<ReadonlyArray<number>>([]);
+    const captureDescendantProcessGroups = discoveredDescendantProcessGroups.pipe(
+      Effect.flatMap((discovered) =>
+        Ref.update(knownDetachedProcessGroupsRef, (known) =>
+          Array.from(new Set([...known, ...discovered])),
+        ),
+      ),
+    );
+    const signalProcessGroups = (processGroupIds: ReadonlyArray<number>, signal: NodeJS.Signals) =>
+      Effect.forEach(
+        processGroupIds,
+        (processGroupId) =>
+          Effect.try(() => globalThis.process.kill(-processGroupId, signal)).pipe(Effect.ignore),
+        { concurrency: "unbounded", discard: true },
+      );
+    const shutdown = Effect.gen(function* () {
+      // Capture once more, but retain snapshots taken before cancel/close: a
+      // provider can exit during the cooperative request and reparent its tool
+      // shells, at which point a fresh descendant walk can no longer see them.
+      yield* captureDescendantProcessGroups;
+      const detachedGroups = yield* Ref.get(knownDetachedProcessGroupsRef);
+      yield* signalProcessGroups(detachedGroups, "SIGTERM");
+      if (detachedGroups.length > 0) {
+        // Escalate while the captured PGIDs are still fresh. Waiting through
+        // the host's multi-second force-kill bound first creates an avoidable
+        // window in which the OS could recycle a departed numeric PGID for an
+        // unrelated process group.
+        yield* Effect.sleep("100 millis");
+        yield* signalProcessGroups(detachedGroups, "SIGKILL");
+      }
+      yield* child
+        .kill({
+          forceKillAfter: options.spawn.forceKillAfter ?? "2 seconds",
+        })
+        .pipe(Effect.ignore);
+    });
 
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
@@ -867,6 +983,7 @@ export const make = (
       cancel: getStartedState.pipe(
         Effect.flatMap((started) =>
           Effect.gen(function* () {
+            yield* captureDescendantProcessGroups;
             const cancelPayload = {
               sessionId: started.sessionId,
               ...(options.cancelNotificationMeta ? { _meta: options.cancelNotificationMeta } : {}),
@@ -879,6 +996,9 @@ export const make = (
             yield* sendCancel;
             const extraCancels = options.extraCancelNotifications ?? 0;
             for (let extra = 0; extra < extraCancels; extra += 1) {
+              if (options.extraCancelNotificationDelay !== undefined) {
+                yield* Effect.sleep(options.extraCancelNotificationDelay);
+              }
               yield* sendCancel;
             }
             const activePromptFibers = yield* Ref.get(activePromptFibersRef);
@@ -890,6 +1010,23 @@ export const make = (
           }),
         ),
       ),
+      closeSession: captureDescendantProcessGroups.pipe(
+        Effect.andThen(getStartedState),
+        Effect.flatMap((started) => {
+          const closeCapability =
+            started.initializeResult.agentCapabilities?.sessionCapabilities?.close;
+          if (closeCapability === undefined || closeCapability === null) {
+            return Effect.void;
+          }
+          const payload = {
+            sessionId: started.sessionId,
+          } satisfies EffectAcpSchema.CloseSessionRequest;
+          return runLoggedRequest("session/close", payload, acp.agent.closeSession(payload)).pipe(
+            Effect.asVoid,
+          );
+        }),
+      ),
+      shutdown,
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
           Effect.flatMap((modeState) => {

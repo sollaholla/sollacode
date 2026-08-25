@@ -19,10 +19,12 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
+  appendAgentStreamText,
   emittedAgentStop,
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
+import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { refreshProjectionThreadPendingWork } from "../../persistence/PendingWorkProjection.ts";
@@ -1194,7 +1196,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             onNone: () => event.payload.text,
             onSome: (message) => {
               if (event.payload.streaming) {
-                return `${message.text}${event.payload.text}`;
+                return appendAgentStreamText(message.text, event.payload.text);
               }
               if (event.payload.text.length === 0) {
                 return message.text;
@@ -2241,10 +2243,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         if (isProviderAuthenticationFailure(assistantMessage.text)) return;
         if (!shouldAgentContinueAfterReply(assistantMessage.text)) return;
 
+        const sourceMessageIndex =
+          turn.value.pendingMessageId === null
+            ? -1
+            : messages.findIndex((message) => message.messageId === turn.value.pendingMessageId);
+        const sourceMessage = sourceMessageIndex < 0 ? undefined : messages[sourceMessageIndex];
         if (turn.value.pendingMessageId !== null) {
-          const sourceMessage = messages.find(
-            (message) => message.messageId === turn.value.pendingMessageId,
-          );
           if (
             sourceMessage === undefined ||
             sourceMessage.role !== "user" ||
@@ -2253,6 +2257,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
         }
+        // A later queued turn may arrive after this turn's source but before
+        // this turn writes its assistant response. It is therefore invisible
+        // to the usual "messages after the assistant" check below. Apply the
+        // same priority rule from the immutable source boundary: a real user
+        // turn or browser cleanup owns the next work slot, while ordinary
+        // agent-loop messages remain eligible for normal continuation.
+        if (
+          sourceMessageIndex >= 0 &&
+          messages
+            .slice(sourceMessageIndex + 1)
+            .some(
+              (message) =>
+                message.role === "user" &&
+                (message.inputOrigin !== "agent-loop" ||
+                  isBrowserTabCleanupMessageId(String(message.messageId))),
+            )
+        ) {
+          return;
+        }
         // A real user message anywhere after the judged reply always outranks
         // synthetic continuation — including on turn rows minted straight from
         // an assistant message, which have no pending source pointer and used
@@ -2260,10 +2283,55 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         const assistantIndex = messages.findIndex(
           (message) => message.messageId === assistantMessage.messageId,
         );
+        // A cleanup turn is housekeeping on behalf of the latest substantive
+        // turn, not a fresh authorization to keep an Agent loop alive. Judge
+        // both replies: the cleanup reply itself must be continuable (checked
+        // above), and the newest finalized assistant reply that did not come
+        // from a cleanup turn must also be continuable. Filtering by the turn's
+        // immutable pending source handles interleavings such as
+        // A -> cleanup C, queued B -> cleanup D: C's ordinary housekeeping
+        // response must not hide B's later AGENT_STOP when D completes.
+        if (
+          sourceMessage !== undefined &&
+          isBrowserTabCleanupMessageId(String(sourceMessage.messageId))
+        ) {
+          const threadTurns = yield* projectionTurnRepository.listByThreadId({
+            threadId: input.threadId,
+          });
+          const cleanupTurnIds = new Set(
+            threadTurns.flatMap((candidateTurn) =>
+              candidateTurn.turnId !== null &&
+              candidateTurn.pendingMessageId !== null &&
+              isBrowserTabCleanupMessageId(String(candidateTurn.pendingMessageId))
+                ? [String(candidateTurn.turnId)]
+                : [],
+            ),
+          );
+          const substantiveAssistantMessage = messages
+            .slice(0, assistantIndex)
+            .findLast(
+              (message) =>
+                message.role === "assistant" &&
+                !message.isStreaming &&
+                (message.turnId === null || !cleanupTurnIds.has(String(message.turnId))),
+            );
+          if (
+            substantiveAssistantMessage === undefined ||
+            isProviderAuthenticationFailure(substantiveAssistantMessage.text) ||
+            !shouldAgentContinueAfterReply(substantiveAssistantMessage.text)
+          ) {
+            return;
+          }
+        }
         if (
           messages
             .slice(assistantIndex + 1)
-            .some((message) => message.role === "user" && message.inputOrigin !== "agent-loop")
+            .some(
+              (message) =>
+                message.role === "user" &&
+                (message.inputOrigin !== "agent-loop" ||
+                  isBrowserTabCleanupMessageId(String(message.messageId))),
+            )
         ) {
           return;
         }
@@ -3110,6 +3178,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly completedAt: string | null;
           readonly assistantText: string | null;
           readonly assistantUpdatedAt: string | null;
+          readonly sourceMessageId: string | null;
           readonly sourceMessageText: string | null;
           readonly latestUserMessageAt: string | null;
           readonly sessionStatus: string | null;
@@ -3132,6 +3201,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ) AS "turnRuntimeErrors",
             assistant.text AS "assistantText",
             assistant.updated_at AS "assistantUpdatedAt",
+            source.message_id AS "sourceMessageId",
             source.text AS "sourceMessageText",
             threads.latest_user_message_at AS "latestUserMessageAt",
             sessions.status AS "sessionStatus",
@@ -3195,6 +3265,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             row.sessionStatus === "ready" &&
             row.sessionUpdatedAt === row.completedAt &&
             (row.latestUserMessageAt === null || row.latestUserMessageAt <= row.completedAt) &&
+            // Cleanup continuation is decided transactionally while the live
+            // projection still has the substantive predecessor available.
+            // Boot recovery intentionally fails closed here: synthesizing a
+            // missing continuation from housekeeping alone can resurrect an
+            // Agent loop whose substantive turn ended with AGENT_STOP.
+            !isBrowserTabCleanupMessageId(row.sourceMessageId ?? "") &&
             !row.sourceMessageText?.startsWith("Settings updated:") &&
             row.assistantText !== null &&
             shouldAgentContinueAfterReply(row.assistantText);

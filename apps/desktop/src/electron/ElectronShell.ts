@@ -28,6 +28,7 @@ export class ElectronShell extends Context.Service<
   ElectronShell,
   {
     readonly openExternal: (rawUrl: unknown) => Effect.Effect<boolean>;
+    readonly revealFile: (path: string) => Effect.Effect<void>;
     readonly copyText: (text: string) => Effect.Effect<void>;
     readonly writeComposerClipboard: (input: {
       readonly text: string;
@@ -49,6 +50,7 @@ export const make = ElectronShell.of({
           ),
         ),
     }),
+  revealFile: (path) => Effect.sync(() => Electron.shell.showItemInFolder(path)),
   copyText: (text) =>
     Effect.sync(() => {
       Electron.clipboard.writeText(text);

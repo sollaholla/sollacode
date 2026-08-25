@@ -456,17 +456,19 @@ export async function writeComposerTransferToClipboard(
 }
 
 /**
- * Reads native image entries from a paste event without assuming Chromium put
- * them in `DataTransfer.files`. On macOS and Windows clipboard images may be
+ * Reads native file entries from a paste event without assuming Chromium put
+ * them in `DataTransfer.files`. On macOS and Windows clipboard files may be
  * exposed only as file-kind `items`, even though a normal file drop populates
  * both collections.
+ *
+ * Preserve native File objects whenever possible. Electron's
+ * `webUtils.getPathForFile` can resolve a disk-backed File, but a reconstructed
+ * copy no longer carries that backing path.
  */
-export function readClipboardImageFiles(
-  clipboardData: Pick<DataTransfer, "files" | "items">,
-): File[] {
+export function readClipboardFiles(clipboardData: Pick<DataTransfer, "files" | "items">): File[] {
   let files: File[] = [];
   try {
-    files = Array.from(clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    files = Array.from(clipboardData.files);
   } catch {
     // Some synthetic and restricted clipboard objects throw while enumerating.
   }
@@ -474,11 +476,11 @@ export function readClipboardImageFiles(
 
   try {
     return Array.from(clipboardData.items).flatMap((item) => {
+      if (item.kind !== "file") return [];
       const declaredType = item.type.toLowerCase();
-      if (!declaredType.startsWith("image/")) return [];
       const file = item.getAsFile();
       if (!file) return [];
-      if (file.type.startsWith("image/")) return [file];
+      if (!declaredType.startsWith("image/") || file.type.startsWith("image/")) return [file];
       return [
         new File([file], file.name || "clipboard-image", {
           type: declaredType,
@@ -595,9 +597,9 @@ export function clearInMemoryComposerTransfersForTest(): void {
  *
  * Three routes converge here and only one may win, or the draft is duplicated:
  *  - a resolved staged transfer restores the whole draft at full fidelity;
- *  - otherwise clipboard image bytes plus their accompanying text are inserted
- *    together, which is what a cut produces once the token has been stripped;
- *  - with no images at all the browser's own paste is left alone.
+ *  - otherwise clipboard files plus their accompanying text are inserted
+ *    together; images upload while disk-backed non-images become path refs;
+ *  - with no files at all the browser's own paste is left alone.
  */
 export function planComposerPaste(input: {
   readonly transfer: ComposerTransfer | null;
@@ -617,13 +619,12 @@ export function planComposerPaste(input: {
       files: input.transfer.files,
     };
   }
-  const images = input.clipboardFiles.filter((file) => file.type.startsWith("image/"));
-  if (images.length === 0) {
+  if (input.clipboardFiles.length === 0) {
     return { handled: false, prompt: null, files: [] };
   }
   return {
     handled: true,
     prompt: input.clipboardText.length > 0 ? input.clipboardText : null,
-    files: images,
+    files: input.clipboardFiles,
   };
 }

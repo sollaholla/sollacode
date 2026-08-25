@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { appendAgentStreamText } from "@t3tools/shared/agentMode";
 
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -36,6 +37,7 @@ import {
   ThreadSessionSetPayload,
   ThreadSessionStopRequestedPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnInterruptRequestedPayload,
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
@@ -621,7 +623,7 @@ export function projectEvent(
                 ? {
                     ...entry,
                     text: message.streaming
-                      ? `${entry.text}${message.text}`
+                      ? appendAgentStreamText(entry.text, message.text)
                       : message.text.length > 0
                         ? message.text
                         : entry.text,
@@ -681,6 +683,41 @@ export function projectEvent(
                     completedAt: session.updatedAt,
                   }
                 : thread.latestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-interrupt-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnInterruptRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) return nextBase;
+
+        const interruptedTurnId =
+          payload.turnId ??
+          (thread.session?.status === "running" ? thread.session.activeTurnId : null);
+        if (
+          interruptedTurnId === null ||
+          interruptedTurnId === undefined ||
+          thread.latestTurn?.turnId !== interruptedTurnId ||
+          thread.latestTurn.state !== "running"
+        ) {
+          return nextBase;
+        }
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            latestTurn: {
+              ...thread.latestTurn,
+              state: "interrupted",
+              completedAt: payload.createdAt,
+            },
             updatedAt: event.occurredAt,
           }),
         };

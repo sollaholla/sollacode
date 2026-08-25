@@ -314,9 +314,15 @@ export const saveThreadExportJson = DesktopIpc.makeIpcMethod({
 export const revealFile = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.REVEAL_FILE_CHANNEL,
   payload: Schema.String,
-  result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.window.revealFile")(function* (path) {
-    yield* Effect.sync(() => Electron.shell.showItemInFolder(path));
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.revealFile")(function* (requestedPath) {
+    const path = yield* Path.Path;
+    if (!path.isAbsolute(requestedPath)) return false;
+    const fileSystem = yield* FileSystem.FileSystem;
+    if (!(yield* fileSystem.exists(requestedPath))) return false;
+    const electronShell = yield* ElectronShell.ElectronShell;
+    yield* electronShell.revealFile(requestedPath);
+    return true;
   }),
 });
 

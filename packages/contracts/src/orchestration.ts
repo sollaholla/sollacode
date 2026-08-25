@@ -1010,6 +1010,19 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  /**
+   * Server-owned follow-up that must become durable in the same transaction as
+   * the session settlement. This prevents a newly-ready Agent thread from
+   * claiming its ordinary continuation in the gap before housekeeping work is
+   * queued.
+   */
+  atomicFollowupTurn: Schema.optional(
+    Schema.Struct({
+      sourceTurnId: TurnId,
+      message: ThreadTurnStartCommand.fields.message,
+      modelSelection: Schema.optional(ModelSelection),
+    }),
+  ),
   createdAt: IsoDateTime,
 });
 

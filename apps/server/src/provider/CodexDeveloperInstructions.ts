@@ -1,14 +1,19 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
+
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## Solla Code collaborative browser
 
-You are running inside Solla Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
+You are running inside Solla Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. Use its \`preview_*\` tools for browser navigation, inspection, interaction, screenshots, and recordings.
 
-For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
+${T3_BROWSER_CONTROL_POLICY}
 
-Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.
+After opening or selecting a tab, use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
+
+Treat \`preview_open\` lifecycle results as authoritative. If it returns \`selection-required\`, choose an offered tab ID to reuse or explicitly request a new tab on the next call. If it reports that it created a tab, reuse that tab for the browsing task and call \`preview_close\` with its exact ID when the task is finished. Never close a reused tab merely as cleanup.
+
 `;
 
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)

@@ -1197,6 +1197,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.atomicFollowupTurn !== undefined &&
+        (command.session.status !== "ready" || command.session.activeTurnId !== null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "An atomic follow-up turn requires a ready session with no active turn.",
+        });
+      }
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1221,9 +1230,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // as snoozed, without spending the return ticket.
       const isSessionActivity =
         command.session.status === "starting" || command.session.status === "running";
+      // The provider completion is observed before this command is decided.
+      // Stop or a newer turn may win in that gap. Keep the lifecycle settlement,
+      // but only enqueue housekeeping while its successful source turn is still
+      // current; a late cleanup prompt must never resurrect interrupted work.
+      const atomicFollowupIsCurrent =
+        command.atomicFollowupTurn !== undefined &&
+        thread.latestTurn?.turnId === command.atomicFollowupTurn.sourceTurnId &&
+        (thread.latestTurn.state === "running" || thread.latestTurn.state === "completed");
+      const followupEvents = atomicFollowupIsCurrent
+        ? yield* decideOrchestrationCommand({
+            readModel,
+            command: {
+              type: "thread.turn.start",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              message: command.atomicFollowupTurn.message,
+              ...(command.atomicFollowupTurn.modelSelection === undefined
+                ? {}
+                : { modelSelection: command.atomicFollowupTurn.modelSelection }),
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              createdAt: command.createdAt,
+            },
+          }).pipe(Effect.map((events) => (Array.isArray(events) ? events : [events])))
+        : [];
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !isSessionActivity) {
-        return sessionSetEvent;
+        return followupEvents.length === 0 ? sessionSetEvent : [sessionSetEvent, ...followupEvents];
       }
       const unsettledEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
@@ -1239,7 +1273,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
-      return [unsettledEvent, sessionSetEvent];
+      return [unsettledEvent, sessionSetEvent, ...followupEvents];
     }
 
     case "thread.message.assistant.delta": {

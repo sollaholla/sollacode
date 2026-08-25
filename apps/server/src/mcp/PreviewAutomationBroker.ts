@@ -574,7 +574,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         return current;
       }
       const assignments = new Map(current.assignments);
-      if (resultTabId === null) {
+      const closedDifferentExactTab =
+        input.operation === "close" &&
+        input.tabId !== undefined &&
+        assignment.tabId !== undefined &&
+        input.tabId !== assignment.tabId;
+      if (closedDifferentExactTab) {
+        assignments.set(assignmentKey, { ...assignment, tabSequence: requestSequence });
+      } else if (resultTabId === null) {
         const { tabId: _tabId, ...withoutTabId } = assignment;
         assignments.set(assignmentKey, { ...withoutTabId, tabSequence: requestSequence });
       } else {

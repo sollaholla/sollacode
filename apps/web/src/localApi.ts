@@ -30,7 +30,15 @@ function createBrowserLocalApi(): LocalApi {
           return;
         }
 
-        window.open(url, "_blank", "noopener,noreferrer");
+        const openedWindow = window.open(url, "_blank");
+        if (!openedWindow) {
+          throw new Error("Unable to open link.");
+        }
+        // Keeping the WindowProxy observable lets us distinguish a blocked
+        // popup from a successful open. Sever the opener synchronously to
+        // retain the reverse-tabnabbing protection previously supplied by the
+        // `noopener` feature (which is allowed to return null on success).
+        openedWindow.opener = null;
       },
     },
     contextMenu: {

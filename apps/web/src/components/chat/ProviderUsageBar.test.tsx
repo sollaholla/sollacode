@@ -143,6 +143,58 @@ describe("provider usage summaries", () => {
     expect(compactProviderUsageMetric(summaries[0]!)?.label).toBe("Pay as you go");
   });
 
+  it("replaces persisted Grok usage with zero when a new active period omits the scalar", () => {
+    const grok = {
+      ...makeProvider("grok"),
+      displayName: "Grok",
+      accountUsage: {
+        config: {
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-25T17:24:28.593003+00:00",
+            end: "2026-09-01T17:24:28.593003+00:00",
+          },
+          onDemandCap: { val: 0 },
+          onDemandUsed: { val: 0 },
+          prepaidBalance: { val: 0 },
+        },
+      },
+      accountUsageReportedAt: "2026-08-25T22:37:00.104Z",
+    } satisfies ServerProvider;
+    const accountKey = providerUsageAccountKey(grok)!;
+
+    const summaries = deriveProviderUsageSummaries(
+      [grok],
+      [],
+      {
+        [accountKey]: {
+          accountKey,
+          driver: grok.driver,
+          windows: [
+            {
+              key: "weekly",
+              label: "Weekly",
+              usedPercent: 60,
+              resetAt: Date.parse("2026-08-25T17:24:28.593003+00:00"),
+            },
+          ],
+          reportedAt: "2026-08-19T18:23:44.941Z",
+        },
+      },
+      Date.parse("2026-08-25T22:37:30.000Z"),
+    );
+
+    expect(summaries[0]?.state).toBe("available");
+    expect(summaries[0]?.reportedAt).toBe("2026-08-25T22:37:00.104Z");
+    expect(summaries[0]?.windows).toEqual([
+      expect.objectContaining({
+        key: "weekly",
+        usedPercent: 0,
+        resetAt: Date.parse("2026-09-01T17:24:28.593003+00:00"),
+      }),
+    ]);
+  });
+
   it("marks Grok usage stale after the freshness window and fresh after a new snapshot", () => {
     const grok = {
       ...makeProvider("grok"),

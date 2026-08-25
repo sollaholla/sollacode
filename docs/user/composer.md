@@ -33,6 +33,24 @@ and PNG representation before clearing the draft. If either staging or clipboard
 the source composer remains unchanged. Pasting into another application still provides the prompt
 text and first image, but Solla-specific multi-image transfer remains inside Solla Code.
 
+## Reference local files
+
+In the desktop app, drag a file onto the conversation or composer, or copy it in Finder or File
+Explorer and paste it into the composer. Images remain uploaded attachments. Videos, documents, and
+other file types appear as file-reference chips and are sent to the agent as their exact local path;
+their bytes are not uploaded.
+
+Path references are available only when the chat runs in the desktop app's primary, same-computer
+environment. A remote, SSH, relay, browser, mobile, or WSL-backed agent cannot read the desktop
+client's path namespace, so the composer rejects that reference visibly instead of sending an
+unusable path.
+
+After a message is sent, HTTP and HTTPS links open through the app's system-browser integration.
+File references open in the owning environment: previewable workspace files use the file panel,
+while local videos, audio, documents, archives, and executables are revealed in Finder or File
+Explorer. Missing local files report an error instead of failing silently, and remote paths are
+never passed to the desktop's local file explorer.
+
 ## Interaction and access
 
 Build, Plan, Agent, and the access picker work for Claude, Codex, Cursor, and

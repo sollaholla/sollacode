@@ -916,6 +916,21 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("The user wants you to continue working autonomously");
   });
 
+  it("collapses browser housekeeping into a compact browser chip", () => {
+    const entry = buildUserTimelineEntry(
+      "Browser tab check: 2 tabs are open. Review and clean up tabs.",
+    );
+    entry.message.id = MessageId.make("browser-tab-cleanup-message:thread-1:turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
+    );
+
+    expect(markup).toContain("Browser tab cleanup");
+    expect(markup).toContain("lucide-globe");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("Browser tab check: 2 tabs are open");
+  });
+
   it.each([
     ["contextual resume prompt", RESUME_PROMPT],
     ["legacy resume prompt", "resume"],
@@ -1087,6 +1102,69 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Context compacted");
     expect(markup).toContain("Work Log");
+  });
+
+  it.each([
+    ["active turn", true],
+    ["completed turn", false],
+  ] as const)("uses a file-search icon during an %s", (_state, active) => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        activeTurnInProgress={active}
+        isWorking={active}
+        timelineEntries={[
+          {
+            id: `entry-file-search-${active ? "active" : "completed"}`,
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: `work-file-search-${active ? "active" : "completed"}`,
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: null,
+              label: "Searched files",
+              toolTitle: "Searched files",
+              detail: "found 9 matches",
+              tone: "tool",
+              itemType: "web_search",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("lucide-file-search");
+    expect(markup).not.toContain("lucide-globe");
+  });
+
+  it("keeps the globe icon for genuine web search activity", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-web-search",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-web-search",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: null,
+              label: "Web search",
+              toolTitle: "Web search",
+              detail: "site:example.com accessibility",
+              tone: "tool",
+              itemType: "web_search",
+              toolLifecycleStatus: "completed",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("lucide-globe");
+    expect(markup).not.toContain("lucide-file-search");
   });
 
   it("renders Token Optimizer evidence with a hoverable lightning affordance", () => {

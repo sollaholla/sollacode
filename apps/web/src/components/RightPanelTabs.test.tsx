@@ -14,6 +14,7 @@ import {
   routeCapturedHorizontalTabWheel,
   routeHorizontalTabWheel,
   shouldShowArtifactShelf,
+  shouldShowFloatingPreviewIcon,
   shouldShowSideChatProviderIcon,
 } from "./RightPanelTabs";
 
@@ -108,6 +109,27 @@ describe("right-panel tab naming", () => {
         liveLabels,
       ),
     ).toBe("Deployment");
+  });
+});
+
+describe("floating browser tab indicator", () => {
+  const previewSurface: RightPanelSurface = {
+    id: "browser:tab-2",
+    kind: "preview",
+    resourceId: "tab-2",
+  };
+
+  it("marks only an inactive tab whose floating window is open", () => {
+    const floating = new Set(["tab-2"]);
+    expect(shouldShowFloatingPreviewIcon(previewSurface, false, floating)).toBe(true);
+    expect(shouldShowFloatingPreviewIcon(previewSurface, true, floating)).toBe(false);
+    expect(shouldShowFloatingPreviewIcon(previewSurface, false, new Set())).toBe(false);
+  });
+
+  it("never marks non-browser surfaces", () => {
+    expect(
+      shouldShowFloatingPreviewIcon({ id: "diff", kind: "diff" }, false, new Set(["tab-2"])),
+    ).toBe(false);
   });
 });
 

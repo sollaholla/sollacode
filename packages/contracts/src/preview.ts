@@ -199,6 +199,13 @@ export const PreviewListResult = Schema.Struct({
 });
 export type PreviewListResult = typeof PreviewListResult.Type;
 
+/** Authoritative tab set committed by a close operation. */
+export const PreviewCloseResult = Schema.Struct({
+  ...PreviewListResult.fields,
+  closedTabIds: Schema.Array(PreviewTabId),
+});
+export type PreviewCloseResult = typeof PreviewCloseResult.Type;
+
 const PreviewEventBaseSchema = Schema.Struct({
   threadId: TrimmedNonEmptyString,
   tabId: PreviewTabId,

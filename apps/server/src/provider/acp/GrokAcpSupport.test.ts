@@ -61,6 +61,7 @@ describe("buildGrokAcpSpawnInput", () => {
       command: "/usr/local/bin/grok",
       args: ["agent", "stdio"],
       cwd: "/tmp/project",
+      forceKillAfter: "2 seconds",
       env: {
         XAI_API_KEY: "secret",
         GROK_OAUTH2_REFERRER: "other-client",
@@ -79,6 +80,7 @@ describe("buildGrokAcpSpawnInput", () => {
       command: "/usr/local/bin/grok",
       args: ["agent", "stdio"],
       cwd: "/tmp/project",
+      forceKillAfter: "2 seconds",
       env: {
         XAI_API_KEY: "secret",
         GROK_OAUTH2_REFERRER: "t3code",

@@ -41,6 +41,7 @@ import { isAgentContinuePrompt } from "../../agentMode";
 import { extractAgentStopSignoff } from "@t3tools/shared/agentMode";
 import { isResumePrompt } from "../../resumePrompt";
 import { parseSettingsUpdatePrompt } from "@t3tools/shared/settingsPrompt";
+import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
 import {
   deriveTimelineEntries,
   workEntryIndicatesToolFailure,
@@ -63,6 +64,7 @@ import {
   CircleAlertIcon,
   EyeIcon,
   FastForwardIcon,
+  FileSearchIcon,
   GlobeIcon,
   HammerIcon,
   LoaderCircleIcon,
@@ -147,10 +149,10 @@ import { useOpenInPreferredEditor } from "../../editorPreferences";
 import { readLocalApi } from "../../localApi";
 import { serverEnvironment } from "../../state/server";
 import { useEnvironment } from "../../state/environments";
-import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { revealInFileExplorerLabel } from "../preview/fileExplorerLabel";
+import { resolveLinkedFileAbsolutePath } from "./linkedFileBehavior";
 
 import {
   buildInlineTerminalContextText,
@@ -1559,11 +1561,14 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     );
   }
 
-  const syntheticPromptLabel = isAgentContinuePrompt(row.message.text)
-    ? "Agent auto-resuming"
-    : isResumePrompt(row.message.text)
-      ? "Resume"
-      : null;
+  const browserTabCleanup = isBrowserTabCleanupMessageId(row.message.id);
+  const syntheticPromptLabel = browserTabCleanup
+    ? "Browser tab cleanup"
+    : isAgentContinuePrompt(row.message.text)
+      ? "Agent auto-resuming"
+      : isResumePrompt(row.message.text)
+        ? "Resume"
+        : null;
 
   if (syntheticPromptLabel !== null) {
     return (
@@ -1575,7 +1580,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           onClick={() => setSyntheticPromptExpanded((expanded) => !expanded)}
         >
           <span>{syntheticPromptLabel}</span>
-          <FastForwardIcon className="size-3.5" aria-hidden />
+          {browserTabCleanup ? (
+            <GlobeIcon className="size-3.5" aria-hidden />
+          ) : (
+            <FastForwardIcon className="size-3.5" aria-hidden />
+          )}
         </button>
         {showDeliveryIndicator ? (
           <MessageDeliveryIndicator state={deliveryState} providerName={ctx.deliveryProviderName} />
@@ -2673,6 +2682,7 @@ type WorkEntryIconName =
   | "check"
   | "circle-alert"
   | "eye"
+  | "file-search"
   | "globe"
   | "hammer"
   | "message-circle"
@@ -2692,6 +2702,8 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       return <CircleAlertIcon className={className} aria-hidden />;
     case "eye":
       return <EyeIcon className={className} aria-hidden />;
+    case "file-search":
+      return <FileSearchIcon className={className} aria-hidden />;
     case "globe":
       return <GlobeIcon className={className} aria-hidden />;
     case "hammer":
@@ -2833,6 +2845,12 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   }
   if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
     return "square-pen";
+  }
+  if (
+    normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label).toLowerCase() ===
+    "searched files"
+  ) {
+    return "file-search";
   }
   if (workEntry.itemType === "web_search") return "globe";
   if (workEntry.itemType === "image_view") return "eye";
@@ -3160,22 +3178,26 @@ function ToolReadImagePreviewWithThread(props: {
   const previewUrl = asset._tag === "Success" ? withAssetRevision(asset.url, props.revision) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const displayPath = formatWorkspaceRelativePath(props.path, props.workspaceRoot);
+  const resolvedFilePath = useMemo(
+    () => resolveLinkedFileAbsolutePath(props.path, props.workspaceRoot),
+    [props.path, props.workspaceRoot],
+  );
   const workspaceRelativePath = useMemo(() => {
-    if (!props.workspaceRoot) return null;
-    const normalizedPath = props.path.replaceAll("\\", "/");
+    if (!props.workspaceRoot || !resolvedFilePath) return null;
+    const normalizedPath = resolvedFilePath.replaceAll("\\", "/");
     const normalizedRoot = props.workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
     const pathForCompare = normalizedPath.toLowerCase();
     const rootForCompare = normalizedRoot.toLowerCase();
     return pathForCompare.startsWith(`${rootForCompare}/`)
       ? normalizedPath.slice(normalizedRoot.length + 1)
       : null;
-  }, [props.path, props.workspaceRoot]);
+  }, [props.workspaceRoot, resolvedFilePath]);
   const failed = asset._tag === "Failure" || (previewUrl !== null && previewUrl === failedUrl);
   const canRevealOnThisDevice =
     typeof window !== "undefined" &&
     window.desktopBridge !== undefined &&
-    (environment?.entry.target._tag === "PrimaryConnectionTarget" ||
-      (environment !== null && isDesktopLocalConnectionTarget(environment.entry.target)));
+    environment?.entry.target._tag === "PrimaryConnectionTarget" &&
+    resolvedFilePath !== null;
 
   useEffect(() => {
     setFailedUrl(null);
@@ -3186,7 +3208,7 @@ function ToolReadImagePreviewWithThread(props: {
       useRightPanelStore.getState().openFile(props.threadRef, workspaceRelativePath, undefined);
       return;
     }
-    void openInPreferredEditor(props.path).then((result) => {
+    void openInPreferredEditor(resolvedFilePath ?? props.path).then((result) => {
       if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
       const error = squashAtomCommandFailure(result);
       toastManager.add(
@@ -3197,20 +3219,32 @@ function ToolReadImagePreviewWithThread(props: {
         }),
       );
     });
-  }, [openInPreferredEditor, props.path, props.threadRef, workspaceRelativePath]);
+  }, [openInPreferredEditor, props.path, props.threadRef, resolvedFilePath, workspaceRelativePath]);
 
   const handleRevealFile = useCallback(() => {
-    if (!canRevealOnThisDevice || !window.desktopBridge) return;
-    void window.desktopBridge.revealFile(props.path).catch((cause) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to locate file",
-          description: cause instanceof Error ? cause.message : "An error occurred.",
-        }),
-      );
-    });
-  }, [canRevealOnThisDevice, props.path]);
+    if (!canRevealOnThisDevice || !window.desktopBridge || !resolvedFilePath) return;
+    void window.desktopBridge.revealFile(resolvedFilePath).then(
+      (revealed) => {
+        if (revealed) return;
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to locate file",
+            description: "The file no longer exists on this computer.",
+          }),
+        );
+      },
+      (cause) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to locate file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      },
+    );
+  }, [canRevealOnThisDevice, resolvedFilePath]);
 
   const handleCopyPath = useCallback((path: string, label: string) => {
     void navigator.clipboard.writeText(path).then(
@@ -3259,7 +3293,7 @@ function ToolReadImagePreviewWithThread(props: {
       if (clicked === "preview" && workspaceRelativePath) {
         useRightPanelStore.getState().openFile(props.threadRef, workspaceRelativePath, undefined);
       } else if (clicked === "editor") {
-        void openInPreferredEditor(props.path);
+        void openInPreferredEditor(resolvedFilePath ?? props.path);
       } else if (clicked === "reveal") {
         handleRevealFile();
       } else if (clicked === "copy-relative" && workspaceRelativePath) {
@@ -3275,6 +3309,7 @@ function ToolReadImagePreviewWithThread(props: {
       openInPreferredEditor,
       props.path,
       props.threadRef,
+      resolvedFilePath,
       workspaceRelativePath,
     ],
   );

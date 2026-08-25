@@ -5,6 +5,7 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  canReferenceLocalComposerFiles,
   classifyComposerFileIntake,
   isComposerSubmitBlocked,
   isEnabledComposerSubmitButton,
@@ -430,6 +431,7 @@ describe("classifyComposerFileIntake", () => {
     expect(intake.referencedPaths).toEqual([]);
     expect(intake.error).toContain("clip.mp4");
     expect(intake.error).toContain("desktop app");
+    expect(intake.error).toContain("same computer");
   });
 
   it("still enforces the image cap, counting already-attached images", () => {
@@ -440,5 +442,34 @@ describe("classifyComposerFileIntake", () => {
     });
     expect(intake.imageFiles.map((file) => file.name)).toEqual(["a.png"]);
     expect(intake.error).toContain("up to 10 images");
+  });
+});
+
+describe("canReferenceLocalComposerFiles", () => {
+  it("allows only the same-machine desktop primary environment", () => {
+    expect(
+      canReferenceLocalComposerFiles({
+        hasDesktopPathResolver: true,
+        environmentTargetKind: "PrimaryConnectionTarget",
+      }),
+    ).toBe(true);
+    expect(
+      canReferenceLocalComposerFiles({
+        hasDesktopPathResolver: false,
+        environmentTargetKind: "PrimaryConnectionTarget",
+      }),
+    ).toBe(false);
+    expect(
+      canReferenceLocalComposerFiles({
+        hasDesktopPathResolver: true,
+        environmentTargetKind: "SshConnectionTarget",
+      }),
+    ).toBe(false);
+    expect(
+      canReferenceLocalComposerFiles({
+        hasDesktopPathResolver: true,
+        environmentTargetKind: "BearerConnectionTarget",
+      }),
+    ).toBe(false);
   });
 });

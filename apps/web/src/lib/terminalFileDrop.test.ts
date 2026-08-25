@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { COMPOSER_MENTION_DRAG_TYPE } from "../components/chat/composerMentionDrag";
 import {
   buildTerminalDropInput,
+  canResolveOsFilePaths,
   classifyTerminalFileDrop,
   collectTerminalDropInput,
   COMPOSER_MENTION_DRAG_MIME,
@@ -15,6 +16,14 @@ import {
   TERMINAL_PANE_DRAG_MIME,
   terminalFileDropPreviewsEqual,
 } from "./terminalFileDrop";
+
+describe("canResolveOsFilePaths", () => {
+  it("requires the actual desktop path resolver, not merely a bridge object", () => {
+    expect(canResolveOsFilePaths(undefined)).toBe(false);
+    expect(canResolveOsFilePaths({})).toBe(false);
+    expect(canResolveOsFilePaths({ getPathForFile: () => "/tmp/clip.mp4" })).toBe(true);
+  });
+});
 
 describe("classifyTerminalFileDrop", () => {
   it("ignores pane and group rearranges", () => {
@@ -90,6 +99,11 @@ describe("resolveOsFilePath", () => {
     expect(resolveOsFilePath(file, () => "/tmp/photo.png")).toBe("/tmp/photo.png");
     Object.defineProperty(file, "path", { value: "/legacy/photo.png" });
     expect(resolveOsFilePath(file)).toBe("/legacy/photo.png");
+    expect(
+      resolveOsFilePath(file, () => {
+        throw new Error("old preload");
+      }),
+    ).toBe("/legacy/photo.png");
   });
 });
 

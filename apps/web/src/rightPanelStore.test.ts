@@ -446,6 +446,23 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("keeps an opened blank Browser surface until a real server tab arrives", () => {
+    useRightPanelStore.getState().open(refA, "preview");
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, []);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "browser:new",
+      surfaces: [{ id: "browser:new", kind: "preview", resourceId: null }],
+    });
+
+    useRightPanelStore.getState().reconcileBrowserSurfaces(refA, ["tab-a"]);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "browser:tab-a",
+      surfaces: [{ id: "browser:tab-a", kind: "preview", resourceId: "tab-a" }],
+    });
+  });
+
   it("opens side chats and reconciles them to the authoritative server children", () => {
     useRightPanelStore.getState().openSideChat(refA, "side-1", "Investigate auth");
     useRightPanelStore.getState().openSideChat(refA, "side-2", "Check scroll jank");

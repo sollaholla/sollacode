@@ -1,9 +1,12 @@
 import {
   PreviewAutomationClickInput,
+  PreviewAutomationCloseInput,
+  PreviewAutomationCloseResult,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
+  PreviewAutomationOpenResult,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
@@ -54,14 +57,25 @@ export const PreviewStatusTool = Tool.make("preview_status", {
 export const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
     description:
-      "Initialize a collaborative browser tab and open its thread-bound inline preview by default. Set open=false for background-only automation. Pass tabId to reuse a specific existing tab, set reuseExistingTab=false to create another tab, or omit both to use this agent session's current tab.",
+      "Initialize a collaborative browser tab and open its thread-bound inline preview by default. When the requested domain is already open, the first call can return selection-required with matching tab IDs: retry with tabId to reuse one, or with reuseExistingTab=false to explicitly create another. A created result includes the exact preview_close cleanup call; close that created tab when its browsing task is finished, but never close a reused tab merely as cleanup. Set open=false for background-only automation.",
     parameters: PreviewAutomationOpenInput,
-    success: PreviewAutomationStatus,
+    success: PreviewAutomationOpenResult,
     failure: PreviewAutomationError,
     dependencies,
   })
     .annotate(Tool.Title, "Open browser preview")
     .annotate(Tool.Destructive, false),
+);
+
+export const PreviewCloseTool = browserTool(
+  Tool.make("preview_close", {
+    description:
+      "Close one collaborative browser tab by its exact tabId. Use this to clean up a tab that preview_open reported as newly created after that browsing task is finished. Never close a tab that preview_open reported as reused merely as cleanup.",
+    parameters: PreviewAutomationCloseInput,
+    success: PreviewAutomationCloseResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Close browser preview tab"),
 );
 
 export const PreviewNavigateTool = safeBrowserTool(
@@ -213,6 +227,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewScrollTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
+  PreviewCloseTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
 );
@@ -229,6 +244,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewScrollTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
+  PreviewCloseTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
 );

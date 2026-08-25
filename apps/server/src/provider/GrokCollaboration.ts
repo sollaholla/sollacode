@@ -1,11 +1,17 @@
 import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
+
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## Solla Code collaborative browser
 
-You are running inside Solla Code. When the \`t3-code\` MCP server exposes \`preview_*\` tools, prefer those for browser work. Call \`preview_status\` first, then \`preview_open\` if no automation-capable preview is attached.
+You are running inside Solla Code. Use the \`t3-code\` MCP server's \`preview_*\` tools for browser work.
+
+${T3_BROWSER_CONTROL_POLICY}
+
+Treat \`preview_open\` lifecycle results as authoritative. Resolve \`selection-required\` by reusing an offered tab ID or explicitly requesting a new tab. Close tabs reported as newly created with \`preview_close\` when their browsing task is finished, and never close a reused tab merely as cleanup.
 
 When \`thread_terminals\` is available, call \`list_terminals\` once. That response already includes each pane's thread title, whether it belongs to this chat's thread (\`belongsToThisChat\`), the running-command label, and a preview of what is on screen. A Grok or Claude CLI in this thread's terminal pane is a separate process — not this chat. Use \`read_terminal\` only for a longer tail than the preview.
 `;

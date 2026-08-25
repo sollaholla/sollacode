@@ -11,6 +11,14 @@ interface DesktopTabLease {
 const leases = new Map<string, DesktopTabLease>();
 const pendingTabOperations = new Map<string, Promise<void>>();
 
+const reportDesktopTabCleanupFailure = (
+  operation: "stop-recording" | "close-tab",
+  tabId: string,
+  cause: unknown,
+): void => {
+  console.error(`[desktop-tab-lifetime] ${operation} failed`, { tabId, cause });
+};
+
 const enqueueDesktopTabOperation = (
   tabId: string,
   operation: () => Promise<void> | void,
@@ -60,8 +68,22 @@ export function acquireDesktopTab(tabId: string): AcquiredDesktopTab {
         if (!latest || latest.references > 0) return;
         leases.delete(tabId);
         void enqueueDesktopTabOperation(tabId, async () => {
-          await stopBrowserRecording(tabId).catch(() => null);
-          await previewBridge?.closeTab(tabId);
+          // Native teardown must not wait for MediaRecorder finalization. A
+          // recorder can stall while saving its artifact, but Electron still
+          // needs to release the tab, screencast and floating-window resources
+          // immediately. Keep both promises in the per-tab queue so a same-id
+          // reacquire cannot race late recording cleanup against a new tab.
+          const recordingCleanup = Promise.resolve()
+            .then(() => stopBrowserRecording(tabId))
+            .catch((cause: unknown) => {
+              reportDesktopTabCleanupFailure("stop-recording", tabId, cause);
+            });
+          const nativeCleanup = Promise.resolve()
+            .then(() => previewBridge?.closeTab(tabId))
+            .catch((cause: unknown) => {
+              reportDesktopTabCleanupFailure("close-tab", tabId, cause);
+            });
+          await Promise.all([recordingCleanup, nativeCleanup]);
         }).catch(() => undefined);
       }, 0);
     },

@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
@@ -107,6 +108,19 @@ const agent: VmAgent = {
   createdAt: iso,
   updatedAt: iso,
 };
+
+it("keeps ephemeral delegated workers on the exclusive T3 browser-control surface", () => {
+  const delegation = {
+    title: "Inspect inherited browser state",
+    task: "Verify the signed-in browser session.",
+    requestedCapabilities: ["browser"],
+  } as never as VmAgentDelegation;
+
+  const prompt = taskPrompt(task, delegation);
+  assert.include(prompt, T3_BROWSER_CONTROL_POLICY);
+  assert.include(prompt, "Authentication, login, CAPTCHA");
+  assert.include(prompt, "browser-profile mismatch");
+});
 
 it.effect("dispatches a new ephemeral worker with transitive browser provenance", () =>
   Effect.gen(function* () {

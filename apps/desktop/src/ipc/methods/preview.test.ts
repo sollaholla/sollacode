@@ -51,4 +51,34 @@ describe("preview IPC methods", () => {
       },
     ),
   );
+
+  effectIt.effect("encodes composite runtime tab ids in automation status", () => {
+    const tabId = JSON.stringify([
+      "6e0f84a4-7d9a-4d13-99da-d824bbd64a2f",
+      "ce4c14c6-6784-4244-a64c-9317eadc61b2",
+      "9ea6a44c-3b51-4919-a275-dcc6acbc9317",
+      "tab_f6081bc1-1fdb-4fc8-9441-183bdea7e152",
+    ]);
+    expect(tabId.length).toBeGreaterThan(128);
+    const manager = PreviewManager.PreviewManager.of({
+      automationStatus: () =>
+        Effect.succeed({
+          available: true,
+          visible: false,
+          tabId,
+          url: "https://example.com",
+          title: "Example",
+          loading: false,
+        }),
+    } as never);
+
+    return Effect.map(
+      PreviewIpc.automationStatus
+        .handler({ tabId })
+        .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
+      (status) => {
+        expect(status).toMatchObject({ tabId, available: true });
+      },
+    );
+  });
 });

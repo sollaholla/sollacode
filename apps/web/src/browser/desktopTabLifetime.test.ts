@@ -90,7 +90,7 @@ describe("desktopTabLifetime", () => {
     await vi.advanceTimersByTimeAsync(0);
   });
 
-  it("stops recording before closing the final desktop tab lease", async () => {
+  it("closes the final desktop tab lease without waiting for recording cleanup", async () => {
     vi.useFakeTimers();
     let resolveStop: (() => void) | undefined;
     stopBrowserRecording.mockReturnValueOnce(
@@ -106,12 +106,50 @@ describe("desktopTabLifetime", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(stopBrowserRecording).toHaveBeenCalledWith("tab_recording_cleanup");
-    expect(closeTab).not.toHaveBeenCalled();
+    expect(closeTab).toHaveBeenCalledWith("tab_recording_cleanup");
 
     resolveStop?.();
     await Promise.resolve();
     await Promise.resolve();
-    expect(closeTab).toHaveBeenCalledWith("tab_recording_cleanup");
+    expect(closeTab).toHaveBeenCalledOnce();
+  });
+
+  it("still closes the desktop tab when recording cleanup rejects", async () => {
+    vi.useFakeTimers();
+    const cleanupError = new Error("recording cleanup failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    createTab.mockResolvedValueOnce(undefined);
+    stopBrowserRecording.mockRejectedValueOnce(cleanupError);
+
+    const lease = acquireDesktopTab("tab_recording_cleanup_failure");
+    await lease.ready;
+    lease.release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeTab).toHaveBeenCalledWith("tab_recording_cleanup_failure");
+    expect(consoleError).toHaveBeenCalledWith("[desktop-tab-lifetime] stop-recording failed", {
+      tabId: "tab_recording_cleanup_failure",
+      cause: cleanupError,
+    });
+  });
+
+  it("reports a native close failure instead of silently discarding it", async () => {
+    vi.useFakeTimers();
+    const closeError = new Error("native close failed");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    createTab.mockResolvedValueOnce(undefined);
+    closeTab.mockRejectedValueOnce(closeError);
+
+    const lease = acquireDesktopTab("tab_native_cleanup_failure");
+    await lease.ready;
+    lease.release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeTab).toHaveBeenCalledWith("tab_native_cleanup_failure");
+    expect(consoleError).toHaveBeenCalledWith("[desktop-tab-lifetime] close-tab failed", {
+      tabId: "tab_native_cleanup_failure",
+      cause: closeError,
+    });
   });
 
   it("waits for an in-flight close before recreating a reacquired tab", async () => {
@@ -135,6 +173,33 @@ describe("desktopTabLifetime", () => {
     expect(createTab).toHaveBeenCalledTimes(1);
 
     resolveClose?.();
+    await reacquired.ready;
+    expect(createTab).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for recording cleanup before recreating after native close finishes", async () => {
+    vi.useFakeTimers();
+    let resolveStop: (() => void) | undefined;
+    createTab.mockResolvedValue(undefined);
+    closeTab.mockResolvedValueOnce(undefined);
+    stopBrowserRecording.mockReturnValueOnce(
+      new Promise<null>((resolve) => {
+        resolveStop = () => resolve(null);
+      }),
+    );
+
+    const initial = acquireDesktopTab("tab_recording_reacquire");
+    await initial.ready;
+    initial.release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(closeTab).toHaveBeenCalledWith("tab_recording_reacquire");
+
+    const reacquired = acquireDesktopTab("tab_recording_reacquire");
+    await Promise.resolve();
+    expect(createTab).toHaveBeenCalledTimes(1);
+
+    resolveStop?.();
     await reacquired.ready;
     expect(createTab).toHaveBeenCalledTimes(2);
   });

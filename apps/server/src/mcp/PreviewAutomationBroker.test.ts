@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  PREVIEW_AUTOMATION_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -123,6 +124,103 @@ it.effect("targets multiple tabs explicitly while retaining a default tab", () =
       expect(routedRequests[3]?.tabId).toBe(appTabId);
       expect(routedRequests[3]?.tabIdExplicit).toBe(true);
       expect(routedRequests[4]?.tabId).toBe(appTabId);
+    }),
+  ),
+);
+
+it.effect("moves the provider session onto the surviving tab after an exact close", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const createdTabId = PreviewTabId.make("tab-created");
+      const blankTabId = PreviewTabId.make("tab-blank");
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: PREVIEW_AUTOMATION_OPERATIONS })),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "open"
+              ? { outcome: "created", tabId: createdTabId }
+              : request.operation === "close"
+                ? {
+                    closedTabId: createdTabId,
+                    tabId: blankTabId,
+                    replacementCreated: true,
+                    message: "Closed the created tab and retained a blank replacement.",
+                  }
+                : { url: null },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke({ scope, operation: "open", input: {} });
+      yield* broker.invoke({
+        scope,
+        operation: "close",
+        input: {},
+        tabId: createdTabId,
+      });
+      yield* broker.invoke({ scope, operation: "status", input: {} });
+
+      expect(routedRequests.map((request) => request.operation)).toEqual([
+        "open",
+        "close",
+        "status",
+      ]);
+      expect(routedRequests[1]?.tabId).toBe(createdTabId);
+      expect(routedRequests[1]?.tabIdExplicit).toBe(true);
+      expect(routedRequests[2]?.tabId).toBe(blankTabId);
+      expect(routedRequests[2]?.tabIdExplicit).toBe(false);
+    }),
+  ),
+);
+
+it.effect("keeps the assigned tab when an explicit non-current tab closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const assignedTabId = PreviewTabId.make("tab-assigned");
+      const closingTabId = PreviewTabId.make("tab-old-cleanup");
+      const userActiveTabId = PreviewTabId.make("tab-user-active");
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: PREVIEW_AUTOMATION_OPERATIONS })),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result:
+            request.operation === "open"
+              ? { outcome: "created", tabId: assignedTabId }
+              : request.operation === "close"
+                ? {
+                    closedTabId: closingTabId,
+                    tabId: userActiveTabId,
+                    replacementCreated: false,
+                    message: "Closed an older non-current tab.",
+                  }
+                : { url: "https://example.com" },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke({ scope, operation: "open", input: {} });
+      yield* broker.invoke({ scope, operation: "close", input: {}, tabId: closingTabId });
+      yield* broker.invoke({ scope, operation: "status", input: {} });
+
+      expect(routedRequests.at(-1)?.tabId).toBe(assignedTabId);
+      expect(routedRequests.at(-1)?.tabIdExplicit).toBe(false);
     }),
   ),
 );

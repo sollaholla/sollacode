@@ -69,7 +69,7 @@ export function canResolveOsFilePaths(
     | null
     | undefined = typeof window === "undefined" ? undefined : window.desktopBridge,
 ): boolean {
-  return bridge != null;
+  return typeof bridge?.getPathForFile === "function";
 }
 
 export function classifyTerminalFileDrop(
@@ -170,7 +170,14 @@ export function resolveOsFilePath(
   file: File,
   getPathForFile?: (file: File) => string | null,
 ): string | null {
-  const fromBridge = getPathForFile?.(file)?.trim() ?? "";
+  let fromBridge = "";
+  try {
+    fromBridge = getPathForFile?.(file)?.trim() ?? "";
+  } catch {
+    // Older or partially loaded desktop preloads can reject cross-world File
+    // objects. Fall through to the legacy property and then a visible intake
+    // error instead of aborting the drop handler without feedback.
+  }
   if (fromBridge.length > 0) {
     return fromBridge;
   }

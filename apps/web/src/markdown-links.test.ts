@@ -1,11 +1,57 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
 import { describe, expect, it } from "vite-plus/test";
+import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 
 import {
+  MARKDOWN_FILE_LINK_HREF_PROTOCOLS,
+  preserveMarkdownFileLinkHref,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
   rewriteMarkdownFileUriHref,
 } from "./markdown-links";
+
+describe("markdown file link pipeline", () => {
+  it("preserves a dropped Windows path through markdown sanitization and URL transformation", () => {
+    const markdown = serializeComposerFileLink(String.raw`C:\media\clip.mp4`);
+    const sanitizeSchema = {
+      ...defaultSchema,
+      protocols: {
+        ...defaultSchema.protocols,
+        href: [...(defaultSchema.protocols?.href ?? []), ...MARKDOWN_FILE_LINK_HREF_PROTOCOLS],
+      },
+    };
+    const html = renderToStaticMarkup(
+      createElement(
+        ReactMarkdown,
+        {
+          remarkPlugins: [remarkGfm],
+          rehypePlugins: [[rehypeSanitize, sanitizeSchema]],
+          urlTransform: (href: string) =>
+            rewriteMarkdownFileUriHref(href) ??
+            preserveMarkdownFileLinkHref(href) ??
+            defaultUrlTransform(href),
+        },
+        markdown,
+      ),
+    );
+
+    expect(markdown).toBe("[clip.mp4](C:%5Cmedia%5Cclip.mp4)");
+    expect(html).toContain('href="C:%5Cmedia%5Cclip.mp4"');
+    expect(resolveMarkdownFileLinkTarget("C:%5Cmedia%5Cclip.mp4")).toBe(
+      String.raw`C:\media\clip.mp4`,
+    );
+  });
+
+  it("does not preserve an arbitrary one-letter URL scheme as a file", () => {
+    expect(preserveMarkdownFileLinkHref("C:payload")).toBeNull();
+    expect(defaultUrlTransform("C:payload")).toBe("");
+  });
+});
 
 describe("rewriteMarkdownFileUriHref", () => {
   it("rewrites file uri hrefs into direct path hrefs", () => {

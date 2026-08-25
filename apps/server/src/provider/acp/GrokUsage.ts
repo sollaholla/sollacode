@@ -58,7 +58,14 @@ export function parseGrokSubscription(raw: unknown): GrokSubscriptionProbe | und
 
 export function grokWeeklyUsagePercent(raw: unknown): number | undefined {
   const config = grokBillingConfig(raw);
-  return finiteNumber(config?.creditUsagePercent);
+  const reported = finiteNumber(config?.creditUsagePercent);
+  if (reported !== undefined) return reported;
+
+  // Grok's billing response is protobuf-shaped. At the start of a billing
+  // period the scalar percentage has its default value (zero), so the JSON
+  // encoder omits `creditUsagePercent` altogether. An advertised current
+  // period makes that omission an authoritative 0%, rather than missing data.
+  return asRecord(config?.currentPeriod) !== null ? 0 : undefined;
 }
 
 export function grokWeeklyResetAtMs(raw: unknown): number | undefined {

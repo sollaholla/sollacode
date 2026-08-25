@@ -7,6 +7,7 @@ import * as NodeProcess from "node:process";
 
 import { describe, expect, it } from "vite-plus/test";
 
+import { T3_BROWSER_CONTROL_POLICY } from "../browserControlPolicy.ts";
 import {
   CLAUDE_TERMINAL_MCP_CONFIG,
   GROK_TERMINAL_MCP_OVERLAY,
@@ -90,6 +91,7 @@ describe("terminal agent awareness", () => {
     const context = terminalAgentContext({ threadId: "thread-a", terminalId: "term-3" });
     expect(context).toContain("Solla Code's integrated terminal");
     expect(context).toContain("credential-bound t3-code MCP server");
+    expect(context).toContain(T3_BROWSER_CONTROL_POLICY);
     expect(context).not.toContain("mcp__t3-code__");
   });
 

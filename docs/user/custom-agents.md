@@ -18,6 +18,32 @@ mobile group agents by their connected host, so a phone connected over LAN, rela
 open the same named agent and its dedicated chat. An environment-qualified agent link never silently
 switches to an agent with the same id on another host.
 
+## Browser tab lifecycle
+
+An agent's browser sidebar always retains one tab. Closing the final page replaces it with a blank
+tab instead of showing the general surface picker, and that blank tab survives an app restart.
+
+Custom agents and their delegated workers use this built-in collaborative browser as their browser-
+control surface. Computer control, Chrome or browser-extension control, and standalone browser
+automation are not fallbacks for a closed preview, a failed tool call, or a login/profile mismatch.
+The agent keeps the relevant page open here and raises a blocker when the user must sign in or
+complete another human-only step. If the built-in preview is unavailable, it reports that limitation
+or raises a blocker instead of substituting a different browser-control surface.
+
+The browser tools also make tab ownership explicit. Before opening another page on a domain that is
+already present, the agent receives the matching tab IDs and must either select one to reuse or
+explicitly request a separate tab. A newly created tab comes with its exact cleanup call; the agent
+closes it when that browsing concern is finished. Reused tabs are never closed merely as cleanup,
+and `preview_close` removes the thread-owned tab session rather than merely closing the guest page.
+After a successful turn changes the open-tab set, one compact housekeeping prompt asks the agent to
+review only its newly created tabs; unchanged, failed, cancelled, interrupted, and cleanup turns do
+not create another prompt.
+
+Only the browser tab visibly selected in the sidebar can play audio. Background tabs and floating
+preview windows remain muted; a floating window does not grant audio permission by itself. When an
+inactive tab has a floating preview or picture-in-picture window open, its favicon changes to a blue
+cast icon so the remote view is still obvious.
+
 ## Collaboration
 
 The **Collaborate** view is a bounded handoff workspace. Its list and conversation panes scroll

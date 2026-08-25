@@ -37,6 +37,29 @@ export interface AgentStopSignoff {
 }
 
 /**
+ * Keeps a terminal Agent control token separate when a provider later resumes
+ * the same assistant segment after a tool call. Some providers stream the
+ * token, run more tools, then begin the next prose chunk without a leading
+ * newline. A raw string append turns that into `AGENT_STOPNext`, which is
+ * neither readable nor recognizable as the control token the model emitted.
+ */
+export function appendAgentStreamText(existingText: string, delta: string): string {
+  const metadataMatch = AGENT_TRAILING_HIDDEN_METADATA_PATTERN.exec(existingText);
+  const visibleText = metadataMatch
+    ? existingText.slice(0, metadataMatch.index).trimEnd()
+    : existingText.trimEnd();
+  if (
+    existingText.length === 0 ||
+    delta.length === 0 ||
+    /^[\r\n]/u.test(delta) ||
+    !extractTerminalStopSignoff(visibleText, existingText, (body) => body).hasStop
+  ) {
+    return `${existingText}${delta}`;
+  }
+  return `${existingText}\n\n${delta}`;
+}
+
+/**
  * Removes only a terminal Agent stop control token while preserving the rest
  * of the reply. Providers commonly wrap the token in Markdown, quotes, or
  * brackets, so those adjacent wrappers are treated as part of the signoff.

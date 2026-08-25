@@ -39,6 +39,14 @@ describe("Grok usage parsers", () => {
     expect(grokOnDemandUsage(liveBilling)).toBeUndefined();
   });
 
+  it("treats an omitted weekly percentage in an active period as zero usage", () => {
+    const { creditUsagePercent: _creditUsagePercent, ...zeroUsageConfig } = liveBilling.config;
+
+    expect(grokWeeklyUsagePercent({ config: zeroUsageConfig })).toBe(0);
+    expect(grokBillingIsExhausted({ config: zeroUsageConfig })).toBe(false);
+    expect(grokWeeklyUsagePercent({ config: { prepaidBalance: { val: 0 } } })).toBeUndefined();
+  });
+
   it("treats a 100% weekly pool as exhausted", () => {
     expect(
       grokBillingIsExhausted({
