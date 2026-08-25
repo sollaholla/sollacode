@@ -2884,10 +2884,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       // Repair both sides before the generic pending-work backfill runs:
       //   1. a durable exact receipt proves delivery, so retire only that
       //      message's placeholder and never replay it;
-      //   2. a pre-claimed row carrying the unconfirmed marker but no receipt
-      //      has an ambiguous outcome. Retire its false queue without replaying
-      //      potentially consequential work; the unchanged single-check message
-      //      remains the honest UI signal that delivery was not confirmed.
+      //   2. a pre-claimed row carrying an unconfirmed/unknown marker but no
+      //      receipt never crossed the provider's durable acceptance boundary.
+      //      Re-arm it so the parked path can deliver it after restart. Older
+      //      builds converted the first marker to the second, so recognizing
+      //      both heals messages they already stranded.
       const completedDeliveredSteerOwners = yield* sql<{ readonly threadId: string }>`
         UPDATE thread_work_obligations AS work
         SET state = 'completed',
@@ -2900,7 +2901,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           AND work.state != 'cancelled'
           AND (
             work.state != 'completed'
-            OR work.blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+            OR work.blocked_reason IN (
+              ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+              ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON}
+            )
           )
           AND EXISTS (
             SELECT 1
@@ -2928,17 +2932,44 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           )
         RETURNING thread_id AS "threadId"
       `;
-      const retiredUnknownSteerOwners = yield* sql<{ readonly threadId: string }>`
+      const recoveredUnconfirmedSteerOwners = yield* sql<{ readonly threadId: string }>`
         UPDATE thread_work_obligations AS work
-        SET state = 'completed',
+        SET state = 'pending',
             next_attempt_at = NULL,
             claimed_at = NULL,
             lease_expires_at = NULL,
-            blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON},
+            blocked_reason = NULL,
             updated_at = ${settledAt}
         WHERE work.kind = 'active-turn-recovery'
           AND work.state = 'completed'
-          AND work.blocked_reason = ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON}
+          AND work.blocked_reason IN (
+            ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+            ${ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON}
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM orchestration_events AS delivered
+            WHERE delivered.aggregate_kind = 'thread'
+              AND delivered.stream_id = work.thread_id
+              AND delivered.event_type = 'thread.activity-appended'
+              AND json_extract(delivered.payload_json, '$.activity.kind') = 'message.delivered'
+              AND json_extract(delivered.payload_json, '$.activity.payload.messageId') =
+                substr(work.source_turn_id, length('turn-start:') + 1)
+              AND delivered.sequence >= COALESCE(
+                (
+                  SELECT start.sequence
+                  FROM orchestration_events AS start
+                  WHERE start.aggregate_kind = 'thread'
+                    AND start.stream_id = work.thread_id
+                    AND start.event_type = 'thread.turn-start-requested'
+                    AND json_extract(start.payload_json, '$.messageId') =
+                      substr(work.source_turn_id, length('turn-start:') + 1)
+                  ORDER BY start.sequence DESC
+                  LIMIT 1
+                ),
+                0
+              )
+          )
         RETURNING thread_id AS "threadId"
       `;
       // Heal placeholders left by older builds whose owner already reached a
@@ -3050,7 +3081,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         new Set(
           [
             ...completedDeliveredSteerOwners,
-            ...retiredUnknownSteerOwners,
+            ...recoveredUnconfirmedSteerOwners,
             ...retiredTerminalOwnerPlaceholders,
             ...reconstructedPendingStarts,
             ...retiredInactiveOwners,

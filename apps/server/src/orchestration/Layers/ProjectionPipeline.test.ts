@@ -6941,7 +6941,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         `;
       });
 
-    it.effect("repairs delivered and unconfirmed steer claims before pending-work backfill", () =>
+    it.effect("retires delivered steers and recovers every unconfirmed steer at boot", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const eventStore = yield* OrchestrationEventStore;
@@ -6952,11 +6952,29 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         const deliveredMessageId = "message-startup-delivered-steer";
         const unconfirmedThreadId = "thread-startup-unconfirmed-steer";
         const unconfirmedMessageId = "message-startup-unconfirmed-steer";
+        const legacyUnknownThreadId = "thread-startup-legacy-unknown-steer";
+        const legacyUnknownMessageId = "message-startup-legacy-unknown-steer";
         const seededAt = "2026-03-02T09:00:00.000Z";
 
-        for (const [threadId, messageId] of [
-          [deliveredThreadId, deliveredMessageId],
-          [unconfirmedThreadId, unconfirmedMessageId],
+        for (const [threadId, messageId, blockedReason, hasPlaceholder] of [
+          [
+            deliveredThreadId,
+            deliveredMessageId,
+            ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+            true,
+          ],
+          [
+            unconfirmedThreadId,
+            unconfirmedMessageId,
+            ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+            true,
+          ],
+          [
+            legacyUnknownThreadId,
+            legacyUnknownMessageId,
+            ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+            false,
+          ],
         ] as const) {
           yield* sql`
             INSERT INTO projection_threads (
@@ -6978,15 +6996,17 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
               ${seededAt}, ${seededAt}
             )
           `;
-          yield* sql`
-            INSERT INTO projection_turns (
-              thread_id, turn_id, pending_message_id, assistant_message_id, state,
-              requested_at, started_at, completed_at, checkpoint_files_json
-            ) VALUES (
-              ${threadId}, NULL, ${messageId}, NULL, 'pending',
-              ${seededAt}, NULL, NULL, '[]'
-            )
-          `;
+          if (hasPlaceholder) {
+            yield* sql`
+              INSERT INTO projection_turns (
+                thread_id, turn_id, pending_message_id, assistant_message_id, state,
+                requested_at, started_at, completed_at, checkpoint_files_json
+              ) VALUES (
+                ${threadId}, NULL, ${messageId}, NULL, 'pending',
+                ${seededAt}, NULL, NULL, '[]'
+              )
+            `;
+          }
           yield* sql`
             INSERT INTO thread_work_obligations (
               obligation_id, thread_id, source_turn_id, kind, state,
@@ -6995,10 +7015,27 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             ) VALUES (
               ${`work-${threadId}`}, ${threadId}, ${`turn-start:${messageId}`},
               'active-turn-recovery', 'completed', 'codex', 0, NULL, NULL, NULL,
-              ${ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON},
+              ${blockedReason},
               ${seededAt}, ${seededAt}
             )
           `;
+          yield* eventStore.append({
+            type: "thread.turn-start-requested",
+            eventId: EventId.make(`evt-startup-steer-start-${threadId}`),
+            aggregateKind: "thread",
+            aggregateId: ThreadId.make(threadId),
+            occurredAt: seededAt,
+            commandId: CommandId.make(`cmd-startup-steer-start-${threadId}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-startup-steer-start-${threadId}`),
+            metadata: {},
+            payload: {
+              threadId: ThreadId.make(threadId),
+              messageId: MessageId.make(messageId),
+              runtimeMode: "full-access",
+              createdAt: seededAt,
+            },
+          });
         }
 
         yield* sql`
@@ -7011,23 +7048,6 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             '2026-03-02T09:01:00.000Z', '[]'
           )
         `;
-        yield* eventStore.append({
-          type: "thread.turn-start-requested",
-          eventId: EventId.make("evt-startup-delivered-steer-start"),
-          aggregateKind: "thread",
-          aggregateId: ThreadId.make(deliveredThreadId),
-          occurredAt: seededAt,
-          commandId: CommandId.make("cmd-startup-delivered-steer-start"),
-          causationEventId: null,
-          correlationId: CorrelationId.make("cmd-startup-delivered-steer-start"),
-          metadata: {},
-          payload: {
-            threadId: ThreadId.make(deliveredThreadId),
-            messageId: MessageId.make(deliveredMessageId),
-            runtimeMode: "full-access",
-            createdAt: seededAt,
-          },
-        });
         yield* eventStore.append({
           type: "thread.activity-appended",
           eventId: EventId.make("evt-startup-delivered-steer-receipt"),
@@ -7063,10 +7083,15 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           SELECT thread_id AS "threadId", pending_message_id AS "messageId"
           FROM projection_turns
           WHERE turn_id IS NULL AND state = 'pending'
-            AND thread_id IN (${deliveredThreadId}, ${unconfirmedThreadId})
+            AND thread_id IN (
+              ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId}
+            )
           ORDER BY thread_id ASC
         `;
-        assert.deepEqual(pendingRows, []);
+        assert.deepEqual(pendingRows, [
+          { threadId: legacyUnknownThreadId, messageId: legacyUnknownMessageId },
+          { threadId: unconfirmedThreadId, messageId: unconfirmedMessageId },
+        ]);
 
         const obligations = yield* sql<{
           readonly threadId: string;
@@ -7075,15 +7100,18 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         }>`
           SELECT thread_id AS "threadId", state, blocked_reason AS "blockedReason"
           FROM thread_work_obligations
-          WHERE thread_id IN (${deliveredThreadId}, ${unconfirmedThreadId})
+          WHERE thread_id IN (
+            ${deliveredThreadId}, ${unconfirmedThreadId}, ${legacyUnknownThreadId}
+          )
           ORDER BY thread_id ASC
         `;
         assert.deepEqual(obligations, [
           { threadId: deliveredThreadId, state: "completed", blockedReason: null },
+          { threadId: legacyUnknownThreadId, state: "pending", blockedReason: null },
           {
             threadId: unconfirmedThreadId,
-            state: "completed",
-            blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON,
+            state: "pending",
+            blockedReason: null,
           },
         ]);
       }),
