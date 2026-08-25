@@ -13,6 +13,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -29,6 +30,7 @@ const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
@@ -2360,6 +2362,107 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ThreadId.make("thread-delegation-provenance"),
       );
       assert.isTrue(Option.isNone(ordinary));
+    }),
+  );
+
+  it.effect("does not treat a later startup-resume prompt as newer user intent", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-turn-start-user-intent");
+      const sourceMessageId = MessageId.make("message-turn-start-user-intent");
+      const startupMessageId = MessageId.make(
+        `startup-auto-resume-message:${threadId}:turn-interrupted`,
+      );
+
+      yield* sql`DELETE FROM orchestration_events`;
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, input_origin,
+          is_streaming, created_at, updated_at
+        ) VALUES
+          (${sourceMessageId}, ${threadId}, NULL, 'user', 'Meet the deadline', NULL,
+           0, '2026-08-25T23:32:41.000Z', '2026-08-25T23:32:41.000Z'),
+          (${startupMessageId}, ${threadId}, NULL, 'user', 'Resume', NULL,
+           0, '2026-08-25T23:33:07.000Z', '2026-08-25T23:33:07.000Z')
+      `;
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, command_id, causation_event_id, correlation_id,
+          actor_kind, payload_json, metadata_json
+        ) VALUES
+          (
+            'event-turn-start-user-intent', 'thread', ${threadId}, 1,
+            'thread.turn-start-requested', '2026-08-25T23:32:41.000Z',
+            NULL, NULL, NULL, 'user',
+            ${encodeUnknownJson({
+              threadId,
+              messageId: sourceMessageId,
+              runtimeMode: "full-access",
+              createdAt: "2026-08-25T23:32:41.000Z",
+            })},
+            '{}'
+          ),
+          (
+            'event-turn-start-startup-resume', 'thread', ${threadId}, 2,
+            'thread.turn-start-requested', '2026-08-25T23:33:07.000Z',
+            NULL, NULL, NULL, 'system',
+            ${encodeUnknownJson({
+              threadId,
+              messageId: startupMessageId,
+              runtimeMode: "full-access",
+              createdAt: "2026-08-25T23:33:07.000Z",
+            })},
+            '{}'
+          )
+      `;
+
+      const getThreadTurnStartContext = snapshotQuery.getThreadTurnStartContext;
+      if (getThreadTurnStartContext === undefined) {
+        return yield* Effect.die("getThreadTurnStartContext is not configured");
+      }
+      const beforeRealUser = yield* getThreadTurnStartContext(threadId, sourceMessageId);
+      assert.isTrue(Option.isSome(beforeRealUser));
+      if (Option.isSome(beforeRealUser)) {
+        assert.isFalse(beforeRealUser.value.hasLaterRealUserTurn);
+      }
+
+      const laterUserMessageId = MessageId.make("message-turn-start-later-user-intent");
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, input_origin,
+          is_streaming, created_at, updated_at
+        ) VALUES (
+          ${laterUserMessageId}, ${threadId}, NULL, 'user', 'This replaces it', NULL,
+          0, '2026-08-25T23:34:00.000Z', '2026-08-25T23:34:00.000Z'
+        )
+      `;
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, command_id, causation_event_id, correlation_id,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          'event-turn-start-later-user-intent', 'thread', ${threadId}, 3,
+          'thread.turn-start-requested', '2026-08-25T23:34:00.000Z',
+          NULL, NULL, NULL, 'user',
+          ${encodeUnknownJson({
+            threadId,
+            messageId: laterUserMessageId,
+            runtimeMode: "full-access",
+            createdAt: "2026-08-25T23:34:00.000Z",
+          })},
+          '{}'
+        )
+      `;
+      const afterRealUser = yield* getThreadTurnStartContext(threadId, sourceMessageId);
+      assert.isTrue(Option.isSome(afterRealUser));
+      if (Option.isSome(afterRealUser)) {
+        assert.isTrue(afterRealUser.value.hasLaterRealUserTurn);
+      }
     }),
   );
 });

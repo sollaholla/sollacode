@@ -1130,6 +1130,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               AND later_message.thread_id = events.stream_id
               AND later_message.role = 'user'
               AND COALESCE(later_message.input_origin, '') != 'agent-loop'
+              AND later_message.message_id NOT LIKE 'startup-auto-resume-message:%'
             WHERE later.aggregate_kind = 'thread'
               AND later.stream_id = events.stream_id
               AND later.event_type = 'thread.turn-start-requested'
