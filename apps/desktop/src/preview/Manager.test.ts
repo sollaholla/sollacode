@@ -859,6 +859,10 @@ describe("PreviewManager", () => {
           };
         });
         let debuggerScreenshotAvailable = true;
+        let debuggerScreencastAvailable = false;
+        const debuggerMessages = new Set<
+          (event: unknown, method: string, params: Record<string, unknown>) => void
+        >();
         const sendCommand = vi.fn(async (method: string) => {
           if (method === "Runtime.evaluate") {
             return {
@@ -877,6 +881,17 @@ describe("PreviewManager", () => {
           }
           if (method === "Page.captureScreenshot") {
             return debuggerScreenshotAvailable ? { data: debuggerPng } : {};
+          }
+          if (method === "Page.startScreencast" && debuggerScreencastAvailable) {
+            queueMicrotask(() => {
+              for (const listener of debuggerMessages) {
+                listener({}, "Page.screencastFrame", {
+                  sessionId: 1,
+                  data: debuggerPng,
+                  metadata: { deviceWidth: 800, deviceHeight: 600 },
+                });
+              }
+            });
           }
           if (method === "Accessibility.getFullAXTree") return { nodes: [] };
           return {};
@@ -903,8 +918,22 @@ describe("PreviewManager", () => {
             attach: vi.fn(),
             detach: vi.fn(),
             sendCommand,
-            on: vi.fn(),
-            off: vi.fn(),
+            on: vi.fn(
+              (
+                event: string,
+                listener: (event: unknown, method: string, params: Record<string, unknown>) => void,
+              ) => {
+                if (event === "message") debuggerMessages.add(listener);
+              },
+            ),
+            off: vi.fn(
+              (
+                event: string,
+                listener: (event: unknown, method: string, params: Record<string, unknown>) => void,
+              ) => {
+                if (event === "message") debuggerMessages.delete(listener);
+              },
+            ),
           },
           invalidate,
           capturePage,
@@ -961,18 +990,35 @@ describe("PreviewManager", () => {
         expect(states.at(-1)?.snapshotStageId).toBeNull();
 
         nativeScreenshotAvailable = false;
+        debuggerScreencastAvailable = true;
+        const screencastSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(screencastSnapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: debuggerPng,
+          width: 800,
+          height: 600,
+        });
+        expect(sendCommand).toHaveBeenCalledWith("Page.startScreencast", {
+          format: "png",
+          maxWidth: 800,
+          maxHeight: 600,
+          everyNthFrame: 1,
+        });
+        expect(sendCommand).toHaveBeenCalledWith("Page.stopScreencast");
+
+        debuggerScreencastAvailable = false;
         const failedSnapshotFiber = yield* manager
           .automationSnapshot("tab_hidden_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
-        yield* TestClock.adjust(100);
+        yield* TestClock.adjust("10 seconds");
         const failedSnapshot = yield* Fiber.await(failedSnapshotFiber);
         expect(Exit.isFailure(failedSnapshot)).toBe(true);
         expect(states.at(-1)?.snapshotStageId).toBeNull();
         if (Exit.isFailure(failedSnapshot)) {
           expect(Option.getOrThrow(Cause.findErrorOption(failedSnapshot.cause))).toMatchObject({
             _tag: "PreviewOperationError",
-            operation: "automationSnapshot.Page.captureScreenshot",
+            operation: "automationSnapshot.Page.screencastFrame",
           });
         }
       }),
