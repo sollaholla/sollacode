@@ -3024,6 +3024,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               }),
           ),
         );
+        // The renderer receipt proves the guest has compositor-eligible
+        // geometry. Explicitly schedule the corresponding frame before
+        // capturePage registers its hidden capturer; macOS otherwise keeps an
+        // occluded Electron guest dormant indefinitely.
+        wc.invalidate();
         return yield* capture();
       }).pipe(Effect.ensuring(cleanup));
     });

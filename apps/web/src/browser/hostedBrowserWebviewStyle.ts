@@ -12,6 +12,7 @@ export interface HostedBrowserWebviewWrapperStyle {
   readonly height: number;
   readonly zIndex: number;
   readonly pointerEvents: "auto" | "none";
+  readonly opacity?: number;
   readonly borderRadius?: number;
   readonly visibility?: "visible";
 }
@@ -58,8 +59,13 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
       top: 0,
       width: hiddenSize.width,
       height: hiddenSize.height,
-      zIndex: -1,
+      // A fully occluded or zero-opacity guest is removed from Chromium's
+      // compositor, so Electron cannot capture it. Keep the guest in the
+      // foreground surface tree at an imperceptible alpha while snapshotting;
+      // pointer input and audio remain disabled because this is not `active`.
+      zIndex: 30,
       pointerEvents: "none",
+      opacity: 0.001,
       visibility: "visible",
     };
   }

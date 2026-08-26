@@ -71,8 +71,9 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       top: 0,
       width: 1280,
       height: 800,
-      zIndex: -1,
+      zIndex: 30,
       pointerEvents: "none",
+      opacity: 0.001,
       visibility: "visible",
     });
   });
