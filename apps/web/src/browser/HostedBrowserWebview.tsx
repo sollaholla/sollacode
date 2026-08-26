@@ -210,21 +210,15 @@ export function HostedBrowserWebview(props: {
     const bridge = previewBridge;
     if (!bridge || snapshotStageId === null || active) return;
     const leaseId = `snapshot-stage:${snapshotStageId}`;
-    let firstFrame = 0;
-    let secondFrame = 0;
-    let leaseRequested = false;
-    firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        leaseRequested = true;
-        void bridge.setUiActivity(runtimeTabId, leaseId, true).catch(() => undefined);
-      });
-    });
+    // Layout effects run after React has placed the guest on-window. Force the
+    // new geometry to resolve before acknowledging the main-process request.
+    // requestAnimationFrame cannot be used as the receipt here: Chromium may
+    // suspend it while the app is occluded, which is exactly when agents need
+    // background snapshots to keep working.
+    wrapperRef.current?.getBoundingClientRect();
+    void bridge.setUiActivity(runtimeTabId, leaseId, true).catch(() => undefined);
     return () => {
-      window.cancelAnimationFrame(firstFrame);
-      window.cancelAnimationFrame(secondFrame);
-      if (leaseRequested) {
-        void bridge.setUiActivity(runtimeTabId, leaseId, false).catch(() => undefined);
-      }
+      void bridge.setUiActivity(runtimeTabId, leaseId, false).catch(() => undefined);
     };
   }, [active, runtimeTabId, snapshotStageId]);
 
