@@ -112,19 +112,20 @@ const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
-const AUTOMATION_SNAPSHOT_CAPTURE_RETRY_MS = 50;
-const AUTOMATION_SNAPSHOT_CAPTURE_RETRIES = 2;
+const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
+const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
 
-const isUnknownVizCaptureFailure = (error: unknown): boolean => {
-  if (typeof error !== "object" || error === null || !("cause" in error)) return false;
-  const cause = (error as { readonly cause: unknown }).cause;
-  return (
-    cause instanceof Error &&
-    (cause.name === "UnknownVizError" || cause.message.includes("UnknownVizError"))
-  );
+const isRetryableAutomationSnapshotFailure = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return false;
+  return [
+    "PreviewOperationError",
+    "PreviewAutomationEvaluationError",
+    "PreviewWebContentsNotFoundError",
+    "PreviewWebviewNotInitializedError",
+  ].includes(String(error._tag));
 };
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
@@ -2782,12 +2783,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
           },
           () => wc.capturePage(),
-        ).pipe(
-          Effect.retry({
-            times: AUTOMATION_SNAPSHOT_CAPTURE_RETRIES,
-            schedule: Schedule.spaced(AUTOMATION_SNAPSHOT_CAPTURE_RETRY_MS),
-            while: isUnknownVizCaptureFailure,
-          }),
         ),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
@@ -2818,9 +2813,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationSnapshot = Effect.fn("PreviewManager.automationSnapshot")(function* (
     tabId: string,
   ) {
-    const wc = yield* requireWebContents(tabId);
-    return yield* withControlSession(tabId, wc, "snapshot", (send) =>
-      captureAutomationSnapshot(tabId, wc, send),
+    return yield* Effect.gen(function* () {
+      // Navigation can replace a guest or its JavaScript context between the
+      // host readiness check and the first CDP command. Snapshot is read-only,
+      // so retry the whole operation and resolve WebContents again instead of
+      // retrying capturePage alone against a stale guest.
+      const wc = yield* requireWebContents(tabId);
+      return yield* withControlSession(tabId, wc, "snapshot", (send) =>
+        captureAutomationSnapshot(tabId, wc, send),
+      );
+    }).pipe(
+      Effect.retry({
+        times: AUTOMATION_SNAPSHOT_RETRIES,
+        schedule: Schedule.spaced(AUTOMATION_SNAPSHOT_RETRY_MS),
+        while: isRetryableAutomationSnapshotFailure,
+      }),
     );
   });
 

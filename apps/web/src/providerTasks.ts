@@ -53,8 +53,6 @@ export const PROVIDER_TASK_FAILED_RETENTION_MS = 60 * 60 * 1000;
  */
 export const PROVIDER_TASK_FINISHED_MAX_COUNT = 20;
 
-export const PROVIDER_TASK_PAGE_SIZE = 10;
-
 /**
  * `stale` is deliberately distinct from `stopped`: we did not observe this task
  * end, we simply stopped hearing from it. Claiming either "running" or
@@ -331,97 +329,11 @@ export function countActiveProviderTasks(tasks: ReadonlyArray<ProviderTask>): nu
   return tasks.filter(isProviderTaskActive).length;
 }
 
-export interface ProviderTaskPage {
-  readonly items: ReadonlyArray<ProviderTask>;
-  readonly page: number;
-  readonly pageCount: number;
-  readonly total: number;
-}
-
-/**
- * One page of tasks. The page index is clamped rather than trusted, because the
- * list shrinks underneath the panel as tasks age out — a held page index would
- * otherwise land past the end and render empty.
- */
-export function pageProviderTasks(
-  tasks: ReadonlyArray<ProviderTask>,
-  page: number,
-  pageSize: number = PROVIDER_TASK_PAGE_SIZE,
-): ProviderTaskPage {
-  const size = Math.max(1, pageSize);
-  const pageCount = Math.max(1, Math.ceil(tasks.length / size));
-  const clamped = Math.min(Math.max(0, Math.trunc(page)), pageCount - 1);
-  const start = clamped * size;
-  return {
-    items: tasks.slice(start, start + size),
-    page: clamped,
-    pageCount,
-    total: tasks.length,
-  };
-}
-
-/**
- * Whether the panel has anything worth showing. Finished tasks stay visible for
- * the rest of the turn so a sub-agent that failed is not erased by completing.
- */
-export function shouldShowProviderTaskPanel(tasks: ReadonlyArray<ProviderTask>): boolean {
-  return tasks.length > 0;
-}
-
-/**
- * Where the panel renders.
- *
- * The panel is bound to the right panel: it never overlays the conversation.
- * An earlier floating placement covered links and text in the transcript, which
- * is worse than not seeing task state at all — the conversation is the thing
- * the user is actually reading.
- *
- * `stacked` takes the lower part of the right panel, below its active surface.
- * The same vertical composition is used for the inline desktop panel and the
- * full-viewport responsive sheet. This keeps task rows at the full panel width
- * instead of squeezing them beside another surface on narrow screens.
- *
- * Right panel collapsed means hidden, full stop. That is the user's existing
- * control for "give me my screen back", and this reuses it rather than adding
- * a second one — which is also why the panel itself has no dismiss control:
- * background work keeps running whether or not the panel is looked at, and a
- * separate "hide" would let it be dismissed into invisibility while live.
- */
-export type ProviderTaskPanelPlacement = "hidden" | "stacked";
-
-export function resolveProviderTaskPanelPlacement(input: {
-  readonly hasTasks: boolean;
-  readonly rightPanelOpen: boolean;
-}): ProviderTaskPanelPlacement {
-  if (!input.hasTasks) return "hidden";
-  if (!input.rightPanelOpen) return "hidden";
-  return "stacked";
-}
-
 const TASK_TYPE_LABELS: Record<string, string> = {
   local_agent: "Sub-agent",
   local_bash: "Background command",
   remote_agent: "Remote agent",
 };
-
-/**
- * Label for the composer chip.
- *
- * Running and stale are counted separately and worded differently: "2 running"
- * is a claim about live work, while stale work is reported as unaccounted for
- * rather than folded into a number that would overstate what is happening.
- */
-export function providerTaskChipLabel(tasks: ReadonlyArray<ProviderTask>): string | null {
-  const running = countActiveProviderTasks(tasks);
-  const stale = tasks.filter((task) => task.status === "stale").length;
-  if (running > 0) {
-    return stale > 0
-      ? `${running} running · ${stale} stalled`
-      : `${running} running task${running === 1 ? "" : "s"}`;
-  }
-  if (stale > 0) return `${stale} stalled task${stale === 1 ? "" : "s"}`;
-  return null;
-}
 
 export function providerTaskTypeLabel(task: ProviderTask): string {
   if (task.taskType === null) return "Task";
@@ -469,21 +381,4 @@ export function describeSendOverRunningTasks(count: number): string {
   const subject = count === 1 ? "1 background task is" : `${count} background tasks are`;
   const object = count === 1 ? "it" : "them";
   return `${subject} still running. Sending now will cancel ${object}. Send anyway?`;
-}
-
-/**
- * Whether the agents-and-tasks panel starts collapsed.
- *
- * It is stacked under the panel's other sections and claims up to 45% of the
- * height, which on a phone pushes whatever is above it — a plan, an artifact
- * list — into a sliver. On a small touch layout it opens as a header row
- * carrying the counts, and expands when asked.
- *
- * Running work never collapses out of sight silently: the header keeps the
- * active count, so the panel still says what is happening while folded.
- */
-export function shouldCollapseProviderTaskPanelByDefault(input: {
-  readonly usesCompactLayout: boolean;
-}): boolean {
-  return input.usesCompactLayout;
 }

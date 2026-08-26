@@ -530,6 +530,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   settingsUpdateLabel: string | null;
   isApplyingSettings: boolean;
   isInterrupting: boolean;
+  hasQueuedSendNow: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart: () => void;
   onPushToTalkStop: () => void;
@@ -583,6 +584,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         settingsUpdateLabel={props.settingsUpdateLabel}
         isApplyingSettings={props.isApplyingSettings}
         isInterrupting={props.isInterrupting}
+        hasQueuedSendNow={props.hasQueuedSendNow}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPushToTalkStart={props.onPushToTalkStart}
         onPushToTalkStop={props.onPushToTalkStop}
@@ -677,6 +679,7 @@ export interface ChatComposerProps {
   pushToTalkDisabledReason: string | null;
   isApplyingSettings: boolean;
   isInterrupting: boolean;
+  hasQueuedSendNow: boolean;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -803,6 +806,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pushToTalkDisabledReason,
     isApplyingSettings,
     isInterrupting,
+    hasQueuedSendNow,
     environmentUnavailable,
     activePendingApproval,
     pendingApprovals,
@@ -1541,26 +1545,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : null,
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
   );
-  const sendWhileRunning = shouldSendComposerWhileProcessing({
-    isProcessing: phase === "running",
-    hasCurrentEditorText: currentEditorHasText,
-    hasPendingComposerContent: composerSendState.hasSendableContent,
-  });
-  const hasCurrentSendableContent = composerSendState.hasSendableContent || currentEditorHasText;
-  const collapsedComposerPrimaryActionDisabled = isInterruptible
-    ? isInterrupting
-    : isSendBusy ||
-      isSendDisabled ||
-      isConnecting ||
-      noProviderAvailable ||
-      projectSelectionRequired ||
-      environmentUnavailable !== null ||
-      !composerSendState.hasSendableContent;
-  const collapsedComposerPrimaryActionLabel = isInterruptible
-    ? isInterrupting
-      ? "Stopping generation"
-      : "Stop generation"
-    : "Send message";
+  const sendWhileRunning =
+    shouldSendComposerWhileProcessing({
+      isProcessing: phase === "running",
+      hasCurrentEditorText: currentEditorHasText,
+      hasPendingComposerContent: composerSendState.hasSendableContent,
+    }) || hasQueuedSendNow;
+  const hasCurrentSendableContent =
+    composerSendState.hasSendableContent || currentEditorHasText || hasQueuedSendNow;
+  const collapsedComposerPrimaryActionDisabled = hasQueuedSendNow
+    ? isSendBusy || isConnecting || environmentUnavailable !== null
+    : isInterruptible
+      ? isInterrupting
+      : isSendBusy ||
+        isSendDisabled ||
+        isConnecting ||
+        noProviderAvailable ||
+        projectSelectionRequired ||
+        environmentUnavailable !== null ||
+        !(composerSendState.hasSendableContent || hasQueuedSendNow);
+  const collapsedComposerPrimaryActionLabel = hasQueuedSendNow
+    ? "Send all queued messages now"
+    : isInterruptible
+      ? isInterrupting
+        ? "Stopping generation"
+        : "Stop generation"
+      : "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
   const showComposerCutButton =
@@ -3385,14 +3395,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 type="button"
                 className={cn(
                   "flex size-8 shrink-0 items-center justify-center rounded-full text-white disabled:opacity-30",
-                  isInterruptible ? "bg-destructive/90" : "bg-primary/90 text-primary-foreground",
+                  isInterruptible && !hasQueuedSendNow
+                    ? "bg-destructive/90"
+                    : "bg-primary/90 text-primary-foreground",
                 )}
                 disabled={collapsedComposerPrimaryActionDisabled}
                 aria-label={collapsedComposerPrimaryActionLabel}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (isInterruptible) {
+                  if (hasQueuedSendNow) {
+                    submitComposer();
+                  } else if (isInterruptible) {
                     handleInterruptPrimaryAction();
                   } else {
                     submitComposer();
@@ -3401,7 +3415,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               >
                 {isInterrupting ? (
                   <Spinner className="size-3.5" aria-hidden="true" />
-                ) : isInterruptible ? (
+                ) : isInterruptible && !hasQueuedSendNow ? (
                   <svg
                     width="12"
                     height="12"
@@ -3867,6 +3881,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   settingsUpdateLabel={settingsUpdateLabel}
                   isApplyingSettings={isApplyingSettings}
                   isInterrupting={isInterrupting}
+                  hasQueuedSendNow={hasQueuedSendNow}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPushToTalkStart={onPushToTalkStart}
                   onPushToTalkStop={onPushToTalkStop}

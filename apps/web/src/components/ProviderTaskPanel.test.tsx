@@ -17,15 +17,31 @@ const task: ProviderTask = {
 };
 
 describe("ProviderTaskPanel", () => {
-  it("stacks vertically inside its parent panel instead of becoming a horizontal overlay", () => {
-    const markup = renderToStaticMarkup(<ProviderTaskPanel tasks={[task]} highlighted={false} />);
+  it("renders every task in a bounded composer drawer instead of paginating", () => {
+    const tasks = Array.from({ length: 12 }, (_, index) => ({
+      ...task,
+      taskId: `composer-task-${index + 1}`,
+      title: `Background task ${index + 1}`,
+    }));
 
-    expect(markup).toContain('aria-label="Agents and tasks"');
-    expect(markup).toContain("flex-col");
-    expect(markup).toContain("max-h-[45%]");
-    expect(markup).toContain("cursor-pointer");
-    expect(markup).toContain("hover:bg-accent");
-    expect(markup).not.toContain("fixed inset-0");
-    expect(markup).not.toContain('role="dialog"');
+    const markup = renderToStaticMarkup(<ProviderTaskPanel tasks={tasks} />);
+
+    expect(markup).toContain('aria-label="Background tasks"');
+    expect(markup).toContain('data-provider-task-placement="composer"');
+    expect(markup).toContain("flex-col-reverse");
+    expect(markup).toContain("max-h-[min(38dvh,22rem)]");
+    expect(markup).toContain("overflow-y-auto");
+    expect(markup).toContain("Background task 12");
+    expect(markup).not.toContain('aria-label="Task pages"');
+  });
+
+  it("starts collapsed when it is bound to a thread", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel tasks={[task]} threadKey="environment:thread" />,
+    );
+
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("Background tasks · 1 running");
+    expect(markup).not.toContain(task.title);
   });
 });

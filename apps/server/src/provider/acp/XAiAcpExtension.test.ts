@@ -13,6 +13,7 @@ import {
   makeXAiAskUserQuestionCancelledResponse,
   makeXAiAskUserQuestionResponse,
   makeXAiPromptCompletionRuntime,
+  xAiQueueInterjectPayloads,
   XAiAskUserQuestionRequest,
 } from "./XAiAcpExtension.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
@@ -38,6 +39,20 @@ const makePromptCompletionRuntime = (env: NodeJS.ProcessEnv) =>
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
 describe("XAiAcpExtension", () => {
+  it("builds every native queue interjection oldest first", () => {
+    expect(
+      xAiQueueInterjectPayloads("session-1", [
+        { id: "oldest", version: 0 },
+        { id: "middle", version: 3 },
+        { id: "newest", version: 1 },
+      ]),
+    ).toEqual([
+      { sessionId: "session-1", id: "oldest", expectedVersion: 0 },
+      { sessionId: "session-1", id: "middle", expectedVersion: 3 },
+      { sessionId: "session-1", id: "newest", expectedVersion: 1 },
+    ]);
+  });
+
   it("extracts questions from the real xAI ask_user_question payload shape", () => {
     const questions = extractXAiAskUserQuestions({
       sessionId: "session-1",

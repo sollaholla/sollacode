@@ -723,6 +723,9 @@ export function projectEvent(
         };
       });
 
+    case "thread.queued-turn-promote-requested":
+      return Effect.succeed(nextBase);
+
     case "thread.session-set":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(

@@ -16,6 +16,52 @@ const XAiPromptCompleteNotification = Schema.Struct({
 
 type XAiPromptCompleteNotification = typeof XAiPromptCompleteNotification.Type;
 
+const XAiQueuedPromptEntry = Schema.Struct({
+  id: Schema.String,
+  version: Schema.Number,
+  kind: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  position: Schema.optional(Schema.Number),
+});
+
+export const XAiQueueChangedNotification = Schema.Struct({
+  sessionId: Schema.String,
+  entries: Schema.Array(XAiQueuedPromptEntry),
+  runningPromptId: Schema.optional(Schema.String),
+  runningText: Schema.optional(Schema.String),
+  runningKind: Schema.optional(Schema.String),
+});
+
+export type XAiQueueChangedNotification = typeof XAiQueueChangedNotification.Type;
+
+export function xAiQueueInterjectPayload(input: {
+  readonly sessionId: string;
+  readonly messageId: string;
+  readonly expectedVersion: number;
+}) {
+  return {
+    sessionId: input.sessionId,
+    id: input.messageId,
+    expectedVersion: input.expectedVersion,
+  };
+}
+
+export function xAiQueueInterjectPayloads(
+  sessionId: string,
+  entries: ReadonlyArray<{
+    readonly id: string;
+    readonly version: number;
+  }>,
+) {
+  return entries.map((entry) =>
+    xAiQueueInterjectPayload({
+      sessionId,
+      messageId: entry.id,
+      expectedVersion: entry.version,
+    }),
+  );
+}
+
 interface PendingXAiPromptCompletion {
   readonly sessionId: string;
   readonly promptId: string;
@@ -235,7 +281,7 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
             return yield* runtime.prompt(payload);
           }
 
-          const promptId = yield* allocatePromptFallbackId;
+          const promptId = payload.messageId ?? (yield* allocatePromptFallbackId);
           const fallback = yield* registerXAiPromptCompletionFallback(
             pendingRef,
             sessionId,

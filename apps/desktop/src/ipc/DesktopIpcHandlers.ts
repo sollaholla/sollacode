@@ -46,6 +46,7 @@ import {
   showContextMenu,
   writeComposerClipboard,
 } from "./methods/window.ts";
+import { transcribeVoice } from "./methods/voiceTranscription.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import {
   endOrchestratorBubbleDrag,
@@ -126,6 +127,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(revealFile);
   yield* ipc.handle(writeComposerClipboard);
   yield* ipc.handle(setPushToTalkSystemAudioMuted);
+  yield* ipc.handle(transcribeVoice);
   yield* ipc.handle(captureRemoteControlFrame);
   yield* ipc.handle(listRemoteControlCaptureSources);
   yield* ipc.handle(activateRemoteControlHost);

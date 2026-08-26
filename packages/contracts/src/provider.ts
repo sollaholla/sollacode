@@ -109,6 +109,11 @@ export const ProviderInterruptTurnInput = Schema.Struct({
 });
 export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
+export const ProviderPromoteQueuedTurnInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type ProviderPromoteQueuedTurnInput = typeof ProviderPromoteQueuedTurnInput.Type;
+
 export const ProviderStopTaskInput = Schema.Struct({
   threadId: ThreadId,
   taskId: RuntimeTaskId,

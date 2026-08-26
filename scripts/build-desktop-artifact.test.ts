@@ -18,6 +18,7 @@ import {
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  MACOS_SPEECH_TRANSCRIBER_EXTRA_RESOURCE,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -33,6 +34,8 @@ import {
   resolveBuildOptions,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
+  resolveDesktopExtraResources,
+  resolveMacSpeechTranscriberTargets,
   resolveDesktopReleaseChannel,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
@@ -549,6 +552,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         from: "apps/desktop/prod-resources/app-update",
         to: "app-update",
       },
+    ]);
+    assert.deepStrictEqual(resolveDesktopExtraResources("mac"), [
+      ...DESKTOP_EXTRA_RESOURCES,
+      MACOS_SPEECH_TRANSCRIBER_EXTRA_RESOURCE,
+    ]);
+    assert.deepStrictEqual(resolveDesktopExtraResources("win"), DESKTOP_EXTRA_RESOURCES);
+    assert.deepStrictEqual(resolveMacSpeechTranscriberTargets("arm64"), ["arm64-apple-macosx26.0"]);
+    assert.deepStrictEqual(resolveMacSpeechTranscriberTargets("universal"), [
+      "arm64-apple-macosx26.0",
+      "x86_64-apple-macosx26.0",
     ]);
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [
       "aarch64-apple-darwin",

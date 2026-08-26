@@ -9,6 +9,7 @@ export const WRITE_COMPOSER_CLIPBOARD_CHANNEL = "desktop:write-composer-clipboar
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
 export const SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL =
   "desktop:set-push-to-talk-system-audio-muted";
+export const TRANSCRIBE_VOICE_CHANNEL = "desktop:transcribe-voice";
 export const REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL = "desktop:remote-control-capture-frame";
 export const REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL = "desktop:remote-control-capture-sources";
 export const REMOTE_CONTROL_ACTIVATE_HOST_CHANNEL = "desktop:remote-control-activate-host";

@@ -29,8 +29,8 @@ Voice recording and model controls are owned by the composer where they were inv
 recording can only update and focus the side-chat draft, and side-chat model or trait selections do
 not replace the main chat's selection or the default used for new threads.
 
-On narrow screens, the right panel occupies the full viewport. When provider background tasks are
-present, they stack below the active side-chat surface and scroll independently instead of
-squeezing the two surfaces into side-by-side columns. Grok background commands use the same
-panel as Claude sub-agents; agent mode waits for them to finish, and you can stop a running Grok
-command from the row.
+Provider background tasks live in a per-thread drawer directly beneath the composer and checkout
+strip. Expanding the drawer moves the conversation viewport upward and gives a long task list its own
+bounded scroll area; its state is remembered per thread. Grok background commands use the same
+drawer as Claude sub-agents, agent mode waits for them to finish, and you can stop a running Grok
+command from its row without leaving the chat or opening a second panel.

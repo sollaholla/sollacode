@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  MessageId,
   type GrokSettings,
   EventId,
   type ProviderApprovalDecision,
@@ -84,6 +85,8 @@ import {
   makeXAiAskUserQuestionResponse,
   promptResponseHasMissingXAiStopReason,
   XAiAskUserQuestionRequest,
+  XAiQueueChangedNotification,
+  xAiQueueInterjectPayloads,
 } from "../acp/XAiAcpExtension.ts";
 import {
   extractCompletedProposedPlans,
@@ -162,6 +165,10 @@ interface GrokSessionContext {
    * >0 means a turn is actively running, so a new sendTurn is a steer that
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
+  /** Messages admitted to Grok's native queue but not yet receipted to T3. */
+  pendingMessageDeliveries: Map<string, TurnId>;
+  /** Latest native queue versions, used by Grok's compare-and-promote operation. */
+  queuedPromptVersions: Map<string, number>;
   currentModelId: string | undefined;
   /** Last reasoning effort applied via session/set_model metadata. */
   currentEffort: string | undefined;
@@ -836,6 +843,39 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
               { discard: true },
             );
+            yield* acp.handleExtNotification(
+              "_x.ai/queue/changed",
+              XAiQueueChangedNotification,
+              (notification) =>
+                Effect.gen(function* () {
+                  yield* logNative(input.threadId, "_x.ai/queue/changed", notification);
+                  const liveCtx = sessions.get(input.threadId);
+                  if (!liveCtx || liveCtx.acpSessionId !== notification.sessionId) return;
+
+                  liveCtx.queuedPromptVersions = new Map(
+                    notification.entries.map((entry) => [entry.id, entry.version]),
+                  );
+                  const admittedIds = new Set(notification.entries.map((entry) => entry.id));
+                  if (notification.runningPromptId) admittedIds.add(notification.runningPromptId);
+                  for (const messageId of admittedIds) {
+                    const turnId = liveCtx.pendingMessageDeliveries.get(messageId);
+                    if (turnId === undefined) continue;
+                    liveCtx.pendingMessageDeliveries.delete(messageId);
+                    yield* offerRuntimeEvent({
+                      type: "message.delivered",
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId,
+                      payload: { messageId: MessageId.make(messageId) },
+                    });
+                  }
+                }).pipe(
+                  Effect.catch((cause) =>
+                    Effect.logError("Failed to process Grok queue notification.", { cause }),
+                  ),
+                ),
+            );
             yield* Effect.forEach(
               ["x.ai/ask_user_question", "_x.ai/ask_user_question"] as const,
               (method) =>
@@ -1031,6 +1071,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             activeTurnId: undefined,
             interruptedTurnIds: new Set(),
             promptsInFlight: 0,
+            pendingMessageDeliveries: new Map(),
+            queuedPromptVersions: new Map(),
             currentModelId: boundModelId,
             currentEffort: boundSelection.reasoningEffort,
             interactionMode: undefined,
@@ -1402,6 +1444,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 acp: ctx.acp,
                 acpSessionId: ctx.acpSessionId,
                 displayModel,
+                messageId: input.messageId,
                 promptParts,
                 turnId,
               };
@@ -1430,8 +1473,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
 
         return yield* Effect.gen(function* () {
+          if (prepared.messageId !== undefined) {
+            const liveCtx = sessions.get(input.threadId);
+            if (liveCtx?.acpSessionId === prepared.acpSessionId) {
+              liveCtx.pendingMessageDeliveries.set(prepared.messageId, prepared.turnId);
+            }
+          }
           const result = yield* prepared.acp
             .prompt({
+              ...(prepared.messageId !== undefined ? { messageId: prepared.messageId } : {}),
               prompt: prepared.promptParts,
             })
             .pipe(
@@ -1461,14 +1511,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // best-effort after that boundary: surfacing its failure would make
           // the delivery queue replay a prompt Grok already received.
           if (input.messageId !== undefined) {
-            yield* offerRuntimeEvent({
-              type: "message.delivered",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId: prepared.turnId,
-              payload: { messageId: input.messageId },
-            });
+            const liveCtx = sessions.get(input.threadId);
+            if (liveCtx?.pendingMessageDeliveries.delete(input.messageId)) {
+              yield* offerRuntimeEvent({
+                type: "message.delivered",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId: prepared.turnId,
+                payload: { messageId: input.messageId },
+              });
+            }
           }
 
           const finalizedTurn = yield* preserveAcceptedGrokTurn(
@@ -1600,6 +1653,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
+              if (prepared.messageId !== undefined) {
+                const liveCtx = sessions.get(input.threadId);
+                if (
+                  liveCtx?.acpSessionId === prepared.acpSessionId &&
+                  liveCtx.pendingMessageDeliveries.get(prepared.messageId) === prepared.turnId
+                ) {
+                  liveCtx.pendingMessageDeliveries.delete(prepared.messageId);
+                }
+              }
               if (yield* Ref.get(promptSettled)) {
                 return;
               }
@@ -1665,6 +1727,47 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           ),
         );
       });
+
+    const promoteQueuedTurn: NonNullable<GrokAdapterShape["promoteQueuedTurn"]> = (threadId) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const ctx = yield* requireSession(threadId);
+          const queuedPrompts = xAiQueueInterjectPayloads(
+            ctx.acpSessionId,
+            Array.from(ctx.queuedPromptVersions, ([id, version]) => ({ id, version })),
+          );
+          if (queuedPrompts.length === 0) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "x.ai/queue/interject",
+              detail: "Grok no longer has any follow-ups waiting in its native queue.",
+            });
+          }
+
+          // One empty-composer Enter means "catch up now" in Solla. Promote
+          // every native row, oldest first, so a burst of corrections cannot
+          // remain minutes behind one full Grok reasoning cycle at a time.
+          yield* Effect.forEach(
+            queuedPrompts,
+            (payload) => {
+              ctx.queuedPromptVersions.delete(payload.id);
+              return ctx.acp.notify("x.ai/queue/interject", payload).pipe(
+                Effect.tapError(() =>
+                  Effect.sync(() =>
+                    ctx.queuedPromptVersions.set(payload.id, payload.expectedVersion),
+                  ),
+                ),
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(PROVIDER, threadId, "x.ai/queue/interject", error),
+                ),
+              );
+            },
+            { discard: true },
+          );
+          return queuedPrompts.map((payload) => MessageId.make(payload.id));
+        }),
+      );
 
     const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
@@ -1861,6 +1964,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       startSession,
       sendTurn,
       interruptTurn,
+      promoteQueuedTurn,
       stopTask,
       readThread,
       rollbackThread,

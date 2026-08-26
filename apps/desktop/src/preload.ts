@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL, input),
   setPushToTalkSystemAudioMuted: (muted) =>
     ipcRenderer.invoke(IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL, muted),
+  transcribeVoice: (input) => ipcRenderer.invoke(IpcChannels.TRANSCRIBE_VOICE_CHANNEL, input),
   captureRemoteControlFrame: (input) =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL, input),
   listRemoteControlCaptureSources: () =>

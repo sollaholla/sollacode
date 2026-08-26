@@ -15,6 +15,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
+  ProviderPromoteQueuedTurnInput,
   ProviderStopTaskInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
@@ -933,6 +934,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const promoteQueuedTurn: ProviderServiceMethod<"promoteQueuedTurn"> = Effect.fn(
+    "promoteQueuedTurn",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.promoteQueuedTurn",
+      schema: ProviderPromoteQueuedTurnInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.promoteQueuedTurn",
+      allowRecovery: false,
+    });
+    const promote = routed.adapter.promoteQueuedTurn;
+    if (promote === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: routed.adapter.provider,
+        method: "queue/interject",
+        detail: `Provider '${routed.adapter.provider}' cannot promote queued turns.`,
+      });
+    }
+    return yield* promote(routed.threadId);
+  });
+
   const stopTask: ProviderServiceMethod<"stopTask"> = Effect.fn("stopTask")(function* (rawInput) {
     const input = yield* decodeInputOrValidationError({
       operation: "ProviderService.stopTask",
@@ -1412,6 +1437,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     interruptTurn,
+    promoteQueuedTurn,
     stopTask,
     respondToRequest,
     respondToUserInput,

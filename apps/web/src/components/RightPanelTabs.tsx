@@ -133,12 +133,6 @@ interface RightPanelTabsProps {
   /** Artifact choices shown in the new-surface menu. */
   artifactMenu?: ReactNode;
   children: ReactNode;
-  /**
-   * Rendered below the surface content, splitting this column vertically.
-   * Used for the agents & tasks panel so it shares the right panel's width
-   * instead of overlaying the conversation.
-   */
-  footer?: ReactNode;
 }
 
 const SURFACE_DISABLED_REASONS = {
@@ -1130,7 +1124,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         )}
       </div>
       {shouldShowArtifactShelf(props.surfaces, props.activeSurfaceId) ? props.artifactShelf : null}
-      {props.footer}
     </PreviewPanelShell>
   );
 }

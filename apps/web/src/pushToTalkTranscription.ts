@@ -1,7 +1,38 @@
 export const LONG_FORM_TRANSCRIPTION_OPTIONS = {
   chunk_length_s: 30,
   stride_length_s: 5,
+  language: "english",
+  task: "transcribe",
 } as const;
+
+/**
+ * Free local fallback for web, non-Mac clients, and Macs where SpeechAnalyzer
+ * is unavailable. Distil-small is still practical on-device but is trained
+ * from Whisper large-v2 supervision; tiny.en was fast but routinely lost
+ * names, clauses, and technical terms in ordinary dictation.
+ */
+export const LOCAL_TRANSCRIPTION_MODEL = {
+  id: "onnx-community/distil-small.en",
+  revision: "69be759f982d1d4c5b8a987d4140752742619bd0",
+  dtype: "q4",
+} as const;
+
+/** Baseline coding vocabulary for Apple's context-aware DictationTranscriber. */
+export const DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT = [
+  "Solla Code",
+  "T3 Code",
+  "Codex",
+  "Claude",
+  "Grok",
+  "OpenCode",
+  "GitHub",
+  "TypeScript",
+  "JavaScript",
+  "React",
+  "Electron",
+  "WebSocket",
+  "macOS",
+] as const;
 
 interface TranscriptionResult {
   readonly text?: string;
