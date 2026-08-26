@@ -2846,7 +2846,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               tabId,
               webContentsId: wc.id,
             },
-            () => wc.capturePage(),
+            // Electron only considers a page inside a hidden/occluded window
+            // capture-visible while a hidden capturer is registered. Without
+            // these options the promise can remain pending forever even after
+            // the renderer has staged the guest on-window. Keep the window
+            // hidden and the compositor awake for the duration of this one
+            // read-only frame instead of surfacing or focusing Browser UI.
+            () => wc.capturePage(undefined, { stayHidden: true, stayAwake: true }),
             AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
           ).pipe(
             Effect.flatMap((sourceImage) => {
