@@ -4,30 +4,30 @@ import type { MessageId, OrchestrationThreadActivity } from "@t3tools/contracts"
  * Delivery state for a user message, rendered as WhatsApp-style checkmarks.
  *
  * The distinction only matters because a message sent while a turn is running
- * is a *steer*: it waits in the provider's prompt queue until the agent loop
- * pulls it, which can take many seconds. Before this indicator existed there
- * was no way to tell a steer that had landed from one the CLI had not reached
- * yet.
+ * is a *steer*: the provider may admit it to a native prompt queue before the
+ * agent loop can act on it. Before this indicator existed there was no way to
+ * tell a steer the CLI had accepted from one it had not reached yet.
  *
  * - `pending` — not yet acknowledged by the server (still a local echo).
- * - `sent` — persisted by the orchestrator, but the provider has not taken it.
- * - `read` — the provider pulled it into the agent loop.
+ * - `sent` — persisted by the orchestrator, but the provider has not accepted it.
+ * - `read` — accepted by the provider; it may still be waiting in a native queue.
  */
 export type MessageDeliveryState = "pending" | "sent" | "read";
 
 export const MESSAGE_DELIVERED_ACTIVITY_KIND = "message.delivered";
+export const QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND = "provider.queue.promoted";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
 /**
- * Collects the ids the provider has confirmed consuming.
+ * Collects the ids the provider has confirmed accepting.
  *
  * Deliberately a positive signal: nothing here infers delivery from assistant
  * output, because a running turn keeps producing output from work that predates
  * the steer. Inferring would light the second checkmark before the provider had
- * seen the message — the exact question the indicator exists to answer.
+ * accepted the message — the exact question the indicator exists to answer.
  */
 export function deriveDeliveredMessageIds(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
@@ -41,6 +41,21 @@ export function deriveDeliveredMessageIds(
     }
   }
   return delivered;
+}
+
+export function derivePromotedQueuedMessageIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const promoted = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND) continue;
+    const messageIds = asRecord(activity.payload).messageIds;
+    if (!Array.isArray(messageIds)) continue;
+    for (const messageId of messageIds) {
+      if (typeof messageId === "string" && messageId.length > 0) promoted.add(messageId);
+    }
+  }
+  return promoted;
 }
 
 /**

@@ -861,6 +861,13 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadQueuedTurnPromoteCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-turn.promote"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 /**
  * Stop one background task or sub-agent the provider started, by task id.
  *
@@ -966,6 +973,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadQueuedTurnPromoteCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -995,6 +1003,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
+  ThreadQueuedTurnPromoteCommand,
   ThreadTaskStopCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -1119,6 +1128,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.message-sent",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.queued-turn-promote-requested",
   "thread.task-stop-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -1298,6 +1308,11 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  createdAt: IsoDateTime,
+});
+
+export const ThreadQueuedTurnPromoteRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
   createdAt: IsoDateTime,
 });
 
@@ -1481,6 +1496,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.queued-turn-promote-requested"),
+    payload: ThreadQueuedTurnPromoteRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

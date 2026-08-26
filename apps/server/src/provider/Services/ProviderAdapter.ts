@@ -18,6 +18,7 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ModelSelection,
+  MessageId,
   RuntimeMode,
   RuntimeTaskId,
   ThreadId,
@@ -109,6 +110,11 @@ export interface ProviderAdapterShape<TError> {
    * Interrupt an active turn.
    */
   readonly interruptTurn: (threadId: ThreadId, turnId?: TurnId) => Effect.Effect<void, TError>;
+
+  /** Promote every provider-native queued follow-up without cancelling background work. */
+  readonly promoteQueuedTurn?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<MessageId>, TError>;
 
   /**
    * Stop one background task or sub-agent by id, leaving the turn running.

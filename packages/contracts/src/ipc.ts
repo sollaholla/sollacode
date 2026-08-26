@@ -1108,6 +1108,35 @@ export const DesktopComposerClipboardInputSchema = Schema.Struct({
 });
 export type DesktopComposerClipboardInput = typeof DesktopComposerClipboardInputSchema.Type;
 
+/**
+ * Mono signed 16-bit PCM captured by the renderer for macOS SpeechAnalyzer.
+ * Keeping this as PCM avoids sending a lossy WebM recording through a second
+ * codec before Apple's native speech model sees it.
+ */
+export const DesktopVoiceTranscriptionInputSchema = Schema.Struct({
+  pcm16: Schema.Uint8Array,
+  sampleRate: Schema.Int.check(Schema.isBetween({ minimum: 8_000, maximum: 48_000 })),
+  locale: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  contextualStrings: Schema.Array(
+    Schema.String.check(Schema.isTrimmed())
+      .check(Schema.isNonEmpty())
+      .check(Schema.isMaxLength(80)),
+  ).check(Schema.isMaxLength(100)),
+});
+export type DesktopVoiceTranscriptionInput = typeof DesktopVoiceTranscriptionInputSchema.Type;
+
+export const DesktopVoiceTranscriptionResultSchema = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("success"),
+    text: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reason: Schema.String,
+  }),
+]);
+export type DesktopVoiceTranscriptionResult = typeof DesktopVoiceTranscriptionResultSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   // One bootstrap per pool instance currently registered with bootstrap
@@ -1173,6 +1202,13 @@ export interface DesktopBridge {
   revealFile: (path: string) => Promise<boolean>;
   writeComposerClipboard: (input: DesktopComposerClipboardInput) => Promise<boolean>;
   setPushToTalkSystemAudioMuted: (muted: boolean) => Promise<boolean>;
+  /**
+   * macOS 26+ on-device dictation. Optional so web, mobile, non-Mac desktop,
+   * and an older installed preload transparently retain local Whisper.
+   */
+  transcribeVoice?: (
+    input: DesktopVoiceTranscriptionInput,
+  ) => Promise<DesktopVoiceTranscriptionResult>;
   captureRemoteControlFrame: (
     input: DesktopRemoteControlCaptureInput,
   ) => Promise<DesktopRemoteControlFrame>;

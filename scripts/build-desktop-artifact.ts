@@ -625,6 +625,17 @@ export const DESKTOP_EXTRA_RESOURCES = [
     to: "app-update",
   },
 ] as const;
+export const MACOS_SPEECH_TRANSCRIBER_EXTRA_RESOURCE = {
+  from: "apps/desktop/prod-resources/macos-speech-transcriber",
+  to: "macos-speech-transcriber",
+} as const;
+
+export function resolveDesktopExtraResources(platform: typeof BuildPlatform.Type) {
+  return [
+    ...DESKTOP_EXTRA_RESOURCES,
+    ...(platform === "mac" ? [MACOS_SPEECH_TRANSCRIBER_EXTRA_RESOURCE] : []),
+  ];
+}
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -1144,6 +1155,69 @@ const runCommand = Effect.fn("runCommand")(function* (
   }
 });
 
+export function resolveMacSpeechTranscriberTargets(
+  arch: typeof BuildArch.Type,
+): ReadonlyArray<string> {
+  if (arch === "universal") {
+    return ["arm64-apple-macosx26.0", "x86_64-apple-macosx26.0"];
+  }
+  return [arch === "arm64" ? "arm64-apple-macosx26.0" : "x86_64-apple-macosx26.0"];
+}
+
+const stageMacSpeechTranscriber = Effect.fn("stageMacSpeechTranscriber")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageResourcesDir: string;
+  readonly platform: typeof BuildPlatform.Type;
+  readonly arch: typeof BuildArch.Type;
+  readonly verbose: boolean;
+}) {
+  if (input.platform !== "mac") return;
+  const path = yield* Path.Path;
+  const sourcePath = path.join(
+    input.repoRoot,
+    "apps/desktop/resources/native/MacSpeechTranscriber.swift",
+  );
+  const outputPath = path.join(input.stageResourcesDir, "macos-speech-transcriber");
+  const targets = resolveMacSpeechTranscriberTargets(input.arch);
+  const targetOutputs: string[] = [];
+
+  for (const target of targets) {
+    const targetOutput =
+      targets.length === 1
+        ? outputPath
+        : `${outputPath}.${target.startsWith("arm64") ? "arm64" : "x64"}`;
+    yield* runCommand(
+      ChildProcess.make(
+        "/usr/bin/xcrun",
+        [
+          "swiftc",
+          "-parse-as-library",
+          sourcePath,
+          "-o",
+          targetOutput,
+          "-framework",
+          "Speech",
+          "-framework",
+          "AVFoundation",
+          "-target",
+          target,
+        ],
+        { cwd: input.repoRoot },
+      ),
+      { label: `swiftc MacSpeechTranscriber (${target})`, verbose: input.verbose },
+    );
+    targetOutputs.push(targetOutput);
+  }
+
+  if (targetOutputs.length > 1) {
+    yield* runCommand(
+      ChildProcess.make("/usr/bin/lipo", ["-create", ...targetOutputs, "-output", outputPath]),
+      { label: "lipo MacSpeechTranscriber", verbose: input.verbose },
+    );
+  }
+  yield* Effect.log(`[desktop-artifact] Staged Apple native speech helper (${input.arch}).`);
+});
+
 const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input: {
   readonly repoRoot: string;
   readonly stageResourcesDir: string;
@@ -1576,7 +1650,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     // WINDOWS_ASAR_UNPACK); macOS and Linux stay packed — smart unpack
     // extracts native libraries, which fff-node finds in app.asar.unpacked.
     ...(platform === "win" ? { asarUnpack: [...WINDOWS_ASAR_UNPACK] } : {}),
-    extraResources: DESKTOP_EXTRA_RESOURCES,
+    extraResources: resolveDesktopExtraResources(platform),
   };
   if (platform === "mac") {
     buildConfig.mac = {
@@ -1888,6 +1962,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     arch: options.arch,
     verbose: options.verbose,
     prebuildPath: options.resourceMonitorPrebuild,
+  });
+  yield* stageMacSpeechTranscriber({
+    repoRoot,
+    stageResourcesDir,
+    platform: options.platform,
+    arch: options.arch,
+    verbose: options.verbose,
   });
 
   yield* assertPlatformBuildResources(

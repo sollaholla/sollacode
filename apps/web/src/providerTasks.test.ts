@@ -4,18 +4,12 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 import {
   PROVIDER_TASK_FINISHED_MAX_COUNT,
-  PROVIDER_TASK_PAGE_SIZE,
   canStopProviderTask,
   countActiveProviderTasks,
   describeSendOverRunningTasks,
   deriveProviderTasks,
-  providerTaskChipLabel,
   providerTaskStatusLabel,
   providerTaskTypeLabel,
-  pageProviderTasks,
-  resolveProviderTaskPanelPlacement,
-  shouldCollapseProviderTaskPanelByDefault,
-  shouldShowProviderTaskPanel,
   type ProviderTask,
 } from "./providerTasks.ts";
 
@@ -161,89 +155,6 @@ describe("deriveProviderTasks", () => {
       activity("task.started", "2026-08-01T10:00:01Z", { detail: "no id" }),
     ]);
     NodeAssert.deepEqual(tasks, []);
-    NodeAssert.equal(shouldShowProviderTaskPanel(tasks), false);
-  });
-
-  it("stacks below the active right-panel surface on desktop", () => {
-    NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: true,
-        rightPanelOpen: true,
-      }),
-      "stacked",
-    );
-  });
-
-  it("uses the same vertical stack inside the full-screen mobile sheet", () => {
-    NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: true,
-        rightPanelOpen: true,
-      }),
-      "stacked",
-    );
-  });
-
-  it("never renders while the right panel is collapsed", () => {
-    // Bound to the right panel so it can never overlay the conversation —
-    // collapsing that panel is the user's existing "give me my screen back".
-    NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: true,
-        rightPanelOpen: false,
-      }),
-      "hidden",
-    );
-  });
-
-  it("hides the panel only when there is nothing to show", () => {
-    NodeAssert.equal(
-      resolveProviderTaskPanelPlacement({
-        hasTasks: false,
-        rightPanelOpen: true,
-      }),
-      "hidden",
-    );
-  });
-
-  it("counts running and stalled work separately in the chip label", () => {
-    const nowMs = Date.parse("2026-08-01T14:31:00Z");
-    const live = deriveProviderTasks(
-      [
-        activity("task.progress", "2026-08-01T14:30:00Z", { taskId: "a", title: "A" }),
-        activity("task.progress", "2026-08-01T14:30:00Z", { taskId: "b", title: "B" }),
-      ],
-      { nowMs },
-    );
-    NodeAssert.equal(providerTaskChipLabel(live), "2 running tasks");
-
-    const mixed = deriveProviderTasks(
-      [
-        activity("task.progress", "2026-08-01T14:30:00Z", { taskId: "a", title: "A" }),
-        activity("task.started", "2026-08-01T11:00:00Z", { taskId: "ghost", detail: "Ghost" }),
-      ],
-      { nowMs },
-    );
-    NodeAssert.equal(providerTaskChipLabel(mixed), "1 running · 1 stalled");
-
-    const stalledOnly = deriveProviderTasks(
-      [activity("task.started", "2026-08-01T11:00:00Z", { taskId: "ghost", detail: "Ghost" })],
-      { nowMs },
-    );
-    NodeAssert.equal(providerTaskChipLabel(stalledOnly), "1 stalled task");
-  });
-
-  it("shows no chip when nothing is outstanding", () => {
-    const nowMs = Date.parse("2026-08-01T14:31:00Z");
-    const finished = deriveProviderTasks(
-      [
-        activity("task.started", "2026-08-01T14:29:00Z", { taskId: "a", detail: "A" }),
-        activity("task.completed", "2026-08-01T14:30:00Z", { taskId: "a", status: "completed" }),
-      ],
-      { nowMs },
-    );
-    NodeAssert.equal(providerTaskChipLabel(finished), null);
-    NodeAssert.equal(providerTaskChipLabel([]), null);
   });
 
   it("downgrades a silent running task to stale instead of claiming it is live", () => {
@@ -382,26 +293,6 @@ describe("deriveProviderTasks", () => {
     );
   });
 
-  it("pages the list and clamps an out-of-range page", () => {
-    const many = Array.from({ length: 23 }, (_, index) =>
-      activity("task.progress", "2026-08-01T14:00:00Z", {
-        taskId: `t${index}`,
-        title: `Task ${index}`,
-      }),
-    );
-    const tasks = deriveProviderTasks(many, { nowMs: Date.parse("2026-08-01T14:00:30Z") });
-
-    const first = pageProviderTasks(tasks, 0);
-    NodeAssert.equal(first.items.length, PROVIDER_TASK_PAGE_SIZE);
-    NodeAssert.equal(first.pageCount, 3);
-    NodeAssert.equal(first.total, 23);
-
-    NodeAssert.equal(pageProviderTasks(tasks, 2).items.length, 3);
-    // The list shrinks as tasks age out, so a held page index must not render empty.
-    NodeAssert.equal(pageProviderTasks(tasks, 99).page, 2);
-    NodeAssert.equal(pageProviderTasks(tasks, -5).page, 0);
-  });
-
   it("labels task types and statuses for display", () => {
     const [task] = deriveProviderTasks(
       [
@@ -478,15 +369,5 @@ describe("describeSendOverRunningTasks", () => {
       describeSendOverRunningTasks(3),
       "3 background tasks are still running. Sending now will cancel them. Send anyway?",
     );
-  });
-});
-
-describe("shouldCollapseProviderTaskPanelByDefault", () => {
-  it("folds on a compact layout, where it would crowd everything above it", () => {
-    NodeAssert.equal(shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout: true }), true);
-  });
-
-  it("stays open where there is room for it", () => {
-    NodeAssert.equal(shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout: false }), false);
   });
 });

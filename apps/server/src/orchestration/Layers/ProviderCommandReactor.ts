@@ -112,6 +112,7 @@ type ProviderIntentEvent = Extract<
       | "thread.session-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.queued-turn-promote-requested"
       | "thread.task-stop-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -445,7 +446,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         | "provider.approval.respond.failed"
         | "provider.user-input.respond.failed"
         | "provider.session.stop.failed"
-        | "provider.task.stop.failed";
+        | "provider.task.stop.failed"
+        | "provider.queue.promote.failed";
       readonly summary: string;
       readonly detail: string;
       readonly turnId: TurnId | null;
@@ -470,6 +472,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 detail: input.detail,
                 ...(input.requestId ? { requestId: input.requestId } : {}),
               },
+              turnId: input.turnId,
+              createdAt: input.createdAt,
+            },
+            createdAt: input.createdAt,
+          }),
+        ),
+      );
+
+    const appendQueuedTurnPromotionActivity = (input: {
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly messageIds: ReadonlyArray<MessageId>;
+      readonly createdAt: string;
+    }) =>
+      Effect.all({
+        commandId: serverCommandId("provider-queue-promoted-activity"),
+        eventId: serverEventId(),
+      }).pipe(
+        Effect.flatMap(({ commandId, eventId }) =>
+          orchestrationEngine.dispatch({
+            type: "thread.activity.append",
+            commandId,
+            threadId: input.threadId,
+            activity: {
+              id: eventId,
+              tone: "info",
+              kind: "provider.queue.promoted",
+              summary: "Queued messages sent now",
+              payload: { messageIds: input.messageIds },
               turnId: input.turnId,
               createdAt: input.createdAt,
             },
@@ -1777,6 +1808,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         createdAt: interruptedAt,
       });
     });
+
+    const processQueuedTurnPromoteRequested = Effect.fn("processQueuedTurnPromoteRequested")(
+      function* (
+        event: Extract<ProviderIntentEvent, { type: "thread.queued-turn-promote-requested" }>,
+      ) {
+        const thread = yield* resolveThread(event.payload.threadId);
+        if (!thread?.session || thread.session.status === "stopped") return;
+        yield* providerService.promoteQueuedTurn({ threadId: event.payload.threadId }).pipe(
+          Effect.flatMap((messageIds) =>
+            appendQueuedTurnPromotionActivity({
+              threadId: event.payload.threadId,
+              turnId: thread.session?.activeTurnId ?? null,
+              messageIds,
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.queue.promote.failed",
+              summary: "Could not send the queued messages now",
+              detail: formatFailureDetail(cause),
+              turnId: thread.session?.activeTurnId ?? null,
+              createdAt: event.payload.createdAt,
+            }),
+          ),
+        );
+      },
+    );
 
     /**
      * Settle a thread whose provider callback is gone.
@@ -3638,6 +3698,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         case "thread.turn-interrupt-requested":
           yield* processTurnInterruptRequested(event);
           return;
+        case "thread.queued-turn-promote-requested":
+          yield* processQueuedTurnPromoteRequested(event);
+          return;
         case "thread.task-stop-requested":
           yield* processTaskStopRequested(event);
           return;
@@ -3712,6 +3775,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
         if (
           event.type === "thread.turn-interrupt-requested" ||
+          event.type === "thread.queued-turn-promote-requested" ||
           event.type === "thread.session-stop-requested"
         ) {
           return yield* controlDispatcher.enqueue(event);

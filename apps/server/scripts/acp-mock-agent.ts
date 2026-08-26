@@ -47,6 +47,7 @@ const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "
 const emitGrokBackgroundTasks = process.env.T3_ACP_EMIT_GROK_BACKGROUND_TASKS;
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
+const emitXAiQueueChanged = process.env.T3_ACP_EMIT_XAI_QUEUE_CHANGED === "1";
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -78,6 +79,8 @@ let currentModeId = "ask";
 let currentModelId = "default";
 let parameterizedModelPicker = false;
 let currentReasoning = "medium";
+let runningQueuePromptId: string | undefined;
+const queuedPromptEntries: Array<{ id: string; version: number; kind: string; text: string }> = [];
 let currentContext = "272k";
 let currentFast = false;
 let promptCount = 0;
@@ -571,6 +574,23 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       promptCount += 1;
+
+      if (emitXAiQueueChanged) {
+        const messageId =
+          request.messageId ?? promptIdFromRequestMeta(request) ?? `prompt-${promptCount}`;
+        if (runningQueuePromptId === undefined) {
+          runningQueuePromptId = messageId;
+        } else {
+          queuedPromptEntries.push({ id: messageId, version: 0, kind: "prompt", text: messageId });
+        }
+        writeJsonRpcNotification("_x.ai/queue/changed", {
+          sessionId: requestedSessionId,
+          entries: queuedPromptEntries.map((entry, position) => ({ ...entry, position })),
+          ...(runningQueuePromptId
+            ? { runningPromptId: runningQueuePromptId, runningKind: "prompt" }
+            : {}),
+        });
+      }
 
       if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);

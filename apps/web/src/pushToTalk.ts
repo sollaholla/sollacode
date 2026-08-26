@@ -1,4 +1,5 @@
 import { playCueOnce, type VoiceCuePolicy } from "./orchestrator/voiceCues";
+import { DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT } from "./pushToTalkTranscription";
 
 export interface PushToTalkShortcutEvent {
   readonly code?: string;
@@ -94,6 +95,17 @@ export function downmixAudioChannels(channels: ReadonlyArray<Float32Array>): Flo
     mono[frame] = sample / channels.length;
   }
   return mono;
+}
+
+/** Convert Web Audio's normalized floats to the little-endian PCM Apple expects. */
+export function encodeFloat32Pcm16(audio: Float32Array): Uint8Array {
+  const pcm = new Uint8Array(audio.length * 2);
+  const view = new DataView(pcm.buffer);
+  for (let index = 0; index < audio.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, audio[index] ?? 0));
+    view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  }
+  return pcm;
 }
 
 function transcriptionCancellationError(signal: AbortSignal): Error {
@@ -335,6 +347,33 @@ export function transcribeRecordedAudio(
     );
     if (audio.length === 0) return "";
     if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
+
+    // macOS 26's SpeechAnalyzer is the primary desktop path: it uses Apple's
+    // current on-device model, needs no account or API key, and avoids the
+    // smallest Whisper checkpoint that made dictation visibly inaccurate.
+    // The bridge is optional so web/mobile/older installs fall through to the
+    // local Transformers.js model below without changing their contract.
+    const nativeTranscribe =
+      typeof window === "undefined" ? undefined : window.desktopBridge?.transcribeVoice;
+    if (nativeTranscribe) {
+      onProgress?.({ status: "transcribing" });
+      try {
+        const nativeResult = await raceWithTranscriptionCancellation(
+          nativeTranscribe({
+            pcm16: encodeFloat32Pcm16(audio),
+            sampleRate: 16_000,
+            locale: navigator.language?.trim() || "en-US",
+            contextualStrings: [...DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT],
+          }),
+          controller.signal,
+        );
+        if (nativeResult.status === "success") return nativeResult.text.trim();
+      } catch (cause) {
+        if (controller.signal.aborted) throw transcriptionCancellationError(controller.signal);
+        // A missing native model, older macOS build, or helper failure is not a
+        // lost dictation: retry the same PCM through the free local fallback.
+      }
+    }
 
     const id = ++nextRequestId;
     const worker = getTranscriptionWorker();

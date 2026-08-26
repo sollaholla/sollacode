@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   cueThenMuteSystemAudio,
   downmixAudioChannels,
+  encodeFloat32Pcm16,
   isPushToTalkReleaseEvent,
   isPushToTalkShortcut,
   raceWithTranscriptionCancellation,
@@ -158,6 +159,16 @@ describe("downmixAudioChannels", () => {
     const right = new Float32Array([-1, 0.5]);
     expect([...downmixAudioChannels([left, right])]).toEqual([0, -0.25]);
     expect([...left]).toEqual([1, -1]);
+  });
+});
+
+describe("encodeFloat32Pcm16", () => {
+  it("clips and encodes mono samples as signed little-endian PCM", () => {
+    const pcm = encodeFloat32Pcm16(new Float32Array([-2, -1, -0.5, 0, 0.5, 1, 2]));
+    const view = new DataView(pcm.buffer);
+    expect(Array.from({ length: 7 }, (_, index) => view.getInt16(index * 2, true))).toEqual([
+      -32_768, -32_768, -16_384, 0, 16_383, 32_767, 32_767,
+    ]);
   });
 });
 

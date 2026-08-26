@@ -132,11 +132,13 @@ import {
   deriveProviderTasks,
   describeSendOverRunningTasks,
   isProviderTaskActive,
-  resolveProviderTaskPanelPlacement,
 } from "../providerTasks";
 import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
-import { deriveDeliveredMessageIds, expandDeliveredMessageIds } from "../messageDelivery";
-import { ProviderTaskChip } from "./ProviderTaskChip";
+import {
+  deriveDeliveredMessageIds,
+  derivePromotedQueuedMessageIds,
+  expandDeliveredMessageIds,
+} from "../messageDelivery";
 import { ProviderTaskPanel } from "./ProviderTaskPanel";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -1750,6 +1752,9 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const promoteQueuedThreadTurns = useAtomCommand(threadEnvironment.promoteQueuedTurns, {
+    reportFailure: false,
+  });
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
     reportFailure: false,
   });
@@ -3265,9 +3270,8 @@ function ChatViewContent(props: ChatViewProps) {
     const timer = setInterval(() => setProviderTaskNowMs(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
-  // Filtered here rather than inside the panel so the composer chip's count and
-  // the panel agree — dismissing a task has to remove it from both, or the chip
-  // keeps advertising work the user just hid.
+  // Filter before rendering so dismissing a task removes the row and updates
+  // the dock count in one state transition.
   const providerTaskDismissals = useProviderTaskDismissalStore((state) => state.dismissals);
   // A stopped session has no process left to run anything, so its tasks are
   // not "running" no matter what the last activity said. Only `stopped` counts
@@ -3285,23 +3289,6 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [providerTaskDismissals, providerTaskNowMs, providerSessionEnded, threadActivities],
   );
-  const providerTaskPanelPlacement = resolveProviderTaskPanelPlacement({
-    hasTasks: providerTasks.length > 0,
-    rightPanelOpen,
-  });
-  // Flashed after the chip is clicked so the panel is findable in a column that
-  // may already hold several tabs.
-  const [providerTasksHighlighted, setProviderTasksHighlighted] = useState(false);
-  useEffect(() => {
-    if (!providerTasksHighlighted) return;
-    const timer = setTimeout(() => setProviderTasksHighlighted(false), 2200);
-    return () => clearTimeout(timer);
-  }, [providerTasksHighlighted]);
-  const setRightPanelOpen = useRightPanelStore((state) => state.setOpen);
-  const openProviderTasks = useCallback(() => {
-    if (activeThreadRef) setRightPanelOpen(activeThreadRef, true);
-    setProviderTasksHighlighted(true);
-  }, [activeThreadRef, setRightPanelOpen]);
   // Read off the *session* rather than the composer's selection: the stop
   // control has to describe the runtime that owns the running tasks, not the
   // provider the next turn would go to.
@@ -3322,10 +3309,9 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, stopThreadTask],
   );
   const providerTaskPanel =
-    providerTaskPanelPlacement === "hidden" ? null : (
+    providerTasks.length === 0 ? null : (
       <ProviderTaskPanel
         driverKind={providerTaskDriverKind}
-        highlighted={providerTasksHighlighted}
         onStopTask={onStopProviderTask}
         tasks={providerTasks}
         threadKey={
@@ -3335,8 +3321,6 @@ function ChatViewContent(props: ChatViewProps) {
         }
       />
     );
-  const providerTaskPanelFooter =
-    providerTaskPanelPlacement === "stacked" ? providerTaskPanel : null;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -3781,6 +3765,33 @@ function ChatViewContent(props: ChatViewProps) {
         receiptedMessageIds,
       ),
     [receiptedMessageIds, timelineMessages],
+  );
+  const promotedQueuedGrokMessageIds = useMemo(
+    () => derivePromotedQueuedMessageIds(threadActivities),
+    [threadActivities],
+  );
+  const hasQueuedGrokMessages = useMemo(
+    () =>
+      lockedProvider === "grok" &&
+      phase === "running" &&
+      timelineMessages.some(
+        (message) =>
+          message.role === "user" &&
+          message.turnId === null &&
+          (activeWorkStartedAt === null || message.createdAt > activeWorkStartedAt) &&
+          !promotedQueuedGrokMessageIds.has(message.id) &&
+          !pendingMessageIds.has(message.id) &&
+          deliveredMessageIds.has(message.id),
+      ),
+    [
+      deliveredMessageIds,
+      activeWorkStartedAt,
+      lockedProvider,
+      pendingMessageIds,
+      phase,
+      promotedQueuedGrokMessageIds,
+      timelineMessages,
+    ],
   );
   const newestUserMessageId = useMemo(() => {
     for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
@@ -6335,13 +6346,34 @@ function ChatViewContent(props: ChatViewProps) {
     }
     const sendCtx = composerRef.current?.getSendContext();
     if (!sendCtx?.providerAvailable) return;
+    const composerIsEmpty =
+      promptRef.current.trim().length === 0 &&
+      sendCtx.images.length === 0 &&
+      sendCtx.terminalContexts.length === 0 &&
+      sendCtx.elementContexts.length === 0 &&
+      sendCtx.previewAnnotations.length === 0 &&
+      sendCtx.reviewComments.length === 0;
+    if (composerIsEmpty && hasQueuedGrokMessages) {
+      const result = await promoteQueuedThreadTurns({
+        environmentId,
+        input: { threadId: activeThread.id },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setThreadError(
+          activeThread.id,
+          error instanceof Error ? error.message : "Failed to send the queued Grok messages now.",
+        );
+      }
+      return;
+    }
     // Sending interrupts the turn that owns any background work, so those tasks
     // die with it. Confirm before destroying work the user can see running,
     // then stop them explicitly rather than letting them disappear silently.
     // Captured here, not read later: by the time the message is built these
     // tasks have been stopped and are gone from the list.
     let interruptedTaskTitles: ReadonlyArray<string> = [];
-    if (runningBackgroundTasks.length > 0) {
+    if (runningBackgroundTasks.length > 0 && !(lockedProvider === "grok" && phase === "running")) {
       if (!window.confirm(describeSendOverRunningTasks(runningBackgroundTasks.length))) return;
       interruptedTaskTitles = runningBackgroundTasks.map(
         (task) => task.title || task.taskType || "Background task",
@@ -8553,7 +8585,7 @@ function ChatViewContent(props: ChatViewProps) {
                     ) : null
                   }
                   actions={
-                    activeSideChatActivity || activeTerminalActivity || providerTasks.length > 0 ? (
+                    activeSideChatActivity || activeTerminalActivity ? (
                       <>
                         {activeTerminalActivity ? (
                           <button
@@ -8585,11 +8617,6 @@ function ChatViewContent(props: ChatViewProps) {
                             </span>
                           </button>
                         ) : null}
-                        <ProviderTaskChip
-                          tasks={providerTasks}
-                          onOpen={openProviderTasks}
-                          positioned={false}
-                        />
                       </>
                     ) : null
                   }
@@ -8701,6 +8728,7 @@ function ChatViewContent(props: ChatViewProps) {
                             pushToTalkDisabledReason={null}
                             isApplyingSettings={isApplyingComposerSettings}
                             isInterrupting={isInterrupting}
+                            hasQueuedSendNow={hasQueuedGrokMessages}
                             environmentUnavailable={
                               canQueueLocalMessage ? null : activeEnvironmentUnavailableState
                             }
@@ -8807,6 +8835,7 @@ function ChatViewContent(props: ChatViewProps) {
                         </div>
                       </div>
                     </div>
+                    {providerTaskPanel}
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
@@ -8987,7 +9016,6 @@ function ChatViewContent(props: ChatViewProps) {
           browserOnly={browserOnlySurfaces}
           artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
           artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
-          footer={providerTaskPanelFooter}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -9026,7 +9054,6 @@ function ChatViewContent(props: ChatViewProps) {
             browserOnly={browserOnlySurfaces}
             artifactShelf={browserOnlySurfaces ? undefined : artifactShelf}
             artifactMenu={browserOnlySurfaces ? undefined : artifactMenu}
-            footer={providerTaskPanelFooter}
           >
             {rightPanelContent}
           </RightPanelTabs>

@@ -4,11 +4,10 @@ import { configurePackagedOnnxWasm } from "./pushToTalkOnnx";
 /* eslint-disable unicorn/require-post-message-target-origin -- DedicatedWorkerGlobalScope.postMessage has a transfer-list second argument, not a target origin. */
 import {
   assembleTranscriptionText,
+  LOCAL_TRANSCRIPTION_MODEL,
   LONG_FORM_TRANSCRIPTION_OPTIONS,
 } from "./pushToTalkTranscription";
 
-const MODEL_ID = "onnx-community/whisper-tiny.en";
-const MODEL_REVISION = "2575352d61be1bf7225cf8f8b268a4678025fc58";
 let transcriberPromise: ReturnType<typeof pipeline<"automatic-speech-recognition">> | null = null;
 
 env.useBrowserCache = true;
@@ -26,13 +25,12 @@ if (!onnxWasm) {
 configurePackagedOnnxWasm(onnxWasm, onnxWasmUrl, self.location.href);
 
 function getTranscriber(id: number) {
-  transcriberPromise ??= pipeline("automatic-speech-recognition", MODEL_ID, {
-    // The repository's legacy `_quantized` decoder is not compatible with
-    // ONNX Runtime Web 1.26's MatMulNBits graph optimizer (it fails with a
-    // missing scale initializer). The q4 export is larger but is a complete,
-    // supported graph and remains practical for the tiny local model.
-    dtype: "q4",
-    revision: MODEL_REVISION,
+  transcriberPromise ??= pipeline("automatic-speech-recognition", LOCAL_TRANSCRIPTION_MODEL.id, {
+    // q4 keeps the substantially more accurate 166M-parameter fallback
+    // practical in a browser cache. The full model is never bundled into the
+    // app or sent to a paid API.
+    dtype: LOCAL_TRANSCRIPTION_MODEL.dtype,
+    revision: LOCAL_TRANSCRIPTION_MODEL.revision,
     progress_callback: (progress) => {
       if (progress.status !== "progress") return;
       self.postMessage({

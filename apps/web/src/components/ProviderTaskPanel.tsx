@@ -1,40 +1,37 @@
 import {
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   CircleHelp,
   CircleStop,
   CircleX,
-  LoaderCircle,
   MinusCircle,
   X,
 } from "lucide-react";
 import { useState } from "react";
 
-import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { THREAD_PANEL_AGENTS_TASKS, useUiStateStore } from "../uiStateStore";
 
 import {
-  PROVIDER_TASK_PAGE_SIZE,
   canStopProviderTask,
   countActiveProviderTasks,
   dismissableProviderTaskIds,
   hasDismissableProviderTasks,
   isProviderTaskActive,
-  pageProviderTasks,
   providerTaskStatusLabel,
   providerTaskTypeLabel,
-  shouldCollapseProviderTaskPanelByDefault,
   type ProviderTask,
 } from "../providerTasks";
 import { useProviderTaskDismissalStore } from "../providerTaskDismissalStore";
-import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 
 function TaskStatusIcon({ task }: { readonly task: ProviderTask }) {
   if (isProviderTaskActive(task)) {
-    return <LoaderCircle aria-hidden className="mt-0.5 size-4 shrink-0 animate-spin" />;
+    return (
+      <span
+        aria-hidden
+        className="mt-1.5 size-2 shrink-0 rounded-full bg-sky-500 ring-2 ring-sky-500/15"
+      />
+    );
   }
   if (task.status === "stale") {
     // Not a spinner: a spinner asserts liveness, and silence is exactly what we
@@ -56,15 +53,11 @@ function TaskStatusIcon({ task }: { readonly task: ProviderTask }) {
  * Without this, a turn that fans out to sub-agents looks like a turn that has
  * simply gone quiet — there is no other signal that work is still in flight.
  *
- * Bound to the right panel and stacked below its active surface, so it never
- * overlays the transcript or competes with the surface for horizontal space.
- * On mobile the right panel itself owns the viewport, giving task rows the full
- * screen width while keeping the task list independently scrollable.
+ * This is a thread-scoped bottom drawer: its handle stays below the composer
+ * and its bounded list grows upward with the rest of the chat footer.
  */
 export function ProviderTaskPanel(props: {
   readonly tasks: ReadonlyArray<ProviderTask>;
-  /** Briefly ringed after the composer chip is clicked, to say "over here". */
-  readonly highlighted: boolean;
   /**
    * Driver behind the thread's session, used to decide whether a running row
    * can actually be killed. `null` when no session is bound yet.
@@ -85,17 +78,11 @@ export function ProviderTaskPanel(props: {
   const onStopTask = props.onStopTask;
   const canStop = (task: ProviderTask) =>
     onStopTask !== undefined && canStopProviderTask({ task, driverKind });
-  const [requestedPage, setRequestedPage] = useState(0);
-  // Compact layouts stack this under everything else in the panel, where 45%
-  // of the height leaves a plan or artifact list as a sliver. Folded, it is a
-  // header row that still carries the counts, so running work is never hidden
-  // without saying so.
-  const usesCompactLayout = useMediaQuery({ pointer: "coarse" });
   const [collapsedOverride, setCollapsedOverride] = useState<boolean | null>(null);
   // Remembered per thread, and collapsed until this thread says otherwise —
   // the local override alone was forgotten on every remount, so a reader who
   // folded it away got it back on the next visit. Threadless callers (the
-  // markup test, any surface with no thread bound) keep the old behaviour.
+  // markup test, any surface with no thread bound) keep an ephemeral override.
   const threadKey = props.threadKey ?? null;
   const persistedExpanded = useUiStateStore((state) =>
     threadKey === null
@@ -103,10 +90,7 @@ export function ProviderTaskPanel(props: {
       : state.threadPanelExpandedById[threadKey]?.[THREAD_PANEL_AGENTS_TASKS],
   );
   const setThreadPanelExpanded = useUiStateStore((state) => state.setThreadPanelExpanded);
-  const collapsed =
-    threadKey === null
-      ? (collapsedOverride ?? shouldCollapseProviderTaskPanelByDefault({ usesCompactLayout }))
-      : persistedExpanded !== true;
+  const collapsed = threadKey === null ? (collapsedOverride ?? false) : persistedExpanded !== true;
   const setCollapsed = (next: boolean) => {
     if (threadKey === null) {
       setCollapsedOverride(next);
@@ -114,39 +98,37 @@ export function ProviderTaskPanel(props: {
     }
     setThreadPanelExpanded(threadKey, THREAD_PANEL_AGENTS_TASKS, !next);
   };
-  // Clamped inside the helper, so the list ageing out from under a held page
-  // index shows the last page rather than nothing.
-  const { items, page, pageCount, total } = pageProviderTasks(props.tasks, requestedPage);
 
   return (
     <section
-      aria-label="Agents and tasks"
+      aria-label="Background tasks"
+      data-provider-task-placement="composer"
       className={cn(
-        "flex min-h-0 shrink-0 flex-col overflow-hidden border-t border-border/70 bg-background",
-        collapsed ? "max-h-none" : "max-h-[45%]",
-        props.highlighted && "ring-2 ring-primary/60 ring-inset transition-shadow",
+        "mx-auto mt-1 flex min-h-0 w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] shrink-0 flex-col-reverse overflow-hidden rounded-xl border border-border/70 bg-background/95 shadow-sm backdrop-blur",
+        collapsed ? "max-h-none" : "max-h-[min(38dvh,22rem)]",
       )}
     >
-      {/* Styled to read as a sibling of the Artifacts shelf directly above it:
-          same row height, muted label, and count pill. */}
-      <header className="relative flex min-h-11 shrink-0 items-center gap-2 px-3">
+      <header className="relative flex min-h-9 shrink-0 items-center gap-2 bg-muted/20 px-3">
         <button
           type="button"
           aria-expanded={!collapsed}
-          aria-label={collapsed ? "Expand agents and tasks" : "Collapse agents and tasks"}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} background tasks`}
           onClick={() => setCollapsed(!collapsed)}
-          className="peer absolute inset-0 cursor-pointer text-left text-xs font-medium text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          className="peer absolute inset-0 cursor-pointer text-left text-xs font-medium text-muted-foreground hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         />
         <div className="pointer-events-none z-10 flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium text-muted-foreground peer-hover:text-foreground peer-focus-visible:text-foreground">
           <ChevronDown
             aria-hidden
-            className={cn("size-3.5 shrink-0 transition-transform", collapsed && "-rotate-90")}
+            className={cn("size-3.5 shrink-0 transition-transform", collapsed && "rotate-180")}
           />
           {activeCount > 0 ? (
-            <LoaderCircle aria-hidden className="size-3.5 shrink-0 animate-spin" />
+            <span
+              aria-hidden
+              className="size-2 shrink-0 rounded-full bg-sky-500 ring-2 ring-sky-500/15"
+            />
           ) : null}
           <h2 className="truncate">
-            {activeCount > 0 ? `Agents & tasks · ${activeCount} running` : "Agents & tasks"}
+            {activeCount > 0 ? `Background tasks · ${activeCount} running` : "Background tasks"}
           </h2>
         </div>
         <div className="z-10 flex shrink-0 items-center gap-1.5">
@@ -166,15 +148,15 @@ export function ProviderTaskPanel(props: {
             </button>
           ) : null}
           <span className="pointer-events-none rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground tabular-nums peer-hover:text-foreground peer-focus-visible:text-foreground">
-            {total}
+            {props.tasks.length}
           </span>
         </div>
       </header>
 
       {collapsed ? null : (
-        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
-          {items.map((task) => (
-            <li className="rounded-md border bg-background/70 p-2" key={task.taskId}>
+        <ul className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain border-b border-border/60 p-2">
+          {props.tasks.map((task) => (
+            <li className="rounded-lg border border-border/60 bg-card/60 p-2" key={task.taskId}>
               <div className="flex items-start gap-2">
                 <TaskStatusIcon task={task} />
                 <div className="min-w-0 flex-1">
@@ -184,7 +166,7 @@ export function ProviderTaskPanel(props: {
                     {task.toolUses !== null ? ` · ${task.toolUses} tool uses` : ""}
                   </p>
                   {task.summary && task.summary !== task.title ? (
-                    <p className="mt-1 line-clamp-3 text-[11px] text-muted-foreground">
+                    <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
                       {task.summary}
                     </p>
                   ) : null}
@@ -228,40 +210,6 @@ export function ProviderTaskPanel(props: {
             </li>
           ))}
         </ul>
-      )}
-
-      {collapsed || pageCount <= 1 ? null : (
-        <nav
-          aria-label="Task pages"
-          className="flex shrink-0 items-center justify-between gap-2 border-t px-3 py-2"
-        >
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            {page * PROVIDER_TASK_PAGE_SIZE + 1}–{page * PROVIDER_TASK_PAGE_SIZE + items.length} of{" "}
-            {total}
-          </span>
-          <div className="flex items-center gap-1">
-            <Button
-              aria-label="Previous page"
-              className="size-7"
-              disabled={page === 0}
-              onClick={() => setRequestedPage(page - 1)}
-              size="icon"
-              variant="ghost"
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              aria-label="Next page"
-              className="size-7"
-              disabled={page >= pageCount - 1}
-              onClick={() => setRequestedPage(page + 1)}
-              size="icon"
-              variant="ghost"
-            >
-              <ChevronRight />
-            </Button>
-          </div>
-        </nav>
       )}
     </section>
   );

@@ -47,6 +47,7 @@ interface ComposerPrimaryActionsProps {
   settingsUpdateLabel?: string | null;
   isApplyingSettings?: boolean;
   isInterrupting?: boolean;
+  hasQueuedSendNow?: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart?: () => void;
   onPushToTalkStop?: () => void;
@@ -147,6 +148,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   settingsUpdateLabel = null,
   isApplyingSettings = false,
   isInterrupting = false,
+  hasQueuedSendNow = false,
   preserveComposerFocusOnPointerDown = false,
   onPushToTalkStart = noop,
   onPushToTalkStop = noop,
@@ -477,7 +479,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                     ? "Preparing worktree"
                     : isSendBusy
                       ? "Sending"
-                      : "Send message"
+                      : hasQueuedSendNow
+                        ? "Send all queued messages now"
+                        : "Send message"
         }
       >
         {stageBackdropVariant ? (

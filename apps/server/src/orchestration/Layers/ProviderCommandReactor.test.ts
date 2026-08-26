@@ -385,6 +385,9 @@ describe("ProviderCommandReactor", () => {
       readonly taskId: RuntimeTaskId;
     }) => Effect.Effect<void>;
     readonly interruptTurnEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+    readonly promoteQueuedTurnEffect?: (input: {
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<ReadonlyArray<MessageId>>;
     readonly stopSessionEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     readonly startSessionEffect?: (
       session: ProviderSession,
@@ -474,6 +477,13 @@ describe("ProviderCommandReactor", () => {
     const interruptTurn = vi.fn((rawInput: unknown) => {
       const interruptInput = rawInput as { readonly threadId: ThreadId };
       return input?.interruptTurnEffect?.(interruptInput) ?? Effect.void;
+    });
+    const promoteQueuedTurn = vi.fn((rawInput: unknown) => {
+      const promoteInput = rawInput as { readonly threadId: ThreadId };
+      return (
+        input?.promoteQueuedTurnEffect?.(promoteInput) ??
+        Effect.succeed([asMessageId("queued-grok-message-1"), asMessageId("queued-grok-message-2")])
+      );
     });
     const stopTask = vi.fn((rawInput: unknown) => {
       const stopInput = rawInput as {
@@ -583,6 +593,7 @@ describe("ProviderCommandReactor", () => {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
+      promoteQueuedTurn,
       stopTask: stopTask as ProviderServiceShape["stopTask"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
@@ -752,6 +763,7 @@ describe("ProviderCommandReactor", () => {
       startSession,
       sendTurn,
       interruptTurn,
+      promoteQueuedTurn,
       stopTask,
       respondToRequest,
       respondToUserInput,
@@ -4784,6 +4796,54 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("promotes the queued Grok batch and records the durable cutoff", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-grok-queue"),
+        threadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.promoteQueuedTurn.mock.calls.length === 1);
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({ threadId });
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promoted",
+        summary: "Queued messages sent now",
+        createdAt: "2026-01-01T00:00:05.000Z",
+        payload: {
+          messageIds: ["queued-grok-message-1", "queued-grok-message-2"],
+        },
+      }),
+    );
+  });
+
   it("releases the thread on interrupt even when the provider session cannot be stopped", async () => {
     // Observed 2026-08-06: a usage-limited Codex session pinned a thread in
     // `running` for three hours. Stop is authoritative over T3's own state and
@@ -5022,6 +5082,61 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.interruptTurn.mock.calls.length === 1, 2_000);
     expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId });
     expect(harness.stopTask.mock.calls.length).toBe(1);
+
+    await Effect.runPromise(Deferred.succeed(releaseTaskStop, undefined));
+    await harness.drain();
+  });
+
+  it("does not queue Grok send-now behind blocked ordinary provider work", async () => {
+    const taskStopStarted = await Effect.runPromise(Deferred.make<void>());
+    const releaseTaskStop = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      stopTaskEffect: () =>
+        Deferred.succeed(taskStopStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseTaskStop)),
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-promote-control-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-control"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.task.stop",
+        commandId: CommandId.make("cmd-promote-control-blocker"),
+        threadId,
+        taskId: RuntimeTaskId.make("task-blocking-normal-lane"),
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(Deferred.await(taskStopStarted).pipe(Effect.timeout("2 seconds")));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-control-send-now"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.promoteQueuedTurn.mock.calls.length === 1, 2_000);
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({ threadId });
 
     await Effect.runPromise(Deferred.succeed(releaseTaskStop, undefined));
     await harness.drain();

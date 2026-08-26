@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   expandDeliveredMessageIds,
   deriveDeliveredMessageIds,
+  derivePromotedQueuedMessageIds,
   messageDeliveryLabel,
   messageDeliveryState,
   shouldShowDeliveryIndicator,
@@ -59,6 +60,27 @@ describe("deriveDeliveredMessageIds", () => {
   });
 });
 
+describe("derivePromotedQueuedMessageIds", () => {
+  it("collects every exact message id from durable send-now receipts", () => {
+    expect([
+      ...derivePromotedQueuedMessageIds([
+        activity("provider.queue.promoted", { messageIds: ["older", "newer"] }),
+        activity("task.started", {}),
+        activity("provider.queue.promoted", { messageIds: ["newest"] }),
+      ]),
+    ]).toEqual(["older", "newer", "newest"]);
+  });
+
+  it("ignores malformed queue promotion payloads", () => {
+    expect(
+      derivePromotedQueuedMessageIds([
+        activity("provider.queue.promoted", {}),
+        activity("provider.queue.promoted", { messageIds: [null, 42, ""] }),
+      ]).size,
+    ).toBe(0);
+  });
+});
+
 describe("messageDeliveryState", () => {
   it("is pending while the row is only a local echo", () => {
     expect(messageDeliveryState({ isOptimistic: true, isDelivered: false })).toBe("pending");
@@ -69,7 +91,7 @@ describe("messageDeliveryState", () => {
     expect(messageDeliveryState({ isOptimistic: false, isDelivered: false })).toBe("sent");
   });
 
-  it("is read once the provider reports consuming it", () => {
+  it("is read once the provider reports accepting it", () => {
     expect(messageDeliveryState({ isOptimistic: false, isDelivered: true })).toBe("read");
   });
 

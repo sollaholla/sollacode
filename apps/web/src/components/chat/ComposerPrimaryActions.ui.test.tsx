@@ -100,6 +100,18 @@ describe("composer push-to-talk action", () => {
     expect(markup).not.toContain('disabled=""');
   });
 
+  it("offers one send-now action for the complete Grok queue", () => {
+    const markup = renderActions({
+      isRunning: true,
+      hasQueuedSendNow: true,
+      sendWhileRunning: true,
+    });
+
+    expect(markup).toContain('aria-label="Send all queued messages now"');
+    expect(markup).not.toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('disabled=""');
+  });
+
   it("shows the microphone beside a pending plan-question action", () => {
     const markup = renderActions({
       pendingAction: {

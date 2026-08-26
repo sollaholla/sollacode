@@ -13,6 +13,8 @@
  */
 import type {
   ProviderInterruptTurnInput,
+  MessageId,
+  ProviderPromoteQueuedTurnInput,
   ProviderStopTaskInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -58,6 +60,11 @@ export interface ProviderServiceShape {
   readonly interruptTurn: (
     input: ProviderInterruptTurnInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Promote a provider-native queued follow-up without cancelling its background work. */
+  readonly promoteQueuedTurn: (
+    input: ProviderPromoteQueuedTurnInput,
+  ) => Effect.Effect<ReadonlyArray<MessageId>, ProviderServiceError>;
 
   /**
    * Stop one background task or sub-agent by id without cancelling the turn.

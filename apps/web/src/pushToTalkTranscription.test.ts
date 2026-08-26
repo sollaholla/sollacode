@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   assembleTranscriptionText,
+  DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT,
+  LOCAL_TRANSCRIPTION_MODEL,
   LONG_FORM_TRANSCRIPTION_OPTIONS,
   mergeVoiceTranscriptPrompt,
   resolveVoiceTranscriptInputUpdate,
@@ -13,7 +15,23 @@ describe("long-form push-to-talk transcription", () => {
     expect(LONG_FORM_TRANSCRIPTION_OPTIONS).toEqual({
       chunk_length_s: 30,
       stride_length_s: 5,
+      language: "english",
+      task: "transcribe",
     });
+  });
+
+  it("uses the accurate distilled model rather than Whisper tiny", () => {
+    expect(LOCAL_TRANSCRIPTION_MODEL).toEqual({
+      id: "onnx-community/distil-small.en",
+      revision: "69be759f982d1d4c5b8a987d4140752742619bd0",
+      dtype: "q4",
+    });
+  });
+
+  it("biases native dictation toward coding product names", () => {
+    expect(DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT).toContain("Solla Code");
+    expect(DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT).toContain("TypeScript");
+    expect(DEFAULT_NATIVE_TRANSCRIPTION_CONTEXT.length).toBeLessThanOrEqual(100);
   });
 
   it("preserves every returned transcription segment", () => {

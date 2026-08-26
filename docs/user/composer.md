@@ -78,3 +78,14 @@ The composer footer has three responsive layouts. Wide composers show icons and 
 widths keep every control directly available as an icon-only button with its accessible name and
 tooltip. Only extremely narrow composers move secondary controls into the three-dot menu. The
 provider/model icon remains directly available in both compact layouts.
+
+## Send queued Grok messages now
+
+Pressing Enter while Grok is already working adds the message to Grok's native prompt queue without
+stopping the active turn or its background commands. Once Grok acknowledges that queue entry, the
+empty composer shows a blue **Send all queued messages now** action. Press Enter again, or choose the
+action, to promote every waiting message in send order. This is distinct from the red **Stop** action:
+it preserves the current session and background work.
+
+After the batch is promoted the action disappears. It returns only when a newer message enters the
+queue, including after a reload or reconnect.
