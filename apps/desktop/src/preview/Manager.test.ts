@@ -925,6 +925,10 @@ describe("PreviewManager", () => {
         const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
 
         expect(capturePage).toHaveBeenCalledOnce();
+        expect(capturePage).toHaveBeenLastCalledWith(undefined, {
+          stayHidden: true,
+          stayAwake: true,
+        });
         expect(snapshot.screenshot).toEqual({
           mimeType: "image/png",
           data: debuggerPng,
