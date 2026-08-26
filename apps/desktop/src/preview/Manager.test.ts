@@ -903,6 +903,7 @@ describe("PreviewManager", () => {
 
           yield* manager.createTab("tab_hidden_snapshot");
           yield* manager.registerWebview("tab_hidden_snapshot", 42);
+          yield* manager.setUiActivity("tab_hidden_snapshot", "test", true);
           const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
 
           expect(capturePage).toHaveBeenCalledOnce();
@@ -920,8 +921,10 @@ describe("PreviewManager", () => {
             clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
           });
 
+          yield* manager.setUiActivity("tab_hidden_snapshot", "test", false);
           debuggerScreenshotAvailable = false;
           const semanticOnlySnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+          expect(capturePage).toHaveBeenCalledOnce();
           expect(semanticOnlySnapshot).toMatchObject({
             visibleText: "Example",
             screenshot: {
@@ -932,6 +935,76 @@ describe("PreviewManager", () => {
           });
         }),
       ),
+  );
+
+  effectIt.effect("bounds a visible native capture that never settles", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const debuggerPng = Buffer.from("debugger-timeout-snapshot").toString("base64");
+        const capturePage = vi.fn(() => new Promise<never>(() => {}));
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: {
+                  url: "https://example.com",
+                  title: "Example",
+                  loading: false,
+                  visibleText: "Example",
+                  viewportWidth: 800,
+                  viewportHeight: 600,
+                  interactiveElements: [],
+                },
+              },
+            };
+          }
+          if (method === "Page.captureScreenshot") return { data: debuggerPng };
+          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+          return {};
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          capturePage,
+        } as never);
+
+        yield* manager.createTab("tab_snapshot_timeout");
+        yield* manager.registerWebview("tab_snapshot_timeout", 42);
+        yield* manager.setUiActivity("tab_snapshot_timeout", "test", true);
+
+        const snapshot = yield* manager.automationSnapshot("tab_snapshot_timeout");
+
+        expect(capturePage).toHaveBeenCalledOnce();
+        expect(snapshot.visibleText).toBe("Example");
+        expect(snapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: debuggerPng,
+          width: 800,
+          height: 600,
+        });
+      }),
+    ),
   );
 
   effectIt.effect("re-resolves a snapshot after navigation destroys its JavaScript context", () =>
@@ -993,6 +1066,7 @@ describe("PreviewManager", () => {
 
         yield* manager.createTab("tab_navigation_snapshot");
         yield* manager.registerWebview("tab_navigation_snapshot", 42);
+        yield* manager.setUiActivity("tab_navigation_snapshot", "test", true);
         const fiber = yield* manager
           .automationSnapshot("tab_navigation_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));

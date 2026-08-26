@@ -114,6 +114,7 @@ const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
+const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
 const EMPTY_AUTOMATION_SCREENSHOT = {
   mimeType: "image/png" as const,
   data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -545,6 +546,33 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     Effect.tryPromise({
       try: evaluate,
       catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
+    });
+  const attemptPromiseWithin = <A>(
+    errorContext: PreviewOperationContext,
+    evaluate: () => PromiseLike<A>,
+    timeoutMs: number,
+  ) =>
+    attemptPromise(errorContext, () => {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      return new Promise<A>((resolve, reject) => {
+        const onTimeout = () => reject(timeout.reason);
+        timeout.addEventListener("abort", onTimeout, { once: true });
+        try {
+          Promise.resolve(evaluate()).then(
+            (value) => {
+              timeout.removeEventListener("abort", onTimeout);
+              resolve(value);
+            },
+            (cause) => {
+              timeout.removeEventListener("abort", onTimeout);
+              reject(cause);
+            },
+          );
+        } catch (cause) {
+          timeout.removeEventListener("abort", onTimeout);
+          reject(cause);
+        }
+      });
     });
   const currentIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const currentMillis = Clock.currentTimeMillis;
@@ -2713,7 +2741,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   const captureAutomationSnapshot = Effect.fn("PreviewManager.captureAutomationSnapshot")(
-    function* (tabId: string, wc: Electron.WebContents, send: SendCommand) {
+    function* (tabId: string, wc: Electron.WebContents) {
+      const send: SendCommand = (method, commandParams) =>
+        attemptPromiseWithin(
+          {
+            operation: `automationSnapshot.${method}`,
+            tabId,
+            webContentsId: wc.id,
+          },
+          () => wc.debugger.sendCommand(method, commandParams),
+          AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
+        );
       yield* Effect.all([send("Runtime.enable"), send("Accessibility.enable")], {
         concurrency: 2,
         discard: true,
@@ -2784,39 +2822,49 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         })()`,
         true,
       );
-      const nativeScreenshot = attemptPromise(
-        {
-          operation: "automationSnapshot.capturePage",
-          tabId,
-          webContentsId: wc.id,
-        },
-        () => wc.capturePage(),
-      ).pipe(
-        Effect.flatMap((sourceImage) => {
-          const sourceSize = sourceImage.getSize();
-          if (sourceSize.width <= 0 || sourceSize.height <= 0) {
-            return Effect.fail(
-              new PreviewOperationError({
-                operation: "automationSnapshot.capturePage",
-                tabId,
-                webContentsId: wc.id,
-                cause: new Error("Chromium returned an empty preview frame."),
-              }),
-            );
-          }
-          const image =
-            sourceSize.width > MAX_SCREENSHOT_WIDTH
-              ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
-              : sourceImage;
-          const size = image.getSize();
-          return Effect.succeed({
-            mimeType: "image/png" as const,
-            data: image.toPNG().toString("base64"),
-            width: size.width,
-            height: size.height,
-          });
-        }),
-      );
+      const nativeScreenshot = activityLeases.has(tabId, PreviewActivityConsumer.Ui)
+        ? attemptPromiseWithin(
+            {
+              operation: "automationSnapshot.capturePage",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () => wc.capturePage(),
+            AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
+          ).pipe(
+            Effect.flatMap((sourceImage) => {
+              const sourceSize = sourceImage.getSize();
+              if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+                return Effect.fail(
+                  new PreviewOperationError({
+                    operation: "automationSnapshot.capturePage",
+                    tabId,
+                    webContentsId: wc.id,
+                    cause: new Error("Chromium returned an empty preview frame."),
+                  }),
+                );
+              }
+              const image =
+                sourceSize.width > MAX_SCREENSHOT_WIDTH
+                  ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+                  : sourceImage;
+              const size = image.getSize();
+              return Effect.succeed({
+                mimeType: "image/png" as const,
+                data: image.toPNG().toString("base64"),
+                width: size.width,
+                height: size.height,
+              });
+            }),
+          )
+        : Effect.fail(
+            new PreviewOperationError({
+              operation: "automationSnapshot.capturePage",
+              tabId,
+              webContentsId: wc.id,
+              cause: new Error("The preview has no visible compositor surface."),
+            }),
+          );
       const debuggerScreenshotScale =
         page.viewportWidth > MAX_SCREENSHOT_WIDTH ? MAX_SCREENSHOT_WIDTH / page.viewportWidth : 1;
       const captureDebuggerScreenshot = (fromSurface: boolean) =>
@@ -2878,7 +2926,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ),
       );
       const [accessibility, diagnostics, timelines] = yield* Effect.all([
-        send("Accessibility.getFullAXTree"),
+        send("Accessibility.getFullAXTree").pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "Preview accessibility capture was unavailable; returning the DOM snapshot.",
+              { tabId, cause },
+            ).pipe(Effect.as({ nodes: [] })),
+          ),
+        ),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
       ]);
@@ -2908,8 +2963,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // so retry the whole operation and resolve WebContents again instead of
       // retrying capturePage alone against a stale guest.
       const wc = yield* requireWebContents(tabId);
-      return yield* withControlSession(tabId, wc, "snapshot", (send) =>
-        captureAutomationSnapshot(tabId, wc, send),
+      return yield* withControlSession(tabId, wc, "snapshot", () =>
+        captureAutomationSnapshot(tabId, wc),
       );
     }).pipe(
       Effect.retry({
