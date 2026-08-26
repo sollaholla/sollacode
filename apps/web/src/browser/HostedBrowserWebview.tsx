@@ -89,8 +89,9 @@ export function HostedBrowserWebview(props: {
       };
     }),
   );
-  usePreviewBridge({ threadRef, tabId, runtimeTabId });
+  const snapshotStageId = usePreviewBridge({ threadRef, tabId, runtimeTabId });
   const active = presentation.visible && presentation.rect !== null;
+  const snapshotStaged = snapshotStageId !== null && !active;
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document !== "undefined" && document.visibilityState !== "hidden",
   );
@@ -205,6 +206,28 @@ export function HostedBrowserWebview(props: {
     };
   }, [active, runtimeTabId]);
 
+  useLayoutEffect(() => {
+    const bridge = previewBridge;
+    if (!bridge || snapshotStageId === null || active) return;
+    const leaseId = `snapshot-stage:${snapshotStageId}`;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let leaseRequested = false;
+    firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        leaseRequested = true;
+        void bridge.setUiActivity(runtimeTabId, leaseId, true).catch(() => undefined);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      if (leaseRequested) {
+        void bridge.setUiActivity(runtimeTabId, leaseId, false).catch(() => undefined);
+      }
+    };
+  }, [active, runtimeTabId, snapshotStageId]);
+
   const normalizedZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
   const viewportWidth = viewport._tag === "fill" ? null : viewport.width;
   const viewportHeight = viewport._tag === "fill" ? null : viewport.height;
@@ -290,6 +313,7 @@ export function HostedBrowserWebview(props: {
 
   const wrapperStyle = resolveHostedBrowserWebviewWrapperStyle({
     active,
+    snapshotStaged,
     cornerRadius: presentation.cornerRadius,
     rect: lastRect,
     hiddenSize,

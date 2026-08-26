@@ -80,6 +80,7 @@ export type PreviewNavStatus =
 export interface PreviewTabState {
   tabId: string;
   webContentsId: number | null;
+  snapshotStageId: string | null;
   navStatus: PreviewNavStatus;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -115,12 +116,7 @@ const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
-const EMPTY_AUTOMATION_SCREENSHOT = {
-  mimeType: "image/png" as const,
-  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-  width: 1,
-  height: 1,
-};
+const AUTOMATION_SNAPSHOT_STAGE_TIMEOUT = "1 second";
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
@@ -510,6 +506,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
   >(new Map());
+  const snapshotStageRequestsRef = yield* Ref.make<
+    ReadonlyMap<
+      string,
+      {
+        readonly tabId: string;
+        readonly ready: Deferred.Deferred<void>;
+      }
+    >
+  >(new Map());
+  const snapshotStageSequenceRef = yield* Ref.make(0);
   const activityLeases = new PreviewActivityLeases();
   const recordActivityLeaseMetrics = Effect.fn("PreviewManager.recordActivityLeaseMetrics")(
     function* () {
@@ -1531,6 +1537,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const initial: PreviewTabState = {
           tabId,
           webContentsId: null,
+          snapshotStageId: null,
           navStatus: { kind: "Idle" },
           canGoBack: false,
           canGoForward: false,
@@ -1600,6 +1607,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const closed: PreviewTabState = {
       ...closedTab,
       webContentsId: null,
+      snapshotStageId: null,
       navStatus: { kind: "Idle" },
       canGoBack: false,
       canGoForward: false,
@@ -1787,10 +1795,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const stableLeaseId = `ui:${leaseId}`;
     if (active) {
-      if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) {
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (!tab) {
         return yield* new PreviewTabNotFoundError({ tabId });
       }
       activityLeases.acquire(tabId, stableLeaseId, PreviewActivityConsumer.Ui);
+      const stageId = tab.snapshotStageId;
+      if (stageId !== null && leaseId === `snapshot-stage:${stageId}`) {
+        const request = (yield* Ref.get(snapshotStageRequestsRef)).get(stageId);
+        if (request?.tabId === tabId) {
+          yield* Deferred.succeed(request.ready, undefined);
+        }
+      }
     } else {
       activityLeases.release(tabId, stableLeaseId);
     }
@@ -1807,6 +1823,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const next: PreviewTabState = {
         tabId,
         webContentsId: current?.webContentsId ?? null,
+        snapshotStageId: current?.snapshotStageId ?? null,
         navStatus: {
           kind: "Loading",
           url,
@@ -2916,11 +2933,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 { tabId, nativeCause },
               ),
             ),
-            Effect.catch((debuggerCause) =>
+            Effect.tapError((debuggerCause) =>
               Effect.logWarning(
-                "Preview screenshot capture was unavailable; returning the semantic snapshot.",
+                "Preview screenshot capture was unavailable after background staging.",
                 { tabId, nativeCause, debuggerCause },
-              ).pipe(Effect.as(EMPTY_AUTOMATION_SCREENSHOT)),
+              ),
             ),
           ),
         ),
@@ -2954,6 +2971,57 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     },
   );
 
+  const withSnapshotSurface = <A, E, R>(
+    tabId: string,
+    wc: Electron.WebContents,
+    capture: () => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | PreviewOperationError, R> =>
+    Effect.gen(function* () {
+      if (activityLeases.has(tabId, PreviewActivityConsumer.Ui)) {
+        return yield* capture();
+      }
+
+      const sequence = yield* nextCounter(snapshotStageSequenceRef);
+      const stageId = `${wc.id}:${sequence}`;
+      const ready = yield* Deferred.make<void>();
+      yield* Ref.update(snapshotStageRequestsRef, (requests) =>
+        replaceMap(requests, (copy) => {
+          copy.set(stageId, { tabId, ready });
+        }),
+      );
+
+      const cleanup = Effect.gen(function* () {
+        activityLeases.release(tabId, `ui:snapshot-stage:${stageId}`);
+        yield* recordActivityLeaseMetrics();
+        yield* Ref.update(snapshotStageRequestsRef, (requests) =>
+          replaceMap(requests, (copy) => {
+            copy.delete(stageId);
+          }),
+        );
+        const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        if (current?.snapshotStageId === stageId) {
+          yield* update(tabId, { snapshotStageId: null });
+        }
+      });
+
+      return yield* Effect.gen(function* () {
+        yield* update(tabId, { snapshotStageId: stageId });
+        yield* Deferred.await(ready).pipe(
+          Effect.timeout(AUTOMATION_SNAPSHOT_STAGE_TIMEOUT),
+          Effect.mapError(
+            (cause) =>
+              new PreviewOperationError({
+                operation: "automationSnapshot.stageBackgroundTab",
+                tabId,
+                webContentsId: wc.id,
+                cause,
+              }),
+          ),
+        );
+        return yield* capture();
+      }).pipe(Effect.ensuring(cleanup));
+    });
+
   const automationSnapshot = Effect.fn("PreviewManager.automationSnapshot")(function* (
     tabId: string,
   ) {
@@ -2964,7 +3032,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // retrying capturePage alone against a stale guest.
       const wc = yield* requireWebContents(tabId);
       return yield* withControlSession(tabId, wc, "snapshot", () =>
-        captureAutomationSnapshot(tabId, wc),
+        withSnapshotSurface(tabId, wc, () => captureAutomationSnapshot(tabId, wc)),
       );
     }).pipe(
       Effect.retry({
