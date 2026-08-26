@@ -118,6 +118,8 @@ const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
 const AUTOMATION_SNAPSHOT_STAGE_TIMEOUT = "1 second";
 const AUTOMATION_SNAPSHOT_SCREENCAST_TIMEOUT = "2 seconds";
+const AUTOMATION_SNAPSHOT_MIRROR_LOAD_TIMEOUT_MS = 15_000;
+const AUTOMATION_SNAPSHOT_MIRROR_FRAME_TIMEOUT = "5 seconds";
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
@@ -2999,20 +3001,129 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }).pipe(Effect.ensuring(cleanup));
         },
       );
+      const captureOffscreenMirror = Effect.fn("PreviewManager.captureOffscreenMirror")(
+        function* () {
+          const width = Math.max(1, Math.round(page.viewportWidth));
+          const height = Math.max(1, Math.round(page.viewportHeight));
+          const mirrorWindow = yield* attempt(
+            {
+              operation: "automationSnapshot.offscreenMirror.create",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () =>
+              new BrowserWindow({
+                width,
+                height,
+                show: false,
+                frame: false,
+                skipTaskbar: true,
+                paintWhenInitiallyHidden: true,
+                webPreferences: {
+                  // Reuse the exact preview StoragePartition so the hidden
+                  // renderer has the tab's cookies, logins, cache, and origin
+                  // storage without copying credentials or creating a second
+                  // browser profile.
+                  session: wc.session,
+                  offscreen: true,
+                  backgroundThrottling: false,
+                  contextIsolation: true,
+                  nodeIntegration: false,
+                  sandbox: true,
+                },
+              }),
+          );
+          const mirror = mirrorWindow.webContents;
+          const frameReady = yield* Deferred.make<Electron.NativeImage>();
+          let acceptFrame = false;
+          const onPaint = (
+            _event: Electron.Event<Electron.WebContentsPaintEventParams>,
+            _dirtyRect: Electron.Rectangle,
+            image: Electron.NativeImage,
+          ): void => {
+            if (!acceptFrame) return;
+            const size = image.getSize();
+            if (size.width <= 0 || size.height <= 0) return;
+            runFork(Deferred.succeed(frameReady, image));
+          };
+          const cleanup = Effect.sync(() => {
+            if (!mirror.isDestroyed()) {
+              mirror.off("paint", onPaint);
+              mirror.stopPainting();
+            }
+            if (!mirrorWindow.isDestroyed()) mirrorWindow.destroy();
+          });
+          return yield* Effect.gen(function* () {
+            yield* attempt(
+              {
+                operation: "automationSnapshot.offscreenMirror.configure",
+                tabId,
+                webContentsId: wc.id,
+              },
+              () => {
+                // Muting happens before navigation, so autoplay can never leak
+                // from a snapshot renderer. The window is never shown and all
+                // popup attempts are denied.
+                mirror.setAudioMuted(true);
+                mirror.setWindowOpenHandler(() => ({ action: "deny" }));
+                mirror.setFrameRate(30);
+                mirror.on("paint", onPaint);
+                mirror.startPainting();
+              },
+            );
+            yield* attemptPromiseWithin(
+              {
+                operation: "automationSnapshot.offscreenMirror.loadURL",
+                tabId,
+                webContentsId: wc.id,
+              },
+              () => mirror.loadURL(page.url),
+              AUTOMATION_SNAPSHOT_MIRROR_LOAD_TIMEOUT_MS,
+            );
+            acceptFrame = true;
+            mirror.invalidate();
+            const sourceImage = yield* Deferred.await(frameReady).pipe(
+              Effect.timeout(AUTOMATION_SNAPSHOT_MIRROR_FRAME_TIMEOUT),
+              Effect.mapError(
+                (cause) =>
+                  new PreviewOperationError({
+                    operation: "automationSnapshot.offscreenMirror.paint",
+                    tabId,
+                    webContentsId: wc.id,
+                    cause,
+                  }),
+              ),
+            );
+            const sourceSize = sourceImage.getSize();
+            const image =
+              sourceSize.width > MAX_SCREENSHOT_WIDTH
+                ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+                : sourceImage;
+            const size = image.getSize();
+            return {
+              mimeType: "image/png" as const,
+              data: image.toPNG().toString("base64"),
+              width: size.width,
+              height: size.height,
+            };
+          }).pipe(Effect.ensuring(cleanup));
+        },
+      );
       const screenshot = yield* nativeScreenshot.pipe(
         Effect.catch((nativeCause) =>
           captureDebuggerScreenshot(true).pipe(
             Effect.catch(() => captureDebuggerScreenshot(false)),
             Effect.catch(() => captureDebuggerScreencast()),
+            Effect.catch(() => captureOffscreenMirror()),
             Effect.tap(() =>
               Effect.logWarning(
-                "Native preview capture was unavailable; a debugger frame succeeded.",
+                "Native preview capture was unavailable; a background fallback frame succeeded.",
                 { tabId, nativeCause },
               ),
             ),
             Effect.tapError((debuggerCause) =>
               Effect.logWarning(
-                "Preview screenshot capture was unavailable after background staging.",
+                "Preview screenshot capture was unavailable after all background fallbacks.",
                 { tabId, nativeCause, debuggerCause },
               ),
             ),

@@ -860,6 +860,7 @@ describe("PreviewManager", () => {
         });
         let debuggerScreenshotAvailable = true;
         let debuggerScreencastAvailable = false;
+        const previewSession = {};
         const debuggerMessages = new Set<
           (event: unknown, method: string, params: Record<string, unknown>) => void
         >();
@@ -907,6 +908,7 @@ describe("PreviewManager", () => {
           isDevToolsOpened: () => false,
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
+          session: previewSession,
           on: vi.fn(),
           off: vi.fn(),
           ipc: { on: vi.fn(), off: vi.fn() },
@@ -1007,6 +1009,90 @@ describe("PreviewManager", () => {
         expect(sendCommand).toHaveBeenCalledWith("Page.stopScreencast");
 
         debuggerScreencastAvailable = false;
+        const mirrorPng = Buffer.from("offscreen-mirror-snapshot");
+        const mirrorImage = {
+          getSize: () => ({ width: 800, height: 600 }),
+          resize: () => {
+            throw new Error("unexpected resize");
+          },
+          toPNG: () => mirrorPng,
+        };
+        let paintListener:
+          | ((event: unknown, dirtyRect: Electron.Rectangle, image: typeof mirrorImage) => void)
+          | undefined;
+        const mirrorWebContents = {
+          isDestroyed: vi.fn(() => false),
+          setAudioMuted: vi.fn(),
+          setWindowOpenHandler: vi.fn(),
+          setFrameRate: vi.fn(),
+          on: vi.fn(
+            (
+              event: string,
+              listener: (
+                event: unknown,
+                dirtyRect: Electron.Rectangle,
+                image: typeof mirrorImage,
+              ) => void,
+            ) => {
+              if (event === "paint") paintListener = listener;
+            },
+          ),
+          off: vi.fn(),
+          startPainting: vi.fn(),
+          stopPainting: vi.fn(),
+          loadURL: vi.fn(async () => undefined),
+          invalidate: vi.fn(() =>
+            paintListener?.({}, { x: 0, y: 0, width: 800, height: 600 }, mirrorImage),
+          ),
+        };
+        const mirrorWindow = {
+          webContents: mirrorWebContents,
+          isDestroyed: vi.fn(() => false),
+          destroy: vi.fn(),
+        };
+        browserWindowConstructor.mockImplementation(function () {
+          return mirrorWindow;
+        });
+        const mirrorSnapshotFiber = yield* manager
+          .automationSnapshot("tab_hidden_snapshot")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("3 seconds");
+        const mirrorSnapshot = yield* Fiber.join(mirrorSnapshotFiber);
+        expect(mirrorSnapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: mirrorPng.toString("base64"),
+          width: 800,
+          height: 600,
+        });
+        expect(browserWindowConstructor).toHaveBeenCalledWith({
+          width: 800,
+          height: 600,
+          show: false,
+          frame: false,
+          skipTaskbar: true,
+          paintWhenInitiallyHidden: true,
+          webPreferences: {
+            session: previewSession,
+            offscreen: true,
+            backgroundThrottling: false,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        });
+        expect(mirrorWebContents.setAudioMuted).toHaveBeenCalledWith(true);
+        expect(mirrorWebContents.setAudioMuted.mock.invocationCallOrder[0]).toBeLessThan(
+          mirrorWebContents.loadURL.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+        );
+        expect(mirrorWebContents.setWindowOpenHandler).toHaveBeenCalledOnce();
+        expect(mirrorWebContents.startPainting).toHaveBeenCalledOnce();
+        expect(mirrorWebContents.loadURL).toHaveBeenCalledWith("https://example.com");
+        expect(mirrorWebContents.invalidate).toHaveBeenCalledOnce();
+        expect(mirrorWebContents.stopPainting).toHaveBeenCalledOnce();
+        expect(mirrorWindow.destroy).toHaveBeenCalledOnce();
+
+        mirrorWebContents.loadURL.mockRejectedValue(new Error("mirror load failed"));
         const failedSnapshotFiber = yield* manager
           .automationSnapshot("tab_hidden_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));
@@ -1018,7 +1104,7 @@ describe("PreviewManager", () => {
         if (Exit.isFailure(failedSnapshot)) {
           expect(Option.getOrThrow(Cause.findErrorOption(failedSnapshot.cause))).toMatchObject({
             _tag: "PreviewOperationError",
-            operation: "automationSnapshot.Page.screencastFrame",
+            operation: "automationSnapshot.offscreenMirror.loadURL",
           });
         }
       }),
