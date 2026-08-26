@@ -881,6 +881,7 @@ describe("PreviewManager", () => {
           if (method === "Accessibility.getFullAXTree") return { nodes: [] };
           return {};
         });
+        const invalidate = vi.fn();
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -905,6 +906,7 @@ describe("PreviewManager", () => {
             on: vi.fn(),
             off: vi.fn(),
           },
+          invalidate,
           capturePage,
         } as never);
 
@@ -948,6 +950,7 @@ describe("PreviewManager", () => {
         nativeScreenshotAvailable = true;
         const stagedSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
         expect(capturePage).toHaveBeenCalledTimes(2);
+        expect(invalidate).toHaveBeenCalledOnce();
         expect(stagedSnapshot.screenshot).toEqual({
           mimeType: "image/png",
           data: stagedPng.toString("base64"),
