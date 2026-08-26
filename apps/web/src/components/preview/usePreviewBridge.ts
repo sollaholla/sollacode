@@ -6,7 +6,7 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { applyPreviewDesktopState, type DesktopPreviewOverlay } from "~/previewStateStore";
@@ -23,11 +23,12 @@ export function usePreviewBridge(input: {
   threadRef: ScopedThreadRef;
   tabId: string;
   runtimeTabId: string;
-}): void {
+}): string | null {
   const { threadRef, tabId, runtimeTabId } = input;
   const clearBrowserPointer = useBrowserPointerStore((state) => state.clear);
   const reportStatus = useAtomCommand(previewEnvironment.reportStatus, "preview status report");
   const bridge = previewBridge;
+  const [snapshotStageId, setSnapshotStageId] = useState<string | null>(null);
 
   // One bridge subscription does both jobs (mirror state + forward to
   // server) so the desktop bridge keeps a single listener entry per tab.
@@ -39,8 +40,10 @@ export function usePreviewBridge(input: {
     lastReportedUrl.current = null;
     lastReportedKind.current = null;
     lastDesktopNavStatus.current = null;
+    setSnapshotStageId(null);
     const unsubscribe = bridge.onStateChange((changedTabId, state) => {
       if (changedTabId !== runtimeTabId) return;
+      setSnapshotStageId(state.snapshotStageId);
       if (shouldClearBrowserPointer(lastDesktopNavStatus.current, state.navStatus)) {
         clearBrowserPointer(runtimeTabId);
       }
@@ -63,6 +66,7 @@ export function usePreviewBridge(input: {
     });
     return unsubscribe;
   }, [bridge, clearBrowserPointer, reportStatus, runtimeTabId, tabId, threadRef]);
+  return snapshotStageId;
 }
 
 function shouldClearBrowserPointer(

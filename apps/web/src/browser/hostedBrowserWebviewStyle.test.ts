@@ -58,6 +58,25 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     });
   });
 
+  it("silently stages an inactive webview on-window for a compositor snapshot", () => {
+    expect(
+      resolveHostedBrowserWebviewWrapperStyle({
+        active: false,
+        snapshotStaged: true,
+        rect: null,
+        hiddenSize: { width: 1280, height: 800 },
+      }),
+    ).toEqual({
+      left: 0,
+      top: 0,
+      width: 1280,
+      height: 800,
+      zIndex: -1,
+      pointerEvents: "none",
+      visibility: "visible",
+    });
+  });
+
   it("blocks guest input when the owner presents the surface non-interactively", () => {
     // The floating mini player presents the live guest as a thumbnail. Without
     // this the first click lands in the page instead of grabbing the window.

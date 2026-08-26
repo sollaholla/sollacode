@@ -842,99 +842,134 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect(
-    "keeps semantic snapshots available when hidden native capture has no surface",
-    () =>
-      withManager((manager) =>
-        Effect.gen(function* () {
-          const debuggerPng = Buffer.from("debugger-automation-snapshot").toString("base64");
-          const capturePage = vi.fn(async () => {
-            throw new Error("UnknownVizError");
-          });
-          let debuggerScreenshotAvailable = true;
-          const sendCommand = vi.fn(async (method: string) => {
-            if (method === "Runtime.evaluate") {
-              return {
-                result: {
-                  value: {
-                    url: "https://example.com",
-                    title: "Example",
-                    loading: false,
-                    visibleText: "Example",
-                    viewportWidth: 800,
-                    viewportHeight: 600,
-                    interactiveElements: [],
-                  },
+  effectIt.effect("stages a hidden tab until its compositor surface is ready", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const debuggerPng = Buffer.from("debugger-automation-snapshot").toString("base64");
+        const stagedPng = Buffer.from("staged-automation-snapshot");
+        let nativeScreenshotAvailable = false;
+        const capturePage = vi.fn(async () => {
+          if (!nativeScreenshotAvailable) throw new Error("UnknownVizError");
+          return {
+            getSize: () => ({ width: 800, height: 600 }),
+            resize: () => {
+              throw new Error("unexpected resize");
+            },
+            toPNG: () => stagedPng,
+          };
+        });
+        let debuggerScreenshotAvailable = true;
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: {
+                  url: "https://example.com",
+                  title: "Example",
+                  loading: false,
+                  visibleText: "Example",
+                  viewportWidth: 800,
+                  viewportHeight: 600,
+                  interactiveElements: [],
                 },
-              };
-            }
-            if (method === "Page.captureScreenshot") {
-              return debuggerScreenshotAvailable ? { data: debuggerPng } : {};
-            }
-            if (method === "Accessibility.getFullAXTree") return { nodes: [] };
-            return {};
-          });
-          fromId.mockReturnValue({
-            id: 42,
-            isDestroyed: () => false,
-            getType: () => "webview",
-            getURL: () => "https://example.com",
-            getTitle: () => "Example",
-            isLoading: () => false,
-            isDevToolsOpened: () => false,
-            getZoomFactor: () => 1,
-            setZoomFactor: vi.fn(),
+              },
+            };
+          }
+          if (method === "Page.captureScreenshot") {
+            return debuggerScreenshotAvailable ? { data: debuggerPng } : {};
+          }
+          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+          return {};
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
             on: vi.fn(),
             off: vi.fn(),
-            ipc: { on: vi.fn(), off: vi.fn() },
-            send: webviewSend,
-            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
-            setWindowOpenHandler: vi.fn(),
-            debugger: {
-              isAttached: () => false,
-              attach: vi.fn(),
-              detach: vi.fn(),
-              sendCommand,
-              on: vi.fn(),
-              off: vi.fn(),
-            },
-            capturePage,
-          } as never);
+          },
+          capturePage,
+        } as never);
 
-          yield* manager.createTab("tab_hidden_snapshot");
-          yield* manager.registerWebview("tab_hidden_snapshot", 42);
-          yield* manager.setUiActivity("tab_hidden_snapshot", "test", true);
-          const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        yield* manager.createTab("tab_hidden_snapshot");
+        yield* manager.registerWebview("tab_hidden_snapshot", 42);
+        const states: PreviewManager.PreviewTabState[] = [];
+        yield* manager.subscribeStateChanges((tabId, state) =>
+          Effect.gen(function* () {
+            states.push(state);
+            if (state.snapshotStageId !== null) {
+              yield* manager
+                .setUiActivity(tabId, `snapshot-stage:${state.snapshotStageId}`, true)
+                .pipe(Effect.orDie);
+            }
+          }),
+        );
+        yield* manager.setUiActivity("tab_hidden_snapshot", "test", true);
+        const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
 
-          expect(capturePage).toHaveBeenCalledOnce();
-          expect(snapshot.screenshot).toEqual({
-            mimeType: "image/png",
-            data: debuggerPng,
-            width: 800,
-            height: 600,
-          });
-          expect(snapshot.visibleText).toBe("Example");
-          expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
-            format: "png",
-            fromSurface: true,
-            captureBeyondViewport: false,
-            clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
-          });
+        expect(capturePage).toHaveBeenCalledOnce();
+        expect(snapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: debuggerPng,
+          width: 800,
+          height: 600,
+        });
+        expect(snapshot.visibleText).toBe("Example");
+        expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
+          format: "png",
+          fromSurface: true,
+          captureBeyondViewport: false,
+          clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
+        });
 
-          yield* manager.setUiActivity("tab_hidden_snapshot", "test", false);
-          debuggerScreenshotAvailable = false;
-          const semanticOnlySnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
-          expect(capturePage).toHaveBeenCalledOnce();
-          expect(semanticOnlySnapshot).toMatchObject({
-            visibleText: "Example",
-            screenshot: {
-              mimeType: "image/png",
-              width: 1,
-              height: 1,
-            },
+        yield* manager.setUiActivity("tab_hidden_snapshot", "test", false);
+        debuggerScreenshotAvailable = false;
+        nativeScreenshotAvailable = true;
+        const stagedSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(capturePage).toHaveBeenCalledTimes(2);
+        expect(stagedSnapshot.screenshot).toEqual({
+          mimeType: "image/png",
+          data: stagedPng.toString("base64"),
+          width: 800,
+          height: 600,
+        });
+        expect(states.some((state) => state.snapshotStageId !== null)).toBe(true);
+        expect(states.at(-1)?.snapshotStageId).toBeNull();
+
+        nativeScreenshotAvailable = false;
+        const failedSnapshotFiber = yield* manager
+          .automationSnapshot("tab_hidden_snapshot")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(100);
+        const failedSnapshot = yield* Fiber.await(failedSnapshotFiber);
+        expect(Exit.isFailure(failedSnapshot)).toBe(true);
+        expect(states.at(-1)?.snapshotStageId).toBeNull();
+        if (Exit.isFailure(failedSnapshot)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(failedSnapshot.cause))).toMatchObject({
+            _tag: "PreviewOperationError",
+            operation: "automationSnapshot.Page.captureScreenshot",
           });
-        }),
-      ),
+        }
+      }),
+    ),
   );
 
   effectIt.effect("bounds a visible native capture that never settles", () =>

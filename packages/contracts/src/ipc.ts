@@ -539,6 +539,11 @@ export const DesktopPreviewColorSchemeSchema: Schema.Codec<DesktopPreviewColorSc
 export interface DesktopPreviewTabState {
   tabId: string;
   webContentsId: number | null;
+  /**
+   * Transient main-process request for the renderer to give this guest an
+   * on-window compositor surface. Used only while capturing a background tab.
+   */
+  snapshotStageId: string | null;
   navStatus: DesktopPreviewNavStatus;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -590,6 +595,7 @@ export const DesktopPreviewNavStatusSchema = Schema.Union([
 export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   webContentsId: Schema.NullOr(Schema.Int),
+  snapshotStageId: Schema.NullOr(Schema.String),
   navStatus: DesktopPreviewNavStatusSchema,
   canGoBack: Schema.Boolean,
   canGoForward: Schema.Boolean,
