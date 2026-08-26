@@ -842,115 +842,96 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("retries bounded snapshot failures across the whole read operation", () =>
-    withManager((manager) =>
-      Effect.gen(function* () {
-        const png = Buffer.from("automation-snapshot");
-        const capturePage = vi.fn(async () => ({
-          getSize: () => ({ width: 800, height: 600 }),
-          toPNG: () => png,
-        }));
-        capturePage.mockRejectedValueOnce(new Error("UnknownVizError"));
-        const sendCommand = vi.fn(async (method: string) => {
-          if (method === "Runtime.evaluate") {
-            return {
-              result: {
-                value: {
-                  url: "https://example.com",
-                  title: "Example",
-                  loading: false,
-                  visibleText: "Example",
-                  interactiveElements: [],
+  effectIt.effect(
+    "keeps semantic snapshots available when hidden native capture has no surface",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const debuggerPng = Buffer.from("debugger-automation-snapshot").toString("base64");
+          const capturePage = vi.fn(async () => {
+            throw new Error("UnknownVizError");
+          });
+          let debuggerScreenshotAvailable = true;
+          const sendCommand = vi.fn(async (method: string) => {
+            if (method === "Runtime.evaluate") {
+              return {
+                result: {
+                  value: {
+                    url: "https://example.com",
+                    title: "Example",
+                    loading: false,
+                    visibleText: "Example",
+                    viewportWidth: 800,
+                    viewportHeight: 600,
+                    interactiveElements: [],
+                  },
                 },
-              },
-            };
-          }
-          if (method === "Accessibility.getFullAXTree") return { nodes: [] };
-          return {};
-        });
-        fromId.mockReturnValue({
-          id: 42,
-          isDestroyed: () => false,
-          getType: () => "webview",
-          getURL: () => "https://example.com",
-          getTitle: () => "Example",
-          isLoading: () => false,
-          isDevToolsOpened: () => false,
-          getZoomFactor: () => 1,
-          setZoomFactor: vi.fn(),
-          on: vi.fn(),
-          off: vi.fn(),
-          ipc: { on: vi.fn(), off: vi.fn() },
-          send: webviewSend,
-          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
-          setWindowOpenHandler: vi.fn(),
-          debugger: {
-            isAttached: () => false,
-            attach: vi.fn(),
-            detach: vi.fn(),
-            sendCommand,
+              };
+            }
+            if (method === "Page.captureScreenshot") {
+              return debuggerScreenshotAvailable ? { data: debuggerPng } : {};
+            }
+            if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+            return {};
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
             on: vi.fn(),
             off: vi.fn(),
-          },
-          capturePage,
-        } as never);
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+            capturePage,
+          } as never);
 
-        yield* manager.createTab("tab_hidden_snapshot");
-        yield* manager.registerWebview("tab_hidden_snapshot", 42);
-        const fiber = yield* manager
-          .automationSnapshot("tab_hidden_snapshot")
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
+          yield* manager.createTab("tab_hidden_snapshot");
+          yield* manager.registerWebview("tab_hidden_snapshot", 42);
+          const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
 
-        expect(capturePage).toHaveBeenCalledOnce();
-        yield* TestClock.adjust(50);
-        const snapshot = yield* Fiber.join(fiber);
+          expect(capturePage).toHaveBeenCalledOnce();
+          expect(snapshot.screenshot).toEqual({
+            mimeType: "image/png",
+            data: debuggerPng,
+            width: 800,
+            height: 600,
+          });
+          expect(snapshot.visibleText).toBe("Example");
+          expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
+            format: "png",
+            fromSurface: true,
+            captureBeyondViewport: false,
+            clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
+          });
 
-        expect(capturePage).toHaveBeenCalledTimes(2);
-        expect(snapshot.screenshot).toEqual({
-          mimeType: "image/png",
-          data: png.toString("base64"),
-          width: 800,
-          height: 600,
-        });
-
-        const permanentCause = new Error("UnknownVizError");
-        capturePage.mockRejectedValue(permanentCause);
-        const permanentFiber = yield* manager
-          .automationSnapshot("tab_hidden_snapshot")
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust(100);
-        const permanentExit = yield* Effect.exit(Fiber.join(permanentFiber));
-
-        expect(capturePage).toHaveBeenCalledTimes(5);
-        expect(Exit.isFailure(permanentExit)).toBe(true);
-        if (Exit.isSuccess(permanentExit)) return;
-        expect(Option.getOrThrow(Cause.findErrorOption(permanentExit.cause))).toMatchObject({
-          _tag: "PreviewOperationError",
-          operation: "automationSnapshot.capturePage",
-          cause: permanentCause,
-        });
-
-        const unrelatedCause = new Error("capture failed");
-        capturePage.mockRejectedValue(unrelatedCause);
-        const unrelatedFiber = yield* manager
-          .automationSnapshot("tab_hidden_snapshot")
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust(100);
-        const unrelatedExit = yield* Effect.exit(Fiber.join(unrelatedFiber));
-
-        expect(capturePage).toHaveBeenCalledTimes(8);
-        expect(Exit.isFailure(unrelatedExit)).toBe(true);
-        if (Exit.isSuccess(unrelatedExit)) return;
-        expect(Option.getOrThrow(Cause.findErrorOption(unrelatedExit.cause))).toMatchObject({
-          _tag: "PreviewOperationError",
-          operation: "automationSnapshot.capturePage",
-          cause: unrelatedCause,
-        });
-      }),
-    ),
+          debuggerScreenshotAvailable = false;
+          const semanticOnlySnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+          expect(semanticOnlySnapshot).toMatchObject({
+            visibleText: "Example",
+            screenshot: {
+              mimeType: "image/png",
+              width: 1,
+              height: 1,
+            },
+          });
+        }),
+      ),
   );
 
   effectIt.effect("re-resolves a snapshot after navigation destroys its JavaScript context", () =>
