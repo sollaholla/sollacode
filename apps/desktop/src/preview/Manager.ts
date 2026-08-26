@@ -114,6 +114,12 @@ const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
+const EMPTY_AUTOMATION_SCREENSHOT = {
+  mimeType: "image/png" as const,
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  width: 1,
+  height: 1,
+};
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
@@ -2717,6 +2723,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         title: string;
         loading: boolean;
         visibleText: string;
+        viewportWidth: number;
+        viewportHeight: number;
         interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
       }>(
         tabId,
@@ -2769,43 +2777,124 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             title: document.title,
             loading: document.readyState !== "complete",
             visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
             interactiveElements: elements
           };
         })()`,
         true,
       );
-      const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all([
-        send("Accessibility.getFullAXTree"),
-        attemptPromise(
-          {
-            operation: "automationSnapshot.capturePage",
-            tabId,
-            webContentsId: wc.id,
+      const nativeScreenshot = attemptPromise(
+        {
+          operation: "automationSnapshot.capturePage",
+          tabId,
+          webContentsId: wc.id,
+        },
+        () => wc.capturePage(),
+      ).pipe(
+        Effect.flatMap((sourceImage) => {
+          const sourceSize = sourceImage.getSize();
+          if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+            return Effect.fail(
+              new PreviewOperationError({
+                operation: "automationSnapshot.capturePage",
+                tabId,
+                webContentsId: wc.id,
+                cause: new Error("Chromium returned an empty preview frame."),
+              }),
+            );
+          }
+          const image =
+            sourceSize.width > MAX_SCREENSHOT_WIDTH
+              ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+              : sourceImage;
+          const size = image.getSize();
+          return Effect.succeed({
+            mimeType: "image/png" as const,
+            data: image.toPNG().toString("base64"),
+            width: size.width,
+            height: size.height,
+          });
+        }),
+      );
+      const debuggerScreenshotScale =
+        page.viewportWidth > MAX_SCREENSHOT_WIDTH ? MAX_SCREENSHOT_WIDTH / page.viewportWidth : 1;
+      const captureDebuggerScreenshot = (fromSurface: boolean) =>
+        send("Page.captureScreenshot", {
+          format: "png",
+          fromSurface,
+          captureBeyondViewport: false,
+          clip: {
+            x: 0,
+            y: 0,
+            width: Math.max(1, page.viewportWidth),
+            height: Math.max(1, page.viewportHeight),
+            scale: debuggerScreenshotScale,
           },
-          () => wc.capturePage(),
+        }).pipe(
+          Effect.flatMap((result) => {
+            const data =
+              typeof result === "object" &&
+              result !== null &&
+              "data" in result &&
+              typeof result.data === "string"
+                ? result.data
+                : null;
+            if (!data) {
+              return Effect.fail(
+                new PreviewOperationError({
+                  operation: "automationSnapshot.Page.captureScreenshot",
+                  tabId,
+                  webContentsId: wc.id,
+                  cause: new Error("Chromium returned an invalid debugger screenshot."),
+                }),
+              );
+            }
+            return Effect.succeed({
+              mimeType: "image/png" as const,
+              data,
+              width: Math.max(1, Math.round(page.viewportWidth * debuggerScreenshotScale)),
+              height: Math.max(1, Math.round(page.viewportHeight * debuggerScreenshotScale)),
+            });
+          }),
+        );
+      const screenshot = yield* nativeScreenshot.pipe(
+        Effect.catch((nativeCause) =>
+          captureDebuggerScreenshot(true).pipe(
+            Effect.catch(() => captureDebuggerScreenshot(false)),
+            Effect.tap(() =>
+              Effect.logWarning(
+                "Native preview capture was unavailable; the debugger screenshot succeeded.",
+                { tabId, nativeCause },
+              ),
+            ),
+            Effect.catch((debuggerCause) =>
+              Effect.logWarning(
+                "Preview screenshot capture was unavailable; returning the semantic snapshot.",
+                { tabId, nativeCause, debuggerCause },
+              ).pipe(Effect.as(EMPTY_AUTOMATION_SCREENSHOT)),
+            ),
+          ),
         ),
+      );
+      const [accessibility, diagnostics, timelines] = yield* Effect.all([
+        send("Accessibility.getFullAXTree"),
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
       ]);
-      const sourceSize = sourceImage.getSize();
-      const image =
-        sourceSize.width > MAX_SCREENSHOT_WIDTH
-          ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
-          : sourceImage;
-      const size = image.getSize();
       const browserDiagnostics = diagnostics.get(wc.id);
+      const {
+        viewportWidth: _viewportWidth,
+        viewportHeight: _viewportHeight,
+        ...snapshotPage
+      } = page;
       return {
-        ...page,
+        ...snapshotPage,
         accessibilityTree: accessibility,
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
         networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
         actionTimeline: [...(timelines.get(tabId) ?? [])],
-        screenshot: {
-          mimeType: "image/png" as const,
-          data: image.toPNG().toString("base64"),
-          width: size.width,
-          height: size.height,
-        },
+        screenshot,
       };
     },
   );
