@@ -117,6 +117,7 @@ const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
 const AUTOMATION_SNAPSHOT_STAGE_TIMEOUT = "1 second";
+const AUTOMATION_SNAPSHOT_SCREENCAST_TIMEOUT = "2 seconds";
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
   description: "Current desktop preview activity leases grouped by consumer type.",
 });
@@ -2929,13 +2930,83 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             });
           }),
         );
+      const captureDebuggerScreencast = Effect.fn("PreviewManager.captureDebuggerScreencast")(
+        function* () {
+          const frameReady = yield* Deferred.make<string>();
+          const onMessage = (
+            _event: Electron.Event,
+            method: string,
+            params: Record<string, unknown>,
+          ): void => {
+            if (method !== "Page.screencastFrame" || typeof params["data"] !== "string") return;
+            runFork(Deferred.succeed(frameReady, params["data"]));
+          };
+          yield* attempt(
+            {
+              operation: "automationSnapshot.Page.listenForScreencastFrame",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () => wc.debugger.on("message", onMessage),
+          );
+          const cleanup = Effect.all(
+            [
+              attempt(
+                {
+                  operation: "automationSnapshot.Page.removeScreencastListener",
+                  tabId,
+                  webContentsId: wc.id,
+                },
+                () => wc.debugger.off("message", onMessage),
+              ).pipe(Effect.ignore),
+              attemptPromiseWithin(
+                {
+                  operation: "automationSnapshot.Page.stopScreencast",
+                  tabId,
+                  webContentsId: wc.id,
+                },
+                () => wc.debugger.sendCommand("Page.stopScreencast"),
+                AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
+              ).pipe(Effect.ignore),
+            ],
+            { concurrency: 2, discard: true },
+          );
+          return yield* Effect.gen(function* () {
+            yield* send("Page.startScreencast", {
+              format: "png",
+              maxWidth: Math.max(1, Math.round(page.viewportWidth * debuggerScreenshotScale)),
+              maxHeight: Math.max(1, Math.round(page.viewportHeight * debuggerScreenshotScale)),
+              everyNthFrame: 1,
+            });
+            const data = yield* Deferred.await(frameReady).pipe(
+              Effect.timeout(AUTOMATION_SNAPSHOT_SCREENCAST_TIMEOUT),
+              Effect.mapError(
+                (cause) =>
+                  new PreviewOperationError({
+                    operation: "automationSnapshot.Page.screencastFrame",
+                    tabId,
+                    webContentsId: wc.id,
+                    cause,
+                  }),
+              ),
+            );
+            return {
+              mimeType: "image/png" as const,
+              data,
+              width: Math.max(1, Math.round(page.viewportWidth * debuggerScreenshotScale)),
+              height: Math.max(1, Math.round(page.viewportHeight * debuggerScreenshotScale)),
+            };
+          }).pipe(Effect.ensuring(cleanup));
+        },
+      );
       const screenshot = yield* nativeScreenshot.pipe(
         Effect.catch((nativeCause) =>
           captureDebuggerScreenshot(true).pipe(
             Effect.catch(() => captureDebuggerScreenshot(false)),
+            Effect.catch(() => captureDebuggerScreencast()),
             Effect.tap(() =>
               Effect.logWarning(
-                "Native preview capture was unavailable; the debugger screenshot succeeded.",
+                "Native preview capture was unavailable; a debugger frame succeeded.",
                 { tabId, nativeCause },
               ),
             ),
