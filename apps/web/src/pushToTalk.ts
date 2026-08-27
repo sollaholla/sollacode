@@ -54,17 +54,22 @@ export function shouldHandlePushToTalkForSurface(input: {
     : !input.targetWithinEmbeddedSideChat;
 }
 
-/**
- * A focused control being replaced or focus moving to another control is not
- * an app focus loss. React updates, dialogs, and live Agent UI changes can all
- * emit `focusout` with no next target while the document itself remains
- * focused; stopping a held recorder there makes dictation end at random.
- */
-export function shouldStopPushToTalkAfterFocusOut(input: {
-  readonly relatedTarget: EventTarget | null;
-  readonly documentHasFocus: boolean;
-}): boolean {
-  return input.relatedTarget === null && !input.documentHasFocus;
+export interface PushToTalkFocusTarget {
+  readonly isConnected: boolean;
+  readonly focus: (options?: FocusOptions) => void;
+}
+
+/** Restore the control that owned the held chord, falling back to the composer. */
+export function restorePushToTalkFocus(
+  target: PushToTalkFocusTarget | null,
+  fallback: () => void,
+): "target" | "fallback" {
+  if (target?.isConnected) {
+    target.focus({ preventScroll: true });
+    return "target";
+  }
+  fallback();
+  return "fallback";
 }
 
 /**

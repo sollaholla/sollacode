@@ -78,6 +78,8 @@ import {
   PreviewAutomationStatus,
   PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
+  PreviewAutomationUploadInput,
+  PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import type {
@@ -552,9 +554,42 @@ export interface DesktopPreviewTabState {
   /** Whether this tab is currently mirrored into a desktop picture-in-picture window. */
   pictureInPicture: boolean;
   colorScheme: DesktopPreviewColorScheme;
-  controller: "human" | "agent" | "none";
+  controller: "human" | "agent" | "none" | "waiting-for-user";
   updatedAt: string;
 }
+
+/**
+ * A guest page asked to open a link in another browser tab. The source uses
+ * the desktop runtime tab id so the renderer can recover the owning thread
+ * before creating the durable preview session.
+ */
+export interface DesktopPreviewNewTabRequest {
+  readonly sourceTabId: string;
+  readonly url: string;
+}
+
+/**
+ * Privacy-bounded network evidence emitted by the desktop browser host. The
+ * renderer correlates the guest webContents id with its runtime preview tab;
+ * no cookies, request bodies, response bodies, or header values are included.
+ */
+export type DesktopPreviewHumanVerificationSignal =
+  | {
+      readonly kind: "cf-mitigated-challenge";
+      readonly webContentsId: number;
+      readonly url: string;
+      readonly observedAt: string;
+      readonly statusCode: number;
+    }
+  | {
+      readonly kind: "cloudflare-reachability";
+      readonly webContentsId: number;
+      readonly url: string;
+      readonly observedAt: string;
+      readonly reachable: boolean;
+      readonly statusCode: number | null;
+      readonly error: string | null;
+    };
 
 export const DesktopPreviewTabIdSchema = Schema.String.check(Schema.isTrimmed()).check(
   Schema.isNonEmpty(),
@@ -602,7 +637,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   zoomFactor: Schema.Number,
   pictureInPicture: Schema.Boolean,
   colorScheme: DesktopPreviewColorSchemeSchema,
-  controller: Schema.Literals(["human", "agent", "none"]),
+  controller: Schema.Literals(["human", "agent", "none", "waiting-for-user"]),
   updatedAt: Schema.String,
 });
 
@@ -1006,6 +1041,11 @@ export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   input: PreviewAutomationTypeInput,
 });
 
+export const DesktopPreviewAutomationUploadInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationUploadInput,
+});
+
 export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationPressInput,
@@ -1207,7 +1247,10 @@ export interface DesktopBridge {
   /** Returns false when the path is missing or is not absolute on this desktop host. */
   revealFile: (path: string) => Promise<boolean>;
   writeComposerClipboard: (input: DesktopComposerClipboardInput) => Promise<boolean>;
-  setPushToTalkSystemAudioMuted: (muted: boolean) => Promise<boolean>;
+  setVoiceCaptureSystemAudioMuted: (input: {
+    readonly owner: "dictation" | "orchestrator";
+    readonly muted: boolean;
+  }) => Promise<boolean>;
   /**
    * macOS 26+ on-device dictation. Optional so web, mobile, non-Mac desktop,
    * and an older installed preload transparently retain local Whisper.
@@ -1351,6 +1394,12 @@ export interface DesktopPreviewBridge {
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;
   revealArtifact: (path: string) => Promise<void>;
   copyArtifactToClipboard: (path: string) => Promise<void>;
+  /** Fires when a guest link targets a new browser tab. */
+  onNewTabRequested: (listener: (request: DesktopPreviewNewTabRequest) => void) => () => void;
+  /** Reports Challenge Page headers and Cloudflare challenge-host reachability. */
+  onHumanVerificationSignal: (
+    listener: (signal: DesktopPreviewHumanVerificationSignal) => void,
+  ) => () => void;
   pictureInPicture: {
     open: (tabId: string) => Promise<void>;
     close: (tabId: string) => Promise<void>;
@@ -1370,6 +1419,10 @@ export interface DesktopPreviewBridge {
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
+    upload: (
+      tabId: string,
+      input: PreviewAutomationUploadInput,
+    ) => Promise<PreviewAutomationUploadResult>;
     press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;

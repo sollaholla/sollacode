@@ -24,7 +24,10 @@ import {
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
-import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
+import {
+  browserTabCleanupSourceTurnId,
+  isBrowserTabCleanupMessageId,
+} from "@t3tools/shared/browserTabCleanup";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { refreshProjectionThreadPendingWork } from "../../persistence/PendingWorkProjection.ts";
@@ -70,7 +73,6 @@ import {
 } from "../Services/ProjectionPipeline.ts";
 import {
   attachmentRelativePath,
-  parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
@@ -138,7 +140,7 @@ interface ProjectorDefinition {
 }
 
 interface AttachmentSideEffects {
-  readonly deletedThreadIds: Set<string>;
+  readonly deletedThreadRelativePaths: Map<string, Set<string>>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
   readonly forkedAttachments: Array<{
     readonly source: ChatAttachment;
@@ -350,9 +352,6 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
   const path = yield* Effect.service(Path.Path);
 
   const attachmentsRootDir = serverConfig.attachmentsDir;
-  const readAttachmentRootEntries = fileSystem
-    .readDirectory(attachmentsRootDir, { recursive: false })
-    .pipe(Effect.orElseSucceed(() => [] as Array<string>));
 
   const copyForkedAttachment = Effect.fn("copyForkedAttachment")(function* (input: {
     readonly source: ChatAttachment;
@@ -374,94 +373,15 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     );
   });
 
-  const removeDeletedThreadAttachmentEntry = Effect.fn("removeDeletedThreadAttachmentEntry")(
-    function* (threadSegment: string, entry: string) {
-      const normalizedEntry = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-      if (normalizedEntry.length === 0 || normalizedEntry.includes("/")) {
-        return;
-      }
-      const attachmentId = parseAttachmentIdFromRelativePath(normalizedEntry);
-      if (!attachmentId) {
-        return;
-      }
-      const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
-      if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
-        return;
-      }
-      yield* fileSystem.remove(path.join(attachmentsRootDir, normalizedEntry), {
-        force: true,
-      });
-    },
-  );
-
-  const deleteThreadAttachments = Effect.fn("deleteThreadAttachments")(function* (
-    threadId: string,
+  const deleteAttachmentRelativePaths = Effect.fn("deleteAttachmentRelativePaths")(function* (
+    relativePaths: Set<string>,
   ) {
-    const threadSegment = toSafeThreadAttachmentSegment(threadId);
-    if (!threadSegment) {
-      yield* Effect.logWarning("skipping attachment cleanup for unsafe thread id", {
-        threadId,
-      });
-      return;
-    }
-
-    const entries = yield* readAttachmentRootEntries;
     yield* Effect.forEach(
-      entries,
-      (entry) => removeDeletedThreadAttachmentEntry(threadSegment, entry),
-      {
-        concurrency: 1,
-      },
-    );
-  });
-
-  const pruneThreadAttachmentEntry = Effect.fn("pruneThreadAttachmentEntry")(function* (
-    threadSegment: string,
-    keptThreadRelativePaths: Set<string>,
-    entry: string,
-  ) {
-    const relativePath = entry.replace(/^[/\\]+/, "").replace(/\\/g, "/");
-    if (relativePath.length === 0 || relativePath.includes("/")) {
-      return;
-    }
-    const attachmentId = parseAttachmentIdFromRelativePath(relativePath);
-    if (!attachmentId) {
-      return;
-    }
-    const attachmentThreadSegment = parseThreadSegmentFromAttachmentId(attachmentId);
-    if (!attachmentThreadSegment || attachmentThreadSegment !== threadSegment) {
-      return;
-    }
-
-    const absolutePath = path.join(attachmentsRootDir, relativePath);
-    const fileInfo = yield* fileSystem.stat(absolutePath).pipe(Effect.orElseSucceed(() => null));
-    if (!fileInfo || fileInfo.type !== "File") {
-      return;
-    }
-
-    if (!keptThreadRelativePaths.has(relativePath)) {
-      yield* fileSystem.remove(absolutePath, { force: true });
-    }
-  });
-
-  const pruneThreadAttachments = Effect.fn("pruneThreadAttachments")(function* (
-    threadId: string,
-    keptThreadRelativePaths: Set<string>,
-  ) {
-    if (sideEffects.deletedThreadIds.has(threadId)) {
-      return;
-    }
-
-    const threadSegment = toSafeThreadAttachmentSegment(threadId);
-    if (!threadSegment) {
-      yield* Effect.logWarning("skipping attachment prune for unsafe thread id", { threadId });
-      return;
-    }
-
-    const entries = yield* readAttachmentRootEntries;
-    yield* Effect.forEach(
-      entries,
-      (entry) => pruneThreadAttachmentEntry(threadSegment, keptThreadRelativePaths, entry),
+      relativePaths,
+      (relativePath) =>
+        fileSystem.remove(path.join(attachmentsRootDir, relativePath), {
+          force: true,
+        }),
       { concurrency: 1 },
     );
   });
@@ -470,15 +390,20 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
     concurrency: 1,
   });
 
-  yield* Effect.forEach(sideEffects.deletedThreadIds, deleteThreadAttachments, {
-    concurrency: 1,
-  });
+  yield* Effect.forEach(
+    sideEffects.deletedThreadRelativePaths.values(),
+    deleteAttachmentRelativePaths,
+    {
+      concurrency: 1,
+    },
+  );
 
   yield* Effect.forEach(
-    sideEffects.prunedThreadRelativePaths.entries(),
-    ([threadId, keptThreadRelativePaths]) =>
-      pruneThreadAttachments(threadId, keptThreadRelativePaths),
-    { concurrency: 1 },
+    sideEffects.prunedThreadRelativePaths.values(),
+    deleteAttachmentRelativePaths,
+    {
+      concurrency: 1,
+    },
   );
 });
 
@@ -946,7 +871,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.deleted": {
-          attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+          const messages = yield* projectionThreadMessageRepository.listByThreadId({
+            threadId: event.payload.threadId,
+          });
+          attachmentSideEffects.deletedThreadRelativePaths.set(
+            event.payload.threadId,
+            collectThreadAttachmentRelativePaths(event.payload.threadId, messages),
+          );
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
@@ -1263,9 +1194,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          const existingAttachmentPaths = collectThreadAttachmentRelativePaths(
+            event.payload.threadId,
+            existingRows,
+          );
+          const keptAttachmentPaths = collectThreadAttachmentRelativePaths(
+            event.payload.threadId,
+            keptRows,
+          );
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
+            new Set(
+              [...existingAttachmentPaths].filter(
+                (relativePath) => !keptAttachmentPaths.has(relativePath),
+              ),
+            ),
           );
           return;
         }
@@ -2286,37 +2229,34 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         // A cleanup turn is housekeeping on behalf of the latest substantive
         // turn, not a fresh authorization to keep an Agent loop alive. Judge
         // both replies: the cleanup reply itself must be continuable (checked
-        // above), and the newest finalized assistant reply that did not come
-        // from a cleanup turn must also be continuable. Filtering by the turn's
-        // immutable pending source handles interleavings such as
-        // A -> cleanup C, queued B -> cleanup D: C's ordinary housekeeping
-        // response must not hide B's later AGENT_STOP when D completes.
+        // above), and the exact substantive source turn encoded in the cleanup
+        // message must also be continuable. Following that turn's immutable
+        // assistant pointer handles interleavings such as A -> cleanup C,
+        // queued B -> cleanup D and the Grok projection race that can relabel
+        // B's assistant row as belonging to D: housekeeping must never hide
+        // B's later AGENT_STOP.
         if (
           sourceMessage !== undefined &&
           isBrowserTabCleanupMessageId(String(sourceMessage.messageId))
         ) {
-          const threadTurns = yield* projectionTurnRepository.listByThreadId({
+          const cleanupSourceTurnId = browserTabCleanupSourceTurnId({
             threadId: input.threadId,
+            messageId: String(sourceMessage.messageId),
           });
-          const cleanupTurnIds = new Set(
-            threadTurns.flatMap((candidateTurn) =>
-              candidateTurn.turnId !== null &&
-              candidateTurn.pendingMessageId !== null &&
-              isBrowserTabCleanupMessageId(String(candidateTurn.pendingMessageId))
-                ? [String(candidateTurn.turnId)]
-                : [],
-            ),
+          if (cleanupSourceTurnId === null) return;
+          const cleanupSourceTurn = yield* projectionTurnRepository.getByTurnId({
+            threadId: input.threadId,
+            turnId: cleanupSourceTurnId,
+          });
+          if (Option.isNone(cleanupSourceTurn)) return;
+          const substantiveAssistantMessage = messages.find(
+            (message) =>
+              cleanupSourceTurn.value.assistantMessageId !== null &&
+              message.messageId === cleanupSourceTurn.value.assistantMessageId,
           );
-          const substantiveAssistantMessage = messages
-            .slice(0, assistantIndex)
-            .findLast(
-              (message) =>
-                message.role === "assistant" &&
-                !message.isStreaming &&
-                (message.turnId === null || !cleanupTurnIds.has(String(message.turnId))),
-            );
           if (
             substantiveAssistantMessage === undefined ||
+            substantiveAssistantMessage.isStreaming ||
             isProviderAuthenticationFailure(substantiveAssistantMessage.text) ||
             !shouldAgentContinueAfterReply(substantiveAssistantMessage.text)
           ) {
@@ -2722,7 +2662,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       event: OrchestrationEvent,
     ) {
       const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
+        deletedThreadRelativePaths: new Map<string, Set<string>>(),
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
         forkedAttachments: [],
       };

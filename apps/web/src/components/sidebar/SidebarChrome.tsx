@@ -21,7 +21,6 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
-import { BackgroundTaskRunners, BackgroundTasksIndicator } from "../BackgroundTasksIndicator";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -46,7 +45,6 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         isElectron && "drag-region",
       )}
     >
-      <BackgroundTaskRunners />
       {backdropVariant ? <SidebarStageBackdrop variant={backdropVariant} /> : null}
       <SidebarTrigger
         className={cn(
@@ -100,7 +98,6 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     <SidebarFooter className="p-2">
       <SidebarProviderUpdatePill />
-      <BackgroundTasksIndicator />
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton onClick={handleSettingsClick}>

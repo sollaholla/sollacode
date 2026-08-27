@@ -4,6 +4,8 @@ import {
   type ModelSelection,
   type OrchestrationThreadPendingWork,
   type ProviderDriverKind,
+  isProviderDriverKind,
+  type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
@@ -533,6 +535,28 @@ export function deriveLockedProvider(_input: {
   return null;
 }
 
+/**
+ * Resolve the provider that owns the live session, independently of the
+ * composer's unlocked next-turn selection.
+ *
+ * A running turn may keep using Grok while the user changes the next provider.
+ * Conversely, {@link deriveLockedProvider} deliberately always returns null so
+ * the picker stays unlocked. Runtime controls such as Grok queue promotion must
+ * therefore read the session owner rather than the picker lock.
+ */
+export function deriveActiveSessionProviderDriver(input: {
+  readonly thread: Thread | null | undefined;
+  readonly providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
+}): ProviderDriverKind | null {
+  const session = input.thread?.session;
+  if (!session) return null;
+  const configured = input.providers.find(
+    (provider) => provider.instanceId === session.providerInstanceId,
+  );
+  if (configured) return configured.driver;
+  return isProviderDriverKind(session.providerName) ? session.providerName : null;
+}
+
 export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,
@@ -686,11 +710,14 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 export function shouldAutoFocusComposerOnThreadOpen(input: {
   hasThread: boolean;
   terminalSurfaceActive: boolean;
+  previewFocused: boolean;
   usesOnScreenKeyboard: boolean;
 }): boolean {
   if (!input.hasThread) return false;
   // The terminal owns the caret while it is the active surface.
   if (input.terminalSurfaceActive) return false;
+  // So does the preview browser once the user has clicked into the page.
+  if (input.previewFocused) return false;
   return !input.usesOnScreenKeyboard;
 }
 
@@ -707,6 +734,14 @@ export function shouldAutoFocusComposerOnThreadOpen(input: {
  * it. Focus the user requested outright — tapping the composer, quoting a
  * message, typing a character — does not come through here.
  */
-export function shouldRestoreComposerFocus(input: { usesOnScreenKeyboard: boolean }): boolean {
+export function shouldRestoreComposerFocus(input: {
+  previewFocused: boolean;
+  usesOnScreenKeyboard: boolean;
+}): boolean {
+  // The preview browser is a real focus owner, not a panel. Once the caret is
+  // in the guest page, restoring it here sends the user's next keystroke or
+  // paste to the composer instead of the page they are looking at — which is
+  // indistinguishable from the browser ignoring their input.
+  if (input.previewFocused) return false;
   return !input.usesOnScreenKeyboard;
 }

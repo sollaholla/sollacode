@@ -186,7 +186,7 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
-import { startThreadExportBackgroundTask } from "../backgroundTasks";
+import { exportThreadJson } from "../threadExportAction";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -2223,7 +2223,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         return;
       }
       if (clicked === "export-json") {
-        startThreadExportBackgroundTask(threadRef, thread.title);
+        try {
+          await exportThreadJson(threadRef);
+        } catch (error) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not export conversation",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
         return;
       }
       if (clicked !== "delete") return;

@@ -1304,7 +1304,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           }),
       );
 
-      it.effect("returns the cached provider list when a manual refresh fails", () =>
+      it.effect("preserves cached refreshes and routes resets to the live instance", () =>
         Effect.gen(function* () {
           const codexDriver = ProviderDriverKind.make("codex");
           const codexInstanceId = ProviderInstanceId.make("codex");
@@ -1321,6 +1321,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             slashCommands: [],
             skills: [],
           } as const satisfies ServerProvider;
+          const resetRequests = yield* Ref.make<
+            ReadonlyArray<{
+              readonly creditId?: string | undefined;
+              readonly idempotencyKey: string;
+            }>
+          >([]);
           const instance = {
             instanceId: codexInstanceId,
             driverKind: codexDriver,
@@ -1341,6 +1347,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             },
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
+            usageReset: {
+              consume: (input) =>
+                Ref.update(resetRequests, (requests) => [...requests, input]).pipe(
+                  Effect.as("reset" as const),
+                ),
+            },
           } satisfies ProviderInstance;
           const instanceRegistryLayer = Layer.succeed(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
@@ -1377,6 +1389,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual(yield* registry.refresh(codexDriver), [cachedProvider]);
             assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
               cachedProvider,
+            ]);
+            assert.equal(
+              yield* registry.consumeUsageReset({
+                instanceId: codexInstanceId,
+                creditId: "reset-credit-1",
+                idempotencyKey: "reset-attempt-1",
+              }),
+              "reset",
+            );
+            assert.deepStrictEqual(yield* Ref.get(resetRequests), [
+              { creditId: "reset-credit-1", idempotencyKey: "reset-attempt-1" },
             ]);
           }).pipe(Effect.provide(runtimeServices));
         }),

@@ -1,4 +1,4 @@
-import { ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
+import { ApprovalRequestId, ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 export const ActionApprovalKind = Schema.Literals([
@@ -13,7 +13,6 @@ export type ActionApprovalKind = typeof ActionApprovalKind.Type;
 
 const ActionApprovalSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(240));
 const ActionApprovalPreview = TrimmedNonEmptyString.check(Schema.isMaxLength(60_000));
-const ActionApprovalFeedback = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 
 export const ActionApprovalInput = Schema.Struct({
   actionKind: ActionApprovalKind.annotate({
@@ -30,9 +29,9 @@ export const ActionApprovalInput = Schema.Struct({
 export type ActionApprovalInput = typeof ActionApprovalInput.Type;
 
 export const ActionApprovalResult = Schema.Struct({
-  status: Schema.Literals(["approved", "changes_requested", "cancelled", "approval_unavailable"]),
+  status: Schema.Literals(["approved", "pending", "approval_unavailable"]),
   approvalMode: Schema.Literals(["user", "agent", "none"]),
-  feedback: Schema.optional(ActionApprovalFeedback),
+  requestId: Schema.optional(ApprovalRequestId),
 });
 export type ActionApprovalResult = typeof ActionApprovalResult.Type;
 

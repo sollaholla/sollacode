@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -19,6 +20,7 @@ import {
   canQueueLocalMessageDuringReconnect,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveActiveSessionProviderDriver,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
@@ -424,6 +426,53 @@ describe("deriveLockedProvider", () => {
         threadProvider: "codex",
       }),
     ).toBeNull();
+  });
+});
+
+describe("deriveActiveSessionProviderDriver", () => {
+  it("resolves the running provider even though the composer remains unlocked", () => {
+    const thread = makeThread({
+      session: {
+        ...readySession,
+        status: "running",
+        providerName: "grok",
+        providerInstanceId: ProviderInstanceId.make("grok"),
+        activeTurnId: TurnId.make("turn-running"),
+      },
+    });
+
+    expect(
+      deriveLockedProvider({
+        thread,
+        selectedProvider: "codex",
+        threadProvider: "grok",
+      }),
+    ).toBeNull();
+    expect(deriveActiveSessionProviderDriver({ thread, providers: [] })).toBe("grok");
+  });
+
+  it("uses configured instance metadata for custom Grok instances", () => {
+    const thread = makeThread({
+      session: {
+        ...readySession,
+        status: "running",
+        providerName: "custom-grok-provider",
+        providerInstanceId: ProviderInstanceId.make("grok-work"),
+        activeTurnId: TurnId.make("turn-running"),
+      },
+    });
+
+    expect(
+      deriveActiveSessionProviderDriver({
+        thread,
+        providers: [
+          {
+            instanceId: ProviderInstanceId.make("grok-work"),
+            driver: ProviderDriverKind.make("grok"),
+          },
+        ],
+      }),
+    ).toBe("grok");
   });
 });
 
@@ -967,6 +1016,7 @@ describe("shouldAutoFocusComposerOnThreadOpen", () => {
   const base = {
     hasThread: true,
     terminalSurfaceActive: false,
+    previewFocused: false,
     usesOnScreenKeyboard: false,
   };
 
@@ -998,6 +1048,10 @@ describe("shouldAutoFocusComposerOnThreadOpen", () => {
     );
   });
 
+  it("yields to the preview browser", () => {
+    expect(shouldAutoFocusComposerOnThreadOpen({ ...base, previewFocused: true })).toBe(false);
+  });
+
   it("does nothing without a thread", () => {
     expect(shouldAutoFocusComposerOnThreadOpen({ ...base, hasThread: false })).toBe(false);
   });
@@ -1005,12 +1059,25 @@ describe("shouldAutoFocusComposerOnThreadOpen", () => {
 
 describe("shouldRestoreComposerFocus", () => {
   it("restores the caret where a keyboard is already there", () => {
-    expect(shouldRestoreComposerFocus({ usesOnScreenKeyboard: false })).toBe(true);
+    expect(shouldRestoreComposerFocus({ previewFocused: false, usesOnScreenKeyboard: false })).toBe(
+      true,
+    );
   });
 
   it("leaves focus alone where restoring it would raise a keyboard", () => {
     // Every caller is an action settling — a menu closing, a branch picked.
     // None of them is the user saying they want to type.
-    expect(shouldRestoreComposerFocus({ usesOnScreenKeyboard: true })).toBe(false);
+    expect(shouldRestoreComposerFocus({ previewFocused: false, usesOnScreenKeyboard: true })).toBe(
+      false,
+    );
+  });
+
+  it("leaves focus in the preview browser", () => {
+    // The regression this exists for: clicking into the preview and typing
+    // (or pasting) put the text in the chat composer, because an unrelated
+    // action settling pulled the caret back out of the guest page.
+    expect(shouldRestoreComposerFocus({ previewFocused: true, usesOnScreenKeyboard: false })).toBe(
+      false,
+    );
   });
 });

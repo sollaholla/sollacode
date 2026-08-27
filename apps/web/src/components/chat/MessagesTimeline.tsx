@@ -282,6 +282,7 @@ interface MessagesTimelineProps {
   onResumeIncompleteTurn: () => void;
   isResumeIncompleteTurnBusy: boolean;
   isResumeIncompleteTurnDisabled: boolean;
+  inlineNotice?: { readonly id: string; readonly content: ReactNode } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +333,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onResumeIncompleteTurn,
   isResumeIncompleteTurnBusy,
   isResumeIncompleteTurnDisabled,
+  inlineNotice = null,
 }: MessagesTimelineProps) {
   const drawDistance = resolveTimelineDrawDistance(
     typeof window !== "undefined" && window.desktopBridge !== undefined,
@@ -1005,6 +1007,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
   const timelineShouldFollowEnd = followEnd && !manualFollowSuppressed;
+  useEffect(() => {
+    if (inlineNotice === null) return;
+    const frame = requestAnimationFrame(() => {
+      void mountedListRef.current?.scrollToEnd({ animated: false }).then(handleScroll);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [handleScroll, inlineNotice?.id]);
+
+  const listFooter = useMemo(
+    () =>
+      inlineNotice === null ? (
+        TIMELINE_LIST_FOOTER
+      ) : (
+        <>
+          <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip">
+            {inlineNotice.content}
+          </div>
+          {TIMELINE_LIST_FOOTER}
+        </>
+      ),
+    [inlineNotice],
+  );
 
   if (rows.length === 0 && !isWorking) {
     if (hideEmptyPlaceholder) {
@@ -1088,7 +1112,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
             ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
+            ListFooterComponent={listFooter}
           />
           <TimelineMinimap
             items={minimapItems}

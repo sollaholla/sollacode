@@ -14,14 +14,16 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   HandIcon,
+  MessageSquareDotIcon,
   PlusIcon,
+  ShieldAlertIcon,
   SparklesIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useClientSettings } from "../../hooks/useSettings";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -47,6 +49,7 @@ import {
   resolveAgentRegistryNotice,
   sortAgentEnvironments,
 } from "./agentRegistryState";
+import { shouldSendAgentDesktopNotification } from "./agentNotifications";
 
 const STATUS_DOT: Record<VmAgentStatus, string> = {
   provisioning: "bg-amber-500",
@@ -178,6 +181,9 @@ export function attentionForAgent(
  */
 export function AgentStackSidebarEntry() {
   const enabled = useClientSettings((settings) => settings.agentStackEnabled);
+  const desktopNotificationsEnabled = useClientSettings(
+    (settings) => settings.agentDesktopNotificationsEnabled,
+  );
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { environments } = useEnvironments();
   const expanded = useUiStateStore((state) => state.agentsSectionExpanded);
@@ -206,59 +212,153 @@ export function AgentStackSidebarEntry() {
   if (!enabled || orderedEnvironments.length === 0) return null;
 
   return (
-    <div className="mt-1 flex min-w-0 flex-col gap-1" data-agent-environment-list>
-      {/* The add control belongs on this row, beside the section it adds to —
-          not on a row of its own below it. It cannot go inside the toggle
-          (nesting a button in a button), so the two share a flex row. */}
-      <div className="flex min-w-0 items-center gap-1 pr-1">
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          aria-expanded={expanded}
-          // Only while the body is mounted: collapsed unmounts it, and pointing
-          // aria-controls at an id that is not in the document is worse than omitting it.
-          aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
-          data-testid="agents-section-toggle"
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
-        >
-          <span className="min-w-0 truncate">Agents</span>
-          <ChevronDownIcon
-            aria-hidden
-            className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
-          />
-        </button>
-        {singleEnvironmentId ? (
-          <>
-            <BuildAgentButton
-              environmentId={singleEnvironmentId}
-              onClick={() => openAgentBuilder(singleEnvironmentId)}
-            />
-            <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
-          </>
-        ) : null}
-      </div>
-      {/* Collapsed drops the sections entirely rather than hiding them: each one
-          holds a live agent-registry subscription per host, and a closed section
-          has no reason to keep streaming. */}
-      {expanded ? (
-        <div id={AGENT_SECTION_BODY_ID} className="flex min-w-0 flex-col gap-1">
-          {orderedEnvironments.map((environment) => (
-            <AgentEnvironmentSection
+    <>
+      {desktopNotificationsEnabled
+        ? orderedEnvironments.map((environment) => (
+            <AgentDesktopNotificationObserver
               key={environment.environmentId}
               environmentId={environment.environmentId}
-              environmentLabel={environment.label}
-              showEnvironmentLabel={orderedEnvironments.length > 1}
-              createOpen={createForEnvironmentId === environment.environmentId}
-              onCreateOpenChange={(open) =>
-                setCreateForEnvironmentId(open ? environment.environmentId : null)
-              }
-              onOpenBuilder={() => openAgentBuilder(environment.environmentId)}
             />
-          ))}
+          ))
+        : null}
+      <div className="mt-1 flex min-w-0 flex-col gap-1" data-agent-environment-list>
+        {/* The add control belongs on this row, beside the section it adds to —
+          not on a row of its own below it. It cannot go inside the toggle
+          (nesting a button in a button), so the two share a flex row. */}
+        <div className="flex min-w-0 items-center gap-1 pr-1">
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+            // Only while the body is mounted: collapsed unmounts it, and pointing
+            // aria-controls at an id that is not in the document is worse than omitting it.
+            aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
+            data-testid="agents-section-toggle"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
+          >
+            <span className="min-w-0 truncate">Agents</span>
+            <ChevronDownIcon
+              aria-hidden
+              className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+            />
+          </button>
+          {singleEnvironmentId ? (
+            <>
+              <BuildAgentButton
+                environmentId={singleEnvironmentId}
+                onClick={() => openAgentBuilder(singleEnvironmentId)}
+              />
+              <NewAgentButton onClick={() => setCreateForEnvironmentId(singleEnvironmentId)} />
+            </>
+          ) : null}
         </div>
-      ) : null}
-    </div>
+        {/* Collapsed drops the sections entirely rather than hiding them: each one
+          holds a live agent-registry subscription per host, and a closed section
+          has no reason to keep streaming. */}
+        {expanded ? (
+          <div id={AGENT_SECTION_BODY_ID} className="flex min-w-0 flex-col gap-1">
+            {orderedEnvironments.map((environment) => (
+              <AgentEnvironmentSection
+                key={environment.environmentId}
+                environmentId={environment.environmentId}
+                environmentLabel={environment.label}
+                showEnvironmentLabel={orderedEnvironments.length > 1}
+                createOpen={createForEnvironmentId === environment.environmentId}
+                onCreateOpenChange={(open) =>
+                  setCreateForEnvironmentId(open ? environment.environmentId : null)
+                }
+                onOpenBuilder={() => openAgentBuilder(environment.environmentId)}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </>
   );
+}
+
+/**
+ * Native alerts remain active even when the visual Agents section is folded.
+ * This subscribes only to lightweight agent and attention summaries, never to
+ * every agent's full workspace or notification bodies.
+ */
+function AgentDesktopNotificationObserver(props: { readonly environmentId: EnvironmentId }) {
+  const router = useRouter();
+  const activeAgentId = useParams({
+    strict: false,
+    select: (params) => (params as { agentId?: string }).agentId ?? null,
+  });
+  const activeEnvironmentId = useParams({
+    strict: false,
+    select: (params) =>
+      environmentIdFromUnknown((params as { environmentId?: unknown }).environmentId),
+  });
+  const agentsAtom = useMemo(
+    () => vmAgentEnvironment.agents({ environmentId: props.environmentId, input: {} }),
+    [props.environmentId],
+  );
+  const attentionAtom = useMemo(
+    () => vmAgentEnvironment.attention({ environmentId: props.environmentId, input: {} }),
+    [props.environmentId],
+  );
+  const agentsResult = useAtomValue(agentsAtom);
+  const attentionResult = useAtomValue(attentionAtom);
+  const agentsItem = Option.getOrNull(AsyncResult.value(agentsResult));
+  const attentionItem = Option.getOrNull(AsyncResult.value(attentionResult));
+  const agents = agentsItem?.type === "snapshot" ? agentsItem.agents : [];
+  const attention = attentionItem?.type === "snapshot" ? attentionItem.agents : null;
+  const previousUnreadCounts = useRef<ReadonlyMap<string, number> | null>(null);
+
+  useEffect(() => {
+    if (attention === null) return;
+    const nextCounts = new Map(
+      attention.map((entry) => [String(entry.vmAgentId), entry.unreadNotificationCount]),
+    );
+    const previous = previousUnreadCounts.current;
+    previousUnreadCounts.current = nextCounts;
+    if (previous === null) return;
+
+    for (const entry of attention) {
+      const agent = agents.find((candidate) => candidate.vmAgentId === entry.vmAgentId);
+      if (!agent) continue;
+      const isAgentFocused =
+        entry.vmAgentId === activeAgentId &&
+        props.environmentId === activeEnvironmentId &&
+        document.visibilityState === "visible" &&
+        document.hasFocus();
+      if (
+        !shouldSendAgentDesktopNotification({
+          enabled: true,
+          permission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+          previousUnreadCount: previous.get(String(entry.vmAgentId)) ?? 0,
+          unreadCount: entry.unreadNotificationCount,
+          isAgentFocused,
+        })
+      ) {
+        continue;
+      }
+      const notification = new Notification(`${agent.name} has a new alert`, {
+        body:
+          entry.unreadNotificationCount === 1
+            ? "Open the agent chat to read it."
+            : `${entry.unreadNotificationCount} unread alerts. Open the agent chat to read the newest one.`,
+        tag: `agent-alert:${props.environmentId}:${agent.vmAgentId}`,
+      });
+      notification.addEventListener("click", () => {
+        window.focus();
+        void router.navigate({
+          to: "/agents/$environmentId/$agentId",
+          params: {
+            environmentId: props.environmentId,
+            agentId: agent.vmAgentId,
+          },
+        });
+        notification.close();
+      });
+    }
+  }, [activeAgentId, activeEnvironmentId, agents, attention, props.environmentId, router]);
+
+  return null;
 }
 
 /**
@@ -273,8 +373,8 @@ export function AgentStackSidebarEntry() {
 function AgentSidebarRow(props: {
   readonly agent: VmAgent;
   readonly activeWork: number;
-  readonly unreadNotifications: number;
   readonly openBlockers: number;
+  readonly unreadNotifications: number;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly isActive: boolean;
@@ -292,9 +392,17 @@ function AgentSidebarRow(props: {
   const rowEnvironment = useEnvironment(props.environmentId);
   const environmentUnreachable =
     rowEnvironment != null && rowEnvironment.connection.phase !== "connected";
-  const working =
-    threadShell !== null &&
-    resolveSidebarV2Status({ ...threadShell, environmentUnreachable }) === "working";
+  const status =
+    threadShell === null
+      ? null
+      : resolveSidebarV2Status({ ...threadShell, environmentUnreachable });
+  const working = status === "working";
+  // An agent parked on an approval or a question is the one state on this row
+  // the user has to act on, so it outranks "working" here exactly as it does
+  // in resolveSidebarV2Status. Without it these rows read as busy, and a
+  // background agent could sit waiting for a yes indefinitely, unnoticed.
+  const needsApproval = status === "approval";
+  const needsInput = status === "input";
   // "Done" on the same terms as a thread row: a turn that finished after the
   // last time this conversation was opened. Same store, same helper, so an
   // agent and its thread can never disagree about having finished.
@@ -307,6 +415,8 @@ function AgentSidebarRow(props: {
   );
   const done =
     !working &&
+    !needsApproval &&
+    !needsInput &&
     threadShell !== null &&
     hasUnseenCompletion({ ...threadShell, ...(lastVisitedAt ? { lastVisitedAt } : {}) });
   const resolveAction = useCallback(
@@ -344,7 +454,7 @@ function AgentSidebarRow(props: {
         type="button"
         isActive={props.isActive}
         onClick={handleOpen}
-        aria-label={`Open ${agent.name} on ${props.environmentLabel}`}
+        aria-label={`Open ${agent.name} on ${props.environmentLabel}${needsApproval ? ", waiting for your approval" : needsInput ? ", waiting for your input" : ""}${props.unreadNotifications > 0 ? `, ${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "alert" : "alerts"}` : ""}`}
         data-testid="agent-sidebar-entry"
         className={cn(
           "group/agent-row",
@@ -367,7 +477,23 @@ function AgentSidebarRow(props: {
             state than the one the threads below it were showing. The span
             wrapper is load-bearing: SidebarMenuButton repaints direct <svg>
             children muted grey, which would eat the sky tint. */}
-        {working ? (
+        {needsApproval ? (
+          // Amber approval / indigo input, the hues sidebar v1, the thread rows
+          // and the mobile Live Activity all use for these two states.
+          <span
+            title="Waiting for your approval"
+            className="flex shrink-0 items-center text-amber-700 dark:text-amber-300"
+          >
+            <ShieldAlertIcon className="size-4 shrink-0" aria-label="Waiting for your approval" />
+          </span>
+        ) : needsInput ? (
+          <span
+            title="Waiting for your input"
+            className="flex shrink-0 items-center text-indigo-600 dark:text-indigo-300"
+          >
+            <MessageSquareDotIcon className="size-4 shrink-0" aria-label="Waiting for your input" />
+          </span>
+        ) : working ? (
           <span
             title="Working"
             className="flex shrink-0 items-center animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400"
@@ -384,12 +510,8 @@ function AgentSidebarRow(props: {
             <CircleCheckIcon className="size-4 shrink-0" aria-label="Done" />
           </span>
         ) : null}
-        {/* A badge, not a bare glyph, and deliberately a <span> wrapper: this
-            row is a SidebarMenuButton, whose `[&>svg]:text-sidebar-muted-foreground
-            [&>svg]:opacity-60` has no `:not([class*='text-'])` escape, so a
-            direct <svg> child is repainted grey at 60% no matter what colour
-            it asks for. The hand rendered as a dim grey smudge beside a full
-            blue notification pill — the count it stood for was invisible. */}
+        {/* The wrapper keeps SidebarMenuButton from repainting the hand icon
+            as its default muted direct-child SVG. */}
         {props.openBlockers > 0 ? (
           <span
             className="inline-flex min-w-5 shrink-0 items-center justify-center gap-1 rounded-full bg-warning px-1.5 text-[10px] font-semibold tabular-nums text-amber-950"
@@ -403,8 +525,8 @@ function AgentSidebarRow(props: {
         {props.unreadNotifications > 0 ? (
           <span
             className="inline-flex min-w-5 shrink-0 items-center justify-center gap-1 rounded-full bg-primary px-1.5 text-[10px] font-semibold tabular-nums text-primary-foreground"
-            aria-label={`${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "notification" : "notifications"}`}
-            title={`${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "notification" : "notifications"}`}
+            aria-label={`${props.unreadNotifications} unread ${props.unreadNotifications === 1 ? "agent alert" : "agent alerts"}`}
+            title="Open the newest unread alert"
           >
             <BellIcon className="size-2.5" aria-hidden />
             {props.unreadNotifications}
@@ -659,8 +781,8 @@ function AgentEnvironmentSection(props: {
               key={agent.vmAgentId}
               agent={agent}
               activeWork={activeWork}
-              unreadNotifications={attention.unreadNotificationCount}
               openBlockers={attention.openBlockerCount}
+              unreadNotifications={attention.unreadNotificationCount}
               environmentId={props.environmentId}
               environmentLabel={props.environmentLabel}
               isActive={

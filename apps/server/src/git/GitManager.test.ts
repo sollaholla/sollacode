@@ -292,6 +292,10 @@ function createTextGeneration(
       Effect.succeed({
         title: "Update workflow",
       }),
+    correctVoiceTranscript: (input) =>
+      Effect.succeed({
+        transcript: input.transcript,
+      }),
     generatePlanRefresh: () =>
       Effect.succeed({
         steps: [],
@@ -347,6 +351,17 @@ function createTextGeneration(
           (cause) =>
             new TextGenerationError({
               operation: "generateThreadTitle",
+              detail: "fake text generation failed",
+              ...(cause !== undefined ? { cause } : {}),
+            }),
+        ),
+      ),
+    correctVoiceTranscript: (input) =>
+      implementation.correctVoiceTranscript(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation: "correctVoiceTranscript",
               detail: "fake text generation failed",
               ...(cause !== undefined ? { cause } : {}),
             }),

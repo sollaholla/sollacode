@@ -66,7 +66,11 @@ function ChatRouteGlobalShortcuts() {
       // ChatView owns the press/release lifecycle. Reserve this shortcut before
       // resolving any configurable or remote-control command. Cmd+D/Ctrl+D is
       // voice-only regardless of which app surface currently has focus.
-      if (isPushToTalkShortcut(event)) return;
+      if (isPushToTalkShortcut(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (isRemoteControlInputCaptured()) return;
       const command = resolveShortcutCommand(event, keybindings, {
         context: {

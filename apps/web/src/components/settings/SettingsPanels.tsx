@@ -20,6 +20,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
+  type ServerProvider,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -32,10 +33,12 @@ import {
 import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
   DEFAULT_UNIFIED_SETTINGS,
+  MAX_ATTACHMENT_RETENTION_HOURS,
   type EnvironmentIdentificationMode,
   MAX_GLASS_OPACITY,
   MAX_SOUND_CUE_VOLUME,
   MIN_GLASS_OPACITY,
+  MIN_ATTACHMENT_RETENTION_HOURS,
   MIN_SOUND_CUE_VOLUME,
 } from "@t3tools/contracts/settings";
 import {
@@ -436,6 +439,20 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.autoSendVoiceTranscription !==
+      DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription
+        ? ["Voice transcription auto-send"]
+        : []),
+      ...(settings.voiceTranscriptionCorrectionEnabled !==
+      DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled
+        ? ["Contextual transcription correction"]
+        : []),
+      ...(!Equal.equals(
+        settings.voiceTranscriptionCorrectionModelSelection,
+        DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionModelSelection,
+      )
+        ? ["Voice correction model"]
+        : []),
       ...(settings.enableProviderUpdateChecks !==
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
         ? ["Provider update checks"]
@@ -457,12 +474,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
-      ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
+      ...(isTextGenerationModelDirty ? ["Utility AI model"] : []),
     ],
     [
       isTextGenerationModelDirty,
       isBackgroundActivityDirty,
       settings.autoOpenPlanSidebar,
+      settings.autoSendVoiceTranscription,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
@@ -473,6 +491,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.glassOpacity,
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
+      settings.voiceTranscriptionCorrectionEnabled,
+      settings.voiceTranscriptionCorrectionModelSelection,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -502,6 +522,11 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      autoSendVoiceTranscription: DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription,
+      voiceTranscriptionCorrectionEnabled:
+        DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled,
+      voiceTranscriptionCorrectionModelSelection:
+        DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionModelSelection,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
       backgroundActivityProfile: DEFAULT_UNIFIED_SETTINGS.backgroundActivityProfile,
@@ -1022,15 +1047,15 @@ export function AppearanceSettingsPanel() {
 
         {isElectron ? (
           <SettingsRow
-            title="Mute system audio while dictating"
-            description="Silence the machine's output while push-to-talk records, so music does not bleed into the transcription. macOS only; this is the one place the app touches system volume."
+            title="Mute system audio while listening"
+            description="Silence the machine's output while push-to-talk or Orchestrator voice listens, so other audio does not bleed into the microphone. Orchestrator audio is restored while it speaks. macOS only."
             control={
               <Switch
                 checked={settings.pushToTalkMutesSystemAudio}
                 onCheckedChange={(checked) =>
                   updateSettings({ pushToTalkMutesSystemAudio: Boolean(checked) })
                 }
-                aria-label="Mute system audio while dictating"
+                aria-label="Mute system audio while listening"
               />
             }
           />
@@ -1090,6 +1115,23 @@ export function GeneralSettingsPanel() {
   const isTextGenerationModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
+  );
+  const usesDedicatedVoiceCorrectionModel =
+    settings.voiceTranscriptionCorrectionModelSelection !== null;
+  const voiceCorrectionModelSelection = resolveAppModelSelectionState(
+    {
+      ...settings,
+      textGenerationModelSelection:
+        settings.voiceTranscriptionCorrectionModelSelection ??
+        settings.textGenerationModelSelection,
+    },
+    textGenerationCapableProviders,
+  );
+  const voiceCorrectionModelOptionsByInstance = getCustomModelOptionsByInstance(
+    settings,
+    textGenerationCapableProviders,
+    voiceCorrectionModelSelection.instanceId,
+    voiceCorrectionModelSelection.model,
   );
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const activeBackgroundActivityProfile = resolvedBackgroundActivity.profile;
@@ -1248,33 +1290,6 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
               aria-label="Stream assistant messages"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Auto-send voice transcription"
-          description="Send immediately after local transcription finishes. Off leaves the transcript in the composer for review."
-          resetAction={
-            settings.autoSendVoiceTranscription !==
-            DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription ? (
-              <SettingResetButton
-                label="voice transcription auto-send"
-                onClick={() =>
-                  updateSettings({
-                    autoSendVoiceTranscription: DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.autoSendVoiceTranscription}
-              onCheckedChange={(checked) =>
-                updateSettings({ autoSendVoiceTranscription: Boolean(checked) })
-              }
-              aria-label="Automatically send voice transcriptions"
             />
           }
         />
@@ -1610,12 +1625,59 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Text generation model"
-          description="Default model for generated text like thread titles and source control content. Source control settings can override it with a dedicated source control writer model."
+          title="Attachment retention"
+          description="Automatically remove stored chat attachments after this many hours. Cleanup runs in the background and deleted files cannot be recovered."
+          resetAction={
+            settings.attachmentRetentionHours !==
+            DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours ? (
+              <SettingResetButton
+                label="attachment retention"
+                onClick={() =>
+                  updateSettings({
+                    attachmentRetentionHours: DEFAULT_UNIFIED_SETTINGS.attachmentRetentionHours,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex shrink-0 items-center gap-2">
+              <NumberField
+                value={settings.attachmentRetentionHours}
+                min={MIN_ATTACHMENT_RETENTION_HOURS}
+                max={MAX_ATTACHMENT_RETENTION_HOURS}
+                step={1}
+                size="sm"
+                className="w-32"
+                onValueChange={(value) => {
+                  if (
+                    value !== null &&
+                    Number.isInteger(value) &&
+                    value >= MIN_ATTACHMENT_RETENTION_HOURS &&
+                    value <= MAX_ATTACHMENT_RETENTION_HOURS
+                  ) {
+                    updateSettings({ attachmentRetentionHours: value });
+                  }
+                }}
+              >
+                <NumberFieldGroup>
+                  <NumberFieldDecrement aria-label="Decrease attachment retention" />
+                  <NumberFieldInput aria-label="Attachment retention in hours" />
+                  <NumberFieldIncrement aria-label="Increase attachment retention" />
+                </NumberFieldGroup>
+              </NumberField>
+              <span className="text-xs text-muted-foreground">hours</span>
+            </div>
+          }
+        />
+
+        <SettingsRow
+          title="Utility AI model"
+          description="Default model for app-assisted work such as thread titles, task drafting, plan refresh, and source control content. Dedicated voice correction and source control settings can override it."
           resetAction={
             isTextGenerationModelDirty ? (
               <SettingResetButton
-                label="text generation model"
+                label="utility AI model"
                 onClick={() =>
                   updateSettings({
                     textGenerationModelSelection:
@@ -1684,6 +1746,108 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection title="Voice input">
+        <SettingsRow
+          title="Auto-send transcription"
+          description="Send immediately after local transcription and optional correction finish. Off leaves the transcript in the composer for review."
+          resetAction={
+            settings.autoSendVoiceTranscription !==
+            DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription ? (
+              <SettingResetButton
+                label="voice transcription auto-send"
+                onClick={() =>
+                  updateSettings({
+                    autoSendVoiceTranscription: DEFAULT_UNIFIED_SETTINGS.autoSendVoiceTranscription,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoSendVoiceTranscription}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoSendVoiceTranscription: Boolean(checked) })
+              }
+              aria-label="Automatically send voice transcriptions"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Contextual transcription correction"
+          description="Use a brief recent conversation snapshot to correct likely names, punctuation, and recognition errors before inserting or sending. If correction is slow or fails, the local transcript is used unchanged."
+          resetAction={
+            settings.voiceTranscriptionCorrectionEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled ? (
+              <SettingResetButton
+                label="contextual transcription correction"
+                onClick={() =>
+                  updateSettings({
+                    voiceTranscriptionCorrectionEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.voiceTranscriptionCorrectionEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.voiceTranscriptionCorrectionEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ voiceTranscriptionCorrectionEnabled: Boolean(checked) })
+              }
+              aria-label="Correct voice transcriptions using conversation context"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Voice correction model"
+          description="Optional fast-model override for contextual voice correction. Off uses the global Utility AI model."
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {usesDedicatedVoiceCorrectionModel ? (
+                <ProviderModelPicker
+                  activeInstanceId={voiceCorrectionModelSelection.instanceId}
+                  model={voiceCorrectionModelSelection.model}
+                  lockedProvider={null}
+                  instanceEntries={textGenerationModelInstanceEntries}
+                  modelOptionsByInstance={voiceCorrectionModelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  triggerAriaLabel="Voice correction model"
+                  onInstanceModelChange={(instanceId, model) => {
+                    const selection = resolveAppModelSelectionState(
+                      {
+                        ...settings,
+                        textGenerationModelSelection: createModelSelection(instanceId, model),
+                      },
+                      textGenerationCapableProviders,
+                    );
+                    updateSettings({ voiceTranscriptionCorrectionModelSelection: selection });
+                  }}
+                />
+              ) : null}
+              <Switch
+                checked={usesDedicatedVoiceCorrectionModel}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    voiceTranscriptionCorrectionModelSelection: checked
+                      ? createModelSelection(
+                          textGenerationModelSelection.instanceId,
+                          textGenerationModelSelection.model,
+                        )
+                      : null,
+                  })
+                }
+                aria-label="Use a separate voice correction model"
+              />
+            </div>
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
@@ -1713,6 +1877,9 @@ export function ProviderSettingsPanel() {
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const primaryEnvironment = usePrimaryEnvironment();
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const consumeProviderUsageReset = useAtomCommand(serverEnvironment.consumeProviderUsageReset, {
     reportFailure: false,
   });
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
@@ -1795,6 +1962,32 @@ export function ProviderSettingsPanel() {
       );
     },
     [],
+  );
+
+  const redeemProviderUsageReset = useCallback(
+    async (provider: ServerProvider, creditId: string | undefined, idempotencyKey: string) => {
+      if (!primaryEnvironment) {
+        throw new Error("The provider environment is not connected.");
+      }
+      const result = await consumeProviderUsageReset({
+        environmentId: primaryEnvironment.environmentId,
+        input: {
+          instanceId: provider.instanceId,
+          idempotencyKey,
+          ...(creditId ? { creditId } : {}),
+        },
+      });
+      if (result._tag === "Failure") {
+        throw squashAtomCommandFailure(result);
+      }
+      for (const report of Object.values(
+        deriveProviderUsageReports(result.value.providers, [], primaryEnvironment.environmentId),
+      )) {
+        recordProviderUsage(report);
+      }
+      return result.value.outcome;
+    },
+    [consumeProviderUsageReset, primaryEnvironment, recordProviderUsage],
   );
 
   const providerUsageReports = useMemo(
@@ -2342,6 +2535,12 @@ export function ProviderSettingsPanel() {
                     onRefresh={
                       liveProvider ? () => requestProviderUsageRefresh(liveProvider) : undefined
                     }
+                    {...(liveProvider
+                      ? {
+                          onUseReset: (creditId: string | undefined, idempotencyKey: string) =>
+                            redeemProviderUsageReset(liveProvider, creditId, idempotencyKey),
+                        }
+                      : {})}
                   />
                 ) : undefined
               }
@@ -2583,6 +2782,24 @@ export function ArchivedThreadsPanel() {
 export function AgentsSettingsPanel() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
+  const [desktopNotificationPermission, setDesktopNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() => (typeof Notification === "undefined" ? "unsupported" : Notification.permission));
+
+  const setDesktopAgentAlerts = async (enabled: boolean) => {
+    if (!enabled) {
+      updateSettings({ agentDesktopNotificationsEnabled: false });
+      return;
+    }
+    if (typeof Notification === "undefined") return;
+    const permission =
+      Notification.permission === "default"
+        ? await Notification.requestPermission()
+        : Notification.permission;
+    setDesktopNotificationPermission(permission);
+    if (permission !== "granted") return;
+    updateSettings({ agentDesktopNotificationsEnabled: true });
+  };
 
   return (
     <SettingsPageContainer>
@@ -2607,6 +2824,46 @@ export function AgentsSettingsPanel() {
               checked={settings.agentStackEnabled}
               onCheckedChange={(checked) => updateSettings({ agentStackEnabled: Boolean(checked) })}
               aria-label="Enable the Agent Stack"
+            />
+          }
+        />
+        <SettingsRow
+          title="Desktop agent alerts"
+          description={
+            desktopNotificationPermission === "granted"
+              ? "Show a native notification when an unfocused agent receives a new alert. The focused agent stays quiet."
+              : desktopNotificationPermission === "denied"
+                ? "Blocked by macOS, Windows, or browser notification settings. T3 will not attempt to send desktop alerts."
+                : desktopNotificationPermission === "unsupported"
+                  ? "Native notifications are unavailable in this client. In-app agent alerts still work."
+                  : "Off until you explicitly allow native notifications. In-app agent alerts still work."
+          }
+          resetAction={
+            settings.agentDesktopNotificationsEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.agentDesktopNotificationsEnabled ? (
+              <SettingResetButton
+                label="Desktop agent alerts"
+                onClick={() =>
+                  updateSettings({
+                    agentDesktopNotificationsEnabled:
+                      DEFAULT_UNIFIED_SETTINGS.agentDesktopNotificationsEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={
+                settings.agentDesktopNotificationsEnabled &&
+                desktopNotificationPermission === "granted"
+              }
+              disabled={
+                desktopNotificationPermission === "denied" ||
+                desktopNotificationPermission === "unsupported"
+              }
+              onCheckedChange={(checked) => void setDesktopAgentAlerts(Boolean(checked))}
+              aria-label="Enable desktop agent alerts"
             />
           }
         />

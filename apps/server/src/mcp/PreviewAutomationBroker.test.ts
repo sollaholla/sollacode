@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   PREVIEW_AUTOMATION_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
+  PreviewAutomationHumanVerificationRequiredError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -498,6 +499,83 @@ it.effect("classifies a remote non-editable target without collapsing it to exec
         remoteTag: "PreviewAutomationTargetNotEditableError",
       });
       expect(error.message).toBe("Preview automation type requires an editable focused element.");
+    }),
+  );
+});
+
+it.effect("preserves a remote human-verification gate", () => {
+  const verification = {
+    state: "human_verification_required" as const,
+    kind: "bot-detection" as const,
+    code: "600010",
+    detectedAt: "2026-08-26T12:00:00.000Z",
+    url: "https://suno.com/create",
+    retryCount: 0,
+    retryAvailable: false,
+    message: "Automation is paused for this tab.",
+    compatibilityCheckUrl: "https://debug.challenges.cloudflare.com/" as const,
+    feedbackUrl:
+      "https://developers.cloudflare.com/turnstile/troubleshooting/feedback-reports/" as const,
+    diagnostic: {
+      browserProduct: "Chrome",
+      browserVersion: "140.0.0.0",
+      browserUserAgent: "Mozilla/5.0 Chrome/140.0.0.0",
+      embeddedBrowser: true,
+      headedBrowser: true,
+      automationAvailable: true,
+      cdpAttached: true,
+      viewportMode: null,
+      colorSchemeOverride: null,
+      userAgentOverride: null,
+      canvasOverride: null,
+      webglOverride: null,
+      extensionsEnabled: null,
+      proxyOrVpn: null,
+      cfMitigated: null,
+      responseStatusCode: null,
+      challengesCloudflareReachable: null,
+      rayId: null,
+      qrIdentifier: null,
+      systemClockIso: "2026-08-26T12:00:00.000Z",
+      systemClockCorrect: null,
+    },
+  };
+  const remoteError = {
+    _tag: "PreviewAutomationHumanVerificationRequiredError",
+    message: "remote challenge detail",
+    detail: { verification },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "click",
+          input: { locator: "role=button[name='Continue']" },
+          tabId: PreviewTabId.make("tab-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationHumanVerificationRequiredError);
+      expect(error).toMatchObject({
+        operation: "click",
+        tabId: "tab-1",
+        verification,
+      });
     }),
   );
 });

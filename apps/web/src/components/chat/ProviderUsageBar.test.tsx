@@ -19,13 +19,18 @@ import {
   ProviderUsageDetails,
   ProviderUsagePlacementRow,
   providerUsageDetailsSide,
+  providerUsageExternalLink,
   resolveProviderUsagePlacement,
   resolveUsageWindowElapsedPercent,
   resolveUsageWindowPaceDeltaMs,
   formatUsageWindowPaceDelta,
   usageThreshold,
 } from "./ProviderUsageBar";
-import { mergeProviderUsageEntry, providerUsageAccountKey } from "../../providerUsageStore";
+import {
+  dismissProviderUsageResetCredit,
+  mergeProviderUsageEntry,
+  providerUsageAccountKey,
+} from "../../providerUsageStore";
 
 const makeProvider = (driver: string, instanceId = driver, email?: string): ServerProvider => ({
   instanceId: ProviderInstanceId.make(instanceId),
@@ -64,6 +69,134 @@ const usageActivity = (
 });
 
 describe("provider usage summaries", () => {
+  it("latches a freshly reported reset until the user acts and never resurrects that credit", () => {
+    const accountKey = "environment-local\0codex:account:test@example.com";
+    const resetCredit = {
+      id: "reset-credit-1",
+      title: "Full reset",
+      description: "Ready to redeem",
+      expiresAt: Date.parse("2026-09-01T00:00:00.000Z"),
+    };
+    const observed = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: ProviderDriverKind.make("codex"),
+        windows: [],
+        reportedAt: "2026-08-25T20:00:00.000Z",
+        resetCredits: { availableCount: 1, credits: [resetCredit] },
+      },
+    );
+
+    const omittedByAnotherThread = mergeProviderUsageEntry(observed, {
+      accountKey,
+      driver: ProviderDriverKind.make("codex"),
+      windows: [],
+      reportedAt: "2026-08-25T20:01:00.000Z",
+    });
+    expect(omittedByAnotherThread[accountKey]?.resetCredits?.credits).toEqual([resetCredit]);
+
+    const dismissed = dismissProviderUsageResetCredit(
+      omittedByAnotherThread,
+      accountKey,
+      resetCredit,
+    );
+    expect(dismissed[accountKey]?.resetCredits).toBeNull();
+
+    const staleResurrection = mergeProviderUsageEntry(dismissed, {
+      accountKey,
+      driver: ProviderDriverKind.make("codex"),
+      windows: [],
+      reportedAt: "2026-08-25T20:02:00.000Z",
+      resetCredits: { availableCount: 1, credits: [resetCredit] },
+    });
+    expect(staleResurrection[accountKey]?.resetCredits).toBeNull();
+
+    const newCredit = { ...resetCredit, id: "reset-credit-2" };
+    const genuinelyNewReset = mergeProviderUsageEntry(staleResurrection, {
+      accountKey,
+      driver: ProviderDriverKind.make("codex"),
+      windows: [],
+      reportedAt: "2026-08-25T20:03:00.000Z",
+      resetCredits: { availableCount: 1, credits: [newCredit] },
+    });
+    expect(genuinelyNewReset[accountKey]?.resetCredits?.credits).toEqual([newCredit]);
+  });
+
+  it("links Grok usage to its reset inventory without claiming native redemption", () => {
+    expect(providerUsageExternalLink(ProviderDriverKind.make("grok"))).toEqual({
+      href: "https://grok.com/automations?_s=usage",
+      label: "View Grok usage and resets",
+    });
+    expect(providerUsageExternalLink(ProviderDriverKind.make("codex"))).toBeNull();
+  });
+
+  it("surfaces available Codex usage reset credits without inventing an action for Grok", () => {
+    const codex = {
+      ...makeProvider("codex"),
+      accountUsage: {
+        rateLimits: {
+          secondary: {
+            usedPercent: 82,
+            windowDurationMins: 10_080,
+            resetsAt: 1_800_100_000,
+          },
+        },
+        rateLimitResetCredits: {
+          availableCount: 1,
+          credits: [
+            {
+              id: "reset-credit-1",
+              resetType: "codexRateLimits",
+              status: "available",
+              grantedAt: 1_781_654_400,
+              expiresAt: 1_784_246_400,
+              title: "Full reset",
+              description: "Ready to redeem",
+            },
+          ],
+        },
+      },
+      accountUsageReportedAt: "2026-07-29T15:00:00.000Z",
+    } satisfies ServerProvider;
+    const grok = {
+      ...makeProvider("grok"),
+      accountUsage: {
+        config: {
+          creditUsagePercent: 12,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-15T00:00:00+00:00",
+            end: "2026-08-22T00:00:00+00:00",
+          },
+        },
+      },
+      accountUsageReportedAt: "2026-08-18T15:00:00.000Z",
+    } satisfies ServerProvider;
+
+    const summaries = deriveProviderUsageSummaries(
+      [codex, grok],
+      [],
+      {},
+      Date.parse("2026-08-18T15:01:00.000Z"),
+    );
+
+    expect(summaries[0]?.resetCredits).toEqual({
+      availableCount: 1,
+      credits: [
+        expect.objectContaining({
+          id: "reset-credit-1",
+          title: "Full reset",
+          description: "Ready to redeem",
+        }),
+      ],
+    });
+    expect(summaries[1]?.resetCredits).toBeNull();
+    expect(summaries[1]?.windows[0]).toEqual(
+      expect.objectContaining({ resetAt: Date.parse("2026-08-22T00:00:00+00:00") }),
+    );
+  });
+
   it("omits Codex's retired five-hour window while preserving reported weekly and credit data", () => {
     const summaries = deriveProviderUsageSummaries(
       [makeProvider("codex")],

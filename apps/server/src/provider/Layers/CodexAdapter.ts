@@ -1537,14 +1537,21 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         ).pipe(Effect.forkIn(sessionScope));
 
         const started = yield* runtime.start().pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapterProcessError({
-                provider: PROVIDER,
-                threadId: input.threadId,
-                detail: cause.message,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            isCodexAppServerRequestTimeoutError(cause)
+              ? new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: cause.method,
+                  detail: cause.message,
+                  failureKind: "local-control-timeout",
+                  cause,
+                })
+              : new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: cause.message,
+                  cause,
+                }),
           ),
           Effect.onError(() =>
             runtime.close.pipe(

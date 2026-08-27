@@ -2,14 +2,86 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   appendAgentStreamText,
+  consumeAgentStopStreamDelta,
   containsAgentStopToken,
   emittedAgentStop,
   extractAgentStopSignoff,
+  INITIAL_AGENT_STOP_STREAM_STATE,
   isProviderAuthenticationFailure,
   isTerminalProviderRefusal,
   sessionNeedsProviderReset,
   shouldAgentContinueAfterReply,
 } from "./agentMode.ts";
+
+describe("consumeAgentStopStreamDelta", () => {
+  it("turns a concatenated stop token into an immediate stream boundary", () => {
+    const result = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "Finished.\n\nAGENT_STOPI'll start something else.",
+    );
+
+    expect(result.delta).toBe("Finished.\n\nAGENT_STOP");
+    expect(result.emittedStop).toBe(true);
+    expect(result.state.stopped).toBe(true);
+  });
+
+  it("recognizes a token split across provider deltas", () => {
+    const first = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "Finished.\n\nAGENT_",
+    );
+    const second = consumeAgentStopStreamDelta(first.state, "STOPPinch is working.");
+
+    expect(first.delta).toBe("Finished.\n\nAGENT_");
+    expect(first.emittedStop).toBe(false);
+    expect(second.delta).toBe("STOP");
+    expect(second.emittedStop).toBe(true);
+  });
+
+  it("drops later deltas after the control token has stopped the stream", () => {
+    const stopped = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "Done. AGENT_STOP",
+    );
+
+    expect(consumeAgentStopStreamDelta(stopped.state, "More work").delta).toBe("");
+  });
+
+  it("does not match a token embedded in an identifier", () => {
+    const result = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "MY_AGENT_STOPWATCH remains ordinary prose.",
+    );
+
+    expect(result.delta).toBe("MY_AGENT_STOPWATCH remains ordinary prose.");
+    expect(result.emittedStop).toBe(false);
+  });
+
+  it("does not turn an ordinary progress mention into a stop", () => {
+    const result = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "I’m auditing the stuck microphone, queued follow-ups/AGENT_STOP, and browser teardown next.",
+    );
+
+    expect(result.delta).toBe(
+      "I’m auditing the stuck microphone, queued follow-ups/AGENT_STOP, and browser teardown next.",
+    );
+    expect(result.emittedStop).toBe(false);
+    expect(result.state.stopped).toBe(false);
+  });
+
+  it("does not stop when a progress update ends with a path-like token mention", () => {
+    const result = consumeAgentStopStreamDelta(
+      INITIAL_AGENT_STOP_STREAM_STATE,
+      "Starting with the stuck microphone and queued follow-ups/AGENT_STOP",
+    );
+
+    expect(result.delta).toBe(
+      "Starting with the stuck microphone and queued follow-ups/AGENT_STOP",
+    );
+    expect(result.emittedStop).toBe(false);
+  });
+});
 
 describe("appendAgentStreamText", () => {
   it("separates prose that resumes after a terminal stop token", () => {
@@ -70,6 +142,12 @@ describe("extractAgentStopSignoff", () => {
   it("does not treat an embedded mention as a terminal stop", () => {
     const message = "Do not use AGENT_STOP because work remains.";
     expect(extractAgentStopSignoff(message)).toEqual({ hasStop: false, text: message });
+  });
+
+  it("does not treat a terminal path-like mention as a signoff", () => {
+    const message = "Starting with the microphone and queued follow-ups/AGENT_STOP";
+    expect(extractAgentStopSignoff(message)).toEqual({ hasStop: false, text: message });
+    expect(emittedAgentStop(message)).toBe(false);
   });
 
   it("strips a standalone stop line even when a stray trailing line follows it", () => {
@@ -196,6 +274,10 @@ describe("emittedAgentStop (continuation stop-gate)", () => {
 
   it("never matches the token inside a larger identifier", () => {
     expect(emittedAgentStop("Set MY_AGENT_STOPWATCH=1 before running.")).toBe(false);
+  });
+
+  it("does not stop on a trailing path-like protocol mention", () => {
+    expect(emittedAgentStop("Next: queued follow-ups/AGENT_STOP")).toBe(false);
   });
 });
 

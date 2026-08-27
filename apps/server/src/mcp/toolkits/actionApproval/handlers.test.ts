@@ -1,5 +1,6 @@
 import { expect, it, vi } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -17,6 +18,7 @@ import * as ActionApprovalPrompt from "./prompt.ts";
 import type { ActionApprovalInput } from "./types.ts";
 
 const threadId = ThreadId.make("thread-action-approval");
+const requestId = ApprovalRequestId.make("action-approval:test-request");
 const createdAt = "2026-08-21T12:00:00.000Z" as IsoDateTime;
 const input: ActionApprovalInput = {
   actionKind: "send_email",
@@ -58,7 +60,7 @@ const invocation = (
 
 const run = (
   interactionMode: "default" | "plan" | "agent",
-  outcome: ActionApprovalPrompt.ActionApprovalPromptOutcome = { status: "approved" },
+  outcome: ActionApprovalPrompt.ActionApprovalPromptOutcome = { status: "pending", requestId },
   capabilities?: Set<McpInvocationContext.McpCapability>,
   delegated = false,
 ) => {
@@ -86,27 +88,13 @@ const run = (
   return { effect, request, getThreadShellById };
 };
 
-it.effect("waits for explicit approval in normal interaction mode", () => {
+it.effect("returns a durable pending request in normal interaction mode", () => {
   const harness = run("default");
   return Effect.gen(function* () {
-    expect(yield* harness.effect).toEqual({ status: "approved", approvalMode: "user" });
+    expect(yield* harness.effect).toEqual({ status: "pending", approvalMode: "user", requestId });
     expect(harness.request).toHaveBeenCalledWith(input, {
       threadId,
       turnId: null,
-    });
-  });
-});
-
-it.effect("returns correction feedback so the agent can revise and ask again", () => {
-  const harness = run("default", {
-    status: "changes_requested",
-    feedback: "Make the subject more specific.",
-  });
-  return Effect.gen(function* () {
-    expect(yield* harness.effect).toEqual({
-      status: "changes_requested",
-      approvalMode: "user",
-      feedback: "Make the subject more specific.",
     });
   });
 });
@@ -120,27 +108,23 @@ it.effect("auto-approves in agent mode without opening a prompt", () => {
 });
 
 it.effect("requires explicit approval for the exact delegated turn even in agent mode", () => {
-  const harness = run("agent", { status: "approved" }, undefined, true);
+  const harness = run("agent", { status: "pending", requestId }, undefined, true);
   return Effect.gen(function* () {
-    expect(yield* harness.effect).toEqual({ status: "approved", approvalMode: "user" });
+    expect(yield* harness.effect).toEqual({ status: "pending", approvalMode: "user", requestId });
     expect(harness.request).toHaveBeenCalledOnce();
   });
 });
 
 it.effect("does not treat an unrelated agent-mode turn as delegated", () => {
-  const harness = run("agent", { status: "approved" }, undefined, false);
+  const harness = run("agent", { status: "pending", requestId }, undefined, false);
   return Effect.gen(function* () {
     expect(yield* harness.effect).toEqual({ status: "approved", approvalMode: "agent" });
     expect(harness.request).not.toHaveBeenCalled();
   });
 });
 
-it.effect("reports cancellation and unsupported elicitation without implying approval", () =>
+it.effect("reports unsupported elicitation without implying approval", () =>
   Effect.gen(function* () {
-    expect(yield* run("default", { status: "cancelled" }).effect).toEqual({
-      status: "cancelled",
-      approvalMode: "none",
-    });
     expect(yield* run("default", { status: "unsupported" }).effect).toEqual({
       status: "approval_unavailable",
       approvalMode: "none",
@@ -149,7 +133,7 @@ it.effect("reports cancellation and unsupported elicitation without implying app
 );
 
 it.effect("rejects a credential without collaboration-bound thread access", () => {
-  const harness = run("default", { status: "approved" }, new Set(["history"]));
+  const harness = run("default", { status: "pending", requestId }, new Set(["history"]));
   return Effect.gen(function* () {
     const error = yield* Effect.flip(harness.effect);
     expect(error._tag).toBe("ActionApprovalCapabilityUnavailableError");

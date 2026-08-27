@@ -199,6 +199,24 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const purgeCompletedTasksRow = SqlSchema.findAll({
+    Request: Schema.Struct({ cutoff: VmAgentTask.fields.updatedAt }),
+    Result: AgentRef,
+    execute: ({ cutoff }) => sql`
+      DELETE FROM vm_agent_tasks
+      WHERE status = 'completed'
+        AND delegation_id IS NULL
+        AND updated_at < ${cutoff}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM vm_agent_task_runs AS run
+          WHERE run.task_id = vm_agent_tasks.task_id
+            AND run.status IN ('queued', 'booting', 'running')
+        )
+      RETURNING vm_agent_id AS "vmAgentId"
+    `,
+  });
+
   const listRuns = SqlSchema.findAll({
     Request: AgentRef,
     Result: VmAgentTaskRun,
@@ -375,26 +393,6 @@ const make = Effect.gen(function* () {
       UPDATE vm_agent_notifications
       SET read_at = COALESCE(read_at, ${readAt})
       WHERE vm_agent_id = ${vmAgentId} AND notification_id = ${notificationId}
-    `,
-  });
-
-  /**
-   * Mark every notification raised for one dedupe key as read.
-   *
-   * Blocker alerts are inserted with `blocker:<blockerId>`, which is the only
-   * link between a standing request and the alert that announced it — the
-   * notification table carries no blocker id.
-   */
-  const markNotificationsReadByDedupeKeyRow = SqlSchema.void({
-    Request: Schema.Struct({
-      vmAgentId: VmAgentTask.fields.vmAgentId,
-      dedupeKey: Schema.String,
-      readAt: VmAgentNotification.fields.createdAt,
-    }),
-    execute: ({ vmAgentId, dedupeKey, readAt }) => sql`
-      UPDATE vm_agent_notifications
-      SET read_at = COALESCE(read_at, ${readAt})
-      WHERE vm_agent_id = ${vmAgentId} AND dedupe_key = ${dedupeKey}
     `,
   });
 
@@ -851,6 +849,12 @@ const make = Effect.gen(function* () {
   const deleteTask: VmAgentWorkspaceStoreShape["deleteTask"] = (vmAgentId, taskId) =>
     deleteTaskRow({ vmAgentId, taskId }).pipe(mapError("deleteTask"));
 
+  const purgeCompletedTasks: VmAgentWorkspaceStoreShape["purgeCompletedTasks"] = ({ cutoff }) =>
+    purgeCompletedTasksRow({ cutoff }).pipe(
+      mapError("purgeCompletedTasks"),
+      Effect.map((rows) => [...new Set(rows.map(({ vmAgentId }) => vmAgentId))]),
+    );
+
   const runTaskNow: VmAgentWorkspaceStoreShape["runTaskNow"] = ({ vmAgentId, taskId, now }) =>
     getTaskRow({ vmAgentId, taskId }).pipe(
       mapError("runTaskNow.read"),
@@ -998,10 +1002,6 @@ const make = Effect.gen(function* () {
   const markNotificationRead: VmAgentWorkspaceStoreShape["markNotificationRead"] = (input) =>
     markNotificationReadRow(input).pipe(mapError("markNotificationRead"));
 
-  const markNotificationsReadByDedupeKey: VmAgentWorkspaceStoreShape["markNotificationsReadByDedupeKey"] =
-    (input) =>
-      markNotificationsReadByDedupeKeyRow(input).pipe(mapError("markNotificationsReadByDedupeKey"));
-
   const updateNotification: VmAgentWorkspaceStoreShape["updateNotification"] = (input) =>
     updateNotificationRow({
       vmAgentId: input.vmAgentId,
@@ -1075,6 +1075,7 @@ const make = Effect.gen(function* () {
     createTask,
     updateTask,
     deleteTask,
+    purgeCompletedTasks,
     runTaskNow,
     claimNextDue,
     setRunBooting,
@@ -1083,7 +1084,6 @@ const make = Effect.gen(function* () {
     listRunObservations,
     createNotification,
     markNotificationRead,
-    markNotificationsReadByDedupeKey,
     updateNotification,
     purgeExpiredArchivedNotifications,
     updateNotificationPreferences,

@@ -1381,6 +1381,9 @@ export const makeCodexSessionRuntime = (
           threadId: payload.threadId,
           turnId,
           questions,
+          // We park the turn on `answers` until the user replies, so this
+          // request blocks by definition.
+          isBlocking: true,
         } satisfies EffectCodexSchema.ToolRequestUserInputParams;
 
         yield* Ref.update(pendingUserInputsRef, (current) => {

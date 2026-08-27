@@ -34,8 +34,10 @@ const claudeProvider = (usage?: unknown): ServerProvider => ({
 function summary(overrides: Partial<ProviderUsageSummary> = {}): ProviderUsageSummary {
   return {
     provider: claudeProvider(),
+    accountKey: "environment-local\0claudeAgent:account:test@example.com",
     state: "stale",
     reportedAt: "2026-07-29T15:00:00.000Z",
+    resetCredits: null,
     windows: [
       {
         key: "current_session",
@@ -93,6 +95,72 @@ describe("ProviderSettingsUsage", () => {
     expect(markup).toContain("Weekly");
     expect(markup).toContain("Stale");
     expect(markup).toContain('aria-label="Refresh Claude Personal usage"');
+  });
+
+  it("shows redeemable reset inventory and a use action", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderSettingsUsage
+        displayName="Codex Work"
+        driverKind={ProviderDriverKind.make("codex")}
+        provider={{
+          ...claudeProvider(),
+          instanceId: ProviderInstanceId.make("codex-work"),
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Codex Work",
+        }}
+        summary={summary({
+          provider: {
+            ...claudeProvider(),
+            instanceId: ProviderInstanceId.make("codex-work"),
+            driver: ProviderDriverKind.make("codex"),
+            displayName: "Codex Work",
+          },
+          resetCredits: {
+            availableCount: 1,
+            credits: [
+              {
+                id: "credit-1",
+                title: "Full reset",
+                description: "Ready to redeem",
+                expiresAt: Date.parse("2026-09-20T23:57:00.000Z"),
+              },
+            ],
+          },
+        })}
+        refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}
+        onRefresh={() => undefined}
+        onUseReset={async () => "reset"}
+      />,
+    );
+
+    expect(markup).toContain("Usage limit resets");
+    expect(markup).toContain("1 available");
+    expect(markup).toContain("Full reset");
+    expect(markup).toContain("Use reset");
+  });
+
+  it("links Grok to its web-only reset inventory", () => {
+    const grokProvider = {
+      ...claudeProvider(),
+      instanceId: ProviderInstanceId.make("grok"),
+      driver: ProviderDriverKind.make("grok"),
+      displayName: "Grok",
+    } satisfies ServerProvider;
+    const markup = renderToStaticMarkup(
+      <ProviderSettingsUsage
+        displayName="Grok"
+        driverKind={grokProvider.driver}
+        provider={grokProvider}
+        summary={summary({ provider: grokProvider })}
+        refreshState={IDLE_PROVIDER_USAGE_REFRESH_STATE}
+        onRefresh={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("View Grok usage and resets");
+    expect(markup).toContain("https://grok.com/automations?_s=usage");
+    expect(markup).toContain('target="_blank"');
+    expect(markup).not.toContain("Use reset");
   });
 
   it("announces in-flight refresh and keeps a truthful retryable error", () => {

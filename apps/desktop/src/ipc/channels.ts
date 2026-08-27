@@ -7,8 +7,8 @@ export const SAVE_THREAD_EXPORT_JSON_CHANNEL = "desktop:save-thread-export-json"
 export const REVEAL_FILE_CHANNEL = "desktop:reveal-file";
 export const WRITE_COMPOSER_CLIPBOARD_CHANNEL = "desktop:write-composer-clipboard";
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
-export const SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL =
-  "desktop:set-push-to-talk-system-audio-muted";
+export const SET_VOICE_CAPTURE_SYSTEM_AUDIO_MUTED_CHANNEL =
+  "desktop:set-voice-capture-system-audio-muted";
 export const TRANSCRIBE_VOICE_CHANNEL = "desktop:transcribe-voice";
 export const REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL = "desktop:remote-control-capture-frame";
 export const REMOTE_CONTROL_CAPTURE_SOURCES_CHANNEL = "desktop:remote-control-capture-sources";
@@ -89,6 +89,7 @@ export const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop:preview-automation-sta
 export const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:preview-automation-snapshot";
 export const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop:preview-automation-click";
 export const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop:preview-automation-type";
+export const PREVIEW_AUTOMATION_UPLOAD_CHANNEL = "desktop:preview-automation-upload";
 export const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop:preview-automation-press";
 export const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop:preview-automation-scroll";
 export const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop:preview-automation-evaluate";
@@ -99,6 +100,9 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+export const PREVIEW_NEW_TAB_REQUEST_CHANNEL = "desktop:preview-new-tab-request";
+export const PREVIEW_HUMAN_VERIFICATION_SIGNAL_CHANNEL =
+  "desktop:preview-human-verification-signal";
 export const ORCHESTRATOR_BUBBLE_SET_VISIBLE_CHANNEL = "desktop:orchestrator-bubble-set-visible";
 export const ORCHESTRATOR_BUBBLE_PUBLISH_STATE_CHANNEL =
   "desktop:orchestrator-bubble-publish-state";

@@ -1,10 +1,10 @@
 /**
  * Preview - Schemas for the in-app browser preview surface.
  *
- * The preview is desktop-only (Chromium <webview>); the server tracks per-thread
- * tab metadata so it survives client reconnects and multi-window. The desktop
- * renderer mediates: it owns the actual <webview> and reports navigation back to
- * the server via these RPCs, the server fans events to all subscribers.
+ * Desktop owns the interactive Chromium <webview>, while web and mobile clients
+ * can list and control its tabs and request bounded rendered frames through the
+ * connected server. Per-thread tab metadata survives reconnects and multi-window;
+ * the desktop renderer reports navigation and the server fans events to clients.
  *
  * @module Preview
  */
@@ -198,6 +198,32 @@ export const PreviewListResult = Schema.Struct({
   revision: NonNegativeInt,
 });
 export type PreviewListResult = typeof PreviewListResult.Type;
+
+/** Requests a bounded rendered frame from the desktop host that owns a tab. */
+export const PreviewRemoteSnapshotInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+});
+export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
+
+/**
+ * Mobile only needs the visible browser frame and navigation identity. Keep
+ * console/network/accessibility payloads out of this high-frequency path.
+ */
+export const PreviewRemoteSnapshotResult = Schema.Struct({
+  tabId: PreviewTabId,
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  capturedAt: Schema.String,
+  screenshot: Schema.Struct({
+    mimeType: Schema.Literal("image/jpeg"),
+    data: Schema.String,
+    width: Schema.Int,
+    height: Schema.Int,
+  }),
+});
+export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
 
 /** Authoritative tab set committed by a close operation. */
 export const PreviewCloseResult = Schema.Struct({

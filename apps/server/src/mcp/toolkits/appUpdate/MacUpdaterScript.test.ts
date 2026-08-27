@@ -25,6 +25,10 @@ it("relaunches macOS from the installed bundle path, not a name, id, or recycled
   expect(script).toContain("/usr/bin/nohup");
   expect(script).toContain("&!");
   expect(script).toContain('/bin/kill -TERM "$wait_pid"');
+  expect(script).toContain('/bin/kill -KILL "$wait_pid"');
+  expect(script).toContain('/bin/kill -KILL "$wait_backend_pid"');
+  expect(script).toContain('current_desktop_command="$(/bin/ps -p "$wait_pid"');
+  expect(script).toContain('current_backend_command="$(/bin/ps -p "$wait_backend_pid"');
   expect(script).not.toContain("tell application id");
   expect(script).not.toContain("open -na");
   expect(script).not.toContain("open -a ");

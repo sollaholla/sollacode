@@ -136,6 +136,8 @@ import {
   VmAgentNotificationRef,
   VmAgentNotificationUpdateInput,
   VmAgentRef,
+  VmAgentRules,
+  VmAgentRulesUpdateInput,
   VmAgentStreamItem,
   VmAgentTask,
   VmAgentTaskCreateInput,
@@ -157,6 +159,8 @@ import {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewRemoteSnapshotInput,
+  PreviewRemoteSnapshotResult,
   PreviewReportStatusInput,
   PreviewResizeInput,
   PreviewSessionSnapshot,
@@ -185,8 +189,14 @@ import {
   RemoteControlWatchInput,
 } from "./remoteControl.ts";
 import {
+  HostRepairStartError,
+  HostRepairStartInput,
+  HostRepairStartResult,
   ProviderAccountSwitchError,
   ProviderAccountSwitchState,
+  ProviderUsageResetError,
+  ProviderUsageResetInput,
+  ProviderUsageResetResult,
   ServerConfigStreamEvent,
   ServerConfig,
   ServerProviderUpdateError,
@@ -213,6 +223,7 @@ import {
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
+import { VoiceTranscriptCorrectionInput, VoiceTranscriptCorrectionResult } from "./voice.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -289,6 +300,7 @@ export const WS_METHODS = {
   previewRefresh: "preview.refresh",
   previewClose: "preview.close",
   previewList: "preview.list",
+  previewRemoteSnapshot: "preview.remoteSnapshot",
   previewReportStatus: "preview.reportStatus",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
@@ -310,6 +322,8 @@ export const WS_METHODS = {
   vmAgentDelete: "vmAgent.delete",
   vmAgentSubscribe: "vmAgent.subscribe",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
+  vmAgentRulesGet: "vmAgent.rules.get",
+  vmAgentRulesUpdate: "vmAgent.rules.update",
   vmAgentAttentionSubscribe: "vmAgent.attention.subscribe",
   vmAgentTaskCreate: "vmAgent.task.create",
   vmAgentTaskUpdate: "vmAgent.task.update",
@@ -329,6 +343,7 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverConsumeProviderUsageReset: "server.consumeProviderUsageReset",
   serverStartProviderAccountSwitch: "server.startProviderAccountSwitch",
   serverGetProviderAccountSwitch: "server.getProviderAccountSwitch",
   serverOpenProviderAccountSwitchAuthLink: "server.openProviderAccountSwitchAuthLink",
@@ -340,12 +355,14 @@ export const WS_METHODS = {
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  voiceTranscriptCorrect: "voice.transcript.correct",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverGetResourceTelemetryHistory: "server.getResourceTelemetryHistory",
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
+  serverStartHostRepair: "server.startHostRepair",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
@@ -407,6 +424,15 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
   success: ServerProviderUpdatedPayload,
   error: EnvironmentAuthorizationError,
 });
+
+export const WsServerConsumeProviderUsageResetRpc = Rpc.make(
+  WS_METHODS.serverConsumeProviderUsageReset,
+  {
+    payload: ProviderUsageResetInput,
+    success: ProviderUsageResetResult,
+    error: Schema.Union([ProviderUsageResetError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsServerStartProviderAccountSwitchRpc = Rpc.make(
   WS_METHODS.serverStartProviderAccountSwitch,
@@ -490,6 +516,12 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
 
+export const WsVoiceTranscriptCorrectRpc = Rpc.make(WS_METHODS.voiceTranscriptCorrect, {
+  payload: VoiceTranscriptCorrectionInput,
+  success: VoiceTranscriptCorrectionResult,
+  error: Schema.Union([TextGenerationError, EnvironmentAuthorizationError]),
+});
+
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
@@ -530,6 +562,12 @@ export const WsServerRetryResourceTelemetryRpc = Rpc.make(WS_METHODS.serverRetry
   payload: Schema.Struct({}),
   success: ResourceTelemetryRetryResult,
   error: EnvironmentAuthorizationError,
+});
+
+export const WsServerStartHostRepairRpc = Rpc.make(WS_METHODS.serverStartHostRepair, {
+  payload: HostRepairStartInput,
+  success: HostRepairStartResult,
+  error: Schema.Union([HostRepairStartError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
@@ -840,6 +878,12 @@ export const WsPreviewListRpc = Rpc.make(WS_METHODS.previewList, {
   error: EnvironmentAuthorizationError,
 });
 
+export const WsPreviewRemoteSnapshotRpc = Rpc.make(WS_METHODS.previewRemoteSnapshot, {
+  payload: PreviewRemoteSnapshotInput,
+  success: PreviewRemoteSnapshotResult,
+  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   payload: PreviewReportStatusInput,
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
@@ -918,6 +962,18 @@ export const WsVmAgentWorkspaceSubscribeRpc = Rpc.make(WS_METHODS.vmAgentWorkspa
   success: VmAgentWorkspaceStreamItem,
   error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
   stream: true,
+});
+
+export const WsVmAgentRulesGetRpc = Rpc.make(WS_METHODS.vmAgentRulesGet, {
+  payload: VmAgentRef,
+  success: VmAgentRules,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
+});
+
+export const WsVmAgentRulesUpdateRpc = Rpc.make(WS_METHODS.vmAgentRulesUpdate, {
+  payload: VmAgentRulesUpdateInput,
+  success: VmAgentRules,
+  error: Schema.Union([VmAgentWorkspaceError, EnvironmentAuthorizationError]),
 });
 
 export const WsVmAgentTaskCreateRpc = Rpc.make(WS_METHODS.vmAgentTaskCreate, {
@@ -1210,6 +1266,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerConsumeProviderUsageResetRpc,
   WsServerStartProviderAccountSwitchRpc,
   WsServerGetProviderAccountSwitchRpc,
   WsServerOpenProviderAccountSwitchAuthLinkRpc,
@@ -1221,12 +1278,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsVoiceTranscriptCorrectRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
+  WsServerStartHostRepairRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
@@ -1282,6 +1341,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewRefreshRpc,
   WsPreviewCloseRpc,
   WsPreviewListRpc,
+  WsPreviewRemoteSnapshotRpc,
   WsPreviewReportStatusRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
@@ -1301,6 +1361,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentDeleteRpc,
   WsVmAgentSubscribeRpc,
   WsVmAgentWorkspaceSubscribeRpc,
+  WsVmAgentRulesGetRpc,
+  WsVmAgentRulesUpdateRpc,
   WsVmAgentAttentionSubscribeRpc,
   WsVmAgentTaskCreateRpc,
   WsVmAgentTaskUpdateRpc,

@@ -25,7 +25,9 @@
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
+  ProviderUsageResetError,
   type ProviderInstanceId,
+  type ProviderUsageResetOutcome,
   type ServerProvider,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
@@ -517,6 +519,41 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* refreshOneSource(providerSource);
     });
 
+    const consumeUsageReset = Effect.fn("consumeUsageReset")(function* (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly creditId?: string | undefined;
+      readonly idempotencyKey: string;
+    }): Effect.fn.Return<ProviderUsageResetOutcome, ProviderUsageResetError> {
+      const instance = yield* instanceRegistry.getInstance(input.instanceId);
+      if (!instance) {
+        return yield* new ProviderUsageResetError({
+          instanceId: input.instanceId,
+          reason: "This provider instance is no longer available.",
+        });
+      }
+      if (!instance.usageReset) {
+        return yield* new ProviderUsageResetError({
+          instanceId: input.instanceId,
+          reason: "This provider does not expose redeemable usage resets.",
+        });
+      }
+      return yield* instance.usageReset
+        .consume({
+          idempotencyKey: input.idempotencyKey,
+          ...(input.creditId ? { creditId: input.creditId } : {}),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderUsageResetError({
+                instanceId: input.instanceId,
+                reason: "The provider rejected the usage reset request.",
+                cause,
+              }),
+          ),
+        );
+    });
+
     const recordAccountUsage = Effect.fn("recordAccountUsage")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly driver: ProviderDriverKind;
@@ -752,6 +789,7 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      consumeUsageReset,
       recordAccountUsage,
       getProviderMaintenanceCapabilitiesForInstance,
       setProviderMaintenanceActionState,

@@ -1,16 +1,11 @@
 import { expect, it } from "@effect/vitest";
-import { ApprovalRequestId, type OrchestrationCommand, ThreadId, TurnId } from "@t3tools/contracts";
+import { type OrchestrationCommand, ThreadId, TurnId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import * as ActionApprovalBroker from "./ActionApprovalBroker.ts";
 import * as ActionApprovalPrompt from "./prompt.ts";
 import type { ActionApprovalInput } from "./types.ts";
 
@@ -22,12 +17,8 @@ const input: ActionApprovalInput = {
 const threadId = ThreadId.make("thread-action-approval");
 const turnId = TurnId.make("turn-action-approval");
 
-const makeHarness = Effect.fn("ActionApprovalPromptTest.makeHarness")(function* (
-  timeout: Duration.Input,
-) {
+const makeHarness = Effect.fn("ActionApprovalPromptTest.makeHarness")(function* () {
   const commands: OrchestrationCommand[] = [];
-  const requestAppended =
-    yield* Deferred.make<Extract<OrchestrationCommand, { type: "thread.activity.append" }>>();
   const engineLayer = Layer.succeed(
     OrchestrationEngineService,
     OrchestrationEngineService.of({
@@ -35,15 +26,7 @@ const makeHarness = Effect.fn("ActionApprovalPromptTest.makeHarness")(function* 
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);
-        }).pipe(
-          Effect.andThen(
-            command.type === "thread.activity.append" &&
-              command.activity.kind === "user-input.requested"
-              ? Deferred.succeed(requestAppended, command).pipe(Effect.ignore)
-              : Effect.void,
-          ),
-          Effect.as({ sequence: commands.length }),
-        ),
+        }).pipe(Effect.as({ sequence: commands.length })),
       streamDomainEvents: Stream.empty,
       latestSequence: Effect.succeed(0),
     }),
@@ -60,30 +43,39 @@ const makeHarness = Effect.fn("ActionApprovalPromptTest.makeHarness")(function* 
       digest: (_algorithm, data) => Effect.succeed(data),
     }),
   );
-  const layer = ActionApprovalPrompt.makeLayer({ timeout }).pipe(
-    Layer.provideMerge(ActionApprovalBroker.layer),
+  const layer = ActionApprovalPrompt.makeLayer().pipe(
     Layer.provideMerge(engineLayer),
     Layer.provideMerge(cryptoLayer),
   );
-  return { commands, layer, requestAppended };
+  return { commands, layer };
 });
 
-it.effect("persists a thread-native approval prompt and returns the phone response", () =>
+it.effect("persists a durable approval prompt and returns pending without blocking MCP", () =>
   Effect.gen(function* () {
-    const harness = yield* makeHarness(Duration.minutes(1));
+    const harness = yield* makeHarness();
     yield* Effect.gen(function* () {
       const prompt = yield* ActionApprovalPrompt.ActionApprovalPrompt;
-      const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
-      const approvalFiber = yield* Effect.forkChild(prompt.request(input, { threadId, turnId }), {
-        startImmediately: true,
-      });
-      const requested = yield* Deferred.await(harness.requestAppended);
+      const outcome = yield* prompt.request(input, { threadId, turnId });
+      expect(outcome.status).toBe("pending");
+      if (outcome.status !== "pending") return;
+      expect(outcome.requestId).toMatch(/^action-approval:/);
+
+      const requested = harness.commands.find(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
+          command.type === "thread.activity.append" &&
+          command.activity.kind === "user-input.requested",
+      );
+      expect(requested).toBeDefined();
+      if (requested === undefined) return;
       const payload = requested.activity.payload as {
-        readonly requestId: ApprovalRequestId;
+        readonly requestId: string;
         readonly questions: ReadonlyArray<{ readonly id: string; readonly options: unknown }>;
+        readonly actionApproval: ActionApprovalInput;
       };
 
-      expect(requested.activity.turnId).toBe(turnId);
+      expect(requested.activity.turnId).toBeNull();
+      expect(payload.requestId).toBe(outcome.requestId);
+      expect(payload.actionApproval).toEqual(input);
       expect(payload.questions).toMatchObject([
         {
           id: "t3_action_approval",
@@ -91,63 +83,10 @@ it.effect("persists a thread-native approval prompt and returns the phone respon
         },
       ]);
       expect(
-        yield* broker.resolve({
-          threadId,
-          requestId: payload.requestId,
-          answers: { t3_action_approval: "Approve" },
-        }),
-      ).toBe("accepted");
-      expect(yield* Fiber.join(approvalFiber)).toEqual({ status: "approved" });
-      expect(
         harness.commands
           .filter((command) => command.type === "thread.activity.append")
           .map((command) => command.activity.kind),
-      ).toEqual(["user-input.requested", "user-input.resolved"]);
+      ).toEqual(["user-input.requested"]);
     }).pipe(Effect.provide(harness.layer));
-  }),
-);
-
-it.effect("returns typed corrections through the same durable prompt", () =>
-  Effect.gen(function* () {
-    const harness = yield* makeHarness(Duration.minutes(1));
-    yield* Effect.gen(function* () {
-      const prompt = yield* ActionApprovalPrompt.ActionApprovalPrompt;
-      const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
-      const approvalFiber = yield* Effect.forkChild(prompt.request(input, { threadId, turnId }), {
-        startImmediately: true,
-      });
-      const requested = yield* Deferred.await(harness.requestAppended);
-      const requestId = (requested.activity.payload as { readonly requestId: ApprovalRequestId })
-        .requestId;
-      yield* broker.resolve({
-        threadId,
-        requestId,
-        answers: { t3_action_approval: "Use a more specific subject." },
-      });
-      expect(yield* Fiber.join(approvalFiber)).toEqual({
-        status: "changes_requested",
-        feedback: "Use a more specific subject.",
-      });
-    }).pipe(Effect.provide(harness.layer));
-  }),
-);
-
-it.effect("closes the visible prompt instead of waiting forever", () =>
-  Effect.gen(function* () {
-    const harness = yield* makeHarness(Duration.seconds(30));
-    yield* Effect.gen(function* () {
-      const prompt = yield* ActionApprovalPrompt.ActionApprovalPrompt;
-      const approvalFiber = yield* Effect.forkChild(prompt.request(input, { threadId, turnId }), {
-        startImmediately: true,
-      });
-      yield* Deferred.await(harness.requestAppended);
-      yield* TestClock.adjust(Duration.seconds(30));
-      expect(yield* Fiber.join(approvalFiber)).toEqual({ status: "cancelled" });
-      expect(
-        harness.commands
-          .filter((command) => command.type === "thread.activity.append")
-          .map((command) => command.activity.kind),
-      ).toEqual(["user-input.requested", "user-input.resolved"]);
-    }).pipe(Effect.provide(Layer.merge(harness.layer, TestClock.layer())));
   }),
 );

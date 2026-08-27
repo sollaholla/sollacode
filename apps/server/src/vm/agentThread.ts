@@ -18,18 +18,39 @@ import {
   type ModelSelection,
   ProviderInstanceId,
   ThreadId,
+  toVmAgentHandle,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import {
+  VM_AGENT_CLAUDE_RULES_FILE_NAME,
+  VM_AGENT_CLAUDE_RULES_POINTER,
+  VM_AGENT_RULES_FILE_NAME,
+} from "./VmAgentRules.ts";
 
 const agentDefaultModelSelection = (): ModelSelection => ({
   instanceId: ProviderInstanceId.make("codex"),
   model: DEFAULT_MODEL,
 });
+
+/**
+ * A readable directory name with a durable unique suffix.
+ *
+ * The display name is not the identity: it can be renamed later, and a deleted
+ * agent's name can eventually be reused. The thread id keeps the directory
+ * collision-free without making the ordinary path opaque to a person browsing
+ * the agents folder.
+ */
+export const agentWorkingDirectoryName = (name: string, threadId: ThreadId): string => {
+  const readableName = toVmAgentHandle(name) || "agent";
+  return `${readableName}--${threadId}`;
+};
 
 /**
  * Create the agent's dedicated single chat thread under the reserved (hidden)
@@ -40,6 +61,8 @@ export const createAgentThread = (name: string) =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngine.OrchestrationEngineService;
     const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const modelSelection = agentDefaultModelSelection();
 
@@ -58,7 +81,22 @@ export const createAgentThread = (name: string) =>
       .pipe(Effect.catch(() => Effect.void));
 
     const threadId = ThreadId.make(NodeCrypto.randomUUID());
-    return yield* engine
+    const workingDirectory = path.join(
+      config.agentsWorkspaceDir,
+      agentWorkingDirectoryName(name, threadId),
+    );
+    const directoryReady = yield* Effect.gen(function* () {
+      yield* fs.makeDirectory(workingDirectory, { recursive: true });
+      yield* fs.writeFileString(path.join(workingDirectory, VM_AGENT_RULES_FILE_NAME), "");
+      yield* fs.writeFileString(
+        path.join(workingDirectory, VM_AGENT_CLAUDE_RULES_FILE_NAME),
+        `${VM_AGENT_CLAUDE_RULES_POINTER}\n`,
+      );
+      return true;
+    }).pipe(Effect.orElseSucceed(() => false));
+    if (!directoryReady) return null;
+
+    const created = yield* engine
       .dispatch({
         type: "thread.create",
         commandId: CommandId.make(NodeCrypto.randomUUID()),
@@ -69,13 +107,24 @@ export const createAgentThread = (name: string) =>
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "full-access",
         branch: null,
-        worktreePath: null,
+        // The reserved project keeps all agent chats grouped and hidden from
+        // the normal project sidebar. This per-thread override is their actual
+        // provider cwd, so agents no longer share the reserved project's root.
+        worktreePath: workingDirectory,
         createdAt,
       })
       .pipe(
         Effect.as<ThreadId | null>(threadId),
         Effect.orElseSucceed((): ThreadId | null => null),
       );
+
+    if (created === null) {
+      // This UUID-named directory was made exclusively for the failed create.
+      // Best-effort rollback avoids accumulating empty workspaces.
+      yield* fs.remove(workingDirectory, { recursive: true }).pipe(Effect.ignore);
+    }
+
+    return created;
   });
 
 /**

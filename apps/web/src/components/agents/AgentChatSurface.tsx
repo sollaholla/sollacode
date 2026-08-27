@@ -1,6 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import ChatView from "../ChatView";
 import { useThreadDetail, useThreadShell, useThreadStatus } from "../../state/entities";
@@ -15,6 +15,7 @@ import { resolveThreadSyncPhase } from "../../threadSync";
 export function AgentChatSurface(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly inlineNotice?: { readonly id: string; readonly content: ReactNode } | null;
 }) {
   const threadRef = useMemo(
     () => scopeThreadRef(props.environmentId, props.threadId),
@@ -37,6 +38,7 @@ export function AgentChatSurface(props: {
       threadSyncPhase={threadSyncPhase}
       hideWorkspaceHeader
       browserOnlySurfaces
+      inlineTimelineNotice={props.inlineNotice ?? null}
     />
   );
 }

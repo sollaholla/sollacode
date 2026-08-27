@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import { ThreadArtifactService } from "../../artifacts/ThreadArtifactService.ts";
+import { purgeDeletedThreadPersistence } from "../../persistence/DeletedThreadPersistence.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -69,6 +70,13 @@ const make = Effect.gen(function* () {
       threadId,
     });
 
+  const purgeThreadPersistence = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: purgeDeletedThreadPersistence(threadId),
+      message: "thread deletion cleanup skipped persisted conversation purge",
+      threadId,
+    });
+
   const processThreadDeleted = Effect.fn("processThreadDeleted")(function* (
     event: ThreadDeletedEvent,
   ) {
@@ -76,6 +84,7 @@ const make = Effect.gen(function* () {
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
     yield* deleteThreadArtifacts(threadId);
+    yield* purgeThreadPersistence(threadId);
   });
 
   const processThreadDeletedSafely = (event: ThreadDeletedEvent) =>

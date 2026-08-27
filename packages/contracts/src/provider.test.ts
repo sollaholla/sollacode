@@ -7,6 +7,7 @@ import {
   ProviderSession,
   ProviderSessionStartInput,
 } from "./provider.ts";
+import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "./orchestration.ts";
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
@@ -117,6 +118,32 @@ describe("ProviderSessionStartInput", () => {
 });
 
 describe("ProviderSendTurnInput", () => {
+  it("accepts 20 attachments and rejects the 21st at the provider contract boundary", () => {
+    const attachments = Array.from(
+      { length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 },
+      (_unused, index) => ({
+        type: "image" as const,
+        id: `image-${index + 1}`,
+        name: `image-${index + 1}.png`,
+        mimeType: "image/png",
+        sizeBytes: 1,
+      }),
+    );
+
+    expect(
+      decodeProviderSendTurnInput({
+        threadId: "thread-1",
+        attachments: attachments.slice(0, PROVIDER_SEND_TURN_MAX_ATTACHMENTS),
+      }).attachments,
+    ).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
+    expect(() =>
+      decodeProviderSendTurnInput({
+        threadId: "thread-1",
+        attachments,
+      }),
+    ).toThrow();
+  });
+
   it("accepts the host Token Optimizer state", () => {
     expect(
       decodeProviderSendTurnInput({

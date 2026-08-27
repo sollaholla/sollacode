@@ -59,6 +59,18 @@ releasing the key. Recordings are capped at two minutes. If microphone recording
 the one-time model download, or local inference is unavailable, the composer remains unchanged
 and Solla Code shows an error instead of sending an unverified transcript.
 
+While push-to-talk is active, Solla Code temporarily mutes device playback so a notification,
+video, or another tab cannot be transcribed back into the composer. The mute is scoped to the
+recording and is released on either half of the shortcut chord, a real window blur, page hide,
+timeout, cancellation, or teardown. A composer re-render or an arriving message does not end the
+recording or steal its insertion target; focus returns to the original input when recording ends.
+
+**Settings → General → Contextual voice correction** can pass a completed local transcript through
+a fast Utility AI model before insertion. Correction receives only a bounded recent-conversation
+snapshot, has an eight-second deadline, and falls back to the untouched local transcript on any
+timeout, provider failure, or implausible rewrite. A dedicated model can be selected there; when
+the override is off, correction uses the global **Utility AI model**.
+
 **Cmd+D** and **Ctrl+D** are reserved exclusively for voice transcription and cannot be assigned
 to configurable commands. Existing command rules using `mod+d` are removed during startup.
 

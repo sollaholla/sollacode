@@ -28,6 +28,35 @@ describe("ClientSettings voice transcription", () => {
       decodeClientSettingsPatch({ autoSendVoiceTranscription: true }).autoSendVoiceTranscription,
     ).toBe(true);
   });
+
+  it("defaults contextual correction off and accepts a dedicated model", () => {
+    const defaults = decodeClientSettings({});
+    expect(defaults.voiceTranscriptionCorrectionEnabled).toBe(false);
+    expect(defaults.voiceTranscriptionCorrectionModelSelection).toBeNull();
+
+    const patch = decodeClientSettingsPatch({
+      voiceTranscriptionCorrectionEnabled: true,
+      voiceTranscriptionCorrectionModelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.1-codex-mini",
+      },
+    });
+    expect(patch.voiceTranscriptionCorrectionEnabled).toBe(true);
+    expect(patch.voiceTranscriptionCorrectionModelSelection).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.1-codex-mini",
+    });
+  });
+});
+
+describe("ClientSettings desktop agent alerts", () => {
+  it("defaults off and accepts an explicit per-client opt-in", () => {
+    expect(decodeClientSettings({}).agentDesktopNotificationsEnabled).toBe(false);
+    expect(
+      decodeClientSettingsPatch({ agentDesktopNotificationsEnabled: true })
+        .agentDesktopNotificationsEnabled,
+    ).toBe(true);
+  });
 });
 
 describe("ClientSettings startup resume prompt", () => {
@@ -45,6 +74,20 @@ describe("ServerSettings Token Optimizer", () => {
     expect(
       decodeServerSettingsPatch({ claudeTokenOptimizerEnabled: true }).claudeTokenOptimizerEnabled,
     ).toBe(true);
+  });
+});
+
+describe("ServerSettings attachment retention", () => {
+  it("defaults to 48 hours and accepts a configured retention window", () => {
+    expect(decodeServerSettings({}).attachmentRetentionHours).toBe(48);
+    expect(
+      decodeServerSettingsPatch({ attachmentRetentionHours: 168 }).attachmentRetentionHours,
+    ).toBe(168);
+  });
+
+  it.each([0, 8_761, 47.5])("rejects an invalid retention window: %s", (value) => {
+    expect(() => decodeServerSettings({ attachmentRetentionHours: value })).toThrow();
+    expect(() => decodeServerSettingsPatch({ attachmentRetentionHours: value })).toThrow();
   });
 });
 

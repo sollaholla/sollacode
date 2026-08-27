@@ -171,6 +171,7 @@ target_parent="${target_app:h}"
 target_name="${target_app:t}"
 staged_app="$target_parent/.${target_name}.update-staged-$wait_pid"
 backup_app="$target_parent/.${target_name}.update-backup-$wait_pid"
+shutdown_grace_seconds=15
 if [[ -e "$staged_app" || -e "$backup_app" ]]; then
   print -u2 "A previous Solla Code update staging path still exists."
   exit 73
@@ -186,30 +187,64 @@ if ! /bin/kill -TERM "$wait_pid" >/dev/null 2>&1; then
   exit 75
 fi
 
-for _ in {1..120}; do
+for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
   if ! /bin/kill -0 "$wait_pid" >/dev/null 2>&1; then
     break
   fi
   /bin/sleep 1
 done
 if /bin/kill -0 "$wait_pid" >/dev/null 2>&1; then
-  print -u2 "Solla Code did not close within 120 seconds; the installed app was not changed."
-  /bin/rm -rf "$staged_app"
-  exit 75
+  # A provider drain can stall forever. Revalidate the exact captured process
+  # immediately before escalating so a recycled PID can never be targeted.
+  current_desktop_command="$(/bin/ps -p "$wait_pid" -o command= 2>/dev/null || true)"
+  if [[ -z "$current_desktop_command" || "$current_desktop_command" != "$expected_executable"* ]]; then
+    print -u2 "The Solla Code desktop process changed while the update was waiting; the installed app was not changed."
+    /bin/rm -rf "$staged_app"
+    exit 75
+  fi
+  print "Solla Code did not finish its graceful shutdown within ${shutdown_grace_seconds}s; stopping the verified desktop PID."
+  /bin/kill -KILL "$wait_pid"
+  for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
+    if ! /bin/kill -0 "$wait_pid" >/dev/null 2>&1; then
+      break
+    fi
+    /bin/sleep 1
+  done
+  if /bin/kill -0 "$wait_pid" >/dev/null 2>&1; then
+    print -u2 "The verified Solla Code desktop process could not be stopped; the installed app was not changed."
+    /bin/rm -rf "$staged_app"
+    exit 75
+  fi
 fi
 
 # Do not accept a health response from the backend that served the update
 # request. The replacement must own the listener before the installer succeeds.
-for _ in {1..120}; do
+for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
   if ! /bin/kill -0 "$wait_backend_pid" >/dev/null 2>&1; then
     break
   fi
   /bin/sleep 1
 done
 if /bin/kill -0 "$wait_backend_pid" >/dev/null 2>&1; then
-  print -u2 "The Solla Code backend did not close within 120 seconds; the installed app was not changed."
-  /bin/rm -rf "$staged_app"
-  exit 75
+  current_backend_command="$(/bin/ps -p "$wait_backend_pid" -o command= 2>/dev/null || true)"
+  if [[ -z "$current_backend_command" || "$current_backend_command" != "$expected_executable"* || "$current_backend_command" != *"apps/server/dist/bin.mjs"* ]]; then
+    print -u2 "The Solla Code backend process changed while the update was waiting; the installed app was not changed."
+    /bin/rm -rf "$staged_app"
+    exit 75
+  fi
+  print "The old backend remained after its verified desktop owner exited; stopping that exact backend PID."
+  /bin/kill -KILL "$wait_backend_pid"
+  for (( attempt = 0; attempt < shutdown_grace_seconds; attempt++ )); do
+    if ! /bin/kill -0 "$wait_backend_pid" >/dev/null 2>&1; then
+      break
+    fi
+    /bin/sleep 1
+  done
+  if /bin/kill -0 "$wait_backend_pid" >/dev/null 2>&1; then
+    print -u2 "The verified Solla Code backend process could not be stopped; the installed app was not changed."
+    /bin/rm -rf "$staged_app"
+    exit 75
+  fi
 fi
 
 /bin/mv "$target_app" "$backup_app"

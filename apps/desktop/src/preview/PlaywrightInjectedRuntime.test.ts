@@ -20,11 +20,13 @@ describe("playwright injected runtime", () => {
     }),
   );
 
-  effectIt.effect("builds an idempotent install expression", () =>
+  effectIt.effect("builds an idempotent utility-world install expression", () =>
     Effect.gen(function* () {
       const expression = yield* playwrightInjectedRuntimeInstallExpression();
       expect(expression).toContain("__t3PlaywrightInjected");
       expect(expression).toContain('testIdAttributeName":"data-testid');
+      expect(expression).toContain('isUtilityWorld":true');
+      expect(expression).not.toContain('isUtilityWorld":false');
     }),
   );
 

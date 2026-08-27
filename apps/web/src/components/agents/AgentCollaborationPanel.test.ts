@@ -216,7 +216,7 @@ describe("collaboration interaction identity", () => {
   it("does not claim a bounded empty snapshot has no handoffs", () => {
     expect(emptyDelegationListCopy(false)).toEqual({
       title: "No handoffs yet",
-      detail: "Give a bounded task to a named agent or a one-off helper.",
+      detail: "Delegated work, questions, and results will appear here.",
     });
     expect(emptyDelegationListCopy(true)).toEqual({
       title: "Handoff history is bounded",

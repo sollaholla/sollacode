@@ -80,6 +80,16 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
+    remoteSnapshot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:remote-snapshot",
+      tag: WS_METHODS.previewRemoteSnapshot,
+      scheduler: statusScheduler,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,

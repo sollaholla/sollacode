@@ -18,6 +18,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVoiceTranscriptCorrectionPrompt,
   buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
@@ -25,6 +26,7 @@ import {
   sanitizePrTitle,
   sanitizeThreadTitle,
   sanitizePlanRefreshSteps,
+  sanitizeCorrectedVoiceTranscript,
 } from "./TextGenerationUtils.ts";
 import {
   applyGrokAcpModelSelection,
@@ -57,6 +59,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generateBranchName"
       | "generateThreadTitle"
       | "generatePlanRefresh"
+      | "correctVoiceTranscript"
       | "generateVmAgentTaskPrompt";
     cwd: string;
     prompt: string;
@@ -276,6 +279,21 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       };
     });
 
+  const correctVoiceTranscript: TextGeneration.TextGeneration["Service"]["correctVoiceTranscript"] =
+    Effect.fn("GrokTextGeneration.correctVoiceTranscript")(function* (input) {
+      const { prompt, outputSchema } = buildVoiceTranscriptCorrectionPrompt(input);
+      const generated = yield* runGrokJson({
+        operation: "correctVoiceTranscript",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+      return {
+        transcript: sanitizeCorrectedVoiceTranscript(generated.transcript, input.transcript),
+      };
+    });
+
   const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
     Effect.fn("GrokTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
       const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
@@ -293,6 +311,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    correctVoiceTranscript,
     generatePlanRefresh,
     generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];

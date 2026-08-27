@@ -170,7 +170,7 @@ import { AgentStackSidebarEntry } from "./agents/AgentStackSidebarEntry";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
-import { startThreadExportBackgroundTask } from "../backgroundTasks";
+import { exportThreadJson } from "../threadExportAction";
 import { isAutoResumePendingWork } from "../agentMode";
 import {
   deriveWorkingSideChatsByParent,
@@ -2552,9 +2552,20 @@ export default function SidebarV2() {
           case "mark-unread":
             markThreadUnread(threadKey, thread.latestTurn?.completedAt);
             return;
-          case "export-json":
-            startThreadExportBackgroundTask(threadRef, thread.title);
+          case "export-json": {
+            const result = await settlePromise(() => exportThreadJson(threadRef));
+            if (result._tag === "Failure") {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not export conversation",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
             return;
+          }
           case "delete": {
             if (confirmThreadDelete) {
               const confirmed = await settlePromise(() =>

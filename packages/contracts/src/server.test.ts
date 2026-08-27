@@ -1,11 +1,17 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ServerConfig, ServerProvider, ServerUpsertKeybindingResult } from "./server.ts";
+import {
+  ProviderUsageResetInput,
+  ServerConfig,
+  ServerProvider,
+  ServerUpsertKeybindingResult,
+} from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
+const decodeProviderUsageResetInput = Schema.decodeUnknownSync(ProviderUsageResetInput);
 
 describe("ServerProvider", () => {
   it("defaults capability arrays when decoding provider snapshots", () => {
@@ -72,6 +78,26 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
+  });
+});
+
+describe("ProviderUsageResetInput", () => {
+  it("requires the client to identify one retryable reset attempt", () => {
+    expect(
+      decodeProviderUsageResetInput({
+        instanceId: "codex-work",
+        creditId: "reset-credit-1",
+        idempotencyKey: "reset-attempt-1",
+      }),
+    ).toEqual({
+      instanceId: "codex-work",
+      creditId: "reset-credit-1",
+      idempotencyKey: "reset-attempt-1",
+    });
+
+    expect(() =>
+      decodeProviderUsageResetInput({ instanceId: "codex-work", idempotencyKey: "" }),
+    ).toThrow();
   });
 });
 

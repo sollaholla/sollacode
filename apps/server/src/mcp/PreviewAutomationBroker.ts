@@ -3,6 +3,7 @@ import {
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationExecutionError,
+  PreviewAutomationHumanVerificationRequiredError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -13,6 +14,7 @@ import {
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedClientError,
+  PreviewHumanVerification,
   PreviewTabId,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
@@ -156,6 +158,7 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): stri
   `${scope.environmentId}\u0000${scope.providerSessionId}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
+const isPreviewHumanVerification = Schema.is(PreviewHumanVerification);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
@@ -221,6 +224,24 @@ const classifyResponseError = (
         ...context,
         ...remoteDiagnostics,
       });
+    case "PreviewAutomationHumanVerificationRequiredError": {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const verification =
+        detail && "verification" in detail && isPreviewHumanVerification(detail.verification)
+          ? detail.verification
+          : undefined;
+      return verification
+        ? new PreviewAutomationHumanVerificationRequiredError({
+            ...context,
+            ...remoteDiagnostics,
+            verification,
+          })
+        : new PreviewAutomationExecutionError({
+            ...context,
+            ...remoteDiagnostics,
+          });
+    }
     case "PreviewAutomationInvalidSelectorError": {
       return new PreviewAutomationInvalidSelectorError({
         ...context,

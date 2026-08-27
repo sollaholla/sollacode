@@ -40,7 +40,7 @@ import {
   pickFolder,
   revealFile,
   saveThreadExportJson,
-  setPushToTalkSystemAudioMuted,
+  setVoiceCaptureSystemAudioMuted,
   setTheme,
   startFileDrag,
   showContextMenu,
@@ -126,7 +126,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(saveThreadExportJson);
   yield* ipc.handle(revealFile);
   yield* ipc.handle(writeComposerClipboard);
-  yield* ipc.handle(setPushToTalkSystemAudioMuted);
+  yield* ipc.handle(setVoiceCaptureSystemAudioMuted);
   yield* ipc.handle(transcribeVoice);
   yield* ipc.handle(captureRemoteControlFrame);
   yield* ipc.handle(listRemoteControlCaptureSources);

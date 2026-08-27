@@ -10,7 +10,7 @@ import type { MessageId, OrchestrationThreadActivity } from "@t3tools/contracts"
  *
  * - `pending` — not yet acknowledged by the server (still a local echo).
  * - `sent` — persisted by the orchestrator, but the provider has not accepted it.
- * - `read` — accepted by the provider; it may still be waiting in a native queue.
+ * - `read` — consumed by the provider's active model turn.
  */
 export type MessageDeliveryState = "pending" | "sent" | "read";
 
@@ -22,12 +22,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Collects the ids the provider has confirmed accepting.
+ * Collects the ids the provider has confirmed consuming.
  *
  * Deliberately a positive signal: nothing here infers delivery from assistant
  * output, because a running turn keeps producing output from work that predates
- * the steer. Inferring would light the second checkmark before the provider had
- * accepted the message — the exact question the indicator exists to answer.
+ * the steer. Inferring would light the second checkmark while the message was
+ * merely waiting in a native queue — the exact failure this indicator exists
+ * to make visible.
  */
 export function deriveDeliveredMessageIds(
   activities: ReadonlyArray<OrchestrationThreadActivity>,

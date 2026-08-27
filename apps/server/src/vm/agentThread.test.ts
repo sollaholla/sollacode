@@ -1,13 +1,20 @@
 import { AGENT_BUILDER_THREAD_ID, type OrchestrationCommand, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Path from "effect/Path";
 
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ServerConfig from "../config.ts";
-import { notifyAgentBlockerResolved, openAgentBuilderThread } from "./agentThread.ts";
+import {
+  agentWorkingDirectoryName,
+  createAgentThread,
+  notifyAgentBlockerResolved,
+  openAgentBuilderThread,
+} from "./agentThread.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-agent-thread-test-",
@@ -62,6 +69,30 @@ it.effect("opens one persistent builder thread, greeting exactly once", () =>
     assert.deepStrictEqual(repeatTypes, []);
   }),
 );
+
+it.effect("creates every agent thread in its own readable working directory", () => {
+  const engine = makeEngine();
+  return Effect.gen(function* () {
+    const threadId = yield* createAgentThread("Fleet Scout");
+    assert.isNotNull(threadId);
+
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const threadCreate = engine.dispatched.find(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.create" }> =>
+        command.type === "thread.create",
+    );
+    const expected = path.join(
+      config.agentsWorkspaceDir,
+      agentWorkingDirectoryName("Fleet Scout", threadId!),
+    );
+    assert.strictEqual(threadCreate?.worktreePath, expected);
+    assert.isTrue(yield* fs.exists(expected));
+    assert.isTrue(yield* fs.exists(path.join(expected, "AGENTS.md")));
+    assert.strictEqual(yield* fs.readFileString(path.join(expected, "CLAUDE.md")), "@AGENTS.md\n");
+  }).pipe(Effect.provide(Layer.merge(engine.layer, configLayer)));
+});
 
 it.effect("sends resolved and dismissed blocker outcomes to the agent as follow-up turns", () =>
   Effect.gen(function* () {

@@ -1995,7 +1995,7 @@ export const make = Effect.gen(function* () {
           Effect.flatMap((settings) =>
             settings.sourceControlWriterModelSelection === null
               ? Effect.succeed({
-                  modelSelection: settings.textGenerationModelSelection,
+                  modelSelection: ServerSettings.resolveUtilityAiModelSelection(settings),
                   style: settings.sourceControlWritingStyle,
                 })
               : providerRegistry.getProviders.pipe(

@@ -1,7 +1,17 @@
 import { LoaderIcon, RefreshCwIcon } from "lucide-react";
-import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
+import type {
+  ProviderDriverKind,
+  ProviderUsageResetOutcome,
+  ServerProvider,
+} from "@t3tools/contracts";
 
-import { ProviderUsageDetails, type ProviderUsageSummary } from "../chat/ProviderUsageBar";
+import {
+  ProviderUsageDetails,
+  providerUsageExternalLink,
+  type ProviderUsageResetCredit,
+  type ProviderUsageSummary,
+} from "../chat/ProviderUsageBar";
+import { useProviderUsageStore } from "../../providerUsageStore";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isProviderUsageRefreshEligible } from "./providerUsageRefresh";
@@ -32,8 +42,13 @@ export function ProviderSettingsUsage(props: {
   readonly summary: ProviderUsageSummary | undefined;
   readonly refreshState: ProviderUsageRefreshState;
   readonly onRefresh: (() => void) | undefined;
+  readonly onUseReset?: (
+    creditId: string | undefined,
+    idempotencyKey: string,
+  ) => Promise<ProviderUsageResetOutcome>;
 }) {
-  const { displayName, driverKind, provider, summary, refreshState, onRefresh } = props;
+  const { displayName, driverKind, provider, summary, refreshState, onRefresh, onUseReset } = props;
+  const dismissResetCredit = useProviderUsageStore((state) => state.dismissResetCredit);
   const canRefresh =
     provider !== undefined && isProviderUsageRefreshEligible(provider) && onRefresh !== undefined;
   const refreshing = refreshState.status === "loading";
@@ -64,6 +79,16 @@ export function ProviderSettingsUsage(props: {
         state={summary.state}
         windows={summary.windows}
         reportedAt={summary.reportedAt}
+        resetCredits={summary.resetCredits ?? null}
+        externalUsageLink={providerUsageExternalLink(driverKind)}
+        {...(onUseReset ? { onUseReset } : {})}
+        {...(summary.accountKey
+          ? {
+              onDismissResetCredit: (credit: ProviderUsageResetCredit) => {
+                if (summary.accountKey) dismissResetCredit(summary.accountKey, credit);
+              },
+            }
+          : {})}
       />
       <div className="absolute right-2.5 top-2.5 flex items-center gap-1.5">
         {refreshing ? (

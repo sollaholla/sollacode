@@ -23,12 +23,26 @@ describe("buildVmAgentContext", () => {
     expect(context).toContain("Watch the Okta tenant thread");
   });
 
+  it("describes the agent's cwd as its own isolated durable workspace", () => {
+    const context = buildVmAgentContext(agent);
+    expect(context).toContain("working directory isolated to this agent");
+    expect(context).toContain("including your own AGENTS.md");
+    expect(context).toContain("use collaboration when work must cross agent boundaries");
+  });
+
   it("requires explicit browser tab reuse and cleanup decisions", () => {
     const context = buildVmAgentContext(agent);
     expect(context).toContain(T3_BROWSER_CONTROL_POLICY);
     expect(context).toContain("selection-required");
     expect(context).toContain("preview_close");
     expect(context).toContain("Never close a reused tab merely as cleanup");
+  });
+
+  it("keeps waiting-on-you requests out of the independent notification channel", () => {
+    const context = buildVmAgentContext(agent);
+    expect(context).toContain("waiting-on-you card is already the alert");
+    expect(context).toContain("NEVER call `notify_user` for the same request");
+    expect(context).toContain("independent informational updates that require no user action");
   });
 
   it("asks for direction when no purpose is set", () => {

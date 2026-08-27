@@ -1,4 +1,6 @@
 import { Tool, Toolkit } from "effect/unstable/ai";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
@@ -22,8 +24,10 @@ export const AgentBuilderTool = Tool.make("agent_builder", {
     VmAgentTaskScheduler,
     VmManager,
     OrchestrationEngine.OrchestrationEngineService,
-    // createAgentThread reads the agents workspace directory from config.
+    // createAgentThread provisions the agent's isolated working directory.
     ServerConfig.ServerConfig,
+    FileSystem.FileSystem,
+    Path.Path,
   ],
 })
   .annotate(Tool.Title, "Build and configure custom agents")

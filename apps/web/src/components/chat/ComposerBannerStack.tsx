@@ -38,9 +38,14 @@ export interface ComposerBannerStackItem {
 interface ComposerBannerStackProps {
   readonly className?: string;
   readonly items: ReadonlyArray<ComposerBannerStackItem>;
+  readonly onExpandedChange?: (expanded: boolean) => void;
 }
 
-export function ComposerBannerStack({ className, items }: ComposerBannerStackProps) {
+export function ComposerBannerStack({
+  className,
+  items,
+  onExpandedChange,
+}: ComposerBannerStackProps) {
   const [requestedExitingItemId, setExitingItemId] = useState<string | null>(null);
   const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const exitingItemId =
@@ -83,7 +88,15 @@ export function ComposerBannerStack({ className, items }: ComposerBannerStackPro
   };
 
   return (
-    <div className={cn("group/banner-stack chat-composer-measure mb-2", className)}>
+    <div
+      className={cn("group/banner-stack chat-composer-measure mb-2", className)}
+      onMouseEnter={() => onExpandedChange?.(true)}
+      onMouseLeave={() => onExpandedChange?.(false)}
+      onFocus={() => onExpandedChange?.(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) onExpandedChange?.(false);
+      }}
+    >
       <div
         className={cn(
           "relative flex flex-col-reverse",

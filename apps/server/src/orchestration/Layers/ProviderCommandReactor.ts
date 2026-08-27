@@ -26,6 +26,10 @@ import {
   sessionNeedsProviderReset,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
+import {
+  actionApprovalAnswerFromUnknown,
+  isActionApprovalRequestId,
+} from "@t3tools/shared/actionApproval";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
 import { RESUME_PROMPT } from "@t3tools/shared/resumePrompt";
 import { SETTINGS_UPDATE_MESSAGE_PREFIX } from "@t3tools/shared/settingsPrompt";
@@ -74,6 +78,7 @@ import {
 } from "../Services/ProviderCommandReactor.ts";
 import {
   resolveSourceControlWriterModelSelection,
+  resolveUtilityAiModelSelection,
   ServerSettingsService,
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
@@ -96,7 +101,10 @@ import {
   startupAutoResumeIds,
   STARTUP_RESUME_SIGNED_OFF_REASON,
 } from "../agentModeContinuation.ts";
-import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
+import {
+  browserTabCleanupSourceTurnId,
+  isBrowserTabCleanupMessageId,
+} from "@t3tools/shared/browserTabCleanup";
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -221,6 +229,9 @@ function findProviderAdapterRequestError(
 const isRetryableUpstreamFailure = (cause: Cause.Cause<unknown>): boolean =>
   findProviderAdapterRequestError(cause)?.failureKind === "retryable-upstream";
 
+const isLocalProviderControlPlaneTimeout = (cause: Cause.Cause<unknown>): boolean =>
+  findProviderAdapterRequestError(cause)?.failureKind === "local-control-timeout";
+
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
   if (error) {
@@ -278,6 +289,59 @@ function hasResolvedProviderRequest(
   );
 }
 
+interface DurableActionApprovalProposal {
+  readonly actionKind: string;
+  readonly summary: string;
+  readonly preview: string;
+}
+
+function findDurableActionApprovalProposal(
+  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+  requestId: string,
+): DurableActionApprovalProposal | null {
+  for (const activity of activities.toReversed()) {
+    if (activity.kind !== "user-input.requested") continue;
+    if (typeof activity.payload !== "object" || activity.payload === null) continue;
+    const payload = activity.payload as Record<string, unknown>;
+    if (payload.requestId !== requestId) continue;
+    const proposal = payload.actionApproval;
+    if (typeof proposal !== "object" || proposal === null) return null;
+    const record = proposal as Record<string, unknown>;
+    if (
+      typeof record.actionKind !== "string" ||
+      typeof record.summary !== "string" ||
+      typeof record.preview !== "string"
+    ) {
+      return null;
+    }
+    return {
+      actionKind: record.actionKind,
+      summary: record.summary,
+      preview: record.preview,
+    };
+  }
+  return null;
+}
+
+function actionApprovalContinuationMessage(input: {
+  readonly requestId: string;
+  readonly proposal: DurableActionApprovalProposal | null;
+  readonly answers: Readonly<Record<string, unknown>>;
+}): string {
+  const answer = actionApprovalAnswerFromUnknown(input.answers);
+  const proposal = input.proposal
+    ? `\n\nProposal:\n${input.proposal.summary}\n\n${input.proposal.preview}`
+    : `\n\nApproval request: ${input.requestId}`;
+  switch (answer.status) {
+    case "approved":
+      return `The user approved the exact external action below.${proposal}\n\nProceed with exactly that action now. Do not request approval again unless its destination, content, cost, or scope changes.`;
+    case "changes_requested":
+      return `The user did not approve the external action yet.${proposal}\n\nRequested correction:\n${answer.feedback}\n\nRevise the proposal and call request_action_approval again before acting.`;
+    case "cancelled":
+      return `The user declined the pending external action.${proposal}\n\nDo not perform it. Continue only with work that does not depend on that action.`;
+  }
+}
+
 function buildGeneratedWorktreeBranchName(raw: string): string {
   const normalized = raw
     .trim()
@@ -323,7 +387,8 @@ export const classifyTurnStartRecovery = (input: {
 }): TurnStartRecoveryVerdict => {
   if (input.sourceMessage === undefined) return "awaiting-projection";
   // A delivery whose message turned out not to be a real user send has been
-  // overtaken for good; so has one with an actual later user turn behind it.
+  // overtaken for good. Real user sends are a durable FIFO, however: a later
+  // message cannot erase an older one that the provider never accepted.
   if (input.sourceMessage.role !== "user") return "superseded";
   // Only continuation auto-resume prompts own their launch elsewhere. Judging
   // by the raw `inputOrigin === "agent-loop"` tag instead swept up scheduled
@@ -332,7 +397,7 @@ export const classifyTurnStartRecovery = (input: {
   // and the prompt sat at "Queued" forever. Same narrowing as the projection
   // pipeline applies when it creates the obligation.
   if (isAgentAutoResumeMessageId(input.messageId)) return "superseded";
-  return input.hasLaterRealUserTurn ? "superseded" : "proceed";
+  return "proceed";
 };
 
 /**
@@ -1020,7 +1085,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const settings = yield* serverSettingsService.getSettings;
         const modelSelection =
           settings.sourceControlWriterModelSelection === null
-            ? settings.textGenerationModelSelection
+            ? resolveUtilityAiModelSelection(settings)
             : resolveSourceControlWriterModelSelection(
                 settings,
                 yield* providerRegistry.getProviders,
@@ -1075,8 +1140,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       }) {
         const attachments = input.attachments ?? [];
         yield* Effect.gen(function* () {
-          const { textGenerationModelSelection: modelSelection } =
-            yield* serverSettingsService.getSettings;
+          const modelSelection = resolveUtilityAiModelSelection(
+            yield* serverSettingsService.getSettings,
+          );
 
           const generated = yield* textGeneration.generateThreadTitle({
             cwd: input.cwd,
@@ -1992,6 +2058,58 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           requestId: event.payload.requestId,
           resolvedKind: "user-input.resolved" as const,
         };
+
+        if (isActionApprovalRequestId(event.payload.requestId)) {
+          const alreadyResolved = hasResolvedProviderRequest(thread.activities, resolvedRequest);
+          if (!alreadyResolved) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(
+                `server:action-approval-resolved:${event.payload.requestId}`,
+              ),
+              threadId: event.payload.threadId,
+              activity: {
+                id: EventId.make(`action-approval-resolved:${event.payload.requestId}`),
+                tone: "info",
+                kind: "user-input.resolved",
+                summary: "Action approval answered",
+                payload: {
+                  requestId: event.payload.requestId,
+                  answers: event.payload.answers,
+                },
+                turnId: null,
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          }
+
+          const proposal = findDurableActionApprovalProposal(
+            thread.activities,
+            event.payload.requestId,
+          );
+          yield* orchestrationEngine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`server:action-approval-followup:${event.payload.requestId}`),
+            threadId: event.payload.threadId,
+            message: {
+              messageId: MessageId.make(`action-approval-response:${event.payload.requestId}`),
+              role: "user",
+              text: actionApprovalContinuationMessage({
+                requestId: event.payload.requestId,
+                proposal,
+                answers: event.payload.answers,
+              }),
+              attachments: [],
+            },
+            modelSelection: thread.modelSelection,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            createdAt: event.payload.createdAt,
+          });
+          return;
+        }
+
         if (hasResolvedProviderRequest(thread.activities, resolvedRequest)) {
           return;
         }
@@ -2114,8 +2232,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       });
 
       yield* Effect.gen(function* () {
-        const { textGenerationModelSelection: modelSelection } =
-          yield* serverSettingsService.getSettings;
+        const modelSelection = resolveUtilityAiModelSelection(
+          yield* serverSettingsService.getSettings,
+        );
 
         const currentSteps = derivePlanRefreshCurrentSteps(thread.activities);
         const transcript = buildPlanRefreshTranscript(thread.messages);
@@ -2483,6 +2602,17 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (isTerminalProviderRefusal(detail)) {
         return Effect.succeed({ state: "cancelled" as const, reason: detail });
       }
+      // The adapter has already closed and reaped this local provider process.
+      // Retrying here would only start another worker and wait out the same
+      // control-plane timeout again. The failed message remains visible and a
+      // deliberate user retry starts a clean session after they have had a
+      // chance to resolve host pressure or inspect diagnostics.
+      if (isLocalProviderControlPlaneTimeout(cause)) {
+        return Effect.succeed({
+          state: "cancelled" as const,
+          reason: `Provider startup timed out and its worker was stopped: ${detail}`,
+        });
+      }
       return isRetryableUpstreamFailure(cause)
         ? retryTransientUpstreamWork(detail, attempt)
         : retryFailureWork(detail, attempt);
@@ -2808,6 +2938,30 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             "source message has not been projected yet",
             obligation.attempt,
           );
+        }
+
+        const cleanupSourceTurnId = browserTabCleanupSourceTurnId({
+          threadId: String(obligation.threadId),
+          messageId: String(messageId),
+        });
+        if (
+          cleanupSourceTurnId !== null &&
+          thread.messages.some(
+            (message) =>
+              message.role === "assistant" &&
+              !message.streaming &&
+              String(message.turnId) === String(cleanupSourceTurnId) &&
+              emittedAgentStop(message.text),
+          )
+        ) {
+          // Ingestion normally prevents this synthetic turn from being
+          // planned. This is the durable recovery backstop for a cleanup row
+          // that was already persisted before the streamed stop won its race:
+          // cancel housekeeping only, never a real queued user delivery.
+          return {
+            state: "cancelled" as const,
+            reason: "browser cleanup source turn signed off with Agent stop",
+          };
         }
 
         const provider = (yield* providerRegistry.getProviders).find(

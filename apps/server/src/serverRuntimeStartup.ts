@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import * as ServerConfig from "./config.ts";
+import { startAttachmentRetention } from "./attachmentRetention.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
@@ -36,6 +37,8 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import * as ThreadWorkScheduler from "./orchestration/Services/ThreadWorkScheduler.ts";
 import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
+import { startVmAgentTaskRetention } from "./vm/VmAgentTaskRetention.ts";
+import { migrateVmAgentWorkingDirectories } from "./vm/VmAgentWorkingDirectories.ts";
 import { seedOrchestratorThread } from "./orchestrator/OrchestratorSeed.ts";
 import {
   formatHeadlessServeOutput,
@@ -340,6 +343,21 @@ export const make = Effect.gen(function* () {
           }),
         ),
         Effect.forkScoped,
+      ),
+    );
+
+    yield* startAttachmentRetention().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to start attachment retention", { cause }),
+      ),
+      Effect.forkScoped,
+    );
+
+    yield* startVmAgentTaskRetention.pipe(Effect.forkScoped);
+
+    yield* migrateVmAgentWorkingDirectories.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to migrate named agent working directories", { cause }),
       ),
     );
 

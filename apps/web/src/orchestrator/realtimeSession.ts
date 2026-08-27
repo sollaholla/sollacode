@@ -360,7 +360,7 @@ function readLevel(analyser: AnalyserNode, buffer: Uint8Array<ArrayBuffer>): num
  * server for a short-lived client secret, then talks to the selected backend
  * directly. OpenAI uses WebRTC; Grok Voice uses the xAI WebSocket documented
  * in the Speech-to-Speech API. Barge-in comes from the browser's own echo
- * cancellation — the desktop's `setPushToTalkSystemAudioMuted` path is
+ * cancellation — the desktop's `setVoiceCaptureSystemAudioMuted` path is
  * deliberately NOT used here, because it mutes all system output and would
  * mute the orchestrator's own voice.
  */

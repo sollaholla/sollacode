@@ -60,7 +60,7 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
     provider: Schema.String,
     method: Schema.String,
     detail: Schema.String,
-    failureKind: Schema.optional(Schema.Literal("retryable-upstream")),
+    failureKind: Schema.optional(Schema.Literals(["retryable-upstream", "local-control-timeout"])),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

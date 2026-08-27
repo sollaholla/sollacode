@@ -17,6 +17,8 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
+  observeDetachedPromise,
+  sendIntentionalShutdownToLiveWindows,
   shouldInterceptWindowCloseForQuit,
   withDesktopRelaunchArguments,
 } from "./DesktopLifecycle.logic.ts";
@@ -31,6 +33,18 @@ export class DesktopLifecycleRelaunchError extends Schema.TaggedErrorClass<Deskt
 ) {
   override get message(): string {
     return `Desktop relaunch failed for reason "${this.reason}".`;
+  }
+}
+
+export class DesktopLifecycleDetachedActionError extends Schema.TaggedErrorClass<DesktopLifecycleDetachedActionError>()(
+  "DesktopLifecycleDetachedActionError",
+  {
+    action: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Detached desktop lifecycle action "${this.action}" failed.`;
   }
 }
 
@@ -99,13 +113,18 @@ const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdo
 );
 
 const notifyIntentionalShutdown = Effect.gen(function* () {
-  yield* Effect.sync(() => {
-    for (const window of Electron.BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) {
-        window.webContents.send(INTENTIONAL_SHUTDOWN_CHANNEL);
-      }
-    }
-  });
+  const failures = yield* Effect.sync(() =>
+    sendIntentionalShutdownToLiveWindows(
+      Electron.BrowserWindow.getAllWindows(),
+      INTENTIONAL_SHUTDOWN_CHANNEL,
+    ),
+  );
+  if (failures.length > 0) {
+    yield* logLifecycleWarning("intentional shutdown overlay skipped a closing window", {
+      failureCount: failures.length,
+      error: failures[0],
+    });
+  }
   // Give Chromium one frame to paint the overlay before backend and socket
   // teardown begins. This delay happens only during an intentional quit.
   yield* Effect.sleep(INTENTIONAL_SHUTDOWN_PAINT_DELAY_MS);
@@ -113,12 +132,17 @@ const notifyIntentionalShutdown = Effect.gen(function* () {
 
 function handleBeforeQuit(
   event: Electron.Event,
-  runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
+  runDetached: <A, E>(
+    action: string,
+    effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>,
+    onSettled?: () => void,
+  ) => void,
   allowQuit: () => boolean,
   markQuitAllowed: () => void,
 ): void {
   if (allowQuit()) {
-    void runEffect(
+    runDetached(
+      "before-quit-allowed",
       Effect.gen(function* () {
         const state = yield* DesktopState.DesktopState;
         yield* Ref.set(state.quitting, true);
@@ -129,7 +153,8 @@ function handleBeforeQuit(
   }
 
   event.preventDefault();
-  void runEffect(
+  runDetached(
+    "before-quit-shutdown",
     Effect.gen(function* () {
       const state = yield* DesktopState.DesktopState;
       yield* Ref.set(state.quitting, true);
@@ -137,22 +162,28 @@ function handleBeforeQuit(
       yield* notifyIntentionalShutdown;
       yield* requestDesktopShutdownAndWait();
     }).pipe(Effect.withSpan("desktop.lifecycle.beforeQuit")),
-  ).finally(() => {
-    markQuitAllowed();
-    void runEffect(
-      Effect.gen(function* () {
-        const electronApp = yield* ElectronApp.ElectronApp;
-        yield* electronApp.quit;
-      }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
-    );
-  });
+    () => {
+      markQuitAllowed();
+      runDetached(
+        "quit-after-shutdown",
+        Effect.gen(function* () {
+          const electronApp = yield* ElectronApp.ElectronApp;
+          yield* electronApp.quit;
+        }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
+      );
+    },
+  );
 }
 
 function quitFromSignal(
   signal: "SIGINT" | "SIGTERM",
-  runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
+  runDetached: <A, E>(
+    action: string,
+    effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>,
+  ) => void,
 ): void {
-  void runEffect(
+  runDetached(
+    `process-${signal.toLowerCase()}`,
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ signal });
       const electronApp = yield* ElectronApp.ElectronApp;
@@ -216,17 +247,31 @@ export const make = DesktopLifecycle.of({
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
+    const runDetached = <A, E>(
+      action: string,
+      effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>,
+      onSettled?: () => void,
+    ): void => {
+      const observedEffect = effect.pipe(
+        Effect.catchCause((cause) => {
+          const error = new DesktopLifecycleDetachedActionError({ action, cause });
+          return logLifecycleError(error.message, { error });
+        }),
+      );
+      observeDetachedPromise(runEffect(observedEffect), onSettled);
+    };
     let quitAllowed = false;
     let windowCloseQuitRequested = false;
     yield* electronTheme.onUpdated(() => {
-      void runEffect(
+      runDetached(
+        "theme-updated",
         desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),
       );
     });
     yield* electronApp.on("before-quit", (event: Electron.Event) => {
       handleBeforeQuit(
         event,
-        runEffect,
+        runDetached,
         () => quitAllowed,
         () => {
           quitAllowed = true;
@@ -248,15 +293,19 @@ export const make = DesktopLifecycle.of({
           }
           closeEvent.preventDefault();
           windowCloseQuitRequested = true;
-          void runEffect(electronApp.quit);
+          runDetached("window-close-quit", electronApp.quit);
         });
       },
     );
     yield* electronApp.on("activate", () => {
-      void runEffect(desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")));
+      runDetached(
+        "activate",
+        desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.activate")),
+      );
     });
     yield* electronApp.on("window-all-closed", () => {
-      void runEffect(
+      runDetached(
+        "window-all-closed",
         Effect.gen(function* () {
           const app = yield* ElectronApp.ElectronApp;
           const state = yield* DesktopState.DesktopState;
@@ -269,10 +318,10 @@ export const make = DesktopLifecycle.of({
 
     if (environment.platform !== "win32") {
       yield* addScopedListener(process, "SIGINT", () => {
-        quitFromSignal("SIGINT", runEffect);
+        quitFromSignal("SIGINT", runDetached);
       });
       yield* addScopedListener(process, "SIGTERM", () => {
-        quitFromSignal("SIGTERM", runEffect);
+        quitFromSignal("SIGTERM", runDetached);
       });
     }
   }).pipe(Effect.withSpan("desktop.lifecycle.register")),

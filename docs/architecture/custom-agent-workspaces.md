@@ -20,6 +20,8 @@ Foreign keys cascade from `vm_agents`. A partial unique index permits only one q
 
 `VmAgentTaskScheduler` is one scoped server worker with a coalesced wake queue and a one-second due-work scan. There is no timer or process per task. The scheduler uses deterministic command and message identifiers derived from the run id, so recovery can safely redispatch a command after a crash.
 
+Completed workspace tasks remain visible for one hour after their completed transition, then a server retention sweep deletes the task and its run history. The sweep runs at startup and once per minute, excludes delegation-owned tasks, and will not delete a task with a live run. Reactivating a completed task before expiry preserves it.
+
 Before dispatch it checks the projected dedicated thread and defers when a turn or pending work exists. This preserves the custom agent's one-conversation invariant and makes queue state visible instead of superseding an undelivered instruction.
 
 Running task completion is observed through the existing `projection_turns.pending_message_id` relationship. Terminal projection state finalizes the run, updates one-time task state after success, and emits a deduplicated notification.
@@ -28,9 +30,16 @@ Running task completion is observed through the existing `projection_turns.pendi
 
 The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It derives the caller from the credential-bound thread through `VmAgentStore.getByThreadId`; callers cannot supply another agent id. Agent-created recurrence requires user approval. Artifact input is decoded against the declarative contract before persistence.
 
+The hidden Agents project remains the organizational parent for agent chats, but it is not their
+shared execution directory. Every newly created named agent receives a readable, uniquely suffixed
+subdirectory below the environment's agents root, and its dedicated thread stores that directory as
+its effective provider cwd. Renaming an agent does not move its files, and reusing a deleted name
+cannot collide with the prior directory. Legacy agents retain their existing shared cwd so an
+upgrade never guesses which agent owns older shared files.
+
 ## Client delivery
 
-`packages/client-runtime` owns the environment-scoped workspace stream and serialized mutation commands. The web client renders Tasks, Artifact, and Inbox alongside the existing Chat and Computer surfaces. Desktop inherits the web surface through Electron. Browser notifications are a best-effort delivery channel; the persisted Inbox and workspace stream are authoritative for local, LAN, relay, and tunnel clients.
+`packages/client-runtime` owns the environment-scoped workspace stream and serialized mutation commands. The web client renders scheduled work, structured dashboards, blockers, and independent alerts around the agent's existing Chat surface. Desktop inherits the web surface through Electron. Native notifications are a best-effort delivery channel; persisted workspace state is authoritative for local, LAN, relay, and tunnel clients. Blockers and notifications are separate records and separate attention counts: a waiting-on-you blocker must never create or require a derivative notification row.
 
 Bounded collaboration has a separate environment-scoped stream. A snapshot carries named-agent
 capability and availability summaries plus compact delegation list rows: relationship ids, compact

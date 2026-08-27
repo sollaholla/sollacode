@@ -17,7 +17,7 @@ import {
 } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const UPSTREAM_REF = "678157acaa819d5510adfe359abb5d0392cfe461";
+const UPSTREAM_REF = "3b3b4f8fb3f6403e72c2d0533ed0d2f309c59717";
 const USER_AGENT = "effect-codex-app-server-generator";
 const GITHUB_API_BASE =
   "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
@@ -71,6 +71,20 @@ class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("Generato
 }
 
 const ManualSchemas: Record<string, Schema.Json> = {
+  // 0.150 gave `account/usage/read` a params type, but ships no standalone
+  // schema file for it — without this the method is dropped from the bindings
+  // entirely rather than failing loudly.
+  GetAccountTokenUsageParams: {
+    type: "object",
+    title: "GetAccountTokenUsageParams",
+    properties: {
+      threadId: {
+        description:
+          "When present, read estimated usage for this thread instead of account-wide token activity.",
+        anyOf: [{ type: "string" }, { type: "null" }],
+      },
+    },
+  },
   GetAuthStatusParams: {
     type: "object",
     title: "GetAuthStatusParams",
@@ -291,14 +305,30 @@ function toPascalCaseMethod(method: string) {
     .join("");
 }
 
+/**
+ * Collapses `T | undefined` / `T | null` to `T`, and a params-less request to
+ * the literal `undefined` the rest of the generator expects.
+ */
+function normalizeParamsType(rawTypeName: string): string {
+  const named = rawTypeName
+    .split("|")
+    .map((part) => part.trim())
+    .find((part) => part.length > 0 && part !== "undefined" && part !== "null");
+  return named ?? "undefined";
+}
+
 function parseRequestEntries(fileContents: string): ReadonlyArray<MethodEntry> {
-  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params:\s*([^,}]+)/g;
+  // `params?:` is emitted once upstream makes a request's params optional —
+  // 0.150 did exactly that to `account/usage/read`. Matching only `params:`
+  // drops the entire method from the bindings without failing, so the method
+  // just quietly stops existing.
+  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params\??:\s*([^,}]+)/g;
   const entries: Array<MethodEntry> = [];
   let match: RegExpExecArray | null;
   while ((match = entryPattern.exec(fileContents)) !== null) {
     entries.push({
       method: match[1]!,
-      paramsType: match[2]!.trim(),
+      paramsType: normalizeParamsType(match[2]!),
     });
   }
   return entries;

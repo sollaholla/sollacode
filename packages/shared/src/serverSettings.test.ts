@@ -15,9 +15,24 @@ import {
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveUtilityAiModelSelection,
 } from "./serverSettings.ts";
 
 describe("serverSettings helpers", () => {
+  it("resolves app-owned AI work from the configured utility model", () => {
+    const configured = createModelSelection(
+      ProviderInstanceId.make("claudeAgent"),
+      "claude-sonnet-5",
+      [{ id: "effort", value: "high" }],
+    );
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: configured,
+    };
+
+    expect(resolveUtilityAiModelSelection(settings)).toBe(configured);
+  });
+
   it("normalizes optional persisted strings", () => {
     expect(normalizePersistedServerSettingString(undefined)).toBeUndefined();
     expect(normalizePersistedServerSettingString("   ")).toBeUndefined();

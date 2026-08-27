@@ -187,6 +187,7 @@ import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInvariant";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
+import { SidebarAutoCollapseOnEmptyPanel } from "./SidebarAutoCollapseOnEmptyPanel";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { PreviewSessionHydrator } from "./preview/PreviewSessionHydrator";
@@ -242,6 +243,7 @@ import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
+import { isPreviewFocused } from "../lib/previewFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -343,7 +345,7 @@ import {
   ProviderStatusBanner,
   shouldShowProviderStatusBanner,
 } from "./chat/ProviderStatusBanner";
-import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
+import { isHostRepairEligibleThreadError, ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { resolveThreadPr } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import { ProjectFolderMissingBanner } from "./chat/ProjectFolderMissingBanner";
@@ -374,6 +376,7 @@ import {
   canQueueLocalMessageDuringReconnect,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
+  deriveActiveSessionProviderDriver,
   deriveComposerSendState,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
@@ -444,13 +447,17 @@ import {
   isPushToTalkShortcut,
   isTranscriptionCancellationError,
   playRecordingStartCue,
+  restorePushToTalkFocus,
   resolveVisiblePushToTalkStatus,
   shouldHandlePushToTalkForSurface,
   shouldRouteTranscriptToTerminal,
-  shouldStopPushToTalkAfterFocusOut,
   startRecorderWithCue,
   transcribeRecordedAudio,
 } from "../pushToTalk";
+import {
+  buildVoiceTranscriptConversationContext,
+  correctVoiceTranscriptWithFallback,
+} from "../voiceTranscriptCorrection";
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
 
 const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
@@ -698,6 +705,8 @@ type ChatViewProps =
       hideWorkspaceHeader?: boolean;
       /** Agent threads: the right panel offers only the Browser surface. */
       browserOnlySurfaces?: boolean;
+      /** Agent alert rendered at the live end of the real chat timeline. */
+      inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: ThreadSyncPhase | null;
       artifactId?: string;
       routeKind: "server";
@@ -712,6 +721,7 @@ type ChatViewProps =
       embeddedSideChat?: boolean;
       hideWorkspaceHeader?: boolean;
       browserOnlySurfaces?: boolean;
+      inlineTimelineNotice?: { readonly id: string; readonly content: ReactNode } | null;
       threadSyncPhase?: never;
       artifactId?: never;
       routeKind: "draft";
@@ -1461,6 +1471,7 @@ function ChatViewContent(props: ChatViewProps) {
     embeddedSideChat = false,
     hideWorkspaceHeader = false,
     browserOnlySurfaces = false,
+    inlineTimelineNotice = null,
   } = props;
   const requestedArtifactId = routeKind === "server" ? (props.artifactId ?? null) : null;
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
@@ -1506,6 +1517,12 @@ function ChatViewContent(props: ChatViewProps) {
   const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const correctVoiceTranscript = useAtomCommand(serverEnvironment.correctVoiceTranscript, {
+    reportFailure: false,
+  });
+  const consumeProviderUsageReset = useAtomCommand(serverEnvironment.consumeProviderUsageReset, {
+    reportFailure: false,
+  });
   const startProviderAccountSwitch = useAtomCommand(serverEnvironment.startProviderAccountSwitch, {
     reportFailure: false,
   });
@@ -1524,6 +1541,9 @@ function ChatViewContent(props: ChatViewProps) {
     serverEnvironment.cancelProviderAccountSwitch,
     { reportFailure: false },
   );
+  const startHostRepair = useAtomCommand(serverEnvironment.startHostRepair, {
+    reportFailure: false,
+  });
   const [providerAccountSwitch, setProviderAccountSwitch] =
     useState<ProviderAccountSwitchState | null>(null);
   const [providerAccountSwitchCancelling, setProviderAccountSwitchCancelling] = useState(false);
@@ -1879,6 +1899,8 @@ function ChatViewContent(props: ChatViewProps) {
   >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  const [hostRepairStartingErrorKey, setHostRepairStartingErrorKey] = useState<string | null>(null);
+  const [hostRepairStartedErrorKey, setHostRepairStartedErrorKey] = useState<string | null>(null);
   const [pushToTalkStatus, setPushToTalkStatus] = useState<
     "recording" | "loading" | "transcribing" | null
   >(null);
@@ -2168,6 +2190,10 @@ function ChatViewContent(props: ChatViewProps) {
           dismissedServerErrorsByThreadKey[routeThreadKey] ?? null,
         )
       : localDraftError;
+  const hostRepairErrorKey =
+    isServerThread && threadError && isHostRepairEligibleThreadError(threadError)
+      ? `${routeThreadKey}:${activeServerThread?.session?.updatedAt ?? "local"}:${threadError}`
+      : null;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
@@ -3063,6 +3089,10 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  const activeSessionProviderDriver = deriveActiveSessionProviderDriver({
+    thread: activeThread,
+    providers: providerStatuses,
+  });
   const sideChatStatusByThreadId = useMemo(() => {
     const statusByThreadId = new Map<string, SideChatTabStatus>();
     for (const thread of sideChatChildShells) {
@@ -3124,6 +3154,28 @@ function ChatViewContent(props: ChatViewProps) {
     }
     await request;
   }, []);
+  const redeemProviderUsageReset = useCallback(
+    async (provider: ServerProvider, creditId: string | undefined, idempotencyKey: string) => {
+      const result = await consumeProviderUsageReset({
+        environmentId,
+        input: {
+          instanceId: provider.instanceId,
+          idempotencyKey,
+          ...(creditId ? { creditId } : {}),
+        },
+      });
+      if (result._tag === "Failure") {
+        throw squashAtomCommandFailure(result);
+      }
+      for (const report of Object.values(
+        deriveProviderUsageReports(result.value.providers, [], environmentId),
+      )) {
+        recordProviderUsage(report);
+      }
+      return result.value.outcome;
+    },
+    [consumeProviderUsageReset, environmentId, recordProviderUsage],
+  );
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider,
@@ -3523,6 +3575,10 @@ function ChatViewContent(props: ChatViewProps) {
       };
     });
   }, [serverAttachmentUrlById, serverMessages]);
+  const voiceTranscriptConversationContext = useMemo(
+    () => buildVoiceTranscriptConversationContext(serverMessages ?? []),
+    [serverMessages],
+  );
   useEffect(() => {
     if (typeof Image === "undefined" || displayServerMessages.length === 0) {
       return;
@@ -3772,7 +3828,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const hasQueuedGrokMessages = useMemo(
     () =>
-      lockedProvider === "grok" &&
+      activeSessionProviderDriver === "grok" &&
       phase === "running" &&
       timelineMessages.some(
         (message) =>
@@ -3781,12 +3837,12 @@ function ChatViewContent(props: ChatViewProps) {
           (activeWorkStartedAt === null || message.createdAt > activeWorkStartedAt) &&
           !promotedQueuedGrokMessageIds.has(message.id) &&
           !pendingMessageIds.has(message.id) &&
-          deliveredMessageIds.has(message.id),
+          !deliveredMessageIds.has(message.id),
       ),
     [
       deliveredMessageIds,
       activeWorkStartedAt,
-      lockedProvider,
+      activeSessionProviderDriver,
       pendingMessageIds,
       phase,
       promotedQueuedGrokMessageIds,
@@ -4099,6 +4155,38 @@ function ChatViewContent(props: ChatViewProps) {
     setThreadError,
     stopThreadSession,
   ]);
+  const startHostRepairForThreadError = useCallback(async () => {
+    if (!activeServerThread || !hostRepairErrorKey) return;
+    setHostRepairStartingErrorKey(hostRepairErrorKey);
+    try {
+      const result = await startHostRepair({
+        environmentId: activeServerThread.environmentId,
+        input: { sourceThreadId: activeServerThread.id },
+      });
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start computer repair",
+            description: chatActionErrorMessage(error),
+          }),
+        );
+        return;
+      }
+      setHostRepairStartedErrorKey(hostRepairErrorKey);
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: "Repair agent started",
+          description: `Working in ${result.value.workspaceRoot} under approval-required access.`,
+        }),
+      );
+    } finally {
+      setHostRepairStartingErrorKey((current) => (current === hostRepairErrorKey ? null : current));
+    }
+  }, [activeServerThread, hostRepairErrorKey, startHostRepair]);
 
   /**
    * Put the caret back in the composer after something settles.
@@ -4115,7 +4203,8 @@ function ChatViewContent(props: ChatViewProps) {
    * go straight to the editor handle.
    */
   const focusComposer = useCallback(() => {
-    if (!shouldRestoreComposerFocus({ usesOnScreenKeyboard })) return;
+    if (!shouldRestoreComposerFocus({ previewFocused: isPreviewFocused(), usesOnScreenKeyboard }))
+      return;
     composerRef.current?.focusAtEnd();
   }, [composerRef, usesOnScreenKeyboard]);
   const scheduleComposerFocus = useCallback(() => {
@@ -5625,6 +5714,7 @@ function ChatViewContent(props: ChatViewProps) {
       !shouldAutoFocusComposerOnThreadOpen({
         hasThread: Boolean(activeThread?.id),
         terminalSurfaceActive: terminalMainSurfaceActive,
+        previewFocused: isPreviewFocused(),
         usesOnScreenKeyboard,
       })
     ) {
@@ -6373,7 +6463,10 @@ function ChatViewContent(props: ChatViewProps) {
     // Captured here, not read later: by the time the message is built these
     // tasks have been stopped and are gone from the list.
     let interruptedTaskTitles: ReadonlyArray<string> = [];
-    if (runningBackgroundTasks.length > 0 && !(lockedProvider === "grok" && phase === "running")) {
+    if (
+      runningBackgroundTasks.length > 0 &&
+      !(activeSessionProviderDriver === "grok" && phase === "running")
+    ) {
       if (!window.confirm(describeSendOverRunningTasks(runningBackgroundTasks.length))) return;
       interruptedTaskTitles = runningBackgroundTasks.map(
         (task) => task.title || task.taskType || "Background task",
@@ -7042,6 +7135,22 @@ function ChatViewContent(props: ChatViewProps) {
     setThreadError,
   ]);
 
+  const voiceTranscriptCorrectionConfig = {
+    enabled: settings.voiceTranscriptionCorrectionEnabled,
+    cwd:
+      activeProject === null
+        ? ""
+        : projectScriptCwd({
+            project: { cwd: activeProject.workspaceRoot },
+            worktreePath: activeThread?.worktreePath ?? null,
+          }),
+    conversationContext: voiceTranscriptConversationContext,
+    modelSelection:
+      settings.voiceTranscriptionCorrectionModelSelection ?? settings.textGenerationModelSelection,
+  };
+  const voiceTranscriptCorrectionRef = useRef(voiceTranscriptCorrectionConfig);
+  voiceTranscriptCorrectionRef.current = voiceTranscriptCorrectionConfig;
+
   pushToTalkEnabledRef.current =
     appVoiceCaptureEnabled &&
     !anyBackgroundVoiceTranscriptionActive &&
@@ -7067,6 +7176,9 @@ function ChatViewContent(props: ChatViewProps) {
     let stream: MediaStream | null = null;
     let chunks: Blob[] = [];
     let recordingTimeout: number | null = null;
+    let focusRestoreFrame: number | null = null;
+    let focusRestoreTarget: HTMLElement | null = null;
+    let focusRestoreToComposer = false;
     let recordingTimedOut = false;
     let systemAudioMuteRequested = false;
 
@@ -7074,6 +7186,21 @@ function ChatViewContent(props: ChatViewProps) {
       if (recordingTimeout === null) return;
       window.clearTimeout(recordingTimeout);
       recordingTimeout = null;
+    };
+
+    const restoreHeldFocus = () => {
+      const target = focusRestoreTarget;
+      const shouldFallbackToComposer = focusRestoreToComposer;
+      focusRestoreTarget = null;
+      focusRestoreToComposer = false;
+      if (focusRestoreFrame !== null) window.cancelAnimationFrame(focusRestoreFrame);
+      focusRestoreFrame = window.requestAnimationFrame(() => {
+        focusRestoreFrame = null;
+        if (disposed) return;
+        restorePushToTalkFocus(target, () => {
+          if (shouldFallbackToComposer) composerRef.current?.focusAtEnd();
+        });
+      });
     };
 
     const reportError = (title: string, description: string) => {
@@ -7084,7 +7211,9 @@ function ChatViewContent(props: ChatViewProps) {
     const restoreSystemAudio = () => {
       if (!systemAudioMuteRequested) return;
       systemAudioMuteRequested = false;
-      void window.desktopBridge?.setPushToTalkSystemAudioMuted(false).catch(() => undefined);
+      void window.desktopBridge
+        ?.setVoiceCaptureSystemAudioMuted({ owner: "dictation", muted: false })
+        .catch(() => undefined);
     };
 
     const startRecording = async () => {
@@ -7172,6 +7301,18 @@ function ChatViewContent(props: ChatViewProps) {
                     : Math.max(15, progress.progress ?? 50),
               });
             })
+              .then((transcript) => {
+                const correction = voiceTranscriptCorrectionRef.current;
+                return correctVoiceTranscriptWithFallback({
+                  ...correction,
+                  transcript,
+                  request: async (input) => {
+                    const result = await correctVoiceTranscript({ environmentId, input });
+                    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+                    return result.value.transcript;
+                  },
+                });
+              })
               .then((transcript) => {
                 const terminalTarget = pushToTalkTerminalTargetRef.current;
                 pushToTalkTerminalTargetRef.current = null;
@@ -7270,7 +7411,10 @@ function ChatViewContent(props: ChatViewProps) {
               playCue: () => playRecordingStartCue(resolveVoiceCuePolicy(clientSettings)),
               muteSystemAudio:
                 desktopBridge !== undefined && clientSettings.pushToTalkMutesSystemAudio
-                  ? () => desktopBridge.setPushToTalkSystemAudioMuted(true).catch(() => false)
+                  ? () =>
+                      desktopBridge
+                        .setVoiceCaptureSystemAudioMuted({ owner: "dictation", muted: true })
+                        .catch(() => false)
                   : null,
               recordingActive: () => !disposed && recorder?.state === "recording",
               noteMuteRequested: () => {
@@ -7287,11 +7431,18 @@ function ChatViewContent(props: ChatViewProps) {
           if (recorder?.state !== "recording") return;
           recordingTimedOut = true;
           held = false;
+          restoreHeldFocus();
           restoreSystemAudio();
           recorder.stop();
         }, PUSH_TO_TALK_MAX_RECORDING_MS);
       } catch (cause) {
+        clearRecordingTimeout();
         restoreSystemAudio();
+        if (recorder?.state !== "recording") {
+          recorder = null;
+          stream?.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
         reportError(
           "Microphone access failed",
           cause instanceof Error ? cause.message : "Solla Code could not access the microphone.",
@@ -7301,12 +7452,21 @@ function ChatViewContent(props: ChatViewProps) {
 
     const beginHolding = (terminalTarget: PushToTalkTerminalTarget | null = null) => {
       if (held) return;
+      if (focusRestoreFrame !== null) {
+        window.cancelAnimationFrame(focusRestoreFrame);
+        focusRestoreFrame = null;
+      }
+      focusRestoreTarget =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      focusRestoreToComposer = terminalTarget === null;
       pushToTalkTerminalTargetRef.current = terminalTarget;
       held = true;
       void startRecording();
     };
     const endHolding = () => {
+      const wasHeld = held;
       held = false;
+      if (wasHeld) restoreHeldFocus();
       restoreSystemAudio();
       if (pushToTalkStatusRef.current === "recording" && !disposed) {
         setPushToTalkStatus(null);
@@ -7342,33 +7502,22 @@ function ChatViewContent(props: ChatViewProps) {
       event.stopImmediatePropagation();
       endHolding();
     };
-    const stopOnFocusLoss = () => {
+    const stopForPageDeparture = () => {
       endHolding();
     };
-    const onDocumentFocusOut = (event: FocusEvent) => {
-      // Focus settles after `focusout`. Deferring distinguishes a true window
-      // departure from a focused React node being replaced during a live UI
-      // update, which otherwise ends a held recording at random.
-      window.setTimeout(() => {
-        if (
-          shouldStopPushToTalkAfterFocusOut({
-            relatedTarget: event.relatedTarget,
-            documentHasFocus: document.hasFocus(),
-          })
-        ) {
-          stopOnFocusLoss();
-        }
-      }, 0);
-    };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") stopOnFocusLoss();
+      if (document.visibilityState === "hidden") stopForPageDeparture();
     };
 
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
-    window.addEventListener("blur", stopOnFocusLoss);
-    window.addEventListener("pagehide", stopOnFocusLoss);
-    document.addEventListener("focusout", onDocumentFocusOut, true);
+    // A held recording belongs to the physical chord, not DOM focus. React
+    // replacing the focused composer or a new message taking focus must not
+    // end it, so there is deliberately no `focusout` listener. A true window
+    // blur is different: Chromium may never deliver keyup after the app loses
+    // focus, so it is a deterministic stop boundary alongside page departure.
+    window.addEventListener("blur", stopForPageDeparture);
+    window.addEventListener("pagehide", stopForPageDeparture);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disposed = true;
@@ -7379,11 +7528,11 @@ function ChatViewContent(props: ChatViewProps) {
       endHolding();
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
-      window.removeEventListener("blur", stopOnFocusLoss);
-      window.removeEventListener("pagehide", stopOnFocusLoss);
-      document.removeEventListener("focusout", onDocumentFocusOut, true);
+      window.removeEventListener("blur", stopForPageDeparture);
+      window.removeEventListener("pagehide", stopForPageDeparture);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       clearRecordingTimeout();
+      if (focusRestoreFrame !== null) window.cancelAnimationFrame(focusRestoreFrame);
       if (!recordingWasActive) stream?.getTracks().forEach((track) => track.stop());
       restoreSystemAudio();
     };
@@ -7391,7 +7540,9 @@ function ChatViewContent(props: ChatViewProps) {
     appVoiceCaptureEnabled,
     composerDraftTarget,
     composerRef,
+    correctVoiceTranscript,
     embeddedSideChat,
+    environmentId,
     setComposerDraftPrompt,
     settings.autoSendVoiceTranscription,
     transcriptionOwnerKey,
@@ -8338,6 +8489,12 @@ function ChatViewContent(props: ChatViewProps) {
           error={threadError}
           occurredAt={activeServerThread?.session?.updatedAt ?? null}
           onDismiss={dismissThreadError}
+          {...(hostRepairErrorKey && hostRepairStartedErrorKey !== hostRepairErrorKey
+            ? { onFixWithAi: () => void startHostRepairForThreadError() }
+            : {})}
+          fixingWithAi={
+            hostRepairErrorKey !== null && hostRepairStartingErrorKey === hostRepairErrorKey
+          }
         />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -8384,6 +8541,7 @@ function ChatViewContent(props: ChatViewProps) {
                   detailsSide={providerUsageDetailsSide(true)}
                   onRefreshProvider={refreshProviderUsage}
                   onSwitchUser={requestProviderAccountSwitch}
+                  onUseReset={redeemProviderUsageReset}
                 />
               </ProviderUsagePlacementRow>
             ) : null}
@@ -8509,6 +8667,7 @@ function ChatViewContent(props: ChatViewProps) {
                 onResumeIncompleteTurn={onResumeIncompleteTurn}
                 isResumeIncompleteTurnBusy={isResumeIncompleteTurnBusy}
                 isResumeIncompleteTurnDisabled={activeEnvironmentUnavailable}
+                inlineNotice={inlineTimelineNotice}
               />
 
               {showThreadSyncOverlay && threadSyncPhase ? (
@@ -8581,6 +8740,7 @@ function ChatViewContent(props: ChatViewProps) {
                         detailsSide={providerUsageDetailsSide(false)}
                         onRefreshProvider={refreshProviderUsage}
                         onSwitchUser={requestProviderAccountSwitch}
+                        onUseReset={redeemProviderUsageReset}
                       />
                     ) : null
                   }
@@ -9078,6 +9238,16 @@ function ChatViewContent(props: ChatViewProps) {
     >
       {activeThreadRef && isPreviewSupportedInRuntime() ? (
         <PreviewSessionHydrator threadRef={activeThreadRef} />
+      ) : null}
+      {/* Keyed by thread so arriving at a thread with no tabs from one with
+          tabs does not read as a close. Browser-only chats are exempt: they
+          immediately reopen a blank Browser tab, so their count touches zero
+          in passing and would spend the one-shot on nothing. */}
+      {activeThreadRef && !browserOnlySurfaces ? (
+        <SidebarAutoCollapseOnEmptyPanel
+          key={scopedThreadKey(activeThreadRef)}
+          surfaceCount={rightPanelState.surfaces.length}
+        />
       ) : null}
       {chatLayout}
     </ExpandedImagePreviewProvider>

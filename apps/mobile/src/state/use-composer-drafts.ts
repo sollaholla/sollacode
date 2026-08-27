@@ -276,6 +276,22 @@ export function setComposerDraftText(draftKey: string, value: string): void {
   });
 }
 
+/**
+ * Applies an intent to the latest durable draft. This is used by navigation
+ * actions such as Waiting on you → Follow up, where the destination composer
+ * may not be mounted yet and a cold-start draft may still be hydrating.
+ */
+export async function transformComposerDraftText(
+  draftKey: string,
+  transform: (current: string) => string,
+): Promise<void> {
+  ensureComposerDraftsLoaded();
+  if (loadPromise !== null) await loadPromise;
+  const current = getComposerDraftSnapshot(draftKey).text;
+  const next = transform(current);
+  if (next !== current) setComposerDraftText(draftKey, next);
+}
+
 export function appendComposerDraftText(draftKey: string, value: string): void {
   updateComposerDrafts((current) => {
     const existing = normalizeDraft(current[draftKey]);

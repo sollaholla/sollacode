@@ -7,6 +7,7 @@ import {
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
+  DesktopPreviewAutomationUploadInputSchema,
   DesktopPreviewAutomationWaitForInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewNavigateInputSchema,
@@ -44,6 +45,9 @@ export const installPreviewEventForwarding = Effect.fn(
   );
   yield* manager.subscribePointerEvents((event) =>
     electronWindow.sendAll(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, event),
+  );
+  yield* manager.subscribeNewTabRequests((request) =>
+    electronWindow.sendAll(IpcChannels.PREVIEW_NEW_TAB_REQUEST_CHANNEL, request),
   );
 });
 
@@ -324,6 +328,19 @@ export const automationType = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationUpload = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_UPLOAD_CHANNEL,
+  payload: DesktopPreviewAutomationUploadInputSchema,
+  result: Schema.Struct({
+    fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
+    fileNames: Schema.Array(Schema.String),
+  }),
+  handler: Effect.fn("desktop.ipc.preview.automationUpload")(function* ({ tabId, input }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.automationUpload(tabId, input);
+  }),
+});
+
 export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
@@ -404,6 +421,7 @@ export const methods = [
   automationSnapshot,
   automationClick,
   automationType,
+  automationUpload,
   automationPress,
   automationScroll,
   automationEvaluate,

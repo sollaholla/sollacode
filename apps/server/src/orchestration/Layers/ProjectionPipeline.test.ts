@@ -6110,6 +6110,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         const cleanupTurnD = TurnId.make("turn-agent-cleanup-stop-chain-d");
         const messageA = MessageId.make("message-agent-cleanup-stop-chain-a");
         const messageB = MessageId.make("message-agent-cleanup-stop-chain-b");
+        const assistantMessageB = MessageId.make("assistant-agent-cleanup-stop-chain-b");
         const cleanupMessageC = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnA}`);
         const cleanupMessageD = MessageId.make(`browser-tab-cleanup-message:${threadId}:${turnB}`);
 
@@ -6249,7 +6250,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           type: "thread.message.assistant.delta",
           commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-delta"),
           threadId,
-          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-b"),
+          messageId: assistantMessageB,
           delta: "B is complete.\n\nAGENT_STOP",
           turnId: turnB,
           createdAt: "2026-01-01T00:00:07.000Z",
@@ -6258,7 +6259,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           type: "thread.message.assistant.complete",
           commandId: CommandId.make("cmd-agent-cleanup-stop-chain-b-complete"),
           threadId,
-          messageId: MessageId.make("assistant-agent-cleanup-stop-chain-b"),
+          messageId: assistantMessageB,
           turnId: turnB,
           createdAt: "2026-01-01T00:00:07.500Z",
         });
@@ -6288,6 +6289,17 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           },
           createdAt: "2026-01-01T00:00:08.000Z",
         });
+
+        // Grok can finish the substantive reply immediately before its queued
+        // cleanup begins. The live projection then associates that reply row
+        // with the cleanup turn even though the substantive turn still points
+        // at the same assistant message. The cleanup verdict must follow that
+        // immutable source-turn pointer, not infer ancestry from message rows.
+        yield* sql`
+          UPDATE projection_thread_messages
+          SET turn_id = ${cleanupTurnD}
+          WHERE message_id = ${assistantMessageB}
+        `;
 
         for (const cleanup of [
           {

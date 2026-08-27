@@ -23,6 +23,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVoiceTranscriptCorrectionPrompt,
   buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import {
@@ -31,7 +32,8 @@ import {
   sanitizePrTitle,
   sanitizeThreadTitle,
   sanitizePlanRefreshSteps,
-  toJsonSchemaObject,
+  sanitizeCorrectedVoiceTranscript,
+  toCodexJsonSchemaObject,
 } from "./TextGenerationUtils.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
@@ -103,6 +105,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateBranchName"
       | "generateThreadTitle"
       | "generatePlanRefresh"
+      | "correctVoiceTranscript"
       | "generateVmAgentTaskPrompt",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -124,6 +127,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateBranchName"
       | "generateThreadTitle"
       | "generatePlanRefresh"
+      | "correctVoiceTranscript"
       | "generateVmAgentTaskPrompt",
     attachments: TextGeneration.BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
@@ -168,6 +172,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateBranchName"
       | "generateThreadTitle"
       | "generatePlanRefresh"
+      | "correctVoiceTranscript"
       | "generateVmAgentTaskPrompt";
     cwd: string;
     prompt: string;
@@ -178,7 +183,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
     const schemaJson = yield* encodeJsonForOperation(
       operation,
-      toJsonSchemaObject(outputSchemaJson),
+      toCodexJsonSchemaObject(outputSchemaJson),
     );
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
     const outputPath = yield* writeTempFile(operation, "codex-output", "");
@@ -430,6 +435,21 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       };
     });
 
+  const correctVoiceTranscript: TextGeneration.TextGeneration["Service"]["correctVoiceTranscript"] =
+    Effect.fn("CodexTextGeneration.correctVoiceTranscript")(function* (input) {
+      const { prompt, outputSchema } = buildVoiceTranscriptCorrectionPrompt(input);
+      const generated = yield* runCodexJson({
+        operation: "correctVoiceTranscript",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+      return {
+        transcript: sanitizeCorrectedVoiceTranscript(generated.transcript, input.transcript),
+      };
+    });
+
   const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
     Effect.fn("CodexTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
       const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
@@ -447,6 +467,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    correctVoiceTranscript,
     generatePlanRefresh,
     generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];
