@@ -72,8 +72,10 @@ class FakeBridgeClient implements McpBridgeClient {
   turnStartResponseGate: Promise<void> | undefined;
   sessionStopGate: Promise<void> | undefined;
   stopStarted = false;
+  onSessionStopStart: (() => void) | undefined;
   failEventPollingAfterStop = false;
   sessionStartCount = 0;
+  nextTurnId: string | undefined;
   onRecovery: (() => void) | undefined;
 
   async describe(): Promise<McpBridgeDescriptor> {
@@ -102,7 +104,7 @@ class FakeBridgeClient implements McpBridgeClient {
         return {
           protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
           sessionId,
-          turnId: `turn-${sessionId}`,
+          turnId: this.nextTurnId ?? `turn-${sessionId}`,
           resumeCursor: { schemaVersion: 1, bridgeSessionId: sessionId },
         };
       case "provider_bridge.turn_steer":
@@ -147,6 +149,7 @@ class FakeBridgeClient implements McpBridgeClient {
         };
       case "provider_bridge.session_stop":
         this.stopStarted = true;
+        this.onSessionStopStart?.();
         await this.sessionStopGate;
         return { protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION, sessionId };
       default:
@@ -414,6 +417,10 @@ it.effect("steers a follow-up into the active external browser turn", () =>
         messageId: MessageId.make("message-follow-up"),
         attachments: [],
         interactionMode: "default",
+        liveSteerTarget: {
+          providerInstanceId: instanceId,
+          activeTurnId: started.turnId,
+        },
       });
 
       assert.equal(steered.turnId, started.turnId);
@@ -426,6 +433,129 @@ it.effect("steers a follow-up into the active external browser turn", () =>
       assert.equal(steer?.arguments.messageId, "message-follow-up");
       assert.equal(steer?.arguments.message, "follow up while running");
       yield* adapter.stopAll();
+    }),
+  ),
+);
+
+it.effect("rejects a live steer targeted at a predecessor after a successor starts", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fake = new FakeBridgeClient();
+      const adapter = yield* makeMcpBridgeAdapter({
+        connection: fake,
+        instanceId,
+        serverConfig,
+      });
+      const threadId = ThreadId.make("external-thread-stale-live-steer");
+      yield* adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        modelSelection: { instanceId, model: "fake-default" },
+      });
+      const predecessor = yield* adapter.sendTurn({
+        threadId,
+        input: "predecessor",
+        attachments: [],
+      });
+
+      yield* adapter.stopSession(threadId);
+      fake.nextTurnId = "turn-successor";
+      yield* adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        modelSelection: { instanceId, model: "fake-default" },
+      });
+      const successor = yield* adapter.sendTurn({
+        threadId,
+        input: "successor",
+        attachments: [],
+      });
+      assert.equal(String(successor.turnId), "turn-successor");
+      const steerCountBefore = fake.calls.filter(
+        (call) => call.tool === "provider_bridge.turn_steer",
+      ).length;
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not reach the successor",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: instanceId,
+            activeTurnId: predecessor.turnId,
+          },
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      assert.equal(
+        fake.calls.filter((call) => call.tool === "provider_bridge.turn_steer").length,
+        steerCountBefore,
+      );
+      const sessions = yield* adapter.listSessions();
+      assert.equal(String(sessions[0]?.activeTurnId), String(successor.turnId));
+      yield* adapter.stopAll();
+    }),
+  ),
+);
+
+it.effect("rejects a live steer while its bridge context is stopping", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fake = new FakeBridgeClient();
+      const adapter = yield* makeMcpBridgeAdapter({
+        connection: fake,
+        instanceId,
+        serverConfig,
+      });
+      const threadId = ThreadId.make("external-thread-stopping-live-steer");
+      yield* adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "approval-required",
+        modelSelection: { instanceId, model: "fake-default" },
+      });
+      const runningTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "long task",
+        attachments: [],
+      });
+      let releaseStop!: () => void;
+      fake.sessionStopGate = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      let markStopStarted!: () => void;
+      const stopStarted = new Promise<void>((resolve) => {
+        markStopStarted = resolve;
+      });
+      fake.onSessionStopStart = markStopStarted;
+
+      const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+      yield* Effect.promise(() => stopStarted);
+      const steerCountBefore = fake.calls.filter(
+        (call) => call.tool === "provider_bridge.turn_steer",
+      ).length;
+      const exit = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not enter a stopping bridge context",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: instanceId,
+            activeTurnId: runningTurn.turnId,
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(exit._tag, "Failure");
+      assert.equal(
+        fake.calls.filter((call) => call.tool === "provider_bridge.turn_steer").length,
+        steerCountBefore,
+      );
+      releaseStop();
+      yield* Fiber.join(stopFiber);
     }),
   ),
 );

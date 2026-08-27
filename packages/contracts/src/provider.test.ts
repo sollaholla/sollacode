@@ -153,6 +153,22 @@ describe("ProviderSendTurnInput", () => {
     ).toBe(true);
   });
 
+  it("preserves the exact provider turn targeted by a live steer", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      input: "Change direction now.",
+      liveSteerTarget: {
+        providerInstanceId: "codex-personal",
+        activeTurnId: "turn-live-1",
+      },
+    });
+
+    expect(parsed.liveSteerTarget).toEqual({
+      providerInstanceId: "codex-personal",
+      activeTurnId: "turn-live-1",
+    });
+  });
+
   it("validates the auto-compaction threshold at the provider boundary", () => {
     expect(
       decodeProviderSendTurnInput({

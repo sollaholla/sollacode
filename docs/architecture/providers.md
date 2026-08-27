@@ -15,6 +15,13 @@ Methods mirror the `NativeApi` interface defined in `@t3tools/contracts`:
 
 Built-in drivers materialize scoped provider instances for Codex, Claude, Cursor, Grok, OpenCode, and the generic `mcpBridge` external-provider contract. The provider-instance registry owns each instance scope, so disabling, removing, or reconfiguring one instance releases only that instance’s processes and sessions.
 
+Mid-turn human input is dispatched on a per-thread priority lane and carries the exact provider
+instance and active turn it was meant to steer. The service does not resume or replace a session for
+that request, and each adapter validates the target again at its native send boundary. If the target
+has ended or a successor now owns the session, the adapter fails closed and orchestration re-arms the
+durable queued delivery. Synthetic Agent continuations and startup auto-resume prompts stay on the
+ordinary work lane.
+
 Grok background commands arrive as `_x.ai/session/update` (`task_backgrounded` / `task_completed`) or the dedicated `_x.ai/task_*` notifications. The Grok adapter maps those onto the shared `task.started` / `task.completed` stream so the right-panel task list and agent-mode continuation wait on them. Per-task stop is `_x.ai/task/kill`.
 
 Grok provider health checks only `initialize` and `authenticate`. They do not call `session/new`, because Grok waits there for the user's own MCP servers (including npx plugins) and a hung plugin used to mark a working CLI as "ACP startup timed out". After authenticate they also call `_x.ai/billing` so Refresh on the usage pill is not stuck on a 15-minute-old snapshot. A handshake that still times out is a warning with built-in models, not a hard error.

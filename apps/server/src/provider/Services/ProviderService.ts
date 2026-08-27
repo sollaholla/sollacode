@@ -35,6 +35,15 @@ import type { ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
+export interface ProviderSessionStartOptions {
+  /**
+   * Adopt a session that now matches the requested configuration instead of
+   * restarting it. The command reactor uses this after its own preflight: any
+   * matching session here was created by lifecycle work that won the race.
+   */
+  readonly reuseMatchingSession?: boolean;
+}
+
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
@@ -45,6 +54,7 @@ export interface ProviderServiceShape {
   readonly startSession: (
     threadId: ThreadId,
     input: ProviderSessionStartInput,
+    options?: ProviderSessionStartOptions,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
   /**

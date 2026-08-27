@@ -1622,10 +1622,25 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     // precondition makes this race-safe — if the turn finished in the meantime
     // the steer fails and the caller's queued-delivery fallback handles it.
     const liveSession = yield* session.runtime.getSession;
+    const liveSteerTarget = input.liveSteerTarget;
+    if (
+      liveSteerTarget !== undefined &&
+      (liveSteerTarget.providerInstanceId !== boundInstanceId ||
+        liveSession.status !== "running" ||
+        liveSession.activeTurnId !== liveSteerTarget.activeTurnId)
+    ) {
+      return yield* new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method: "turn/steer",
+        detail: `Live steer target '${liveSteerTarget.activeTurnId}' is no longer the active Codex turn for thread '${input.threadId}'.`,
+      });
+    }
     if (liveSession.status === "running" && liveSession.activeTurnId) {
       const steered = yield* session.runtime
         .steerTurn({
-          expectedTurnId: liveSession.activeTurnId,
+          // Do not substitute a successor observed after orchestration chose
+          // its target. Codex enforces this id atomically in turn/steer.
+          expectedTurnId: liveSteerTarget?.activeTurnId ?? liveSession.activeTurnId,
           ...(input.input !== undefined ? { input: input.input } : {}),
           ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
         })

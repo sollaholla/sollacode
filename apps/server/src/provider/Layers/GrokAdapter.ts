@@ -1313,10 +1313,28 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           input.threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(input.threadId);
+            const liveSteerTarget = input.liveSteerTarget;
+            if (
+              liveSteerTarget !== undefined &&
+              (liveSteerTarget.providerInstanceId !== boundInstanceId ||
+                sessions.get(input.threadId) !== ctx ||
+                ctx.stopped ||
+                ctx.session.status !== "running" ||
+                ctx.activeTurnId !== liveSteerTarget.activeTurnId ||
+                ctx.session.activeTurnId !== liveSteerTarget.activeTurnId)
+            ) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail: `Live steer target '${liveSteerTarget.activeTurnId}' is no longer the active Grok turn for thread '${input.threadId}'.`,
+              });
+            }
             // A sendTurn while a prompt is in flight is a steer: the agent
             // folds the new prompt into the ongoing work, so the active turn
             // id is reused instead of opening a new turn.
-            const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
+            const steeringTurnId =
+              liveSteerTarget?.activeTurnId ??
+              (ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined);
             const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
             // Count this prompt immediately so a superseded in-flight prompt
             // resolving from here on does not settle the turn; decremented on
@@ -1490,6 +1508,40 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
 
         return yield* Effect.gen(function* () {
+          const liveSteerTarget = input.liveSteerTarget;
+          const liveCtx = sessions.get(input.threadId);
+          if (
+            liveSteerTarget !== undefined &&
+            (liveSteerTarget.providerInstanceId !== boundInstanceId ||
+              liveCtx === undefined ||
+              liveCtx.acpSessionId !== prepared.acpSessionId ||
+              liveCtx.stopped ||
+              liveCtx.session.status !== "running" ||
+              liveCtx.activeTurnId !== liveSteerTarget.activeTurnId ||
+              liveCtx.session.activeTurnId !== liveSteerTarget.activeTurnId)
+          ) {
+            // Preparation reserved one prompt slot. If the same native
+            // session moved on meanwhile, release only that reservation and
+            // leave the successor's turn state untouched.
+            if (liveCtx?.acpSessionId === prepared.acpSessionId) {
+              yield* withThreadLock(
+                input.threadId,
+                Effect.sync(() => {
+                  const current = sessions.get(input.threadId);
+                  if (current?.acpSessionId === prepared.acpSessionId) {
+                    current.promptsInFlight = Math.max(0, current.promptsInFlight - 1);
+                  }
+                }),
+              );
+            }
+            yield* Ref.set(promptSettled, true);
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/steer",
+              detail: `Live steer target '${liveSteerTarget.activeTurnId}' is no longer the active Grok turn for thread '${input.threadId}'.`,
+            });
+          }
+
           if (prepared.messageId !== undefined) {
             const liveCtx = sessions.get(input.threadId);
             if (liveCtx?.acpSessionId === prepared.acpSessionId) {

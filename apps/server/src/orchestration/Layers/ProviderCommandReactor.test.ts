@@ -9,6 +9,7 @@ import {
   ProviderSession,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderSendTurnInput,
   RuntimeTaskId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -35,6 +36,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -70,6 +72,7 @@ import {
   providerErrorLabelFromInstanceHint,
   classifyTurnStartRecovery,
   countContinuationsSinceUserIntent,
+  isDirectUserSteerCandidate,
   makeProviderCommandReactorLive,
   providerTurnProducedOutput,
 } from "./ProviderCommandReactor.ts";
@@ -242,6 +245,54 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  describe("isDirectUserSteerCandidate", () => {
+    const threadId = ThreadId.make("thread-1");
+
+    it("accepts typed and transcribed user input", () => {
+      expect(
+        isDirectUserSteerCandidate({
+          threadId,
+          message: {
+            id: asMessageId("typed-message"),
+            role: "user",
+          },
+        }),
+      ).toBe(true);
+      expect(
+        isDirectUserSteerCandidate({
+          threadId,
+          message: {
+            id: asMessageId("transcribed-message"),
+            role: "user",
+            inputOrigin: "transcription",
+          },
+        }),
+      ).toBe(true);
+    });
+
+    it("keeps agent-loop and startup-auto-resume prompts off the priority lane", () => {
+      expect(
+        isDirectUserSteerCandidate({
+          threadId,
+          message: {
+            id: asMessageId("agent-auto-resume-message:thread-1:turn-1"),
+            role: "user",
+            inputOrigin: "agent-loop",
+          },
+        }),
+      ).toBe(false);
+      expect(
+        isDirectUserSteerCandidate({
+          threadId,
+          message: {
+            id: asMessageId("startup-auto-resume-message:thread-1:turn-1"),
+            role: "user",
+          },
+        }),
+      ).toBe(false);
+    });
+  });
+
   describe("countContinuationsSinceUserIntent", () => {
     const typed = (id: string) => ({ id, role: "user", inputOrigin: null });
     const resume = (id: string) => ({
@@ -378,6 +429,7 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly startReactor?: boolean;
+    readonly serializeSessionLifecycle?: boolean;
     readonly providerSilenceRestartMs?: number;
     readonly providerMidTurnSilenceRestartMs?: number;
     readonly stopTaskEffect?: (input: {
@@ -391,7 +443,11 @@ describe("ProviderCommandReactor", () => {
     readonly stopSessionEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     readonly startSessionEffect?: (
       session: ProviderSession,
+      runtimeSessions: Array<ProviderSession>,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError | ProviderAdapterProcessError>;
+    readonly getCapabilitiesEffect?: (
+      instanceId: ProviderInstanceId,
+    ) => Effect.Effect<{ readonly sessionModelSwitch: "unsupported" | "in-session" }>;
     readonly sendTurnEffect?: (
       input: unknown,
       runtimeSessions: Array<ProviderSession>,
@@ -414,67 +470,89 @@ describe("ProviderCommandReactor", () => {
       model: "gpt-5-codex",
     };
     const startSessionEffect = input?.startSessionEffect;
-    const startSession = vi.fn((_: unknown, input: unknown) => {
-      const sessionIndex = nextSessionIndex++;
-      const resumeCursor =
-        typeof input === "object" && input !== null && "resumeCursor" in input
-          ? input.resumeCursor
-          : undefined;
-      const threadId =
-        typeof input === "object" &&
-        input !== null &&
-        "threadId" in input &&
-        typeof input.threadId === "string"
-          ? ThreadId.make(input.threadId)
-          : ThreadId.make(`thread-${sessionIndex}`);
-      const inputModelSelection =
-        typeof input === "object" && input !== null && "modelSelection" in input
-          ? (input.modelSelection as ModelSelection | undefined)
-          : undefined;
-      const providerInstanceId =
-        typeof input === "object" && input !== null && "providerInstanceId" in input
-          ? (input.providerInstanceId as ProviderInstanceId | undefined)
-          : inputModelSelection?.instanceId;
-      const provider =
-        typeof input === "object" &&
-        input !== null &&
-        "provider" in input &&
-        typeof input.provider === "string"
-          ? (input.provider as ProviderSession["provider"])
-          : ProviderDriverKind.make(inputModelSelection?.instanceId ?? modelSelection.instanceId);
-      const session: ProviderSession = {
-        provider,
-        ...(providerInstanceId ? { providerInstanceId } : {}),
-        status: "ready" as const,
-        runtimeMode:
+    const serializeSessionLifecycle = input?.serializeSessionLifecycle === true;
+    const sessionLifecycleSemaphore = Effect.runSync(Semaphore.make(1));
+    const startSession = vi.fn(
+      (_: unknown, input: unknown, options?: { readonly reuseMatchingSession?: boolean }) => {
+        const sessionIndex = nextSessionIndex++;
+        const resumeCursor =
+          typeof input === "object" && input !== null && "resumeCursor" in input
+            ? input.resumeCursor
+            : undefined;
+        const threadId =
           typeof input === "object" &&
           input !== null &&
-          "runtimeMode" in input &&
-          (input.runtimeMode === "approval-required" || input.runtimeMode === "full-access")
-            ? input.runtimeMode
-            : "full-access",
-        ...(typeof input === "object" &&
-        input !== null &&
-        "cwd" in input &&
-        typeof input.cwd === "string"
-          ? { cwd: input.cwd }
-          : {}),
-        ...((inputModelSelection?.model ?? modelSelection.model)
-          ? { model: inputModelSelection?.model ?? modelSelection.model }
-          : {}),
-        threadId,
-        resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
-        createdAt: now,
-        updatedAt: now,
-      };
-      return (startSessionEffect?.(session) ?? Effect.succeed(session)).pipe(
-        Effect.tap((startedSession) =>
-          Effect.sync(() => {
-            runtimeSessions.push(startedSession);
-          }),
-        ),
-      );
-    });
+          "threadId" in input &&
+          typeof input.threadId === "string"
+            ? ThreadId.make(input.threadId)
+            : ThreadId.make(`thread-${sessionIndex}`);
+        const inputModelSelection =
+          typeof input === "object" && input !== null && "modelSelection" in input
+            ? (input.modelSelection as ModelSelection | undefined)
+            : undefined;
+        const providerInstanceId =
+          typeof input === "object" && input !== null && "providerInstanceId" in input
+            ? (input.providerInstanceId as ProviderInstanceId | undefined)
+            : inputModelSelection?.instanceId;
+        const provider =
+          typeof input === "object" &&
+          input !== null &&
+          "provider" in input &&
+          typeof input.provider === "string"
+            ? (input.provider as ProviderSession["provider"])
+            : ProviderDriverKind.make(inputModelSelection?.instanceId ?? modelSelection.instanceId);
+        const session: ProviderSession = {
+          provider,
+          ...(providerInstanceId ? { providerInstanceId } : {}),
+          status: "ready" as const,
+          runtimeMode:
+            typeof input === "object" &&
+            input !== null &&
+            "runtimeMode" in input &&
+            (input.runtimeMode === "approval-required" || input.runtimeMode === "full-access")
+              ? input.runtimeMode
+              : "full-access",
+          ...(typeof input === "object" &&
+          input !== null &&
+          "cwd" in input &&
+          typeof input.cwd === "string"
+            ? { cwd: input.cwd }
+            : {}),
+          ...((inputModelSelection?.model ?? modelSelection.model)
+            ? { model: inputModelSelection?.model ?? modelSelection.model }
+            : {}),
+          threadId,
+          resumeCursor: resumeCursor ?? { opaque: `resume-${sessionIndex}` },
+          createdAt: now,
+          updatedAt: now,
+        };
+        const start = Effect.suspend(() => {
+          const matching =
+            options?.reuseMatchingSession === true
+              ? runtimeSessions.find(
+                  (candidate) =>
+                    candidate.threadId === session.threadId &&
+                    candidate.providerInstanceId === session.providerInstanceId &&
+                    candidate.provider === session.provider &&
+                    candidate.runtimeMode === session.runtimeMode &&
+                    candidate.cwd === session.cwd &&
+                    candidate.model === session.model &&
+                    candidate.status !== "closed" &&
+                    candidate.status !== "error",
+                )
+              : undefined;
+          if (matching !== undefined) return Effect.succeed(matching);
+          return (startSessionEffect?.(session, runtimeSessions) ?? Effect.succeed(session)).pipe(
+            Effect.tap((startedSession) =>
+              Effect.sync(() => {
+                runtimeSessions.push(startedSession);
+              }),
+            ),
+          );
+        });
+        return serializeSessionLifecycle ? sessionLifecycleSemaphore.withPermit(start) : start;
+      },
+    );
     const sendTurn = vi.fn(
       (rawInput: unknown) =>
         input?.sendTurnEffect?.(rawInput, runtimeSessions) ??
@@ -609,7 +687,8 @@ describe("ProviderCommandReactor", () => {
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       forkSessionBinding,
       listSessions: () => Effect.succeed(runtimeSessions),
-      getCapabilities: (_provider) =>
+      getCapabilities: (instanceId) =>
+        input?.getCapabilitiesEffect?.(instanceId) ??
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
         }),
@@ -3621,6 +3700,294 @@ describe("ProviderCommandReactor", () => {
         (call) => (call[0] as { readonly messageId?: string }).messageId === racedMessageId,
       ),
     ).toHaveLength(1);
+  });
+
+  it("dispatches a live user steer before slow session work finishes", async () => {
+    const sessionWorkEntered = await Effect.runPromise(Deferred.make<void>());
+    const releaseSessionWork = await Effect.runPromise(Deferred.make<void>());
+    const steerAccepted = await Effect.runPromise(Deferred.make<void>());
+    const threadId = ThreadId.make("thread-1");
+    const activeTurnId = asTurnId("turn-priority-steer-host");
+    const steerMessageId = asMessageId("message-priority-steer");
+    let startCount = 0;
+    let holdSessionWork = false;
+    let didBlockSessionWork = false;
+    const harness = await createHarness({
+      startSessionEffect: (session) => {
+        startCount += 1;
+        return Effect.succeed(session);
+      },
+      getCapabilitiesEffect: () =>
+        holdSessionWork && !didBlockSessionWork
+          ? Effect.sync(() => {
+              didBlockSessionWork = true;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(sessionWorkEntered, undefined)),
+              Effect.andThen(Deferred.await(releaseSessionWork)),
+              Effect.as({ sessionModelSwitch: "in-session" as const }),
+            )
+          : Effect.succeed({ sessionModelSwitch: "in-session" as const }),
+      sendTurnEffect: (rawInput) => {
+        const messageId = (rawInput as { readonly messageId?: MessageId }).messageId;
+        return (
+          messageId === steerMessageId ? Deferred.succeed(steerAccepted, undefined) : Effect.void
+        ).pipe(Effect.as({ threadId, turnId: activeTurnId }));
+      },
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-priority-steer-host"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-priority-steer-host"),
+          role: "user",
+          text: "Start the long turn.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const liveSession = harness.runtimeSessions[0];
+    if (liveSession === undefined) throw new Error("provider session was not started");
+    harness.runtimeSessions[0] = {
+      ...liveSession,
+      status: "running",
+      activeTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-priority-steer-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+    holdSessionWork = true;
+
+    // Hold ordinary session reconfiguration before it can tear down the live
+    // provider. The priority lane must still reach the exact native turn.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-priority-steer-slow-resume"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(sessionWorkEntered).pipe(Effect.timeout("5 seconds")));
+
+    try {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-priority-steer"),
+          threadId,
+          message: {
+            messageId: steerMessageId,
+            role: "user",
+            text: "Change direction immediately.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+
+      await Effect.runPromise(Deferred.await(steerAccepted).pipe(Effect.timeout("5 seconds")));
+      expect(startCount).toBe(1);
+      expect(
+        harness.sendTurn.mock.calls.some((call) => {
+          const input = call[0] as ProviderSendTurnInput;
+          return (
+            input.messageId === steerMessageId &&
+            input.liveSteerTarget?.providerInstanceId === ProviderInstanceId.make("codex") &&
+            input.liveSteerTarget.activeTurnId === activeTurnId
+          );
+        }),
+      ).toBe(true);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseSessionWork, undefined));
+    }
+
+    await harness.drain();
+    expect(startCount).toBe(2);
+  });
+
+  it("re-arms a steer when restart teardown removed its exact live target", async () => {
+    const restartEntered = await Effect.runPromise(Deferred.make<void>());
+    const releaseRestart = await Effect.runPromise(Deferred.make<void>());
+    const threadId = ThreadId.make("thread-1");
+    const activeTurnId = asTurnId("turn-restart-teardown-host");
+    const steerMessageId = asMessageId("message-restart-teardown-steer");
+    let startCount = 0;
+    const harness = await createHarness({
+      serializeSessionLifecycle: true,
+      startSessionEffect: (session, runtimeSessions) => {
+        startCount += 1;
+        if (startCount !== 2) return Effect.succeed(session);
+        runtimeSessions.splice(0, runtimeSessions.length);
+        return Deferred.succeed(restartEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseRestart)),
+          Effect.as(session),
+        );
+      },
+      sendTurnEffect: (rawInput, runtimeSessions) => {
+        const input = rawInput as ProviderSendTurnInput;
+        if (input.messageId !== steerMessageId || input.liveSteerTarget === undefined) {
+          return Effect.succeed({ threadId, turnId: activeTurnId });
+        }
+        const target = input.liveSteerTarget;
+        const targetIsLive = runtimeSessions.some(
+          (session) =>
+            session.threadId === threadId &&
+            session.providerInstanceId === target?.providerInstanceId &&
+            session.status === "running" &&
+            session.activeTurnId === target?.activeTurnId,
+        );
+        return targetIsLive
+          ? Effect.succeed({ threadId, turnId: activeTurnId })
+          : Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "turn/steer",
+                detail: "exact live turn was removed by restart teardown",
+              }),
+            );
+      },
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-restart-teardown-host"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-restart-teardown-host"),
+          role: "user",
+          text: "Start the long turn.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const liveSession = harness.runtimeSessions[0];
+    if (liveSession === undefined) throw new Error("provider session was not started");
+    harness.runtimeSessions[0] = {
+      ...liveSession,
+      status: "running",
+      activeTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-restart-teardown-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-restart-teardown-slow-resume"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(restartEntered).pipe(Effect.timeout("5 seconds")));
+    expect(harness.runtimeSessions).toHaveLength(0);
+
+    try {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-restart-teardown-steer"),
+          threadId,
+          message: {
+            messageId: steerMessageId,
+            role: "user",
+            text: "Change direction immediately.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+      );
+      await waitFor(() =>
+        harness.sendTurn.mock.calls.some(
+          (call) => (call[0] as ProviderSendTurnInput).messageId === steerMessageId,
+        ),
+      );
+      await waitFor(async () => {
+        const obligation = await Effect.runPromise(
+          harness.threadWorkObligations.getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(steerMessageId),
+            kind: "active-turn-recovery",
+          }),
+        );
+        return Option.isSome(obligation) && obligation.value.state === "pending";
+      });
+      expect(startCount).toBe(2);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseRestart, undefined));
+    }
+
+    await harness.drain();
+    await waitFor(
+      () =>
+        harness.sendTurn.mock.calls.filter(
+          (call) => (call[0] as ProviderSendTurnInput).messageId === steerMessageId,
+        ).length === 2,
+    );
+    await waitFor(async () => {
+      const obligation = await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(steerMessageId),
+          kind: "active-turn-recovery",
+        }),
+      );
+      return Option.isSome(obligation) && obligation.value.state === "completed";
+    });
+    expect(startCount).toBe(2);
   });
 
   it("injects steers into a running turn and parks them when the provider refuses", async () => {

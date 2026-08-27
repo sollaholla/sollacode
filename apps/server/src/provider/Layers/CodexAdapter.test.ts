@@ -460,6 +460,10 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         threadId,
         messageId: MessageId.make("message-steered"),
         input: "mid-turn message",
+        liveSteerTarget: {
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          activeTurnId: asTurnId("turn-live"),
+        },
       });
 
       NodeAssert.equal(result.turnId, "turn-live");
@@ -480,6 +484,47 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
           NodeAssert.equal(receipt.value.turnId, "turn-live");
         }
       }
+    }),
+  );
+
+  it.effect("fails an explicit live steer instead of targeting a successor turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("sess-stale-live-steer");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.startImpl.mockResolvedValue({
+        provider: ProviderDriverKind.make("codex"),
+        status: "running",
+        runtimeMode: "full-access",
+        threadId,
+        cwd: runtime.options.cwd,
+        activeTurnId: asTurnId("turn-successor"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies ProviderSession);
+
+      const exit = yield* adapter
+        .sendTurn({
+          threadId,
+          messageId: MessageId.make("message-stale-live-steer"),
+          input: "must not reach the successor",
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            activeTurnId: asTurnId("turn-original"),
+          },
+        })
+        .pipe(Effect.exit);
+
+      NodeAssert.equal(Exit.isFailure(exit), true);
+      NodeAssert.equal(runtime.steerTurnImpl.mock.calls.length, 0);
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
     }),
   );
 

@@ -80,6 +80,12 @@ export const ProviderSessionStartInput = Schema.Struct({
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
+export const ProviderLiveSteerTarget = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  activeTurnId: TurnId,
+});
+export type ProviderLiveSteerTarget = typeof ProviderLiveSteerTarget.Type;
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   /**
@@ -99,6 +105,12 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /**
+   * Internal proof that this input must join one exact provider-native turn.
+   * ProviderService fails closed instead of recovering or starting a session
+   * when the target is no longer live.
+   */
+  liveSteerTarget: Schema.optional(ProviderLiveSteerTarget),
   /** Internal tag proving this turn is the bounded handoff for a timed-out native resume. */
   contextRecovery: Schema.optional(ProviderPendingContextRecovery),
   /** Internal harness hint: prepend the invisible side-chat sub-agent guard
