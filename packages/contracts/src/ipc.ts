@@ -1022,6 +1022,19 @@ export const DesktopPreviewConfigInputSchema = Schema.Struct({
   browserProfileThreadId: Schema.optional(ThreadId),
 });
 
+/**
+ * Where downloads from this thread's browser tabs should be written.
+ *
+ * The renderer supplies it because only it knows which workspace a thread is
+ * working in; the desktop side sees an opaque partition scope and nothing else.
+ */
+export const DesktopPreviewSetDownloadDirectoryInputSchema = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: Schema.optional(ThreadId),
+  browserProfileThreadId: Schema.optional(ThreadId),
+  directory: Schema.String,
+});
+
 export const DesktopPreviewSetColorSchemeInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   colorScheme: DesktopPreviewColorSchemeSchema,
@@ -1392,6 +1405,17 @@ export interface DesktopPreviewBridge {
     threadId?: ThreadId,
     browserProfileThreadId?: ThreadId,
   ) => Promise<DesktopPreviewWebviewConfig>;
+  /**
+   * Point this thread's downloads at its own workspace, so a file an agent
+   * fetches lands where that agent is working instead of in the app's
+   * artifacts folder.
+   */
+  setPreviewDownloadDirectory: (
+    directory: string,
+    environmentId: EnvironmentId,
+    threadId?: ThreadId,
+    browserProfileThreadId?: ThreadId,
+  ) => Promise<void>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   /**
    * Activate the in-page element picker for the given tab. Resolves with

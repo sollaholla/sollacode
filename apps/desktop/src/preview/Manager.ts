@@ -5105,6 +5105,10 @@ export class PreviewManager extends Context.Service<
     readonly clearCookies: () => Effect.Effect<void, PreviewManagerError>;
     readonly clearCache: () => Effect.Effect<void, PreviewManagerError>;
     readonly getBrowserPartition: (scope?: string) => Effect.Effect<string, PreviewManagerError>;
+    readonly setDownloadDirectory: (
+      scope: string,
+      directory: string,
+    ) => Effect.Effect<void, PreviewOperationError>;
     readonly setAnnotationTheme: (
       theme: DesktopPreviewAnnotationTheme,
     ) => Effect.Effect<void, PreviewManagerError>;
@@ -5193,6 +5197,17 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         );
     }),
     isBrowserPartition: browserSession.isPartition,
+    setDownloadDirectory: Effect.fn("PreviewManager.setDownloadDirectory")(
+      function* (scope, directory) {
+        yield* browserSession
+          .setDownloadDirectory(scope, directory)
+          .pipe(
+            Effect.mapError(
+              (cause) => new PreviewOperationError({ operation: "setDownloadDirectory", cause }),
+            ),
+          );
+      },
+    ),
     createTab: operations.createTab,
     closeTab: operations.closeTab,
     registerWebview: operations.registerWebview,
