@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { reorderSurfaces, type RightPanelSurface } from "~/rightPanelStore";
+import { resolveHostedBrowserWebviewWrapperStyle } from "~/browser/hostedBrowserWebviewStyle";
 
 import {
   isPointerOverTabStrip,
@@ -11,6 +12,7 @@ import {
   resolveRightPanelSurfaceTitle,
   rightPanelTabContextMenuItems,
   RightPanelEmptyState,
+  RIGHT_PANEL_HEADER_Z_INDEX,
   RightPanelTabs,
   routeCapturedHorizontalTabWheel,
   routeHorizontalTabWheel,
@@ -162,6 +164,7 @@ describe("right-panel tab-strip wheel routing", () => {
     const markup = renderToStaticMarkup(
       <RightPanelTabs
         mode="inline"
+        layoutControls={<button type="button" aria-label="Toggle right panel" />}
         surfaces={[]}
         activeSurfaceId={null}
         pendingSurfaceIds={new Set()}
@@ -194,6 +197,15 @@ describe("right-panel tab-strip wheel routing", () => {
 
     expect(markup).toContain("[-webkit-app-region:no-drag]");
     expect(markup).toContain('data-right-panel-tab-list="true"');
+    const previewStyle = resolveHostedBrowserWebviewWrapperStyle({
+      active: true,
+      rect: { x: 320, y: 0, width: 960, height: 800 },
+      hiddenSize: { width: 1280, height: 800 },
+    });
+    expect(RIGHT_PANEL_HEADER_Z_INDEX).toBeGreaterThan(previewStyle.zIndex);
+    expect(markup).toContain(`style="z-index:${RIGHT_PANEL_HEADER_Z_INDEX}"`);
+    expect(markup).toContain("pointer-events-auto relative isolate");
+    expect(markup).toContain('aria-label="Toggle right panel"');
   });
 
   it("uses native horizontal trackpad movement even when a child control owns the pointer", () => {
