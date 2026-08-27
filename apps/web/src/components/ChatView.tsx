@@ -174,6 +174,7 @@ import {
 } from "./chat/mobileComposerViewport";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
+  resolveRightPanelThreadFocus,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
   selectThreadRightPanelState,
@@ -2461,6 +2462,7 @@ function ChatViewContent(props: ChatViewProps) {
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
   const inlineRightPanelOwnsTitleBar = visibleRightPanelOpen && !shouldUsePlanSidebarSheet;
   const showWorkspaceHeader = !embeddedSideChat && !hideWorkspaceHeader;
+  const focusedRightPanelThreadKeyRef = useRef<string | null>(null);
 
   const sideChatAvailable =
     !embeddedSideChat &&
@@ -2472,6 +2474,17 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().reconcileSideChatSurfaces(activeThreadRef, sideChatChildren);
   }, [activeThreadRef, sideChatChildren]);
+
+  useLayoutEffect(() => {
+    const focus = resolveRightPanelThreadFocus(
+      focusedRightPanelThreadKeyRef.current,
+      activeThreadKey,
+    );
+    focusedRightPanelThreadKeyRef.current = focus.focusedThreadKey;
+    if (activeThreadRef && focus.shouldCloseEmptyPanel) {
+      useRightPanelStore.getState().closeEmptyOnFocus(activeThreadRef);
+    }
+  }, [activeThreadKey, activeThreadRef]);
 
   useEffect(() => {
     const presentThreadIds = new Set(allSideChatChildren.map((thread) => thread.threadId));
@@ -2490,12 +2503,16 @@ function ChatViewContent(props: ChatViewProps) {
 
   useLayoutEffect(() => {
     if (!activeThreadRef) return;
+    const currentPanel = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      activeThreadRef,
+    );
     if (
       !shouldEnsureBrowserOnlySurface({
         browserOnly: browserOnlySurfaces,
         browserAvailable: isPreviewSupportedInRuntime(),
-        panelOpen: rightPanelState.isOpen,
-        surfaceCount: rightPanelState.surfaces.length,
+        panelOpen: currentPanel.isOpen,
+        surfaceCount: currentPanel.surfaces.length,
       })
     )
       return;
@@ -8476,7 +8493,10 @@ function ChatViewContent(props: ChatViewProps) {
     />
   );
   const panelLayoutControls = terminalMainSurfaceActive ? null : (
-    <div className="workspace-titlebar-controls z-50 gap-1 [-webkit-app-region:no-drag]">
+    <div
+      className="workspace-titlebar-controls pointer-events-auto z-50 gap-1 [-webkit-app-region:no-drag]"
+      data-right-panel-layout-controls
+    >
       {rightPanelOpen && !shouldUsePlanSidebarSheet ? (
         <RightPanelMaximizeControl
           maximized={rightPanelMaximized}
@@ -8623,9 +8643,6 @@ function ChatViewContent(props: ChatViewProps) {
           onOpen={openArtifactSurface}
         />
       ) : null}
-      {showWorkspaceHeader && visibleRightPanelOpen && !shouldUsePlanSidebarSheet
-        ? panelLayoutControls
-        : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -9350,6 +9367,7 @@ function ChatViewContent(props: ChatViewProps) {
         <RightPanelTabs
           mode="inline"
           maximized={rightPanelMaximized}
+          layoutControls={panelLayoutControls}
           surfaces={rightPanelState.surfaces}
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}

@@ -130,6 +130,7 @@ interface RightPanelStoreState {
   ) => void;
   show: (ref: ScopedThreadRef) => void;
   close: (ref: ScopedThreadRef) => void;
+  closeEmptyOnFocus: (ref: ScopedThreadRef) => void;
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
@@ -143,6 +144,19 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
   activeSurfaceId: null,
   surfaces: [],
 };
+
+export function resolveRightPanelThreadFocus(
+  previousThreadKey: string | null,
+  currentThreadKey: string | null,
+): {
+  readonly focusedThreadKey: string | null;
+  readonly shouldCloseEmptyPanel: boolean;
+} {
+  return {
+    focusedThreadKey: currentThreadKey,
+    shouldCloseEmptyPanel: currentThreadKey !== null && currentThreadKey !== previousThreadKey,
+  };
+}
 
 const singletonSurface = (
   kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "side-chat" | "artifact">,
@@ -832,6 +846,14 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
             current.isOpen ? { ...current, isOpen: false } : current,
+          ),
+        })),
+      closeEmptyOnFocus: (ref) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            current.isOpen && current.surfaces.length === 0
+              ? { ...current, isOpen: false }
+              : current,
           ),
         })),
       toggleVisibility: (ref) =>

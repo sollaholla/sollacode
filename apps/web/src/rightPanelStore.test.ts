@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   migratePersistedRightPanelState,
+  resolveRightPanelThreadFocus,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
   selectThreadRightPanelState,
@@ -19,6 +20,25 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("treats each thread arrival as focus, including returning after no active thread", () => {
+    expect(resolveRightPanelThreadFocus(null, "env-1:thread-A")).toEqual({
+      focusedThreadKey: "env-1:thread-A",
+      shouldCloseEmptyPanel: true,
+    });
+    expect(resolveRightPanelThreadFocus("env-1:thread-A", "env-1:thread-A")).toEqual({
+      focusedThreadKey: "env-1:thread-A",
+      shouldCloseEmptyPanel: false,
+    });
+    expect(resolveRightPanelThreadFocus("env-1:thread-A", null)).toEqual({
+      focusedThreadKey: null,
+      shouldCloseEmptyPanel: false,
+    });
+    expect(resolveRightPanelThreadFocus(null, "env-1:thread-A")).toEqual({
+      focusedThreadKey: "env-1:thread-A",
+      shouldCloseEmptyPanel: true,
+    });
+  });
+
   it("drops the legacy singleton terminal surface during migration", () => {
     expect(
       migratePersistedRightPanelState({
@@ -207,6 +227,46 @@ describe("rightPanelStore", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
+  });
+
+  it("closes an open empty panel when its thread receives focus", () => {
+    useRightPanelStore.getState().toggleVisibility(refA);
+
+    useRightPanelStore.getState().closeEmptyOnFocus(refA);
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: false,
+      activeSurfaceId: null,
+      surfaces: [],
+    });
+  });
+
+  it("keeps a populated panel open when its thread receives focus", () => {
+    useRightPanelStore.getState().open(refA, "plan");
+
+    useRightPanelStore.getState().closeEmptyOnFocus(refA);
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "plan",
+      surfaces: [{ id: "plan", kind: "plan" }],
+    });
+  });
+
+  it("collapses only the focused empty thread", () => {
+    useRightPanelStore.getState().toggleVisibility(refA);
+    useRightPanelStore.getState().open(refB, "plan");
+
+    useRightPanelStore.getState().closeEmptyOnFocus(refA);
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).isOpen,
+    ).toBe(false);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "plan",
+      surfaces: [{ id: "plan", kind: "plan" }],
+    });
   });
 
   it("opening a different kind keeps both surfaces and activates the new one", () => {

@@ -149,6 +149,11 @@ const SURFACE_DISABLED_REASONS = {
   sideChat: "Side Chat requires a server thread on an updated Solla Code server.",
 } as const;
 
+// Hosted preview webviews paint at z-index 30. The complete tab/header layer,
+// including the panel controls, must remain above the guest so it owns pointer
+// input even while an authenticated page is actively rendering underneath.
+export const RIGHT_PANEL_HEADER_Z_INDEX = 40;
+
 type TabContextMenuAction =
   | "copy-path"
   | "copy-chat-id"
@@ -986,13 +991,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     >
       <div
         className={cn(
-          "workspace-topbar gap-1 pl-2",
+          "workspace-topbar pointer-events-auto relative isolate gap-1 bg-background pl-2",
           !ownsDesktopTitleBar && "[--workspace-topbar-height:--spacing(11)]",
           ownsDesktopTitleBar && "drag-region",
           props.mode === "inline" ? "pr-28" : "pr-3",
           ownsDesktopTitleBar && "wco:pr-[calc(var(--workspace-native-controls-inset)+6rem)]",
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
+        style={{ zIndex: RIGHT_PANEL_HEADER_Z_INDEX }}
         data-right-panel-tabbar
       >
         {props.mode === "sheet" && props.onCloseSheet ? (
