@@ -406,6 +406,52 @@ function mapActivityRow(
   return row.sequence === null ? activity : Object.assign(activity, { sequence: row.sequence });
 }
 
+/**
+ * Drops `tool.updated` activities that a `tool.completed` has already replaced.
+ *
+ * A tool call emits progressive `tool.updated` frames carrying the output so
+ * far, then one `tool.completed` carrying the final output. In a *snapshot* —
+ * history, not a live turn — every superseded frame is a second copy of text
+ * the completed row already holds.
+ *
+ * Measured on a real 141k-activity thread: of the newest 750 activities, all
+ * 257 `tool.updated` rows were superseded, and they were 2125 KB of a 6389 KB
+ * snapshot. That payload is schema-decoded on the server, framed over the
+ * socket, and schema-decoded again on the client before the thread stops
+ * saying "Loading conversation…", which is what made opening a long thread
+ * take ten seconds or more.
+ *
+ * Deliberately conservative: a frame is dropped only when a completion for
+ * that exact `toolCallId` is present in the same list. A tool that never
+ * completed — an interrupted turn — has no replacement, so its last in-flight
+ * frame is the only record of it and is kept.
+ */
+export function dropSupersededToolUpdates<
+  A extends { readonly kind: string; readonly payload: unknown },
+>(activities: ReadonlyArray<A>): ReadonlyArray<A> {
+  const toolCallIdOf = (activity: A): string | null => {
+    if (activity.payload === null || typeof activity.payload !== "object") return null;
+    const data = (activity.payload as { readonly data?: unknown }).data;
+    if (data === null || typeof data !== "object") return null;
+    const id = (data as { readonly toolCallId?: unknown }).toolCallId;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  };
+
+  const completedToolCallIds = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "tool.completed") continue;
+    const toolCallId = toolCallIdOf(activity);
+    if (toolCallId !== null) completedToolCallIds.add(toolCallId);
+  }
+  if (completedToolCallIds.size === 0) return activities;
+
+  return activities.filter((activity) => {
+    if (activity.kind !== "tool.updated") return true;
+    const toolCallId = toolCallIdOf(activity);
+    return toolCallId === null || !completedToolCallIds.has(toolCallId);
+  });
+}
+
 function taskTitleFromRow(
   row: Schema.Schema.Type<typeof ProjectionTaskTitleRowSchema>,
 ): string | null {
@@ -2718,7 +2764,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const loadThreadDetailById = (
     threadId: ThreadId,
-    options?: { readonly activityLimit?: number },
+    options?: {
+      readonly activityLimit?: number;
+      /** Snapshot reads only — see {@link dropSupersededToolUpdates}. */
+      readonly dropSupersededToolUpdates?: boolean;
+    },
   ) =>
     Effect.gen(function* () {
       const [
@@ -2827,7 +2877,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         deletedAt: null,
         messages: messageRows.map(mapMessageRow),
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-        activities: activityRows.map(mapActivityRow),
+        activities:
+          options?.dropSupersededToolUpdates === true
+            ? dropSupersededToolUpdates(activityRows.map(mapActivityRow))
+            : activityRows.map(mapActivityRow),
         checkpoints: checkpointRows.map((row) => ({
           turnId: row.turnId,
           checkpointTurnCount: row.checkpointTurnCount,
@@ -2867,6 +2920,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         Effect.gen(function* () {
           const thread = yield* loadThreadDetailById(threadId, {
             activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+            dropSupersededToolUpdates: true,
           });
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
