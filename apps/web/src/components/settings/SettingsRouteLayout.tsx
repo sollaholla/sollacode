@@ -9,6 +9,11 @@ import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
 import { useSettingsRestore } from "./SettingsPanels";
 
+// Preview webviews live outside the router so they survive navigation and are
+// presented at z-index 30. Keep settings in a higher stacking context so a
+// still-releasing agent preview cannot paint over the newly selected route.
+export const SETTINGS_ROUTE_SURFACE_Z_INDEX = 40;
+
 function RestoreDefaultsButton({ onRestored }: { onRestored: () => void }) {
   const { changedSettingLabels, restoreDefaults } = useSettingsRestore(onRestored);
 
@@ -62,7 +67,10 @@ export function SettingsRouteLayout() {
   }, [navigateBackWithinApp]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
+    <SidebarInset
+      className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate"
+      style={{ zIndex: SETTINGS_ROUTE_SURFACE_Z_INDEX }}
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {!isElectron && (
           <header
