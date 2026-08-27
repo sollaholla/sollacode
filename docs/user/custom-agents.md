@@ -51,9 +51,14 @@ automation from a site, or bypass CAPTCHA and anti-abuse decisions.
 
 Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
 background, so timer- and animation-frame-based authentication can finish without the user focusing
-each surface. When preview automation connects or begins an MCP operation, Solla Code makes every
-registered preview tab foreground-equivalent before running that operation and renews the fleet-wide
-lease throughout long-running operations. The lease is released one minute after the last operation
+each surface. Desktop guest lifetime is independent of transient server tab metadata: reconnecting
+the preview stream does not recreate the Chromium guest or change its browser profile. Background
+guests retain a compositor-visible edge at imperceptible opacity, so a newly opened page starts
+loading before its thread or tab is selected. Selecting a tab changes only its presentation, and
+automation preserves the fill-the-panel viewport unless the user or tool explicitly resizes it.
+When preview automation connects or begins an MCP operation, Solla Code makes every registered
+preview tab foreground-equivalent before running that operation and renews the fleet-wide lease
+throughout long-running operations. The lease is released one minute after the last operation
 finishes; the next connection or operation reactivates every tab before continuing. Automation
 snapshots capture only that live guest. They never reload an authenticated URL in a second renderer;
 if the page changes while its pixels and semantic state are being read, Solla Code retries the live

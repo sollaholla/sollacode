@@ -6,18 +6,25 @@
  * is the one place that must enumerate every live preview tab.
  */
 import { useAtomValue } from "@effect/atom-react";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  parseScopedThreadKey,
+  scopedThreadKey,
+  scopeThreadRef,
+} from "@t3tools/client-runtime/environment";
 import {
   type DesktopPreviewColorScheme,
+  type EnvironmentId,
   type PreviewDownload,
   type PreviewEvent,
   type PreviewListResult,
   type PreviewDownloadApproval,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
+  ThreadId,
 } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
+import { hasStablePreviewTabIdentity } from "./browser/previewRuntimeTabId";
 import { PREVIEW_RECENT_URL_LIMIT } from "./components/preview/previewConstants";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 
@@ -40,7 +47,14 @@ export interface DesktopPreviewOverlay {
 
 export interface ThreadPreviewState {
   snapshot: PreviewSessionSnapshot | null;
+  /** Server-confirmed tab metadata used by UI and automation routing. */
   sessions: Record<string, PreviewSessionSnapshot>;
+  /**
+   * Renderer-owned Electron guests. A cached thread-local omission never
+   * removes these because unmounting destroys the live page and authentication.
+   * A fresh environment-wide adoption pass may remove a confirmed closed tab.
+   */
+  hostedSessions: Record<string, PreviewSessionSnapshot>;
   /** Tabs intentionally closed by this client. Stale list snapshots must not resurrect them. */
   suppressedTabIds: ReadonlySet<string>;
   activeTabId: string | null;
@@ -51,11 +65,14 @@ export interface ThreadPreviewState {
   serverEpoch: string | null;
   /** Latest ordered server revision applied from a list response or event. */
   serverRevision: number;
+  /** Re-registers a stable native guest after an environment transport reconnect. */
+  hostSyncGeneration: number;
 }
 
 const EMPTY_THREAD_PREVIEW_STATE: ThreadPreviewState = Object.freeze({
   snapshot: null,
   sessions: {},
+  hostedSessions: {},
   suppressedTabIds: new Set<string>(),
   activeTabId: null,
   desktopOverlay: null,
@@ -63,6 +80,7 @@ const EMPTY_THREAD_PREVIEW_STATE: ThreadPreviewState = Object.freeze({
   recentlySeenUrls: [] as string[],
   serverEpoch: null,
   serverRevision: 0,
+  hostSyncGeneration: 0,
 });
 
 const emptyPreviewStateAtom = Atom.make<ThreadPreviewState>(EMPTY_THREAD_PREVIEW_STATE).pipe(
@@ -90,7 +108,7 @@ const activePreviewSessionsAtom = Atom.make((get) => {
   const byThreadKey: Record<string, ThreadPreviewState> = {};
   for (const threadKey of get(activePreviewThreadKeysAtom).keys) {
     const state = get(previewStateAtom(threadKey));
-    if (Object.keys(state.sessions).length > 0) {
+    if (Object.keys(state.hostedSessions).length > 0) {
       byThreadKey[threadKey] = state;
     }
   }
@@ -99,8 +117,67 @@ const activePreviewSessionsAtom = Atom.make((get) => {
 
 const changedPreviewThreadKeys = new Set<string>();
 
+interface PreviewEnvironmentClock {
+  readonly currentEpoch: string;
+  readonly retiredEpochs: ReadonlySet<string>;
+  readonly catchupRevision: number;
+}
+
+const previewEnvironmentClocks = new Map<string, PreviewEnvironmentClock>();
+
+const transitionPreviewEnvironmentEpoch = (
+  environmentId: EnvironmentId,
+  serverEpoch: string,
+): PreviewEnvironmentClock | null => {
+  const key = String(environmentId);
+  const current = previewEnvironmentClocks.get(key);
+  if (!current) {
+    const initial = {
+      currentEpoch: serverEpoch,
+      retiredEpochs: new Set<string>(),
+      catchupRevision: -1,
+    } satisfies PreviewEnvironmentClock;
+    previewEnvironmentClocks.set(key, initial);
+    return initial;
+  }
+  if (current.currentEpoch === serverEpoch) return current;
+  if (current.retiredEpochs.has(serverEpoch)) return null;
+  const retiredEpochs = new Set(current.retiredEpochs);
+  retiredEpochs.add(current.currentEpoch);
+  const next = {
+    currentEpoch: serverEpoch,
+    retiredEpochs,
+    catchupRevision: -1,
+  } satisfies PreviewEnvironmentClock;
+  previewEnvironmentClocks.set(key, next);
+  return next;
+};
+
+const acceptsPreviewEvent = (ref: ScopedThreadRef, event: PreviewEvent): boolean => {
+  const clock = transitionPreviewEnvironmentEpoch(ref.environmentId, event.serverEpoch);
+  return clock !== null && event.revision > clock.catchupRevision;
+};
+
+const acceptsPreviewList = (ref: ScopedThreadRef, result: PreviewListResult): boolean => {
+  const clock = transitionPreviewEnvironmentEpoch(ref.environmentId, result.serverEpoch);
+  return clock !== null && result.revision >= clock.catchupRevision;
+};
+
+const recordPreviewEnvironmentCatchup = (
+  environmentId: EnvironmentId,
+  result: PreviewListResult,
+): boolean => {
+  const clock = transitionPreviewEnvironmentEpoch(environmentId, result.serverEpoch);
+  if (clock === null || result.revision < clock.catchupRevision) return false;
+  previewEnvironmentClocks.set(String(environmentId), {
+    ...clock,
+    catchupRevision: result.revision,
+  });
+  return true;
+};
+
 function syncActivePreviewThread(threadKey: string, state: ThreadPreviewState): void {
-  const active = Object.keys(state.sessions).length > 0;
+  const active = Object.keys(state.hostedSessions).length > 0;
   appAtomRegistry.update(activePreviewThreadKeysAtom, (current) => {
     if (current.keys.has(threadKey) === active) return current;
     const next = new Set(current.keys);
@@ -147,8 +224,9 @@ const latestSnapshot = (
     .at(-1) ?? null;
 
 const removeSession = (current: ThreadPreviewState, tabId: string): ThreadPreviewState => {
-  if (!current.sessions[tabId]) return current;
+  if (!current.sessions[tabId] && !current.hostedSessions[tabId]) return current;
   const { [tabId]: _closed, ...sessions } = current.sessions;
+  const { [tabId]: _hosted, ...hostedSessions } = current.hostedSessions;
   const { [tabId]: _desktop, ...desktopByTabId } = current.desktopByTabId;
   const nextSnapshot = latestSnapshot(sessions);
   const activeTabId =
@@ -157,6 +235,7 @@ const removeSession = (current: ThreadPreviewState, tabId: string): ThreadPrevie
   return {
     ...current,
     sessions,
+    hostedSessions,
     desktopByTabId,
     activeTabId: snapshot?.tabId ?? null,
     snapshot,
@@ -195,36 +274,66 @@ export function subscribeThreadPreviewState(
   });
 }
 
+const transitionPreviewServerEpoch = (
+  current: ThreadPreviewState,
+  serverEpoch: string,
+): ThreadPreviewState => {
+  if (current.serverEpoch === null || current.serverEpoch === serverEpoch) return current;
+  const hostedSessions = Object.fromEntries(
+    Object.entries(current.hostedSessions).filter(([tabId]) => hasStablePreviewTabIdentity(tabId)),
+  );
+  const desktopByTabId = Object.fromEntries(
+    Object.entries(current.desktopByTabId).filter(([tabId]) => hostedSessions[tabId] !== undefined),
+  );
+  return {
+    ...current,
+    snapshot: null,
+    sessions: {},
+    hostedSessions,
+    suppressedTabIds: new Set(),
+    activeTabId: null,
+    desktopOverlay: null,
+    desktopByTabId,
+    serverEpoch,
+    serverRevision: 0,
+  };
+};
+
 export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEvent): void {
+  if (!acceptsPreviewEvent(ref, event)) return;
   updateThreadPreviewState(ref, (current) => {
-    if (current.serverEpoch !== null && event.serverEpoch !== current.serverEpoch) return current;
-    if (event.revision < current.serverRevision) return current;
+    const base = transitionPreviewServerEpoch(current, event.serverEpoch);
+    if (base.serverEpoch === event.serverEpoch && event.revision <= base.serverRevision) {
+      return base;
+    }
     const next = (() => {
       switch (event.type) {
         case "opened":
         case "navigated":
         case "resized": {
           const snapshot = event.snapshot;
-          if (current.suppressedTabIds.has(snapshot.tabId)) return current;
+          if (base.suppressedTabIds.has(snapshot.tabId)) return base;
           const recentlySeenUrls =
             snapshot.navStatus._tag === "Idle"
-              ? current.recentlySeenUrls
-              : dedupeRecentUrls(current.recentlySeenUrls, snapshot.navStatus.url);
-          const sessions = { ...current.sessions, [snapshot.tabId]: snapshot };
-          const activeTabId = event.type === "opened" ? snapshot.tabId : current.activeTabId;
+              ? base.recentlySeenUrls
+              : dedupeRecentUrls(base.recentlySeenUrls, snapshot.navStatus.url);
+          const sessions = { ...base.sessions, [snapshot.tabId]: snapshot };
+          const hostedSessions = { ...base.hostedSessions, [snapshot.tabId]: snapshot };
+          const activeTabId = event.type === "opened" ? snapshot.tabId : base.activeTabId;
           const activeSnapshot = sessions[activeTabId ?? snapshot.tabId] ?? snapshot;
           return {
-            ...current,
+            ...base,
             sessions,
+            hostedSessions,
             activeTabId: activeTabId ?? snapshot.tabId,
             snapshot: activeSnapshot,
-            desktopOverlay: current.desktopByTabId[activeSnapshot.tabId] ?? null,
+            desktopOverlay: base.desktopByTabId[activeSnapshot.tabId] ?? null,
             recentlySeenUrls,
           };
         }
         case "failed": {
-          const existing = current.sessions[event.tabId];
-          if (!existing) return current;
+          const existing = base.sessions[event.tabId] ?? base.hostedSessions[event.tabId];
+          if (!existing) return base;
           const failedSnapshot = {
             ...existing,
             navStatus: {
@@ -236,15 +345,16 @@ export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEven
             },
             updatedAt: event.createdAt,
           };
-          const sessions = { ...current.sessions, [event.tabId]: failedSnapshot };
+          const sessions = { ...base.sessions, [event.tabId]: failedSnapshot };
           return {
-            ...current,
+            ...base,
             sessions,
-            snapshot: current.activeTabId === event.tabId ? failedSnapshot : current.snapshot,
+            hostedSessions: { ...base.hostedSessions, [event.tabId]: failedSnapshot },
+            snapshot: base.activeTabId === event.tabId ? failedSnapshot : base.snapshot,
           };
         }
         case "closed": {
-          const closed = removeSession(current, event.tabId);
+          const closed = removeSession(base, event.tabId);
           if (!closed.suppressedTabIds.has(event.tabId)) return closed;
           const suppressedTabIds = new Set(closed.suppressedTabIds);
           suppressedTabIds.delete(event.tabId);
@@ -267,25 +377,33 @@ export function applyPreviewServerSnapshot(
   snapshot: PreviewSessionSnapshot | null,
 ): void {
   updateThreadPreviewState(ref, (current) => {
-    if (!snapshot && current.snapshot === null) return current;
+    if (
+      !snapshot &&
+      current.snapshot === null &&
+      Object.keys(current.hostedSessions).length === 0
+    ) {
+      return current;
+    }
     if (!snapshot) {
       return {
         ...current,
         snapshot: null,
         sessions: {},
+        hostedSessions: {},
         activeTabId: null,
         desktopOverlay: null,
         desktopByTabId: {},
       };
     }
     if (current.suppressedTabIds.has(snapshot.tabId)) return current;
-    const existing = current.sessions[snapshot.tabId];
+    const existing = current.sessions[snapshot.tabId] ?? current.hostedSessions[snapshot.tabId];
     if (existing && existing.updatedAt > snapshot.updatedAt) return current;
     const recentlySeenUrls = rememberSnapshotUrl(current.recentlySeenUrls, snapshot);
     return {
       ...current,
       snapshot,
       sessions: { ...current.sessions, [snapshot.tabId]: snapshot },
+      hostedSessions: { ...current.hostedSessions, [snapshot.tabId]: snapshot },
       activeTabId: snapshot.tabId,
       desktopOverlay: current.desktopByTabId[snapshot.tabId] ?? null,
       recentlySeenUrls,
@@ -305,7 +423,7 @@ export function updatePreviewServerSnapshot(
 ): void {
   updateThreadPreviewState(ref, (current) => {
     if (current.suppressedTabIds.has(snapshot.tabId)) return current;
-    const existing = current.sessions[snapshot.tabId];
+    const existing = current.sessions[snapshot.tabId] ?? current.hostedSessions[snapshot.tabId];
     if (existing && existing.updatedAt > snapshot.updatedAt) return current;
     const sessions = { ...current.sessions, [snapshot.tabId]: snapshot };
     const activeTabId =
@@ -314,6 +432,7 @@ export function updatePreviewServerSnapshot(
     return {
       ...current,
       sessions,
+      hostedSessions: { ...current.hostedSessions, [snapshot.tabId]: snapshot },
       activeTabId,
       snapshot: activeSnapshot,
       desktopOverlay: current.desktopByTabId[activeTabId] ?? null,
@@ -323,27 +442,48 @@ export function updatePreviewServerSnapshot(
 }
 
 /**
- * Replace the local session index from an authoritative preview.list result.
- * Missing tabs are removed while the current active tab is preserved whenever
- * it still exists in the server result.
+ * Reconcile server metadata without using list omission as a guest-close event.
+ *
+ * A cached or reconnecting `preview.list` can briefly omit a live desktop
+ * guest. Removing it here unmounts Electron's `<webview>` and destroys the
+ * authenticated page before the stream catches up. `sessions` remains the
+ * authoritative UI/automation index; `hostedSessions` owns Electron lifetime.
+ * Explicit close commands and typed `closed` events remove both. Durable UUID
+ * guests also survive a server epoch change because the server restores those
+ * exact ids from its session store.
  */
 export function reconcilePreviewServerSessions(
   ref: ScopedThreadRef,
   result: PreviewListResult,
 ): void {
+  if (!acceptsPreviewList(ref, result)) return;
   updateThreadPreviewState(ref, (current) => {
-    const sameServer = current.serverEpoch === result.serverEpoch;
-    if (sameServer && result.revision < current.serverRevision) return current;
+    const serverAlreadyKnown = current.serverEpoch !== null;
+    const sameServer = !serverAlreadyKnown || current.serverEpoch === result.serverEpoch;
+    if (serverAlreadyKnown && sameServer && result.revision < current.serverRevision)
+      return current;
     const snapshots = result.sessions;
     const sessions: Record<string, PreviewSessionSnapshot> = {};
     const currentSuppressedTabIds = sameServer ? current.suppressedTabIds : new Set<string>();
     let recentlySeenUrls = current.recentlySeenUrls;
     for (const snapshot of snapshots) {
       if (currentSuppressedTabIds.has(snapshot.tabId)) continue;
-      const existing = sameServer ? current.sessions[snapshot.tabId] : undefined;
+      const existing = sameServer
+        ? (current.sessions[snapshot.tabId] ?? current.hostedSessions[snapshot.tabId])
+        : undefined;
       const next = existing && existing.updatedAt > snapshot.updatedAt ? existing : snapshot;
       sessions[next.tabId] = next;
       recentlySeenUrls = rememberSnapshotUrl(recentlySeenUrls, next);
+    }
+
+    const hostedSessions: Record<string, PreviewSessionSnapshot> = {};
+    for (const existing of Object.values(current.hostedSessions)) {
+      if (currentSuppressedTabIds.has(existing.tabId)) continue;
+      if (!sameServer && !hasStablePreviewTabIdentity(existing.tabId)) continue;
+      hostedSessions[existing.tabId] = existing;
+    }
+    for (const snapshot of Object.values(sessions)) {
+      hostedSessions[snapshot.tabId] = snapshot;
     }
 
     const fallback = latestSnapshot(sessions);
@@ -352,11 +492,12 @@ export function reconcilePreviewServerSessions(
         ? current.activeTabId
         : (fallback?.tabId ?? null);
     const snapshot = activeTabId ? (sessions[activeTabId] ?? null) : null;
-    const desktopByTabId = sameServer
-      ? Object.fromEntries(
-          Object.entries(current.desktopByTabId).filter(([tabId]) => sessions[tabId] !== undefined),
-        )
-      : {};
+    const desktopByTabId = Object.fromEntries(
+      Object.entries(current.desktopByTabId).filter(
+        ([tabId]) =>
+          hostedSessions[tabId] !== undefined && (sameServer || hasStablePreviewTabIdentity(tabId)),
+      ),
+    );
     const suppressedTabIds = new Set(
       [...currentSuppressedTabIds].filter((tabId) =>
         snapshots.some((snapshot) => snapshot.tabId === tabId),
@@ -365,6 +506,7 @@ export function reconcilePreviewServerSessions(
     return {
       ...current,
       sessions,
+      hostedSessions,
       suppressedTabIds,
       activeTabId,
       snapshot,
@@ -375,6 +517,56 @@ export function reconcilePreviewServerSessions(
       serverRevision: result.revision,
     };
   });
+}
+
+/**
+ * Hydrate every persisted guest from one environment-wide list response.
+ * The query reruns for each transport generation, so an open event missed
+ * while disconnected is still materialized without routing to its thread.
+ */
+export function reconcilePreviewEnvironmentSessions(
+  environmentId: EnvironmentId,
+  result: PreviewListResult,
+): void {
+  if (!recordPreviewEnvironmentCatchup(environmentId, result)) return;
+  const sessionsByThreadId = new Map<string, PreviewSessionSnapshot[]>();
+  for (const snapshot of result.sessions) {
+    const sessions = sessionsByThreadId.get(snapshot.threadId);
+    if (sessions) sessions.push(snapshot);
+    else sessionsByThreadId.set(snapshot.threadId, [snapshot]);
+  }
+
+  const threadIds = new Set(sessionsByThreadId.keys());
+  for (const threadKey of Object.keys(readActivePreviewSessions())) {
+    const ref = parseScopedThreadKey(threadKey);
+    if (ref?.environmentId === environmentId) threadIds.add(ref.threadId);
+  }
+
+  for (const threadId of threadIds) {
+    const ref = scopeThreadRef(environmentId, ThreadId.make(threadId));
+    const sessions = sessionsByThreadId.get(threadId) ?? [];
+    reconcilePreviewServerSessions(ref, {
+      ...result,
+      sessions,
+    });
+    const listedTabIds = new Set(sessions.map((snapshot) => snapshot.tabId));
+    updateThreadPreviewState(ref, (current) => {
+      if (current.serverEpoch === result.serverEpoch && current.serverRevision > result.revision) {
+        return {
+          ...current,
+          hostSyncGeneration: current.hostSyncGeneration + 1,
+        };
+      }
+      let adopted = current;
+      for (const tabId of Object.keys(adopted.hostedSessions)) {
+        if (!listedTabIds.has(tabId)) adopted = removeSession(adopted, tabId);
+      }
+      return {
+        ...adopted,
+        hostSyncGeneration: current.hostSyncGeneration + 1,
+      };
+    });
+  }
 }
 
 export function applyPreviewDesktopState(
@@ -425,6 +617,7 @@ export function cancelPreviewSessionClose(
       ...current,
       snapshot,
       sessions: { ...current.sessions, [snapshot.tabId]: snapshot },
+      hostedSessions: { ...current.hostedSessions, [snapshot.tabId]: snapshot },
       suppressedTabIds,
       activeTabId: snapshot.tabId,
       desktopOverlay: current.desktopByTabId[snapshot.tabId] ?? null,
@@ -471,6 +664,7 @@ export function resetPreviewStateForTests(): void {
     appAtomRegistry.set(previewStateAtom(threadKey), EMPTY_THREAD_PREVIEW_STATE);
   }
   changedPreviewThreadKeys.clear();
+  previewEnvironmentClocks.clear();
   appAtomRegistry.set(activePreviewThreadKeysAtom, { keys: new Set<string>() });
 }
 

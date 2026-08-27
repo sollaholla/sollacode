@@ -3,6 +3,7 @@ import type { PreviewSessionSnapshot } from "@t3tools/contracts";
 interface PreviewAutomationSessionIndex {
   readonly snapshot: PreviewSessionSnapshot | null;
   readonly sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  readonly hostedSessions?: Readonly<Record<string, PreviewSessionSnapshot>>;
 }
 
 export interface PreviewAutomationDomainTab {
@@ -51,7 +52,8 @@ export function findPreviewAutomationDomainTabs(
 ): readonly PreviewAutomationDomainTab[] {
   const requestedDomain = previewAutomationDomainKey(requestedUrl);
   if (!requestedDomain) return [];
-  return Object.values(state.sessions)
+  const knownSessions = { ...state.hostedSessions, ...state.sessions };
+  return Object.values(knownSessions)
     .flatMap((session): PreviewAutomationDomainTab[] => {
       if (session.navStatus._tag === "Idle") return [];
       if (previewAutomationDomainKey(session.navStatus.url) !== requestedDomain) return [];
@@ -82,7 +84,9 @@ export function resolvePreviewAutomationTarget(
   state: PreviewAutomationSessionIndex,
   requestedTabId: string | null,
 ): { readonly tabId: string | null; readonly snapshot: PreviewSessionSnapshot | null } {
-  const snapshot = requestedTabId ? (state.sessions[requestedTabId] ?? null) : state.snapshot;
+  const snapshot = requestedTabId
+    ? (state.sessions[requestedTabId] ?? state.hostedSessions?.[requestedTabId] ?? null)
+    : state.snapshot;
   return { tabId: snapshot?.tabId ?? null, snapshot };
 }
 
@@ -105,10 +109,16 @@ export function resolvePreviewAutomationOpenTab(
   state: PreviewAutomationSessionIndex,
   requestedTabId: string | undefined,
   reuseExistingTab: boolean,
+  retainedTabId?: string | undefined,
 ): string | null {
   if (!reuseExistingTab) return null;
   if (requestedTabId !== undefined) {
-    return state.sessions[requestedTabId]?.tabId ?? null;
+    return (
+      state.sessions[requestedTabId]?.tabId ?? state.hostedSessions?.[requestedTabId]?.tabId ?? null
+    );
   }
-  return state.snapshot?.tabId ?? null;
+  return (
+    state.snapshot?.tabId ??
+    (retainedTabId ? (state.hostedSessions?.[retainedTabId]?.tabId ?? null) : null)
+  );
 }

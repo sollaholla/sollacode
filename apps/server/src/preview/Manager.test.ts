@@ -128,6 +128,24 @@ it.layer(managerTestLayer)("PreviewManager", (it) => {
     }),
   );
 
+  it.effect("lists every thread when the thread filter is omitted", () =>
+    Effect.gen(function* () {
+      const firstThreadId = freshThreadId();
+      const secondThreadId = freshThreadId();
+      const manager = yield* PreviewManager.PreviewManager;
+      const first = yield* manager.open({ threadId: firstThreadId });
+      const second = yield* manager.open({ threadId: secondThreadId });
+
+      const all = yield* manager.list({});
+      expect(all.sessions.map((snapshot) => snapshot.tabId)).toEqual(
+        expect.arrayContaining([first.tabId, second.tabId]),
+      );
+
+      const filtered = yield* manager.list({ threadId: firstThreadId });
+      expect(filtered.sessions.map((snapshot) => snapshot.tabId)).toEqual([first.tabId]);
+    }),
+  );
+
   it.effect("treats bare hosts as https", () =>
     Effect.gen(function* () {
       const threadId = freshThreadId();

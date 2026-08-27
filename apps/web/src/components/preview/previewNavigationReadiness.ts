@@ -22,7 +22,7 @@ export function assertPreviewRuntimeCurrent(
 ) {
   const state = readThreadPreviewState(threadRef);
   if (
-    state.sessions[tabId] &&
+    (state.sessions[tabId] || state.hostedSessions[tabId]) &&
     isCurrentPreviewRuntimeTab(threadRef, state.serverEpoch, tabId, runtimeTabId)
   ) {
     return state;

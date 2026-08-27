@@ -15,7 +15,9 @@ import {
   beginPreviewSessionClose,
   cancelPreviewSessionClose,
   previewStateAtom,
+  readActivePreviewSessions,
   readThreadPreviewState,
+  reconcilePreviewEnvironmentSessions,
   reconcilePreviewServerSessions,
   rememberPreviewUrl,
   removePreviewThread,
@@ -84,6 +86,25 @@ describe("previewStateStore (single-tab)", () => {
     const state = readThreadPreviewState(ref);
     expect(state.snapshot?.tabId).toBe(snapshot.tabId);
     expect(state.recentlySeenUrls).toContain("http://localhost:5173/");
+  });
+
+  it("ignores a duplicate event revision from a second renderer-wide subscriber", () => {
+    const snapshot = makeSnapshot();
+    const event = {
+      type: "opened" as const,
+      threadId: "thread-1",
+      tabId: snapshot.tabId,
+      createdAt: snapshot.updatedAt,
+      serverEpoch,
+      revision: 1,
+      snapshot,
+    };
+    applyPreviewServerEventImpl(ref, event);
+    const first = readThreadPreviewState(ref);
+
+    applyPreviewServerEventImpl(ref, event);
+
+    expect(readThreadPreviewState(ref)).toBe(first);
   });
 
   it("a second `opened` for a different tab replaces the rendered snapshot", () => {
@@ -379,7 +400,7 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.sessions[background.tabId]).toEqual(resized);
   });
 
-  it("reconciles an authoritative session list without focusing a background tab", () => {
+  it("reconciles a session list without unloading an omitted live desktop tab", () => {
     const active = makeSnapshot({ tabId: "tab_a" });
     const stale = makeSnapshot({
       tabId: "tab_stale",
@@ -405,20 +426,221 @@ describe("previewStateStore (single-tab)", () => {
 
     const state = readThreadPreviewState(ref);
     expect(Object.keys(state.sessions)).toEqual([active.tabId]);
+    expect(Object.keys(state.hostedSessions).toSorted()).toEqual(
+      [active.tabId, stale.tabId].toSorted(),
+    );
     expect(state.activeTabId).toBe(active.tabId);
     expect(state.snapshot).toEqual(active);
-    expect(state.desktopByTabId[stale.tabId]).toBeUndefined();
+    expect(state.desktopByTabId[stale.tabId]?.hasWebContents).toBe(true);
   });
 
-  it("clears stale sessions when an authoritative list is empty", () => {
-    applyPreviewServerSnapshot(ref, makeSnapshot());
+  it("keeps a locally known guest mounted through a transient empty list", () => {
+    const snapshot = makeSnapshot();
+    applyPreviewServerSnapshot(ref, snapshot);
 
     reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch, revision: 1 });
 
     const state = readThreadPreviewState(ref);
     expect(state.sessions).toEqual({});
+    expect(state.hostedSessions).toEqual({ [snapshot.tabId]: snapshot });
     expect(state.activeTabId).toBeNull();
     expect(state.snapshot).toBeNull();
+    expect(readActivePreviewSessions()[scopedThreadKey(ref)]?.hostedSessions).toEqual({
+      [snapshot.tabId]: snapshot,
+    });
+  });
+
+  it("hydrates background threads from one environment-wide reconnect list", () => {
+    const first = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    const second = makeSnapshot({
+      threadId: "thread-2",
+      tabId: "tab_2a5b47f0-bade-4dad-9edb-65082a4a60e2",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [first, second],
+      serverEpoch,
+      revision: 2,
+    });
+
+    expect(readThreadPreviewState(ref).hostedSessions[first.tabId]).toEqual(first);
+    expect(readThreadPreviewState(otherRef).hostedSessions[second.tabId]).toEqual(second);
+    expect(readThreadPreviewState(ref).hostSyncGeneration).toBe(1);
+    expect(readThreadPreviewState(otherRef).hostSyncGeneration).toBe(1);
+  });
+
+  it("uses a fresh environment catch-up to release a close missed while disconnected", () => {
+    const snapshot = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [snapshot],
+      serverEpoch,
+      revision: 1,
+    });
+
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [],
+      serverEpoch,
+      revision: 2,
+    });
+
+    expect(readThreadPreviewState(ref).sessions).toEqual({});
+    expect(readThreadPreviewState(ref).hostedSessions).toEqual({});
+    expect(readActivePreviewSessions()[scopedThreadKey(ref)]).toBeUndefined();
+  });
+
+  it("does not prune a tab from a list older than its streamed open", () => {
+    const existing = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [existing],
+      serverEpoch,
+      revision: 1,
+    });
+    const opened = makeSnapshot({
+      tabId: "tab_2a5b47f0-bade-4dad-9edb-65082a4a60e2",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    applyPreviewServerEventImpl(ref, {
+      type: "opened",
+      threadId: opened.threadId,
+      tabId: opened.tabId,
+      createdAt: opened.updatedAt,
+      serverEpoch,
+      revision: 3,
+      snapshot: opened,
+    });
+
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [existing],
+      serverEpoch,
+      revision: 2,
+    });
+
+    expect(readThreadPreviewState(ref).hostedSessions[opened.tabId]).toEqual(opened);
+    expect(readThreadPreviewState(ref).serverRevision).toBe(3);
+  });
+
+  it("does not let a retired server epoch overwrite a reconnect catch-up", () => {
+    const old = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [old],
+      serverEpoch,
+      revision: 1,
+    });
+    reconcilePreviewEnvironmentSessions(environmentId, {
+      sessions: [],
+      serverEpoch: "server-b",
+      revision: 0,
+    });
+
+    applyPreviewServerEventImpl(otherRef, {
+      type: "opened",
+      threadId: "thread-2",
+      tabId: old.tabId,
+      createdAt: old.updatedAt,
+      serverEpoch,
+      revision: 2,
+      snapshot: { ...old, threadId: "thread-2" },
+    });
+
+    expect(readThreadPreviewState(otherRef)).toEqual(__testing.EMPTY_THREAD_PREVIEW_STATE);
+  });
+
+  it("removes a retained tab immediately when its typed close event arrives", () => {
+    const snapshot = makeSnapshot();
+    applyPreviewServerSnapshot(ref, snapshot);
+    reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch, revision: 1 });
+
+    applyPreviewServerEventImpl(ref, {
+      type: "closed",
+      threadId: snapshot.threadId,
+      tabId: snapshot.tabId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      serverEpoch,
+      revision: 2,
+    });
+
+    const state = readThreadPreviewState(ref);
+    expect(state.sessions).toEqual({});
+    expect(state.hostedSessions).toEqual({});
+  });
+
+  it("preserves a durable hosted guest and desktop binding across a server epoch", () => {
+    const snapshot = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    applyPreviewServerSnapshot(ref, snapshot);
+    applyPreviewDesktopState(ref, snapshot.tabId, {
+      hasWebContents: true,
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1,
+      pictureInPicture: false,
+      colorScheme: "system",
+      controller: "none",
+      agentActive: false,
+      downloads: [],
+      pendingDownloadApprovals: [],
+    });
+    reconcilePreviewServerSessions(ref, { sessions: [snapshot], serverEpoch, revision: 1 });
+
+    reconcilePreviewServerSessions(ref, {
+      sessions: [],
+      serverEpoch: "server-b",
+      revision: 0,
+    });
+
+    const state = readThreadPreviewState(ref);
+    expect(state.sessions).toEqual({});
+    expect(state.hostedSessions).toEqual({ [snapshot.tabId]: snapshot });
+    expect(state.desktopByTabId[snapshot.tabId]?.hasWebContents).toBe(true);
+  });
+
+  it("accepts a background open from a new server epoch without dropping durable guests", () => {
+    const retained = makeSnapshot({
+      tabId: "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445",
+    });
+    applyPreviewServerEventImpl(ref, {
+      type: "opened",
+      threadId: retained.threadId,
+      tabId: retained.tabId,
+      createdAt: retained.updatedAt,
+      serverEpoch,
+      revision: 12,
+      snapshot: retained,
+    });
+    const opened = makeSnapshot({
+      tabId: "tab_2a5b47f0-bade-4dad-9edb-65082a4a60e2",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    applyPreviewServerEventImpl(ref, {
+      type: "opened",
+      threadId: opened.threadId,
+      tabId: opened.tabId,
+      createdAt: opened.updatedAt,
+      serverEpoch: "server-b",
+      revision: 1,
+      snapshot: opened,
+    });
+
+    const state = readThreadPreviewState(ref);
+    expect(state.sessions).toEqual({ [opened.tabId]: opened });
+    expect(state.hostedSessions).toEqual({
+      [retained.tabId]: retained,
+      [opened.tabId]: opened,
+    });
+    expect(state.serverEpoch).toBe("server-b");
+    expect(state.serverRevision).toBe(1);
   });
 
   it("ignores a list response older than the latest server event", () => {

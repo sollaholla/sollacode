@@ -36,6 +36,7 @@ const state = (tabId: string): ThreadPreviewState => {
   return {
     snapshot: session,
     sessions: { [session.tabId]: session },
+    hostedSessions: { [session.tabId]: session },
     suppressedTabIds: new Set(),
     activeTabId: session.tabId,
     desktopOverlay: null,
@@ -43,6 +44,7 @@ const state = (tabId: string): ThreadPreviewState => {
     recentlySeenUrls: [],
     serverEpoch: "epoch-1",
     serverRevision: 1,
+    hostSyncGeneration: 0,
   };
 };
 
@@ -93,6 +95,26 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation(),
           [previewRuntimeTabId(otherEnvironmentThreadRef, foreignState.serverEpoch, "tab-foreign")]:
             presentation({ updatedAt: 2 }),
+        },
+      }),
+    ).toEqual(visibleThreadRef);
+  });
+
+  it("keeps targeting a visible hosted guest while server metadata reconnects", () => {
+    const hostedState = state("tab-visible");
+    hostedState.sessions = {};
+    hostedState.snapshot = null;
+    hostedState.activeTabId = null;
+
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef,
+        requestedTabId: undefined,
+        previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: hostedState },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(visibleThreadRef, hostedState.serverEpoch, "tab-visible")]:
+            presentation(),
         },
       }),
     ).toEqual(visibleThreadRef);

@@ -186,7 +186,8 @@ export const PreviewCloseInput = Schema.Struct({
 export type PreviewCloseInput = typeof PreviewCloseInput.Type;
 
 export const PreviewListInput = Schema.Struct({
-  threadId: ThreadId,
+  /** Omit to catch up every persisted tab in the environment. */
+  threadId: Schema.optional(ThreadId),
 });
 export type PreviewListInput = typeof PreviewListInput.Type;
 

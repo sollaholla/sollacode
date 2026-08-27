@@ -50,6 +50,34 @@ describe("preview automation target selection", () => {
     ).toEqual({ tabId: null, snapshot: null });
   });
 
+  it("can address a retained hosted guest while server metadata reconnects", () => {
+    const hosted = snapshot("tab-hosted", {
+      _tag: "Success",
+      url: "https://example.com/",
+      title: "Example",
+    });
+
+    expect(
+      resolvePreviewAutomationTarget(
+        { snapshot: null, sessions: {}, hostedSessions: { [hosted.tabId]: hosted } },
+        hosted.tabId,
+      ),
+    ).toEqual({ tabId: hosted.tabId, snapshot: hosted });
+    expect(
+      findPreviewAutomationDomainTabs(
+        { snapshot: null, sessions: {}, hostedSessions: { [hosted.tabId]: hosted } },
+        "https://example.com/account",
+      ),
+    ).toEqual([
+      {
+        tabId: hosted.tabId,
+        url: "https://example.com/",
+        title: "Example",
+        loading: false,
+      },
+    ]);
+  });
+
   it("treats a tab missing from the authoritative close snapshot as already closed", () => {
     const active = snapshot("tab-active");
     expect(
@@ -90,6 +118,21 @@ describe("preview automation target selection", () => {
     expect(resolvePreviewAutomationOpenTab(state, agentTab.tabId, true)).toBe(agentTab.tabId);
     expect(resolvePreviewAutomationOpenTab(state, undefined, true)).toBe(uiActive.tabId);
     expect(resolvePreviewAutomationOpenTab(state, agentTab.tabId, false)).toBeNull();
+  });
+
+  it("reuses a retained hosted tab instead of creating a duplicate during reconnect", () => {
+    const hosted = snapshot("tab-hosted");
+    const state = {
+      snapshot: null,
+      sessions: {},
+      hostedSessions: { [hosted.tabId]: hosted },
+    };
+
+    expect(resolvePreviewAutomationOpenTab(state, undefined, true, hosted.tabId)).toBe(
+      hosted.tabId,
+    );
+    expect(resolvePreviewAutomationOpenTab(state, hosted.tabId, true)).toBe(hosted.tabId);
+    expect(resolvePreviewAutomationOpenTab(state, undefined, false, hosted.tabId)).toBeNull();
   });
 
   it("matches public domains after removing www while keeping subdomains distinct", () => {

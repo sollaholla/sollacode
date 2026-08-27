@@ -63,6 +63,32 @@ describe("waitForNavigationReadiness", () => {
     ).rejects.toBeInstanceOf(PreviewAutomationTargetUnavailableError);
   });
 
+  it("keeps a durable hosted guest automatable while server metadata reconnects", async () => {
+    const threadRef = {
+      environmentId: EnvironmentId.make("environment-2"),
+      threadId: ThreadId.make("thread-1"),
+    };
+    const tabId = "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445";
+    const runtimeTabId = previewRuntimeTabId(threadRef, "epoch-1", tabId);
+    mocks.readThreadPreviewState.mockReturnValue({
+      serverEpoch: "epoch-2",
+      sessions: {},
+      hostedSessions: { [tabId]: { tabId } },
+    });
+
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-1",
+        tabId,
+        runtimeTabId,
+        "navigate",
+        "none",
+        100,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it.each(["load", "domContentLoaded"] as const)(
     "fails immediately and actionably when %s readiness reports a navigation failure",
     async (readiness) => {

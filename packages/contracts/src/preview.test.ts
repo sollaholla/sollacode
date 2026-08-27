@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   DiscoveredLocalServer,
   PreviewEvent,
+  PreviewListInput,
   PreviewNavStatus,
   PreviewSessionSnapshot,
   PreviewRemoteSnapshotResult,
@@ -26,6 +27,7 @@ import {
 import { WsPreviewCloseRpc } from "./rpc.ts";
 
 const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
+const decodePreviewListInput = Schema.decodeUnknownSync(PreviewListInput);
 const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
 const decodeRemoteSnapshot = Schema.decodeUnknownSync(PreviewRemoteSnapshotResult);
 const decodeNavStatus = Schema.decodeUnknownSync(PreviewNavStatus);
@@ -69,6 +71,15 @@ describe("preview close RPC compatibility", () => {
         revision: 1,
       }),
     ).toMatchObject({ closedTabIds: ["tab-1"], revision: 1 });
+  });
+});
+
+describe("PreviewListInput", () => {
+  it("supports both thread-local lists and environment-wide catch-up", () => {
+    expect(decodePreviewListInput({ threadId: "thread-1" })).toEqual({
+      threadId: "thread-1",
+    });
+    expect(decodePreviewListInput({})).toEqual({});
   });
 });
 

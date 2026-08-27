@@ -6,6 +6,7 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useEffect, useRef, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
@@ -23,8 +24,11 @@ export function usePreviewBridge(input: {
   threadRef: ScopedThreadRef;
   tabId: string;
   runtimeTabId: string;
+  syncGeneration: number;
 }): string | null {
-  const { threadRef, tabId, runtimeTabId } = input;
+  const { threadRef, tabId, runtimeTabId, syncGeneration } = input;
+  const environmentId = threadRef.environmentId;
+  const threadId = threadRef.threadId;
   const clearBrowserPointer = useBrowserPointerStore((state) => state.clear);
   const reportStatus = useAtomCommand(previewEnvironment.reportStatus, "preview status report");
   const bridge = previewBridge;
@@ -48,9 +52,13 @@ export function usePreviewBridge(input: {
         clearBrowserPointer(runtimeTabId);
       }
       lastDesktopNavStatus.current = state.navStatus;
-      applyPreviewDesktopState(threadRef, tabId, projectDesktopState(state));
+      applyPreviewDesktopState(
+        scopeThreadRef(environmentId, threadId),
+        tabId,
+        projectDesktopState(state),
+      );
       const reported = buildReportInput({
-        threadId: threadRef.threadId,
+        threadId,
         tabId,
         state,
         lastReportedUrl: lastReportedUrl.current,
@@ -60,12 +68,30 @@ export function usePreviewBridge(input: {
       lastReportedUrl.current = reported.lastReportedUrl;
       lastReportedKind.current = reported.lastReportedKind;
       void reportStatus({
-        environmentId: threadRef.environmentId,
+        environmentId,
         input: reported.input,
+      }).then((result) => {
+        if (
+          result._tag === "Failure" &&
+          lastReportedUrl.current === reported.lastReportedUrl &&
+          lastReportedKind.current === reported.lastReportedKind
+        ) {
+          lastReportedUrl.current = null;
+          lastReportedKind.current = null;
+        }
       });
     });
     return unsubscribe;
-  }, [bridge, clearBrowserPointer, reportStatus, runtimeTabId, tabId, threadRef]);
+  }, [
+    bridge,
+    clearBrowserPointer,
+    environmentId,
+    reportStatus,
+    runtimeTabId,
+    syncGeneration,
+    tabId,
+    threadId,
+  ]);
   return snapshotStageId;
 }
 
