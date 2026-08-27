@@ -988,6 +988,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         className={cn(
           "workspace-topbar gap-1 pl-2",
           !ownsDesktopTitleBar && "[--workspace-topbar-height:--spacing(11)]",
+          ownsDesktopTitleBar && "drag-region",
           props.mode === "inline" ? "pr-28" : "pr-3",
           ownsDesktopTitleBar && "wco:pr-[calc(var(--workspace-native-controls-inset)+6rem)]",
           props.mode === "inline" && props.maximized && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
@@ -1015,7 +1016,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           ref={tabListRef}
           hideScrollbars
           scrollFade
-          className={cn("min-w-0 flex-1 rounded-none", ownsDesktopTitleBar && "drag-region")}
+          // Electron drag regions never dispatch pointer or wheel input. The
+          // whole strip must stay interactive, including tab padding, gaps,
+          // close controls, and the empty space after the final tab.
+          className="min-w-0 flex-1 rounded-none [-webkit-app-region:no-drag]"
           data-right-panel-tab-list
         >
           <div className="flex h-full w-max min-w-full items-center gap-1">

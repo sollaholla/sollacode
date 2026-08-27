@@ -11,6 +11,7 @@ import {
   resolveRightPanelSurfaceTitle,
   rightPanelTabContextMenuItems,
   RightPanelEmptyState,
+  RightPanelTabs,
   routeCapturedHorizontalTabWheel,
   routeHorizontalTabWheel,
   shouldShowArtifactShelf,
@@ -156,6 +157,45 @@ describe("RightPanelEmptyState", () => {
 });
 
 describe("right-panel tab-strip wheel routing", () => {
+  it("keeps the complete scrolling viewport out of Electron drag hit-testing", () => {
+    const noop = vi.fn();
+    const markup = renderToStaticMarkup(
+      <RightPanelTabs
+        mode="inline"
+        surfaces={[]}
+        activeSurfaceId={null}
+        pendingSurfaceIds={new Set()}
+        previewSessions={{}}
+        floatingPreviewTabIds={undefined}
+        terminalLabelsById={new Map()}
+        sideChatStatusByThreadId={new Map()}
+        onActivate={noop}
+        onCloseSurface={noop}
+        onCloseOtherSurfaces={noop}
+        onCloseSurfacesToRight={noop}
+        onCloseAllSurfaces={noop}
+        onRenameSurface={noop}
+        onReorderSurface={noop}
+        onCopyFilePath={noop}
+        onCopySideChatId={noop}
+        onAddBrowser={noop}
+        onAddTerminal={noop}
+        onAddDiff={noop}
+        onAddFiles={noop}
+        onAddSideChat={noop}
+        browserAvailable
+        diffAvailable
+        filesAvailable
+        sideChatAvailable
+      >
+        <div />
+      </RightPanelTabs>,
+    );
+
+    expect(markup).toContain("[-webkit-app-region:no-drag]");
+    expect(markup).toContain('data-right-panel-tab-list="true"');
+  });
+
   it("uses native horizontal trackpad movement even when a child control owns the pointer", () => {
     expect(
       resolveHorizontalTabWheelDelta({
