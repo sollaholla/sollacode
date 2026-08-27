@@ -28,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
   consumeAgentStopStreamDelta,
@@ -909,10 +910,58 @@ const make = Effect.gen(function* () {
   const browserTabCleanupStateStore = yield* BrowserTabCleanupStateStore;
   const previewManager = yield* PreviewManager;
   const serverSettingsService = yield* ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
+
+  const clearDeliveredContextRecovery = Effect.fn(
+    "ProviderRuntimeIngestion.clearDeliveredContextRecovery",
+  )(function* (event: Extract<ProviderRuntimeEvent, { type: "message.delivered" }>) {
+    const providerInstanceId = event.providerInstanceId;
+    if (providerInstanceId === undefined) {
+      return;
+    }
+
+    // This receipt is the adapter's durable acknowledgement that it accepted
+    // the exact recovery prompt. Clearing via one conditional UPDATE avoids a
+    // read/merge/write race with ProviderService bookkeeping: a late receipt
+    // cannot erase a newer recovery marker or roll back newer session fields.
+    yield* sql`
+      UPDATE provider_session_runtime
+      SET runtime_payload_json = json_set(
+        runtime_payload_json,
+        '$.pendingContextRecovery',
+        json('null')
+      )
+      WHERE thread_id = ${event.threadId}
+        AND provider_instance_id = ${providerInstanceId}
+        AND CASE
+          WHEN json_valid(runtime_payload_json)
+          THEN json_extract(runtime_payload_json, '$.pendingContextRecovery.version')
+          ELSE NULL
+        END = 1
+        AND CASE
+          WHEN json_valid(runtime_payload_json)
+          THEN json_extract(runtime_payload_json, '$.pendingContextRecovery.kind')
+          ELSE NULL
+        END = 'native-resume-timeout'
+        AND CASE
+          WHEN json_valid(runtime_payload_json)
+          THEN json_extract(
+            runtime_payload_json,
+            '$.pendingContextRecovery.providerInstanceId'
+          )
+          ELSE NULL
+        END = ${providerInstanceId}
+        AND CASE
+          WHEN json_valid(runtime_payload_json)
+          THEN json_extract(runtime_payload_json, '$.pendingContextRecovery.sourceMessageId')
+          ELSE NULL
+        END = ${event.payload.messageId}
+    `;
+  });
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -2010,6 +2059,9 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      if (event.type === "message.delivered") {
+        yield* clearDeliveredContextRecovery(event);
+      }
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
       yield* observeContextCompactionMetric(event);

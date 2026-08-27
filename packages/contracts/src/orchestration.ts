@@ -297,7 +297,10 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
-export const OrchestrationSessionFailureKind = Schema.Literal("retryable-upstream");
+export const OrchestrationSessionFailureKind = Schema.Literals([
+  "retryable-upstream",
+  "local-control-timeout",
+]);
 export type OrchestrationSessionFailureKind = typeof OrchestrationSessionFailureKind.Type;
 
 export const OrchestrationSession = Schema.Struct({
