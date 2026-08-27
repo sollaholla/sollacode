@@ -56,6 +56,7 @@ function PreviewEventHost({ environmentId }: { readonly environmentId: Environme
   const sessionsResult = useAtomValue(sessionsAtom);
   const refreshSessions = useAtomRefresh(sessionsAtom);
   const catchupRequestedRef = useRef(false);
+  const preRefreshResultRef = useRef(sessionsResult);
 
   useEffect(() => {
     if (!catchupRequestedRef.current) {
@@ -67,6 +68,7 @@ function PreviewEventHost({ environmentId }: { readonly environmentId: Environme
       void refreshSessions();
       return;
     }
+    if (sessionsResult === preRefreshResultRef.current) return;
     // Never adopt the cached or waiting SWR value: it may predate a remote
     // close or background open. The query reruns for every connection
     // generation, and only its settled result is an authoritative catch-up.
