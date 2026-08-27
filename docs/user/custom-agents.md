@@ -59,6 +59,13 @@ snapshots capture only that live guest. They never reload an authenticated URL i
 if the page changes while its pixels and semantic state are being read, Solla Code retries the live
 capture once and otherwise returns the latest text and controls without a misleading stale image.
 
+Before an agent has selected a tab, its preview tools bind to the visible interactive Browser
+surface in the same environment, even when another thread owns that tab. Opening a new tab from
+that state keeps it in the visible browser's profile, so the user's authenticated session does not
+silently become an empty thread-local session. An explicitly selected tab stays pinned to its real
+owner for the rest of that tool sequence. When no browser surface is visible, automation falls back
+to the requesting thread's isolated browser profile.
+
 Custom agents and their delegated workers use this built-in collaborative browser as their browser-
 control surface. Computer control, Chrome or browser-extension control, and standalone browser
 automation are not fallbacks for a closed preview, a failed tool call, or a login/profile mismatch.
