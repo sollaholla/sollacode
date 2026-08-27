@@ -223,6 +223,7 @@ import {
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { resolveBlockedSend } from "./ChatView.logic";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -2007,6 +2008,15 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  /**
+   * A send the user made before the thread had finished loading or the socket
+   * had reconnected. Held rather than refused, then replayed by the flush
+   * effect below — waiting ten seconds for a spinner before you are allowed
+   * to type is the thing being fixed.
+   */
+  const deferredSendOriginRef = useRef<{
+    readonly origin: OrchestrationMessageInputOrigin | undefined;
+  } | null>(null);
   const draftThreadPersistedRef = useRef(false);
   const persistDraftThreadPromiseRef = useRef<Promise<boolean> | null>(null);
   const activeThreadIdRef = useRef(threadId);
@@ -6428,14 +6438,61 @@ function ChatViewContent(props: ChatViewProps) {
       threadDetailLoading ||
       (activeEnvironmentUnavailable && !canQueueLocalMessage) ||
       sendInFlightRef.current
-    )
+    ) {
+      // Never a dead button: if the send cannot go, either hold it until the
+      // blocker clears or say why. Reported from mobile Safari as pressing
+      // send and nothing happening at all, which took force-quitting the
+      // browser to escape.
+      const blocked = resolveBlockedSend({
+        hasThread: activeThread !== null && activeThread !== undefined,
+        sendInFlight: isSendBusy || sendInFlightRef.current,
+        providerAuthenticationPaused: activeProviderAuthenticationPaused,
+        connecting: isConnecting,
+        threadDetailLoading,
+        environmentUnavailable: activeEnvironmentUnavailable,
+        canQueueLocalMessage,
+        environmentLabel: activeEnvironmentUnavailableLabel,
+      });
+      if (blocked.kind === "queue") {
+        // Keep what they typed exactly where it is; the flush effect resends
+        // this very call once the wait ends.
+        deferredSendOriginRef.current = { origin: inputOrigin };
+        toastManager.add(
+          stackedThreadToast({
+            type: "info",
+            title: "Message queued",
+            description: blocked.message,
+            priority: "high",
+          }),
+        );
+      } else if (blocked.kind === "explain") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Message not sent",
+            description: blocked.message,
+            priority: "high",
+          }),
+        );
+      }
       return;
+    }
     if (activePendingProgress) {
       onAdvanceActivePendingUserInput();
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable) return;
+    if (!sendCtx?.providerAvailable) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "warning",
+          title: "Message not sent",
+          description: "No model is available for this conversation right now.",
+          priority: "high",
+        }),
+      );
+      return;
+    }
     const composerIsEmpty =
       promptRef.current.trim().length === 0 &&
       sendCtx.images.length === 0 &&
@@ -6871,6 +6928,18 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
+
+  // Flushes a send the user made while the conversation was still catching up.
+  // Their text never left the composer, so replaying the call sends exactly
+  // what they wrote — and if they kept editing in the meantime, it sends the
+  // edited version, which is what someone who kept typing would expect.
+  useEffect(() => {
+    if (deferredSendOriginRef.current === null) return;
+    if (threadDetailLoading || isConnecting || isSendBusy || sendInFlightRef.current) return;
+    const deferred = deferredSendOriginRef.current;
+    deferredSendOriginRef.current = null;
+    void onSendRef.current(undefined, deferred.origin);
+  }, [threadDetailLoading, isConnecting, isSendBusy]);
 
   const sendAutomatedConversationTurn = useCallback(
     async (

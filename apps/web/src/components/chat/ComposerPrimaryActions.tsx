@@ -458,14 +458,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
         )}
         {...pointerFocusProps}
-        disabled={
-          isSendBusy ||
-          isSendDisabled ||
-          isConnecting ||
-          isEnvironmentUnavailable ||
-          pushToTalkStatus !== null ||
-          !hasSendableContent
-        }
+        // Reconnecting and disconnected deliberately do NOT disable this. A
+        // disabled button swallows the click outright, so pressing send while
+        // the socket was down did nothing at all and gave no reason — reported
+        // from mobile Safari as needing a force-quit to escape. Left enabled,
+        // the press reaches onSend, which says why it could not go. What stays
+        // disabled is only what the button itself already explains: a send in
+        // flight, an empty composer, a recording in progress.
+        disabled={isSendBusy || isSendDisabled || pushToTalkStatus !== null || !hasSendableContent}
         aria-label={
           isEnvironmentUnavailable
             ? "Environment disconnected"

@@ -745,3 +745,68 @@ export function shouldRestoreComposerFocus(input: {
   if (input.previewFocused) return false;
   return !input.usesOnScreenKeyboard;
 }
+
+/**
+ * What to do about a send that cannot go through right now.
+ *
+ * Every one of these used to be a bare `return` at the top of `onSend`. The
+ * button depressed, the message stayed in the box, and nothing said why —
+ * reported from mobile Safari as "I pressed send and nothing happened", which
+ * took killing the browser to clear. A dead control is worse than a refusal:
+ * the user cannot tell a broken app from a busy one.
+ *
+ * The three outcomes are deliberate:
+ *
+ * - `"queue"` for blockers that clear on their own. Catching a conversation up
+ *   can take ten seconds or more, and making someone watch a spinner before
+ *   they may even start typing is the wrong trade — hold the message and send
+ *   it the moment the wait ends.
+ * - `"explain"` for blockers that need the user to do something, or that no
+ *   amount of waiting will fix.
+ * - `"silent"` for a send genuinely in flight. That state has a spinner and a
+ *   disabled button, so repeating it on every impatient second tap is noise.
+ */
+export type BlockedSendOutcome =
+  | { readonly kind: "silent" }
+  | { readonly kind: "queue"; readonly message: string }
+  | { readonly kind: "explain"; readonly message: string };
+
+export function resolveBlockedSend(input: {
+  readonly hasThread: boolean;
+  readonly sendInFlight: boolean;
+  readonly providerAuthenticationPaused: boolean;
+  readonly connecting: boolean;
+  readonly threadDetailLoading: boolean;
+  readonly environmentUnavailable: boolean;
+  readonly canQueueLocalMessage: boolean;
+  readonly environmentLabel: string | null;
+}): BlockedSendOutcome {
+  if (input.sendInFlight) return { kind: "silent" };
+  if (input.providerAuthenticationPaused) {
+    return {
+      kind: "explain",
+      message: "This provider needs you to sign in again before it can take a message.",
+    };
+  }
+  if (input.environmentUnavailable && !input.canQueueLocalMessage) {
+    const where = input.environmentLabel === null ? "That host" : input.environmentLabel;
+    return {
+      kind: "explain",
+      message: `${where} is unreachable, so this message cannot be delivered or queued yet.`,
+    };
+  }
+  if (input.connecting) {
+    const where = input.environmentLabel === null ? "the host" : input.environmentLabel;
+    return { kind: "queue", message: `Waiting to reconnect to ${where} — this will send itself.` };
+  }
+  if (input.threadDetailLoading) {
+    return {
+      kind: "queue",
+      message: "Waiting for this conversation to finish loading — this will send itself.",
+    };
+  }
+  if (!input.hasThread) {
+    return { kind: "explain", message: "There is no conversation to send to yet." };
+  }
+  return { kind: "silent" };
+}
