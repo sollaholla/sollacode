@@ -6,7 +6,11 @@ import { useEffect, useState } from "react";
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 
-import { agentBrowserCursorOpacity, type BrowserController } from "./agentBrowserCursorLogic";
+import {
+  agentBrowserCursorOffset,
+  agentBrowserCursorOpacity,
+  type BrowserController,
+} from "./agentBrowserCursorLogic";
 
 const CURSOR_ACTIVE_MS = 700;
 /** The cursor is deliberately a fixed blue rather than the theme accent: it has
@@ -56,12 +60,19 @@ function AgentBrowserCursorEvent(props: {
     return () => window.clearTimeout(timeout);
   }, []);
 
+  const offset = agentBrowserCursorOffset({
+    x: event.x,
+    y: event.y,
+    zoomFactor,
+    surface: content,
+  });
+
   return (
     <div
       className="pointer-events-none absolute left-0 top-0 z-40 transition-[transform,opacity] duration-150 ease-out motion-reduce:transition-none"
       style={{
         opacity: agentBrowserCursorOpacity(active, controller),
-        transform: `translate3d(${event.x * zoomFactor * (content?.scale ?? 1) + (content?.x ?? 0) - (content?.scrollLeft ?? 0)}px, ${event.y * zoomFactor * (content?.scale ?? 1) + (content?.y ?? 0) - (content?.scrollTop ?? 0)}px, 0)`,
+        transform: `translate3d(${offset.x}px, ${offset.y}px, 0)`,
       }}
       aria-hidden="true"
       data-agent-browser-cursor
