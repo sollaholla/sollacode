@@ -191,7 +191,7 @@ import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInvariant";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
-import { SidebarAutoCollapseOnEmptyPanel } from "./SidebarAutoCollapseOnEmptyPanel";
+import { RightPanelAutoCollapseOnEmpty } from "./RightPanelAutoCollapseOnEmpty";
 import { PreviewDownloadDirectorySync } from "./preview/PreviewDownloadDirectorySync";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
@@ -9474,9 +9474,11 @@ function ChatViewContent(props: ChatViewProps) {
           immediately reopen a blank Browser tab, so their count touches zero
           in passing and would spend the one-shot on nothing. */}
       {activeThreadRef && !browserOnlySurfaces ? (
-        <SidebarAutoCollapseOnEmptyPanel
+        <RightPanelAutoCollapseOnEmpty
           key={scopedThreadKey(activeThreadRef)}
           surfaceCount={rightPanelState.surfaces.length}
+          panelOpen={rightPanelOpen}
+          onCollapse={closePreviewPanel}
         />
       ) : null}
       {chatLayout}
