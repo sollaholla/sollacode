@@ -1,8 +1,10 @@
 import type { ModelSelection } from "@t3tools/contracts";
 
-export const VOICE_TRANSCRIPT_CORRECTION_DEADLINE_MS = 8_000;
+export const VOICE_TRANSCRIPT_CORRECTION_DEADLINE_MS = 20_000;
 export const VOICE_TRANSCRIPT_CONTEXT_MAX_CHARS = 4_000;
 export const VOICE_TRANSCRIPT_CONTEXT_MAX_MESSAGES = 8;
+
+let activeVoiceTranscriptCorrectionController: AbortController | null = null;
 
 export interface VoiceTranscriptContextMessage {
   readonly role: "user" | "assistant" | "system";
@@ -62,9 +64,42 @@ function correctedTranscriptIsPlausible(original: string, corrected: string): bo
 }
 
 /**
+ * Repair `.2` only when it occupies a grammatical verb slot and is followed by
+ * an object, making spoken "point to" near-unambiguous. Standalone/list-label
+ * `.2` is deliberately left to the contextual model: it can just as plausibly
+ * be a real decimal, and fallback must not rewrite technical dictation.
+ */
+export function normalizeVoiceTranscriptSpeechArtifacts(transcript: string): string {
+  return transcript
+    .replace(
+      /\b((?:can|could|would|will|should|must)\s+you|please)\s+\.2(?=\s+(?:the|this|that|these|those|it|them|him|her|me|us|my|your|our|their|its|his)\b)/gi,
+      "$1 point to",
+    )
+    .replace(
+      /\b((?:need|want)\s+you)\s+\.2(?=\s+(?:the|this|that|these|those|it|them|him|her|me|us|my|your|our|their|its|his)\b)/gi,
+      "$1 to point to",
+    );
+}
+
+function createVoiceTranscriptCorrectionCancellationError(): Error {
+  const error = new Error("Voice transcript correction was cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+
+/** Stop waiting for the active editorial pass so Cancel remains immediate. */
+export function cancelActiveVoiceTranscriptCorrection(): boolean {
+  const controller = activeVoiceTranscriptCorrectionController;
+  if (!controller) return false;
+  controller.abort(createVoiceTranscriptCorrectionCancellationError());
+  return true;
+}
+
+/**
  * Best-effort contextual correction. Failure, timeout, or implausible output
- * all preserve the local transcription byte-for-byte so dictation can never
- * be blocked by an app-owned model request.
+ * preserves the local transcription except for the narrow, grammar-safe speech
+ * artifact repair above, so dictation can never be blocked by an app-owned
+ * model request.
  */
 export async function correctVoiceTranscriptWithFallback(input: {
   readonly enabled: boolean;
@@ -80,13 +115,32 @@ export async function correctVoiceTranscriptWithFallback(input: {
   }) => Promise<string>;
   readonly timeoutMs?: number;
 }): Promise<string> {
-  if (!input.enabled || input.transcript.trim().length === 0 || input.cwd.trim().length === 0) {
+  if (!input.enabled || input.transcript.trim().length === 0) {
     return input.transcript;
   }
 
+  const localFallback = normalizeVoiceTranscriptSpeechArtifacts(input.transcript);
+  if (input.cwd.trim().length === 0) return localFallback;
+
+  activeVoiceTranscriptCorrectionController?.abort(
+    createVoiceTranscriptCorrectionCancellationError(),
+  );
+  const controller = new AbortController();
+  activeVoiceTranscriptCorrectionController = controller;
   const timeoutMs = input.timeoutMs ?? VOICE_TRANSCRIPT_CORRECTION_DEADLINE_MS;
   let timeout: ReturnType<typeof setTimeout> | null = null;
+  let removeCancellationListener: () => void = () => undefined;
   try {
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      const onAbort = () =>
+        reject(
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : createVoiceTranscriptCorrectionCancellationError(),
+        );
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      removeCancellationListener = () => controller.signal.removeEventListener("abort", onAbort);
+    });
     const corrected = await Promise.race([
       input.request({
         cwd: input.cwd,
@@ -100,14 +154,20 @@ export async function correctVoiceTranscriptWithFallback(input: {
           timeoutMs,
         );
       }),
+      cancelled,
     ]);
-    const normalized = corrected.trim();
+    const normalized = normalizeVoiceTranscriptSpeechArtifacts(corrected.trim());
     return correctedTranscriptIsPlausible(input.transcript, normalized)
       ? normalized
-      : input.transcript;
-  } catch {
-    return input.transcript;
+      : localFallback;
+  } catch (cause) {
+    if (controller.signal.aborted) throw cause;
+    return localFallback;
   } finally {
     if (timeout !== null) clearTimeout(timeout);
+    removeCancellationListener();
+    if (activeVoiceTranscriptCorrectionController === controller) {
+      activeVoiceTranscriptCorrectionController = null;
+    }
   }
 }

@@ -101,7 +101,24 @@ export function sanitizeThreadTitle(raw: string): string {
 }
 
 export function sanitizeCorrectedVoiceTranscript(generated: string, original: string): string {
-  const corrected = generated.trim();
+  let corrected = generated.trim();
+  if (!original.trimStart().startsWith("{") && corrected.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(corrected);
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        Object.keys(parsed).length === 1 &&
+        "transcript" in parsed &&
+        typeof parsed.transcript === "string"
+      ) {
+        corrected = parsed.transcript.trim();
+      }
+    } catch {
+      // The corrected transcript can legitimately contain JSON-like prose.
+    }
+  }
   if (corrected.length === 0 || corrected.length > 8_000) return original;
   return corrected;
 }

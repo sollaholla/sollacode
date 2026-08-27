@@ -53,4 +53,19 @@ describe("sanitizeCorrectedVoiceTranscript", () => {
     expect(sanitizeCorrectedVoiceTranscript("   ", "  raw wording  ")).toBe("  raw wording  ");
     expect(sanitizeCorrectedVoiceTranscript("x".repeat(8_001), "raw wording")).toBe("raw wording");
   });
+
+  it("unwraps one accidental structured-output layer without corrupting dictated JSON", () => {
+    expect(
+      sanitizeCorrectedVoiceTranscript(
+        '{"transcript":"The settings render behind the chat."}',
+        "The settings renders behind chat.",
+      ),
+    ).toBe("The settings render behind the chat.");
+    expect(
+      sanitizeCorrectedVoiceTranscript(
+        '{"transcript":"literal user data"}',
+        '{"transcript":"literal user data"}',
+      ),
+    ).toBe('{"transcript":"literal user data"}');
+  });
 });

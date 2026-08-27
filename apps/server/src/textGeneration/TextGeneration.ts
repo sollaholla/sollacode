@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type {
   ChatAttachment,
   ModelSelection,
@@ -20,6 +22,8 @@ export type TextGenerationProvider =
   | "grok"
   | "opencode"
   | "mcpBridge";
+
+export const VOICE_TRANSCRIPT_CORRECTION_TIMEOUT_MS = 18_000;
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -254,6 +258,19 @@ export const makeTextGenerationFromRegistry = (
     correctVoiceTranscript: (input) =>
       resolveInstance(registry, "correctVoiceTranscript", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.correctVoiceTranscript(input)),
+        Effect.timeoutOption(Duration.millis(VOICE_TRANSCRIPT_CORRECTION_TIMEOUT_MS)),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.fail(
+                new TextGenerationError({
+                  operation: "correctVoiceTranscript",
+                  detail: "Voice transcript correction timed out.",
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
       ),
     generatePlanRefresh: (input) =>
       resolveInstance(registry, "generatePlanRefresh", input.modelSelection.instanceId).pipe(
