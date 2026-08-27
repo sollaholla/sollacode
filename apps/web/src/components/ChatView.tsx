@@ -225,6 +225,7 @@ import {
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { prependWaitingOnYouReply } from "@t3tools/shared/agentAttentionFollowUp";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { resolveBlockedSend, resolveSendDisabledReason } from "./ChatView.logic";
 import { WaitingOnYouComposerTag } from "./agents/WaitingOnYouComposerTag";
@@ -6718,10 +6719,24 @@ function ChatViewContent(props: ChatViewProps) {
     );
     // Appended last, so the render path can strip it before the blocks that
     // must be trailing to parse — see deriveDisplayedUserMessageState.
-    const messageTextForSend = appendInterruptedTasksNotice(
+    const messageTextWithInterruptedTasks = appendInterruptedTasksNotice(
       messageTextWithReviewComments,
       interruptedTaskTitles,
     );
+    // Captured here rather than re-read once the turn starts: this message
+    // quotes the request, so it answers it even if the user takes the tag off
+    // while the send is still in flight.
+    const answeredRequest =
+      activeThreadKey === null ? null : getWaitingOnYouAttachment(activeThreadKey);
+    const messageTextForSend =
+      answeredRequest === null
+        ? messageTextWithInterruptedTasks
+        : prependWaitingOnYouReply(messageTextWithInterruptedTasks, answeredRequest.title);
+    if (answeredRequest !== null && activeThreadKey !== null) {
+      // Off the composer the moment the message leaves, so a second send does
+      // not quote the same request again.
+      detachWaitingOnYou(activeThreadKey);
+    }
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt({
@@ -6950,24 +6965,18 @@ function ChatViewContent(props: ChatViewProps) {
         );
       }
     }
-    if (turnStartSucceeded && activeThreadKey !== null) {
-      // Read at settle time, not at press time: the user may have taken the
-      // tag off while the send was in flight, and a detached request must stay
-      // open. Resolving is best-effort — the message is already sent, and a
+    if (turnStartSucceeded && answeredRequest !== null) {
+      // Best-effort: the message is already sent and quotes the request, so a
       // failed close-out leaves the card there to try again rather than
       // reporting an error over a message that went through.
-      const answered = getWaitingOnYouAttachment(activeThreadKey);
-      if (answered !== null) {
-        detachWaitingOnYou(activeThreadKey);
-        void resolveAgentBlocker({
-          environmentId,
-          input: {
-            vmAgentId: answered.vmAgentId,
-            blockerId: answered.blockerId,
-            answeredInChat: true,
-          },
-        });
-      }
+      void resolveAgentBlocker({
+        environmentId,
+        input: {
+          vmAgentId: answeredRequest.vmAgentId,
+          blockerId: answeredRequest.blockerId,
+          answeredInChat: true,
+        },
+      });
     }
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {

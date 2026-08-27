@@ -25,19 +25,40 @@ export function resolveDownloadApproval(input: {
   return input.allowedDomains.has(input.domain) ? "allowed" : "ask";
 }
 
-/**
- * The domain a download should be attributed to.
- *
- * Falls back to the empty string for anything unparseable, which
- * {@link resolveDownloadApproval} treats as "ask" — an unattributable download
- * is exactly the kind that should not slip through on a remembered answer.
- */
-export function downloadDomain(rawUrl: string): string {
+function hostnameOf(rawUrl: string): string {
   try {
     return new URL(rawUrl).hostname.toLowerCase();
   } catch {
     return "";
   }
+}
+
+/**
+ * The domain a download should be attributed to.
+ *
+ * Three shapes have to work, because the common one has no hostname at all:
+ *
+ * - `https://grok.com/f.mp4` — the plain case, the host.
+ * - `blob:https://grok.com/<uuid>` — how most web apps hand over a file they
+ *   built in the page. `new URL(...).hostname` is empty for these, so without
+ *   unwrapping the `blob:` prefix every such download is unattributable and
+ *   "Allow for this domain" can never be offered — which is exactly how it
+ *   shipped greyed out.
+ * - `data:` and `blob:null` — genuinely hostless, so fall back to the page
+ *   that started the download. Trusting the site the user is looking at is
+ *   both what they mean and the only answer available.
+ *
+ * Still empty means unattributable, which {@link resolveDownloadApproval}
+ * treats as "ask" — the kind that must not slip through a remembered answer.
+ */
+export function downloadDomain(rawUrl: string, pageUrl = ""): string {
+  const direct = hostnameOf(rawUrl);
+  if (direct.length > 0) return direct;
+  if (rawUrl.startsWith("blob:")) {
+    const inner = hostnameOf(rawUrl.slice("blob:".length));
+    if (inner.length > 0) return inner;
+  }
+  return hostnameOf(pageUrl);
 }
 
 /**

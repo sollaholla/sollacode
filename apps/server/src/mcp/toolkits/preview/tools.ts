@@ -16,6 +16,8 @@ import {
   PreviewAutomationSetColorSchemeInput,
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
+  PreviewAutomationWaitForDownloadInput,
+  PreviewAutomationWaitForDownloadResult,
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
   PreviewAutomationTypeInput,
@@ -207,6 +209,17 @@ export const PreviewWaitForTool = readonlyBrowserTool(
   }).annotate(Tool.Title, "Wait for preview page condition"),
 );
 
+export const PreviewWaitForDownloadTool = readonlyBrowserTool(
+  Tool.make("preview_wait_for_download", {
+    description:
+      "Wait for a download started in this tab to finish, including the time a download from a site the user has not approved yet spends waiting for their answer. Downloads from a new domain are held until the user allows or denies them, and a held download is indistinguishable from a slow one in a snapshot — call this instead of polling. Returns the files that landed, or settled:false with the still-pending request when the wait runs out.",
+    parameters: PreviewAutomationWaitForDownloadInput,
+    success: PreviewAutomationWaitForDownloadResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Wait for preview download"),
+);
+
 export const PreviewRecordingStartTool = safeBrowserTool(
   Tool.make("preview_recording_start", {
     description:
@@ -243,6 +256,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewScrollTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
+  PreviewWaitForDownloadTool,
   PreviewCloseTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
@@ -261,6 +275,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewScrollTool,
   PreviewEvaluateTool,
   PreviewWaitForTool,
+  PreviewWaitForDownloadTool,
   PreviewCloseTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,

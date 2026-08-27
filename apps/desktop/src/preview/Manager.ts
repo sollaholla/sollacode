@@ -18,6 +18,7 @@ import type {
   DesktopPreviewAutomationStatus,
   PreviewDownload,
   PreviewDownloadApproval,
+  PreviewAutomationWaitForDownloadResult,
   PreviewAutomationClickInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
@@ -924,6 +925,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   /** Newest-first, and short: this is a notice, not a download history. */
   const TAB_DOWNLOAD_LIMIT = 5;
+  /** Short enough to feel immediate once the user answers. */
+  const WAIT_FOR_DOWNLOAD_POLL_MS = 250;
   browserSession.onDownload((webContentsId, download) => {
     runFork(
       Effect.gen(function* () {
@@ -4816,6 +4819,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Waits for a download this tab started to finish, including the time a
+   * held one spends waiting for the user to allow it.
+   *
+   * Without this an agent has to poll snapshots, and a hold looks the same as
+   * a slow server on every poll. Waiting on a person is why the bound is
+   * minutes rather than the seconds the page-condition waits use.
+   */
+  const automationWaitForDownload = Effect.fn("PreviewManager.automationWaitForDownload")(
+    function* (tabId: string, input: { readonly timeoutMs?: number | undefined }) {
+      const deadlineMs = Math.min(Math.max(input.timeoutMs ?? 120_000, 1), 600_000);
+      const readTab = Effect.map(SynchronizedRef.get(tabsRef), (tabs) => tabs.get(tabId));
+      const initial = yield* readTab;
+      if (!initial) return yield* new PreviewTabNotFoundError({ tabId });
+      const known = new Set(initial.downloads.map((download) => download.path));
+      const startedAtMs = yield* Clock.currentTimeMillis;
+
+      while (true) {
+        const tab = yield* readTab;
+        if (!tab) return yield* new PreviewTabNotFoundError({ tabId });
+        const arrived = tab.downloads.filter((download) => !known.has(download.path));
+        // A refusal settles the hold without producing a file, so "no holds
+        // left" ends the wait just as much as a file landing does.
+        if (arrived.length > 0 || tab.pendingDownloadApprovals.length === 0) {
+          return {
+            tabId,
+            settled: true,
+            downloads: arrived,
+            pendingDownloadApprovals: [...tab.pendingDownloadApprovals],
+          };
+        }
+        if ((yield* Clock.currentTimeMillis) - startedAtMs >= deadlineMs) {
+          return {
+            tabId,
+            settled: false,
+            downloads: [],
+            pendingDownloadApprovals: [...tab.pendingDownloadApprovals],
+          };
+        }
+        yield* Effect.sleep(WAIT_FOR_DOWNLOAD_POLL_MS);
+      }
+    },
+  );
+
   const revealArtifact = Effect.fn("PreviewManager.revealArtifact")(function* (
     artifactPath: string,
   ) {
@@ -4920,6 +4967,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationType,
     automationUpload,
     automationWaitFor,
+    automationWaitForDownload,
     cancelPickElement,
     captureScreenshot,
     closeTab,
@@ -5313,6 +5361,10 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       input: PreviewAutomationWaitForInput,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationWaitForDownload: (
+      tabId: string,
+      input: { readonly timeoutMs?: number | undefined },
+    ) => Effect.Effect<PreviewAutomationWaitForDownloadResult, PreviewManagerError>;
     readonly subscribeStateChanges: (listener: Listener) => Effect.Effect<void, never, Scope.Scope>;
     readonly subscribePointerEvents: (
       listener: PointerEventListener,
@@ -5418,6 +5470,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationScroll: operations.automationScroll,
     automationEvaluate: operations.automationEvaluate,
     automationWaitFor: operations.automationWaitFor,
+    automationWaitForDownload: operations.automationWaitForDownload,
     subscribeStateChanges: operations.subscribeStateChanges,
     subscribePointerEvents: operations.subscribePointerEvents,
     subscribeNewTabRequests: operations.subscribeNewTabRequests,

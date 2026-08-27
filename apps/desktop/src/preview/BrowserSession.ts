@@ -375,7 +375,16 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
               NodeFS.mkdirSync(directory, { recursive: true });
               const fileName = resolveDownloadFileName(item.getFilename());
-              const domain = downloadDomain(item.getURL());
+              // The guest's own URL is the fallback for downloads with no host
+              // of their own — `data:`, and the `blob:null` a sandboxed frame
+              // produces.
+              let pageUrl = "";
+              try {
+                pageUrl = guest?.getURL() ?? "";
+              } catch {
+                // A guest torn down mid-download has no URL to offer.
+              }
+              const domain = downloadDomain(item.getURL(), pageUrl);
               const approval = resolveDownloadApproval({
                 domain,
                 allowedDomains: allowedDownloadDomains,

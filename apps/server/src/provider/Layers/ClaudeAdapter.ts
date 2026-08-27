@@ -1517,6 +1517,24 @@ function sdkNativeMethod(message: SDKMessage): string {
 
 // Discriminator/identity keys carry no human-readable content; everything else
 // on an unmodeled SDK message is potentially worth surfacing in the work log.
+/**
+ * System subtypes the CLI sends but the SDK's typed union does not declare, so
+ * they cannot be switch cases and would otherwise fall through to the
+ * unknown-subtype warning — surfacing a red row in the work log for something
+ * that went fine.
+ *
+ * - `background_tasks_changed`: a roster snapshot ({tasks: [...]}). The task_*
+ *   lifecycle events carry the authoritative per-agent data and the typed
+ *   background_tasks control request is the reconciliation source.
+ * - `vcs_state_changed`: announces a commit, push or branch switch the agent
+ *   just made. The work log already shows the command that did it, so the
+ *   notice adds nothing except, until now, an error row for a successful push.
+ */
+const IGNORED_WIRE_ONLY_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
+  "background_tasks_changed",
+  "vcs_state_changed",
+]);
+
 const SDK_MESSAGE_NOISE_KEYS = new Set([
   "type",
   "subtype",
@@ -2882,14 +2900,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       },
     };
 
-    // Undeclared-but-real subtypes (absent from the SDK's union, so they can't
-    // be switch cases): consumed intentionally without emitting, otherwise
-    // they fall through to the unknown-subtype warning and surface as spurious
-    // error rows in client work logs. `background_tasks_changed` is a roster
-    // snapshot ({tasks: [...]}) — the task_* lifecycle events carry the
-    // authoritative per-agent data and the typed background_tasks control
-    // request is the reconciliation source.
-    if ((message.subtype as string) === "background_tasks_changed") {
+    if (IGNORED_WIRE_ONLY_SYSTEM_SUBTYPES.has(message.subtype as string)) {
       return;
     }
 

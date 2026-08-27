@@ -9,6 +9,7 @@ import type {
   PreviewAutomationResizeResult,
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
+  PreviewAutomationWaitForDownloadResult,
   PreviewAutomationStatus,
   PreviewAutomationUploadResult,
   PreviewTabId,
@@ -85,6 +86,12 @@ const handlers = {
     invokeTargeted<unknown>("evaluate", input).pipe(Effect.map((result) => result ?? null)),
   preview_wait_for: (input) =>
     invokeTargeted<void>("waitFor", input, input.timeoutMs).pipe(Effect.as({})),
+  preview_wait_for_download: (input) =>
+    invokeTargeted<PreviewAutomationWaitForDownloadResult>(
+      "waitForDownload",
+      input,
+      input.timeoutMs,
+    ),
   preview_close: (input) => invokeTargeted<PreviewAutomationCloseResult>("close", input),
   preview_recording_start: (input) =>
     invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),

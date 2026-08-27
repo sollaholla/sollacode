@@ -15,9 +15,28 @@ describe("downloadDomain", () => {
     expect(downloadDomain("https://Grok.COM/a.bin")).toBe("grok.com");
   });
 
+  it("unwraps the blob URL most sites actually download through", () => {
+    // `new URL("blob:https://grok.com/x").hostname` is empty, so without this
+    // every generated-in-the-page download is unattributable and "Allow for
+    // this domain" is permanently greyed out.
+    expect(downloadDomain("blob:https://grok.com/6f1e-42")).toBe("grok.com");
+  });
+
+  it("falls back to the page for a genuinely hostless download", () => {
+    expect(downloadDomain("data:text/plain;base64,AAA", "https://grok.com/chat")).toBe("grok.com");
+    expect(downloadDomain("blob:null/6f1e-42", "https://grok.com/chat")).toBe("grok.com");
+  });
+
+  it("prefers the download's own host over the page it was started from", () => {
+    expect(downloadDomain("https://cdn.grok.com/a.mp4", "https://grok.com/chat")).toBe(
+      "cdn.grok.com",
+    );
+  });
+
   it("returns nothing attributable for a URL it cannot parse", () => {
     expect(downloadDomain("not a url")).toBe("");
     expect(downloadDomain("")).toBe("");
+    expect(downloadDomain("data:text/plain;base64,AAA", "also not a url")).toBe("");
   });
 });
 
