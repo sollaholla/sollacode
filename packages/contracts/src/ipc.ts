@@ -1069,14 +1069,21 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
   data: Schema.Uint8Array,
 });
 
+const DesktopPreviewAutomationExpiryFields = {
+  /** Absolute renderer deadline. Main-process input work is cancelled after it. */
+  expiresAt: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+};
+
 export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationClickInput,
+  ...DesktopPreviewAutomationExpiryFields,
 });
 
 export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationTypeInput,
+  ...DesktopPreviewAutomationExpiryFields,
 });
 
 export const DesktopPreviewAutomationUploadInputSchema = Schema.Struct({
@@ -1087,6 +1094,7 @@ export const DesktopPreviewAutomationUploadInputSchema = Schema.Struct({
 export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationPressInput,
+  ...DesktopPreviewAutomationExpiryFields,
 });
 
 export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
@@ -1478,13 +1486,13 @@ export interface DesktopPreviewBridge {
   automation: {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
-    click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
-    type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
+    click: (tabId: string, input: PreviewAutomationClickInput, expiresAt?: number) => Promise<void>;
+    type: (tabId: string, input: PreviewAutomationTypeInput, expiresAt?: number) => Promise<void>;
     upload: (
       tabId: string,
       input: PreviewAutomationUploadInput,
     ) => Promise<PreviewAutomationUploadResult>;
-    press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
+    press: (tabId: string, input: PreviewAutomationPressInput, expiresAt?: number) => Promise<void>;
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
     waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;

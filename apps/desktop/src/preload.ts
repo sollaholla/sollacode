@@ -275,14 +275,26 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL, { tabId }),
       snapshot: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, { tabId }),
-      click: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL, { tabId, input }),
-      type: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, { tabId, input }),
+      click: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
+      type: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
       upload: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_UPLOAD_CHANNEL, { tabId, input }),
-      press: (tabId, input) =>
-        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, { tabId, input }),
+      press: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
       scroll: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL, { tabId, input }),
       evaluate: (tabId, input) =>
