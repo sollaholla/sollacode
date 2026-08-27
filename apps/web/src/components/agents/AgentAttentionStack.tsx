@@ -1,4 +1,5 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Cause from "effect/Cause";
 import {
   BellIcon,
@@ -23,7 +24,8 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 
 import type { InlineAgentAttention } from "./agentNotifications";
-import { beginWaitingOnYouFollowUpWhenReady } from "./agentAttentionFollowUp";
+import { focusComposerWhenReady } from "./agentAttentionFollowUp";
+import { attachWaitingOnYou } from "./waitingOnYouAttachment";
 
 const commandError = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
@@ -106,13 +108,25 @@ export function AgentAttentionStack(props: {
     });
   };
 
-  const followUpOnBlocker = (title: string) => {
+  /**
+   * Tags the request onto the composer rather than typing about it.
+   *
+   * The old behavior — insert a lead-in sentence and focus — read as doing
+   * nothing, because the request card stayed open and closing it was still a
+   * separate click. The tag is the link between the two: it is visible, it can
+   * be taken off, and sending the message closes the request out.
+   */
+  const followUpOnBlocker = (
+    item: Extract<(typeof props.attention.items)[number], { readonly kind: "blocker" }>,
+  ) => {
     props.onRevealChat();
+    attachWaitingOnYou(scopedThreadKey(props.threadRef), {
+      vmAgentId: item.blocker.vmAgentId,
+      blockerId: item.blocker.blockerId,
+      title: item.blocker.title,
+    });
     cancelPendingFollowUpRef.current?.();
-    cancelPendingFollowUpRef.current = beginWaitingOnYouFollowUpWhenReady(
-      () => composerRef?.current ?? null,
-      title,
-    );
+    cancelPendingFollowUpRef.current = focusComposerWhenReady(() => composerRef?.current ?? null);
   };
 
   useEffect(
@@ -235,7 +249,7 @@ export function AgentAttentionStack(props: {
             label="Follow up"
             icon={<MessageSquareReplyIcon />}
             disabled={busy !== null}
-            onClick={() => followUpOnBlocker(item.blocker.title)}
+            onClick={() => followUpOnBlocker(item)}
           />
           {item.blocker.url ? (
             <AttentionAction

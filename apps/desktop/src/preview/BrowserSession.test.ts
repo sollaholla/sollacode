@@ -29,6 +29,9 @@ vi.mock("electron", () => ({
   session: {
     fromPartition,
   },
+  // Reporting a finished download raises an OS notification. Saying the
+  // platform has none keeps these tests off the real notification centre.
+  Notification: { isSupported: () => false },
 }));
 
 import * as NodeFS from "node:fs";
@@ -56,6 +59,47 @@ const layer = BrowserSession.layer.pipe(
   Layer.provide(environmentLayer),
   Layer.provide(NodeServices.layer),
 );
+
+/**
+ * The parts of Electron's `DownloadItem` the will-download handler touches.
+ *
+ * `finish` fires the item's own `done` listener, which is how the handler
+ * learns the bytes landed — there is no other way to reach that branch
+ * without a real transfer.
+ */
+function makeDownloadItem(fileName: string, url: string) {
+  let savePath = "";
+  let done: ((event: unknown, state: string) => void) | null = null;
+  return {
+    getFilename: () => fileName,
+    getURL: () => url,
+    setSavePath: (value: string) => {
+      savePath = value;
+    },
+    once: (event: string, listener: (event: unknown, state: string) => void) => {
+      if (event === "done") done = listener;
+    },
+    cancel: () => undefined,
+    savedTo: () => savePath,
+    finish: (state: string) => done?.({}, state),
+  };
+}
+
+const registerWillDownload = Effect.fn(function* (
+  browserSessions: typeof BrowserSession.BrowserSession.Service,
+  scope: string,
+) {
+  const partition = yield* browserSessions.getPartition(scope);
+  yield* browserSessions.getSession(scope);
+  const browserSession = sessions.get(partition);
+  if (!browserSession) throw new Error("Expected a session for the derived partition");
+  const registration = browserSession.on.mock.calls.find(
+    ([event]: ReadonlyArray<unknown>) => event === "will-download",
+  );
+  if (!registration) throw new Error("Expected a will-download registration");
+  const handler = registration[1] as (event: unknown, item: unknown, guest: unknown) => void;
+  return (item: ReturnType<typeof makeDownloadItem>) => handler({}, item, { id: 7 });
+});
 
 describe("BrowserSession", () => {
   beforeEach(() => {
@@ -151,32 +195,99 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("gives a download a path so the system save panel never appears", () =>
+  it.effect("holds a new site's download in staging until the user allows it", () =>
     Effect.gen(function* () {
-      // A save panel means a download only completes if a human is sitting
-      // there to click Save, so a background agent simply hung on it.
+      // Two things are being protected at once. A save panel means a download
+      // only completes if a human clicks Save, so a background agent hung on
+      // it — hence the path. But suppressing the panel also removed the only
+      // moment a human could refuse, so the first file from a domain waits in
+      // a staging folder instead of landing in the workspace.
       const browserSessions = yield* BrowserSession.BrowserSession;
-      const partition = yield* browserSessions.getPartition("scope-a");
-      yield* browserSessions.getSession("scope-a");
+      const downloads: Array<{ readonly webContentsId: number; readonly path: string }> = [];
+      browserSessions.onDownload((webContentsId, download) => {
+        downloads.push({ webContentsId, path: download.path });
+      });
+      const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+      browserSessions.onDownloadApproval((_webContentsId, event) => {
+        approvalEvents.push(event);
+      });
+      const willDownload = yield* registerWillDownload(browserSessions, "scope-a");
 
-      const browserSession = sessions.get(partition);
-      assert.isDefined(browserSession);
-      if (!browserSession) throw new Error("Expected a session for the derived partition");
-      const registration = browserSession.on.mock.calls.find(
-        ([event]: ReadonlyArray<unknown>) => event === "will-download",
+      const held = makeDownloadItem("moose-render.mp4", "https://grok.com/f/moose-render.mp4");
+      willDownload(held);
+
+      const stagedTo = held.savedTo();
+      assert.isTrue(
+        stagedTo.endsWith(NodePath.join(".pending-approval", "moose-render.mp4")),
+        stagedTo,
       );
-      if (!registration) throw new Error("Expected a will-download registration");
+      const pending = approvalEvents[0];
+      assert.strictEqual(pending?.kind, "pending");
+      if (pending?.kind !== "pending") throw new Error("Expected a pending approval");
+      assert.strictEqual(pending.approval.domain, "grok.com");
+      assert.strictEqual(pending.approval.fileName, "moose-render.mp4");
 
-      const setSavePath = vi.fn();
-      (registration[1] as (event: unknown, item: unknown) => void)(
-        {},
-        { getFilename: () => "moose-render.mp4", setSavePath },
+      // The transfer finishes while the question is still on screen. Nothing
+      // may be reported as downloaded yet: it is not in the workspace.
+      NodeFS.writeFileSync(stagedTo, "bytes");
+      held.finish("completed");
+      assert.strictEqual(downloads.length, 0);
+      assert.isTrue(NodeFS.existsSync(stagedTo));
+
+      browserSessions.answerDownloadApproval(pending.approval.id, "allow-domain");
+
+      assert.strictEqual(downloads.length, 1);
+      const landedAt = downloads[0]?.path ?? "";
+      assert.isTrue(landedAt.endsWith(NodePath.join("downloads", "moose-render.mp4")), landedAt);
+      assert.isTrue(NodeFS.existsSync(landedAt));
+      assert.isFalse(NodeFS.existsSync(stagedTo));
+      assert.deepStrictEqual(approvalEvents.at(-1), {
+        kind: "settled",
+        id: pending.approval.id,
+      });
+
+      // The answer was about the site, so the next file from it is not asked
+      // about again and goes straight where it belongs.
+      const trusted = makeDownloadItem("moose-clip.mp4", "https://grok.com/f/moose-clip.mp4");
+      willDownload(trusted);
+      const trustedPath = trusted.savedTo();
+      assert.isTrue(
+        trustedPath.endsWith(NodePath.join("downloads", "moose-clip.mp4")),
+        trustedPath,
       );
+      assert.strictEqual(approvalEvents.length, 2);
+    }).pipe(Effect.provide(layer)),
+  );
 
-      assert.strictEqual(setSavePath.mock.calls.length, 1);
-      const savedTo = String(setSavePath.mock.calls[0]?.[0]);
-      assert.isTrue(savedTo.endsWith(NodePath.join("downloads", "moose-render.mp4")), savedTo);
-      assert.isTrue(NodeFS.existsSync(NodePath.dirname(savedTo)));
+  it.effect("keeps nothing on disk when the user denies a download", () =>
+    Effect.gen(function* () {
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const downloads: Array<string> = [];
+      browserSessions.onDownload((_webContentsId, download) => {
+        downloads.push(download.path);
+      });
+      const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+      browserSessions.onDownloadApproval((_webContentsId, event) => {
+        approvalEvents.push(event);
+      });
+      const willDownload = yield* registerWillDownload(browserSessions, "scope-deny");
+
+      const held = makeDownloadItem("payload.bin", "https://evil.test/payload.bin");
+      willDownload(held);
+      const stagedTo = held.savedTo();
+      NodeFS.writeFileSync(stagedTo, "bytes");
+      held.finish("completed");
+
+      const pending = approvalEvents[0];
+      if (pending?.kind !== "pending") throw new Error("Expected a pending approval");
+      browserSessions.answerDownloadApproval(pending.approval.id, "deny");
+
+      assert.strictEqual(downloads.length, 0);
+      assert.isFalse(NodeFS.existsSync(stagedTo));
+      // And a denial teaches the session nothing: the next file asks again.
+      const again = makeDownloadItem("payload.bin", "https://evil.test/payload.bin");
+      willDownload(again);
+      assert.strictEqual(approvalEvents.filter((event) => event.kind === "pending").length, 2);
     }).pipe(Effect.provide(layer)),
   );
 

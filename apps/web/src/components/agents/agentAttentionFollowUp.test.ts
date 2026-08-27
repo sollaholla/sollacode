@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
-  beginWaitingOnYouFollowUp,
-  beginWaitingOnYouFollowUpWhenReady,
+  focusComposerWhenReady,
   type AgentAttentionComposer,
   type WaitingOnYouFollowUpScheduler,
 } from "./agentAttentionFollowUp";
@@ -18,28 +17,19 @@ function makeComposer(value: string) {
   return { composer, focusAtEnd, insertTextAtEnd };
 }
 
-describe("beginWaitingOnYouFollowUp", () => {
-  it("references the blocker, preserves the draft boundary, and focuses the composer", () => {
+describe("focusComposerWhenReady", () => {
+  it("focuses without typing on the user's behalf", () => {
+    // What the follow-up is about is carried by the tag attached to the
+    // composer, so nothing is written into their draft.
     const harness = makeComposer("One detail is wrong");
 
-    beginWaitingOnYouFollowUp(harness.composer, "Sign in to X for Grok");
+    focusComposerWhenReady(() => harness.composer);
 
-    expect(harness.insertTextAtEnd).toHaveBeenCalledWith("Follow-up on “Sign in to X for Grok”: ", {
-      ensureLeadingBoundary: true,
-    });
     expect(harness.focusAtEnd).toHaveBeenCalledOnce();
-  });
-
-  it("does not duplicate a blocker reference already in the draft", () => {
-    const harness = makeComposer("Follow-up on “Sign in to X for Grok”: use the other account");
-
-    beginWaitingOnYouFollowUp(harness.composer, "Sign in to X for Grok");
-
     expect(harness.insertTextAtEnd).not.toHaveBeenCalled();
-    expect(harness.focusAtEnd).toHaveBeenCalledOnce();
   });
 
-  it("keeps the follow-up alive while a mobile composer remounts", () => {
+  it("keeps the intent alive while a mobile composer remounts", () => {
     const harness = makeComposer("");
     const callbacks: Array<() => void> = [];
     const scheduler: WaitingOnYouFollowUpScheduler = {
@@ -51,19 +41,12 @@ describe("beginWaitingOnYouFollowUp", () => {
     };
     let reads = 0;
 
-    beginWaitingOnYouFollowUpWhenReady(
-      () => (++reads < 3 ? null : harness.composer),
-      "Sign in to X for Grok",
-      { scheduler },
-    );
+    focusComposerWhenReady(() => (++reads < 3 ? null : harness.composer), { scheduler });
 
-    expect(harness.insertTextAtEnd).not.toHaveBeenCalled();
+    expect(harness.focusAtEnd).not.toHaveBeenCalled();
     callbacks.shift()?.();
-    expect(harness.insertTextAtEnd).not.toHaveBeenCalled();
+    expect(harness.focusAtEnd).not.toHaveBeenCalled();
     callbacks.shift()?.();
-    expect(harness.insertTextAtEnd).toHaveBeenCalledWith("Follow-up on “Sign in to X for Grok”: ", {
-      ensureLeadingBoundary: true,
-    });
     expect(harness.focusAtEnd).toHaveBeenCalledOnce();
   });
 
@@ -79,7 +62,7 @@ describe("beginWaitingOnYouFollowUp", () => {
     };
     const readComposer = vi.fn(() => null);
 
-    const stop = beginWaitingOnYouFollowUpWhenReady(readComposer, "Blocked", { scheduler });
+    const stop = focusComposerWhenReady(readComposer, { scheduler });
     stop();
     callbacks.shift()?.();
 

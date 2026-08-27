@@ -1,8 +1,8 @@
 /**
- * Whether a download may start without asking the user.
+ * Whether a download may write into the user's workspace without asking.
  *
  * Downloads no longer raise the system save panel, which means a page — or an
- * agent driving one — can now write a file into the user's workspace with no
+ * agent driving one — can now put a file in the user's workspace with no
  * prompt and no click. That is a real capability, so it is gated: the first
  * download from a domain asks, and the answer can be remembered for that
  * domain or spent on the one file.
@@ -10,18 +10,19 @@
  * The decision is keyed by domain rather than by page URL. A site that fetches
  * from its own CDN should not re-ask per file, and a user who trusts
  * "grok.com" means the site, not one URL on it.
+ *
+ * Answers live for as long as the app runs and are deliberately not persisted.
+ * A standing grant that outlives the session is a bigger promise than "yes,
+ * download that", and re-asking once per launch is cheap.
  */
 export type DownloadApproval = "allowed" | "ask";
 
 export function resolveDownloadApproval(input: {
   readonly domain: string;
   readonly allowedDomains: ReadonlySet<string>;
-  /** Set once by an "Allow once" answer, and spent by this download. */
-  readonly oneTimeGrant: string | null;
 }): DownloadApproval {
   if (input.domain.length === 0) return "ask";
-  if (input.allowedDomains.has(input.domain)) return "allowed";
-  return input.oneTimeGrant === input.domain ? "allowed" : "ask";
+  return input.allowedDomains.has(input.domain) ? "allowed" : "ask";
 }
 
 /**
@@ -37,4 +38,21 @@ export function downloadDomain(rawUrl: string): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * What an answer does to the held file, once its bytes have landed in staging.
+ *
+ * Splitting this out keeps the part worth testing — that "allow once" grants
+ * nothing beyond this file, and that a denial never keeps bytes — away from
+ * Electron's `DownloadItem`, which cannot be exercised in a unit test.
+ */
+export function resolveDownloadApprovalEffects(decision: "allow-domain" | "allow-once" | "deny"): {
+  readonly keepFile: boolean;
+  readonly rememberDomain: boolean;
+} {
+  return {
+    keepFile: decision !== "deny",
+    rememberDomain: decision === "allow-domain",
+  };
 }

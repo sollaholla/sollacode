@@ -324,6 +324,7 @@ describe("previewStateStore (single-tab)", () => {
       controller: "none",
       agentActive: false,
       downloads: [],
+      pendingDownloadApprovals: [],
     });
     const state = readThreadPreviewState(ref);
     expect(state.desktopOverlay?.canGoBack).toBe(true);
@@ -346,6 +347,7 @@ describe("previewStateStore (single-tab)", () => {
       controller: "none",
       agentActive: false,
       downloads: [],
+      pendingDownloadApprovals: [],
     });
     setActivePreviewTab(ref, first.tabId);
 
@@ -396,6 +398,7 @@ describe("previewStateStore (single-tab)", () => {
       controller: "none",
       agentActive: false,
       downloads: [],
+      pendingDownloadApprovals: [],
     });
 
     reconcilePreviewServerSessions(ref, { sessions: [active], serverEpoch, revision: 1 });
@@ -512,6 +515,7 @@ describe("previewStateStore (single-tab)", () => {
       controller: "none",
       agentActive: false,
       downloads: [],
+      pendingDownloadApprovals: [],
     });
     const restarted = makeSnapshot({
       navStatus: { _tag: "Success", url: "https://new.example", title: "New" },

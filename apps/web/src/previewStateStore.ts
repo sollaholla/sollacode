@@ -12,6 +12,7 @@ import {
   type PreviewDownload,
   type PreviewEvent,
   type PreviewListResult,
+  type PreviewDownloadApproval,
   type PreviewSessionSnapshot,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -33,6 +34,8 @@ export interface DesktopPreviewOverlay {
   agentActive: boolean;
   /** Finished downloads for this tab, newest first. */
   downloads: ReadonlyArray<PreviewDownload>;
+  /** Downloads held on this tab until the user allows or denies the site. */
+  pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
 }
 
 export interface ThreadPreviewState {

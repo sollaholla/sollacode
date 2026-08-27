@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { downloadDomain, resolveDownloadApproval } from "./downloadApproval.ts";
+import {
+  downloadDomain,
+  resolveDownloadApproval,
+  resolveDownloadApprovalEffects,
+} from "./downloadApproval.ts";
 
 describe("downloadDomain", () => {
   it("attributes a download to its host", () => {
@@ -18,44 +22,48 @@ describe("downloadDomain", () => {
 });
 
 describe("resolveDownloadApproval", () => {
-  const none = { allowedDomains: new Set<string>(), oneTimeGrant: null };
-
   it("asks the first time a domain wants to write a file", () => {
-    expect(resolveDownloadApproval({ domain: "grok.com", ...none })).toBe("ask");
+    expect(resolveDownloadApproval({ domain: "grok.com", allowedDomains: new Set() })).toBe("ask");
   });
 
   it("remembers a domain the user allowed", () => {
     expect(
-      resolveDownloadApproval({
-        domain: "grok.com",
-        allowedDomains: new Set(["grok.com"]),
-        oneTimeGrant: null,
-      }),
+      resolveDownloadApproval({ domain: "grok.com", allowedDomains: new Set(["grok.com"]) }),
     ).toBe("allowed");
   });
 
-  it("honours a one-time grant for that domain only", () => {
+  it("does not let one allowed domain speak for another", () => {
     expect(
-      resolveDownloadApproval({
-        domain: "grok.com",
-        allowedDomains: new Set(),
-        oneTimeGrant: "grok.com",
-      }),
-    ).toBe("allowed");
-    expect(
-      resolveDownloadApproval({
-        domain: "evil.test",
-        allowedDomains: new Set(),
-        oneTimeGrant: "grok.com",
-      }),
+      resolveDownloadApproval({ domain: "evil.test", allowedDomains: new Set(["grok.com"]) }),
     ).toBe("ask");
   });
 
   it("always asks when the download cannot be attributed to a domain", () => {
     // An unattributable download is the kind that must not ride in on a
-    // remembered answer.
-    expect(
-      resolveDownloadApproval({ domain: "", allowedDomains: new Set([""]), oneTimeGrant: "" }),
-    ).toBe("ask");
+    // remembered answer, even one that literally matches.
+    expect(resolveDownloadApproval({ domain: "", allowedDomains: new Set([""]) })).toBe("ask");
+  });
+});
+
+describe("resolveDownloadApprovalEffects", () => {
+  it("keeps the file and the domain when the site is allowed", () => {
+    expect(resolveDownloadApprovalEffects("allow-domain")).toEqual({
+      keepFile: true,
+      rememberDomain: true,
+    });
+  });
+
+  it("spends an allow-once on the file alone", () => {
+    expect(resolveDownloadApprovalEffects("allow-once")).toEqual({
+      keepFile: true,
+      rememberDomain: false,
+    });
+  });
+
+  it("keeps nothing on a denial", () => {
+    expect(resolveDownloadApprovalEffects("deny")).toEqual({
+      keepFile: false,
+      rememberDomain: false,
+    });
   });
 });

@@ -9,6 +9,7 @@ import {
   type VmAgentBlocker,
   type VmAgentNotification,
 } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -73,6 +74,7 @@ vi.mock("~/state/use-atom-command", () => ({
 }));
 
 import { AgentAttentionStack } from "./AgentAttentionStack";
+import { detachWaitingOnYou, getWaitingOnYouAttachment } from "./waitingOnYouAttachment";
 
 const environmentId = EnvironmentId.make("environment-1");
 const threadRef = {
@@ -176,6 +178,7 @@ beforeEach(() => {
   mocks.openUrlInThreadPreview.mockClear();
   mocks.resolveBlocker.mockClear();
   mocks.revealChat.mockClear();
+  detachWaitingOnYou(scopedThreadKey(threadRef));
   mocks.updateNotification.mockClear();
   container = document.createElement("div");
   document.body.append(container);
@@ -219,10 +222,14 @@ describe("AgentAttentionStack", () => {
 
     act(() => buttonLabelled("Follow up").click());
     expect(mocks.revealChat).toHaveBeenCalledTimes(1);
-    expect(mocks.composer.insertTextAtEnd).toHaveBeenCalledWith(
-      expect.stringContaining(request.title),
-      { ensureLeadingBoundary: true },
-    );
+    // Follow-up tags the request onto the composer instead of typing about it;
+    // sending that message is what closes the request out.
+    expect(getWaitingOnYouAttachment(scopedThreadKey(threadRef))).toEqual({
+      vmAgentId: request.vmAgentId,
+      blockerId: request.blockerId,
+      title: request.title,
+    });
+    expect(mocks.composer.insertTextAtEnd).not.toHaveBeenCalled();
     expect(mocks.composer.focusAtEnd).toHaveBeenCalledTimes(1);
 
     await flushAction(() => buttonLabelled("Open").click());
