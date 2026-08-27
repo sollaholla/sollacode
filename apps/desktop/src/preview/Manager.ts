@@ -588,6 +588,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   pictureInPicturePreloadPath: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
+  const browserSession = yield* BrowserSession.BrowserSession;
   const hostPlatform = yield* HostProcessPlatform;
   const path = yield* Path.Path;
   const parentScope = yield* Scope.Scope;
@@ -3774,6 +3775,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
         networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],
         actionTimeline: [...(timelines.get(tabId) ?? [])],
+        // Downloads finish with no save panel and no on-screen trace, so an
+        // agent that asked for one has no other way to learn it arrived — or
+        // where. Without this, a silent success is indistinguishable from a
+        // failure, and the agent simply asks again.
+        downloads: browserSession.recentDownloads(),
         screenshot,
       };
     },
