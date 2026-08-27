@@ -34,6 +34,15 @@ const ProviderSessionStatus = Schema.Literals([
   "closed",
 ]);
 
+export const ProviderPendingContextRecovery = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("native-resume-timeout"),
+  sourceMessageId: Schema.NullOr(MessageId),
+  providerInstanceId: ProviderInstanceId,
+  createdAt: IsoDateTime,
+});
+export type ProviderPendingContextRecovery = typeof ProviderPendingContextRecovery.Type;
+
 export const ProviderSession = Schema.Struct({
   provider: ProviderDriverKind,
   // Optional during the driver/instance migration. Once every producer
@@ -46,6 +55,7 @@ export const ProviderSession = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  pendingContextRecovery: Schema.optional(ProviderPendingContextRecovery),
   activeTurnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -60,6 +70,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
+  /** `null` explicitly starts fresh instead of inheriting a persisted cursor. */
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
@@ -88,6 +99,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  /** Internal tag proving this turn is the bounded handoff for a timed-out native resume. */
+  contextRecovery: Schema.optional(ProviderPendingContextRecovery),
   /** Internal harness hint: prepend the invisible side-chat sub-agent guard
       before sending this turn to the provider. */
   isSideChat: Schema.optionalKey(Schema.Boolean),

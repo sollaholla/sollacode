@@ -816,6 +816,23 @@ it.effect("decodes orchestration session runtime mode defaults", () =>
   }),
 );
 
+it.effect("decodes a local provider control-plane timeout failure kind", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationSession({
+      threadId: "thread-local-timeout",
+      status: "error",
+      providerName: "codex",
+      providerInstanceId: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: "Provider startup timed out.",
+      failureKind: "local-control-timeout",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.failureKind, "local-control-timeout");
+  }),
+);
+
 it.effect("defaults proposed plan implementation metadata for historical rows", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeOrchestrationProposedPlan({

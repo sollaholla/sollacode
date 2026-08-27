@@ -392,6 +392,13 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError | ProviderAdapterProcessError>;
+    readonly sendTurnEffect?: (
+      input: unknown,
+      runtimeSessions: Array<ProviderSession>,
+    ) => Effect.Effect<
+      { readonly threadId: ThreadId; readonly turnId: TurnId },
+      ProviderAdapterRequestError | ProviderAdapterProcessError
+    >;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -468,11 +475,13 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
-      Effect.succeed({
-        threadId: ThreadId.make("thread-1"),
-        turnId: asTurnId("turn-1"),
-      }),
+    const sendTurn = vi.fn(
+      (rawInput: unknown) =>
+        input?.sendTurnEffect?.(rawInput, runtimeSessions) ??
+        Effect.succeed({
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+        }),
     );
     const interruptTurn = vi.fn((rawInput: unknown) => {
       const interruptInput = rawInput as { readonly threadId: ThreadId };
@@ -2409,14 +2418,412 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
-  it("stops after one local Codex control-plane startup timeout", async () => {
+  it("replaces a timed-out native Codex resume with one bounded-context fresh session", async () => {
+    let startAttempts = 0;
+    const messageId = asMessageId("user-message-resume-timeout-fallback");
+    const pendingContextRecovery = {
+      version: 1 as const,
+      kind: "native-resume-timeout" as const,
+      sourceMessageId: messageId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const harness = await createHarness({
+      startSessionEffect: (session) => {
+        startAttempts += 1;
+        return startAttempts === 1
+          ? Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "thread/resume",
+                detail: "Codex App Server did not respond to 'thread/resume' within 90000ms.",
+                failureKind: "local-control-timeout",
+              }),
+            )
+          : Effect.succeed({ ...session, pendingContextRecovery });
+      },
+    });
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-resume-timeout-fallback"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue the blocked task",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ resumeCursor: null });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      messageId,
+      contextRecovery: pendingContextRecovery,
+    });
+    const handoff = JSON.parse(
+      (harness.sendTurn.mock.calls[0]?.[0] as { input?: string } | undefined)?.input ?? "{}",
+    ) as {
+      kind?: string;
+      context?: {
+        handoff?: { reason?: string; from?: { instanceId?: string }; to?: { instanceId?: string } };
+        limits?: { maxSerializedChars?: number };
+      };
+      currentRequest?: string;
+    };
+    expect(handoff).toMatchObject({
+      kind: "t3.provider-handoff-turn",
+      context: {
+        handoff: {
+          reason: "native_resume_timeout_recovery",
+          from: { instanceId: "codex" },
+          to: { instanceId: "codex" },
+        },
+        limits: { maxSerializedChars: 32_000 },
+      },
+      currentRequest: "continue the blocked task",
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.lastError).toBeNull();
+    expect(thread?.session?.failureKind ?? null).toBeNull();
+  });
+
+  it("uses a persisted resume-timeout marker on an already-active session", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-persisted-context-recovery");
+    const pendingContextRecovery = {
+      version: 1 as const,
+      kind: "native-resume-timeout" as const,
+      sourceMessageId: messageId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    harness.runtimeSessions.push({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      cwd: "/tmp/provider-project",
+      model: "gpt-5-codex",
+      threadId,
+      resumeCursor: { opaque: "replacement-session" },
+      pendingContextRecovery,
+      createdAt: "2026-01-01T00:00:01.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-persisted-context-recovery-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-persisted-context-recovery-turn"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue after restarting the app",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      messageId,
+      contextRecovery: pendingContextRecovery,
+    });
+    const handoff = JSON.parse(
+      (harness.sendTurn.mock.calls[0]?.[0] as { input?: string } | undefined)?.input ?? "{}",
+    ) as {
+      context?: { handoff?: { reason?: string } };
+      currentRequest?: string;
+    };
+    expect(handoff).toMatchObject({
+      context: { handoff: { reason: "native_resume_timeout_recovery" } },
+      currentRequest: "continue after restarting the app",
+    });
+  });
+
+  it("keeps the real request ahead of a synthetic startup-resume handoff", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const originalMessageId = asMessageId("user-message-before-startup-resume");
+    const originalTurnId = asTurnId("turn-before-startup-resume");
+    const startupMessageId = asMessageId(
+      `startup-auto-resume-message:${threadId}:${originalTurnId}`,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-before-startup-resume"),
+        threadId,
+        message: {
+          messageId: originalMessageId,
+          role: "user",
+          text: "finish the real blocked task",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-turn-before-startup-resume-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: originalTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-turn-before-startup-resume-delta"),
+        threadId,
+        messageId: asMessageId("assistant-message-before-startup-resume"),
+        delta: "I was implementing the durable recovery marker.",
+        turnId: originalTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-turn-before-startup-resume-complete"),
+        threadId,
+        messageId: asMessageId("assistant-message-before-startup-resume"),
+        turnId: originalTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-turn-before-startup-resume-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    const pendingContextRecovery = {
+      version: 1 as const,
+      kind: "native-resume-timeout" as const,
+      sourceMessageId: startupMessageId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+    };
+    const activeSession = harness.runtimeSessions[0];
+    expect(activeSession).toBeDefined();
+    harness.runtimeSessions[0] = {
+      ...activeSession!,
+      status: "ready",
+      pendingContextRecovery,
+    };
+    harness.sendTurn.mockClear();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`startup-auto-resume-command:${threadId}:${originalTurnId}`),
+        threadId,
+        message: {
+          messageId: startupMessageId,
+          role: "user",
+          text: RESUME_PROMPT,
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const handoff = JSON.parse(
+      (harness.sendTurn.mock.calls[0]?.[0] as { input?: string } | undefined)?.input ?? "{}",
+    ) as {
+      context?: {
+        continuity?: { immediateRequirement?: string; inProgressWork?: string };
+        history?: { messages?: Array<{ id?: string }> };
+      };
+      currentRequest?: string;
+    };
+    expect(handoff.context?.continuity).toEqual({
+      immediateRequirement: "finish the real blocked task",
+      inProgressWork: "I was implementing the durable recovery marker.",
+    });
+    expect(handoff.context?.history?.messages?.map((message) => message.id)).not.toContain(
+      startupMessageId,
+    );
+    expect(handoff.currentRequest).toBe(RESUME_PROMPT);
+  });
+
+  it("retries a route-created recovery marker without surfacing a terminal error", async () => {
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-route-created-context-recovery");
+    const pendingContextRecovery = {
+      version: 1 as const,
+      kind: "native-resume-timeout" as const,
+      sourceMessageId: messageId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    let sendAttempts = 0;
+    const harness = await createHarness({
+      sendTurnEffect: (_input, runtimeSessions) => {
+        sendAttempts += 1;
+        if (sendAttempts === 1) {
+          const activeSession = runtimeSessions[0];
+          if (activeSession !== undefined) {
+            runtimeSessions[0] = { ...activeSession, pendingContextRecovery };
+          }
+          return Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "thread/context-recovery",
+              detail: "bounded context handoff required",
+            }),
+          );
+        }
+        return Effect.succeed({ threadId, turnId: asTurnId("turn-context-recovery-retry") });
+      },
+    });
+    const sourceTurnId = activeTurnWorkSourceId(messageId);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-route-created-context-recovery"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "continue through the recovered provider session",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const work = Option.getOrUndefined(
+        await Effect.runPromise(
+          harness.threadWorkObligations.getByKey({
+            threadId,
+            sourceTurnId,
+            kind: "active-turn-recovery",
+          }),
+        ),
+      );
+      return work?.state === "sleeping";
+    });
+    const sleeping = Option.getOrUndefined(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId,
+          kind: "active-turn-recovery",
+        }),
+      ),
+    );
+    expect(sleeping?.state).toBe("sleeping");
+    if (!sleeping) return;
+    await Effect.runPromise(
+      harness.threadWorkObligations
+        .transition({
+          obligationId: sleeping.obligationId,
+          expectedState: "sleeping",
+          expectedAttempt: sleeping.attempt,
+          state: "pending",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        })
+        .pipe(Effect.andThen(harness.threadWorkScheduler.wake()), Effect.ignore),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      messageId,
+      contextRecovery: pendingContextRecovery,
+    });
+    const handoff = JSON.parse(
+      (harness.sendTurn.mock.calls[1]?.[0] as { input?: string } | undefined)?.input ?? "{}",
+    ) as { context?: { handoff?: { reason?: string } } };
+    expect(handoff.context?.handoff?.reason).toBe("native_resume_timeout_recovery");
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.lastError).toBeNull();
+    expect(thread?.session?.failureKind ?? null).toBeNull();
+  });
+
+  it("stops after one local Codex control-plane fresh-start timeout", async () => {
     const harness = await createHarness({
       startSessionEffect: () =>
         Effect.fail(
           new ProviderAdapterRequestError({
             provider: "codex",
-            method: "thread/resume",
-            detail: "Codex App Server did not respond to 'thread/resume' within 90000ms.",
+            method: "thread/start",
+            detail: "Codex App Server did not respond to 'thread/start' within 90000ms.",
             failureKind: "local-control-timeout",
           }),
         ),

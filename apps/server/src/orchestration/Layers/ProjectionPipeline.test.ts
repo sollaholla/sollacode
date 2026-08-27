@@ -7552,6 +7552,93 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
+    it.effect("does not re-arm a terminal local provider timeout on restart", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = "thread-local-control-timeout";
+        const turnId = "turn-local-control-timeout";
+
+        yield* seedThread({
+          threadId,
+          turnId,
+          assistantMessageId: "assistant-local-control-timeout",
+          turnState: "incomplete",
+          isStreaming: 0,
+          sessionStatus: "error",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "The provider could not finish starting.",
+        });
+        yield* sql`
+          UPDATE projection_thread_sessions
+          SET failure_kind = 'local-control-timeout',
+              last_error = 'Codex App Server did not respond to thread/start within 90000ms.',
+              updated_at = '2026-03-02T10:00:04.000Z'
+          WHERE thread_id = ${threadId}
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'terminal-timeout-owner', ${threadId}, ${turnId},
+            'startup-resume', 'executing', 'codex', 1, NULL,
+            '2026-03-02T10:00:03.000Z', '2026-03-02T10:01:03.000Z', NULL,
+            '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:03.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO thread_work_obligations (
+            obligation_id, thread_id, source_turn_id, kind, state,
+            provider_instance_id, attempt, next_attempt_at, claimed_at,
+            lease_expires_at, blocked_reason, created_at, updated_at
+          ) VALUES (
+            'post-timeout-user-owner', ${threadId}, 'turn-start:newer-user-message',
+            'active-turn-recovery', 'pending', 'codex', 0, NULL,
+            NULL, NULL, NULL,
+            '2026-03-02T10:00:02.000Z', '2026-03-02T10:00:02.000Z'
+          )
+        `;
+
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+        yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+        const sessions = yield* sql<{
+          readonly status: string;
+          readonly failureKind: string | null;
+        }>`
+          SELECT status, failure_kind AS "failureKind"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(sessions, [{ status: "error", failureKind: "local-control-timeout" }]);
+        const obligations = yield* sql<{
+          readonly kind: string;
+          readonly state: string;
+          readonly blockedReason: string | null;
+        }>`
+          SELECT kind, state, blocked_reason AS "blockedReason"
+          FROM thread_work_obligations
+          WHERE thread_id = ${threadId}
+          ORDER BY created_at
+        `;
+        assert.deepEqual(obligations, [
+          {
+            kind: "startup-resume",
+            state: "cancelled",
+            blockedReason: "Codex App Server did not respond to thread/start within 90000ms.",
+          },
+          {
+            kind: "active-turn-recovery",
+            state: "pending",
+            blockedReason: null,
+          },
+        ]);
+      }),
+    );
+
     it.effect("retires a completed synthetic resume owner during restart recovery", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;

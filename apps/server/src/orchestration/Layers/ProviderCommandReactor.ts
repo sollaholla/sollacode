@@ -11,6 +11,7 @@ import {
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
+  type ProviderPendingContextRecovery,
   type ProviderSession,
   type ServerProvider,
   type RuntimeMode,
@@ -99,6 +100,7 @@ import {
   isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
   startupAutoResumeIds,
+  startupResumeSourceTurnId,
   STARTUP_RESUME_SIGNED_OFF_REASON,
 } from "../agentModeContinuation.ts";
 import {
@@ -231,6 +233,14 @@ const isRetryableUpstreamFailure = (cause: Cause.Cause<unknown>): boolean =>
 
 const isLocalProviderControlPlaneTimeout = (cause: Cause.Cause<unknown>): boolean =>
   findProviderAdapterRequestError(cause)?.failureKind === "local-control-timeout";
+
+const isLocalProviderResumeTimeout = (cause: Cause.Cause<unknown>): boolean => {
+  const error = findProviderAdapterRequestError(cause);
+  return error?.failureKind === "local-control-timeout" && error.method === "thread/resume";
+};
+
+const isProviderContextRecoveryRequired = (cause: Cause.Cause<unknown>): boolean =>
+  findProviderAdapterRequestError(cause)?.method === "thread/context-recovery";
 
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
@@ -597,6 +607,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const setThreadSessionErrorOnTurnStartFailure = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
       readonly detail: string;
+      readonly failureKind: Exclude<OrchestrationSession["failureKind"], undefined>;
       readonly createdAt: string;
     }) {
       const thread = yield* resolveThread(input.threadId);
@@ -616,6 +627,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           status: session?.status === "stopped" ? "stopped" : "error",
           activeTurnId: null,
           lastError: input.detail,
+          failureKind: input.failureKind,
           updatedAt: input.createdAt,
         },
         createdAt: input.createdAt,
@@ -642,6 +654,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       options?: {
         readonly modelSelection?: ModelSelection;
         readonly pendingTurnStart?: boolean;
+        readonly recoverResumeTimeout?: boolean;
       },
     ) {
       const thread = yield* resolveThread(threadId);
@@ -780,6 +793,32 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           runtimeMode: desiredRuntimeMode,
         });
 
+      const startProviderSessionWithResumeFallback = Effect.fnUntraced(function* (input?: {
+        readonly resumeCursor?: unknown;
+      }) {
+        const resumed = yield* Effect.exit(startProviderSession(input));
+        if (resumed._tag === "Success") {
+          return resumed.value;
+        }
+        if (
+          options?.recoverResumeTimeout !== true ||
+          preferredProvider !== "codex" ||
+          !isLocalProviderResumeTimeout(resumed.cause)
+        ) {
+          return yield* Effect.failCause(resumed.cause);
+        }
+
+        yield* Effect.logWarning(
+          "provider native resume timed out; starting a bounded-context replacement session",
+          {
+            threadId,
+            providerInstanceId: desiredInstanceId,
+            cause: Cause.pretty(resumed.cause),
+          },
+        );
+        return yield* startProviderSession({ resumeCursor: null });
+      });
+
       const bindSessionToThread = (session: ProviderSession) =>
         Effect.gen(function* () {
           if (session.providerInstanceId === undefined) {
@@ -849,7 +888,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           !shouldRestartForModelChange &&
           !shouldRestartForModelSelectionChange
         ) {
-          return existingSessionThreadId;
+          return {
+            threadId: existingSessionThreadId,
+            pendingContextRecovery: activeSession?.pendingContextRecovery,
+          };
         }
 
         const resumeCursor =
@@ -875,7 +917,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           shouldRestartForModelSelectionChange,
           hasResumeCursor: resumeCursor !== undefined,
         });
-        const restartedSession = yield* startProviderSession(
+        const restartedSession = yield* startProviderSessionWithResumeFallback(
           resumeCursor !== undefined ? { resumeCursor } : undefined,
         );
         yield* Effect.logInfo("provider command reactor restarted provider session", {
@@ -887,12 +929,18 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           cwd: restartedSession.cwd,
         });
         yield* bindSessionToThread(restartedSession);
-        return restartedSession.threadId;
+        return {
+          threadId: restartedSession.threadId,
+          pendingContextRecovery: restartedSession.pendingContextRecovery,
+        };
       }
 
-      const startedSession = yield* startProviderSession(undefined);
+      const startedSession = yield* startProviderSessionWithResumeFallback(undefined);
       yield* bindSessionToThread(startedSession);
-      return startedSession.threadId;
+      return {
+        threadId: startedSession.threadId,
+        pendingContextRecovery: startedSession.pendingContextRecovery,
+      };
     });
 
     const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -903,6 +951,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly attachments?: ReadonlyArray<ChatAttachment>;
       readonly modelSelection?: ModelSelection;
       readonly interactionMode?: "default" | "plan";
+      /** Projected synthetic prompt to omit from a bounded recovery digest. */
+      readonly historyMessageId?: MessageId;
       readonly createdAt: string;
     }) {
       const thread = yield* resolveThread(input.threadId);
@@ -934,6 +984,27 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           : (yield* providerService.getCapabilities(currentInstanceId)).sessionModelSwitch;
       const shouldHandoffForModelRestart =
         modelChangedOnSameInstance && sessionModelSwitchBeforeStart === "unsupported";
+      const boundedHistoryMessages = () => {
+        const lastMessage = thread.messages.at(-1);
+        return thread.messages.filter((message, index) => {
+          if (input.historyMessageId !== undefined && message.id === input.historyMessageId) {
+            return false;
+          }
+          if (isAgentAutoResumeMessageId(String(message.id))) return false;
+          if (
+            message.role === "user" &&
+            startupResumeSourceTurnId({ threadId: thread.id, messageId: message.id }) !== null
+          ) {
+            return false;
+          }
+          return !(
+            index === thread.messages.length - 1 &&
+            lastMessage?.role === "user" &&
+            lastMessage.text === input.messageText &&
+            lastMessage.createdAt === input.createdAt
+          );
+        });
+      };
       const settingsUpdateRequested = input.messageText.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
       if (
         settingsUpdateRequested &&
@@ -961,13 +1032,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const desiredInfo = yield* providerService.getInstanceInfo(
           requestedInstanceId ?? currentInstanceId,
         );
-        const lastMessage = thread.messages.at(-1);
-        const historyMessages =
-          lastMessage?.role === "user" &&
-          lastMessage.text === input.messageText &&
-          lastMessage.createdAt === input.createdAt
-            ? thread.messages.slice(0, -1)
-            : thread.messages;
+        const historyMessages = boundedHistoryMessages();
         const summary = buildProviderHandoffSummary({
           threadId: thread.id,
           threadTitle: thread.title,
@@ -1010,10 +1075,47 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           providerInput = voiceInput;
         }
       }
-      yield* ensureSessionForThread(input.threadId, input.createdAt, {
+      const ensuredSession = yield* ensureSessionForThread(input.threadId, input.createdAt, {
         ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
         pendingTurnStart: true,
+        recoverResumeTimeout: true,
       });
+      const pendingContextRecovery: ProviderPendingContextRecovery | undefined =
+        ensuredSession.pendingContextRecovery;
+      if (pendingContextRecovery !== undefined) {
+        const effectiveModelSelection = input.modelSelection ?? thread.modelSelection;
+        const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId);
+        const desiredInfo = yield* providerService.getInstanceInfo(
+          effectiveModelSelection.instanceId,
+        );
+        const historyMessages = boundedHistoryMessages();
+        const continuity = deriveProviderHandoffContinuity(historyMessages);
+        const summary = buildProviderHandoffSummary({
+          threadId: thread.id,
+          threadTitle: thread.title,
+          messages: historyMessages,
+          from: {
+            instanceId: currentInstanceId,
+            driver: currentInfo.driverKind,
+          },
+          to: {
+            instanceId: effectiveModelSelection.instanceId,
+            driver: desiredInfo.driverKind,
+            modelSelection: effectiveModelSelection,
+          },
+          exhaustion: {
+            reason: "native_resume_timeout_recovery",
+            resetsAt: null,
+          },
+          generatedAt: input.createdAt,
+          immediateRequirement: continuity.immediateRequirement,
+          inProgressWork: continuity.inProgressWork,
+        });
+        providerInput = buildProviderHandoffTurnInput({
+          summary,
+          currentRequest: input.messageText,
+        });
+      }
       if (input.modelSelection !== undefined) {
         threadModelSelections.set(input.threadId, input.modelSelection);
       }
@@ -1056,6 +1158,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
         ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+        ...(pendingContextRecovery !== undefined
+          ? { contextRecovery: pendingContextRecovery }
+          : {}),
         ...(thread.isSideChat === true ? { isSideChat: true } : {}),
         autoCompactionThresholdPercentage,
         tokenOptimizerEnabled: claudeTokenOptimizerEnabled,
@@ -2602,6 +2707,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (isTerminalProviderRefusal(detail)) {
         return Effect.succeed({ state: "cancelled" as const, reason: detail });
       }
+      if (isLocalProviderResumeTimeout(cause) || isProviderContextRecoveryRequired(cause)) {
+        return retryFailureWork(
+          `Provider context recovery is ready for a bounded retry: ${detail}`,
+          attempt,
+        );
+      }
       // The adapter has already closed and reaped this local provider process.
       // Retrying here would only start another worker and wait out the same
       // control-plane timeout again. The failed message remains visible and a
@@ -2830,6 +2941,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       Effect.gen(function* () {
         if (Cause.hasInterruptsOnly(input.cause)) return yield* Effect.interrupt;
         const detail = formatFailureDetail(input.cause);
+        if (
+          isLocalProviderResumeTimeout(input.cause) ||
+          isProviderContextRecoveryRequired(input.cause)
+        ) {
+          return yield* retryFailureWork(
+            `Provider context recovery is ready for a bounded retry: ${detail}`,
+            input.attempt,
+          );
+        }
         const thread = yield* resolveThread(input.context.threadId).pipe(
           Effect.orElseSucceed(() => undefined),
         );
@@ -2849,10 +2969,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (isRetryableUpstreamFailure(input.cause) && !manualProviderSwitchFailed) {
           return yield* retryTransientUpstreamWork(detail, input.attempt);
         }
+        const failedAt = yield* nowIso;
         yield* setThreadSessionErrorOnTurnStartFailure({
           threadId: input.context.threadId,
           detail,
-          createdAt: input.context.createdAt,
+          failureKind: isLocalProviderControlPlaneTimeout(input.cause)
+            ? "local-control-timeout"
+            : isRetryableUpstreamFailure(input.cause)
+              ? "retryable-upstream"
+              : null,
+          createdAt: failedAt,
         }).pipe(
           Effect.flatMap(() =>
             appendProviderFailureActivity({
@@ -2861,7 +2987,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               summary: "Provider turn start failed",
               detail,
               turnId: null,
-              createdAt: input.context.createdAt,
+              createdAt: failedAt,
             }),
           ),
           Effect.catchCause((recoveryCause) =>
@@ -3053,6 +3179,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               messageId: MessageId.make(
                 `active-turn-recovery-delivery:${obligation.threadId}:${messageId}`,
               ),
+              historyMessageId: messageId,
               // Browser providers type this nudge as a visible user message.
               // The autonomous-continue wall (AGENT_STOP contract) belongs to
               // Agent mode only; a Default-mode thread recovering a crashed

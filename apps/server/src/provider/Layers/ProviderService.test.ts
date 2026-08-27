@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import type {
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
+  ProviderPendingContextRecovery,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
@@ -13,6 +14,7 @@ import type {
 import {
   ApprovalRequestId,
   EventId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
@@ -23,6 +25,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -64,6 +67,7 @@ const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTes
 
 const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
+const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const codexInstanceId = ProviderInstanceId.make("codex");
@@ -71,6 +75,27 @@ const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+
+function makeLocalResumeTimeout(): ProviderAdapterRequestError {
+  return new ProviderAdapterRequestError({
+    provider: String(CODEX_DRIVER),
+    method: "thread/resume",
+    detail: "simulated local native-resume timeout",
+    failureKind: "local-control-timeout",
+  });
+}
+
+function readPendingContextRecovery(
+  binding: ProviderSessionDirectory.ProviderRuntimeBinding,
+): ProviderPendingContextRecovery | undefined {
+  const payload = binding.runtimePayload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  return "pendingContextRecovery" in payload && payload.pendingContextRecovery !== null
+    ? (payload.pendingContextRecovery as ProviderPendingContextRecovery | undefined)
+    : undefined;
+}
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -1462,6 +1487,652 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.deepEqual(resumed.resumeCursor, initial.resumeCursor);
       assert.equal(fresh.resumeCursor, undefined);
       assert.equal(fresh.cwd, "/tmp/project-send-turn-resume-fail");
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("explicit fresh replaces the cursor and exposes its pending handoff", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-explicit-fresh-start");
+      const modelSelection = createModelSelection(codexInstanceId, "gpt-5.6", [
+        { id: "reasoningEffort", value: "high" },
+      ]);
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-explicit-fresh-start",
+        modelSelection,
+        runtimeMode: "full-access",
+      });
+      assert.notEqual(initial.resumeCursor, undefined);
+      const badResumeCursor = { opaque: "bad-native-resume-cursor" };
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: badResumeCursor,
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+
+      const freshSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      const freshAdapterInput = routing.codex.startSession.mock.calls[0]?.[0] as {
+        cwd?: string;
+        resumeCursor?: unknown;
+      };
+      assert.equal(Object.hasOwn(freshAdapterInput, "resumeCursor"), false);
+      assert.equal(freshAdapterInput.cwd, "/tmp/project-explicit-fresh-start");
+      assert.notDeepEqual(freshSession.resumeCursor, badResumeCursor);
+      assert.equal(freshSession.pendingContextRecovery?.kind, "native-resume-timeout");
+      assert.equal(freshSession.pendingContextRecovery?.sourceMessageId, null);
+
+      const persisted = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(persisted, undefined);
+      if (!persisted) return;
+      assert.deepEqual(persisted.resumeCursor, freshSession.resumeCursor);
+      assert.deepEqual(readPendingContextRecovery(persisted), freshSession.pendingContextRecovery);
+      assert.equal(
+        (persisted.runtimePayload as { cwd?: unknown }).cwd,
+        "/tmp/project-explicit-fresh-start",
+      );
+      assert.deepEqual(
+        (persisted.runtimePayload as { modelSelection?: unknown }).modelSelection,
+        modelSelection,
+      );
+
+      const listed = (yield* provider.listSessions()).find(
+        (session) => session.threadId === threadId,
+      );
+      assert.deepEqual(listed?.pendingContextRecovery, freshSession.pendingContextRecovery);
+
+      const adopted = yield* provider.forkSessionBinding!({
+        sourceThreadId: asThreadId("unused-source-for-existing-target"),
+        targetThreadId: threadId,
+        runtimeMode: "full-access",
+      });
+      assert.deepEqual(adopted?.pendingContextRecovery, freshSession.pendingContextRecovery);
+
+      const deliveryMessageId = asMessageId("message-explicit-fresh-context-recovery");
+      routing.codex.sendTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: String(CODEX_DRIVER),
+            method: "thread/turn/start",
+            detail: "simulated failure after the durable handoff claim",
+          }),
+        ),
+      );
+      const failedSend = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: deliveryMessageId,
+          input: "bounded context handoff",
+          attachments: [],
+          contextRecovery: freshSession.pendingContextRecovery,
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(failedSend), true);
+      const claimedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(claimedBinding, undefined);
+      if (!claimedBinding) return;
+      const claimedContextRecovery = readPendingContextRecovery(claimedBinding);
+      assert.equal(claimedContextRecovery?.sourceMessageId, deliveryMessageId);
+
+      const supersedingMessageId = asMessageId(
+        "message-explicit-fresh-context-recovery-superseding",
+      );
+      yield* provider.sendTurn({
+        threadId,
+        messageId: supersedingMessageId,
+        input: "newer bounded context handoff",
+        attachments: [],
+        ...(claimedContextRecovery !== undefined
+          ? { contextRecovery: claimedContextRecovery }
+          : {}),
+      });
+      const acceptedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(acceptedBinding, undefined);
+      if (!acceptedBinding) return;
+      assert.equal(readPendingContextRecovery(acceptedBinding), undefined);
+    }),
+  );
+
+  it.effect("clears a pending handoff when the thread switches provider instances", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-context-recovery-provider-switch");
+      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+
+      const codexSession = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-context-recovery-provider-switch",
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+      assert.notEqual(codexSession.pendingContextRecovery, undefined);
+
+      const claudeSession = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: claudeInstanceId,
+        threadId,
+        cwd: "/tmp/project-context-recovery-provider-switch",
+        runtimeMode: "full-access",
+      });
+      assert.equal(claudeSession.pendingContextRecovery, undefined);
+
+      const switchedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(switchedBinding, undefined);
+      if (!switchedBinding) return;
+      assert.equal(switchedBinding.providerInstanceId, claudeInstanceId);
+      assert.equal(readPendingContextRecovery(switchedBinding), undefined);
+      assert.equal(
+        (switchedBinding.runtimePayload as { pendingContextRecovery?: unknown })
+          .pendingContextRecovery,
+        null,
+      );
+
+      routing.claude.sendTurn.mockClear();
+      yield* provider.sendTurn({
+        threadId,
+        messageId: asMessageId("message-after-context-recovery-provider-switch"),
+        input: "continue on the selected provider",
+        attachments: [],
+      });
+      assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("serializes concurrent recovery sends before marker claim and clear", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-concurrent-context-recovery-sends");
+      const firstMessageId = asMessageId("message-concurrent-context-recovery-first");
+      const secondMessageId = asMessageId("message-concurrent-context-recovery-second");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-concurrent-context-recovery-sends",
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+      const pendingContextRecovery = session.pendingContextRecovery;
+      assert.notEqual(pendingContextRecovery, undefined);
+      if (!pendingContextRecovery) return;
+
+      const adapterEntered = yield* Deferred.make<void>();
+      const releaseAdapter = yield* Deferred.make<void>();
+      const secondStarted = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(adapterEntered, undefined);
+          yield* Deferred.await(releaseAdapter);
+          return {
+            threadId: input.threadId,
+            turnId: asTurnId("turn-concurrent-context-recovery-first"),
+          };
+        }),
+      );
+
+      const firstFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: firstMessageId,
+          input: "first bounded recovery handoff",
+          attachments: [],
+          contextRecovery: pendingContextRecovery,
+        }),
+      );
+      yield* Deferred.await(adapterEntered);
+      const claimedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(claimedBinding, undefined);
+      if (!claimedBinding) return;
+      const claimedContextRecovery = readPendingContextRecovery(claimedBinding);
+      assert.notEqual(claimedContextRecovery, undefined);
+      if (!claimedContextRecovery) return;
+      assert.equal(claimedContextRecovery.sourceMessageId, firstMessageId);
+      const secondFiber = yield* Effect.forkScoped(
+        Deferred.succeed(secondStarted, undefined).pipe(
+          Effect.andThen(
+            provider.sendTurn({
+              threadId,
+              messageId: secondMessageId,
+              input: "newer bounded recovery handoff",
+              attachments: [],
+              contextRecovery: claimedContextRecovery,
+            }),
+          ),
+        ),
+      );
+      yield* Deferred.await(secondStarted);
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      yield* Deferred.succeed(releaseAdapter, undefined);
+      const [firstExit, secondExit] = yield* Effect.all([
+        Fiber.await(firstFiber),
+        Fiber.await(secondFiber),
+      ]);
+      assert.equal(Exit.isSuccess(firstExit), true);
+      assert.equal(Exit.isSuccess(secondExit), true);
+      assert.deepEqual(
+        routing.codex.sendTurn.mock.calls.map(
+          (call) => (call[0] as ProviderSendTurnInput).messageId,
+        ),
+        [firstMessageId, secondMessageId],
+      );
+
+      const acceptedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(acceptedBinding, undefined);
+      if (!acceptedBinding) return;
+      assert.equal(readPendingContextRecovery(acceptedBinding), undefined);
+    }),
+  );
+
+  it.effect("does not serialize ordinary Cursor sends behind a long-running turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-concurrent-cursor-steer");
+      yield* provider.startSession(threadId, {
+        provider: CURSOR_DRIVER,
+        providerInstanceId: ProviderInstanceId.make("cursor"),
+        threadId,
+        cwd: "/tmp/project-concurrent-cursor-steer",
+        runtimeMode: "full-access",
+      });
+
+      const adapterEntered = yield* Deferred.make<void>();
+      const releaseAdapter = yield* Deferred.make<void>();
+      routing.cursor.sendTurn.mockClear();
+      routing.cursor.sendTurn.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(adapterEntered, undefined);
+          yield* Deferred.await(releaseAdapter);
+          return {
+            threadId: input.threadId,
+            turnId: asTurnId("turn-concurrent-cursor-first"),
+          };
+        }),
+      );
+
+      const firstFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-concurrent-cursor-first"),
+          input: "start the long Cursor turn",
+          attachments: [],
+        }),
+      );
+      yield* Deferred.await(adapterEntered);
+      const secondFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-concurrent-cursor-second"),
+          input: "steer the in-flight Cursor turn",
+          attachments: [],
+        }),
+      );
+      yield* Effect.yieldNow;
+      assert.equal(routing.cursor.sendTurn.mock.calls.length, 2);
+
+      yield* Deferred.succeed(releaseAdapter, undefined);
+      const [firstExit, secondExit] = yield* Effect.all([
+        Fiber.await(firstFiber),
+        Fiber.await(secondFiber),
+      ]);
+      assert.equal(Exit.isSuccess(firstExit), true);
+      assert.equal(Exit.isSuccess(secondExit), true);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect(
+    "invalidates a timed-out native resume without raw fallback and preserves the handoff when fresh start fails",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-native-resume-timeout-persisted");
+        const sourceMessageId = asMessageId("message-native-resume-timeout-persisted");
+        const badResumeCursor = { opaque: "bad-native-resume-cursor-persisted" };
+        const modelSelection = createModelSelection(codexInstanceId, "gpt-5.6", [
+          { id: "reasoningEffort", value: "high" },
+        ]);
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-native-resume-timeout-persisted",
+          modelSelection,
+          runtimeMode: "full-access",
+        });
+        yield* directory.upsert({
+          threadId,
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          runtimeMode: "full-access",
+          resumeCursor: badResumeCursor,
+        });
+        yield* routing.codex.stopAll();
+        routing.codex.startSession.mockClear();
+        routing.codex.sendTurn.mockClear();
+        routing.codex.startSession.mockImplementationOnce(() =>
+          Effect.fail(makeLocalResumeTimeout()),
+        );
+
+        const resumeExit = yield* provider
+          .sendTurn({
+            threadId,
+            messageId: sourceMessageId,
+            input: "continue from the persisted cursor",
+            attachments: [],
+          })
+          .pipe(Effect.exit);
+
+        assert.equal(Exit.isFailure(resumeExit), true);
+        assert.equal(routing.codex.startSession.mock.calls.length, 1);
+        assert.deepEqual(
+          (routing.codex.startSession.mock.calls[0]?.[0] as { resumeCursor?: unknown })
+            .resumeCursor,
+          badResumeCursor,
+        );
+        assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+        const invalidated = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(invalidated, undefined);
+        if (!invalidated) return;
+        const pendingContextRecovery = readPendingContextRecovery(invalidated);
+        assert.equal(invalidated.resumeCursor, null);
+        assert.equal(pendingContextRecovery?.kind, "native-resume-timeout");
+        assert.equal(pendingContextRecovery?.sourceMessageId, sourceMessageId);
+        assert.equal(pendingContextRecovery?.providerInstanceId, codexInstanceId);
+        assert.equal(
+          (invalidated.runtimePayload as { cwd?: unknown }).cwd,
+          "/tmp/project-native-resume-timeout-persisted",
+        );
+        assert.deepEqual(
+          (invalidated.runtimePayload as { modelSelection?: unknown }).modelSelection,
+          modelSelection,
+        );
+
+        routing.codex.startSession.mockClear();
+        routing.codex.startSession.mockImplementationOnce(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: String(CODEX_DRIVER),
+              method: "thread/start",
+              detail: "simulated fresh-start failure",
+            }),
+          ),
+        );
+        const freshExit = yield* provider
+          .startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            resumeCursor: null,
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.exit);
+
+        assert.equal(Exit.isFailure(freshExit), true);
+        assert.equal(routing.codex.startSession.mock.calls.length, 1);
+        const freshAdapterInput = routing.codex.startSession.mock.calls[0]?.[0] as {
+          cwd?: string;
+          resumeCursor?: unknown;
+        };
+        assert.equal(Object.hasOwn(freshAdapterInput, "resumeCursor"), false);
+        assert.equal(freshAdapterInput.cwd, "/tmp/project-native-resume-timeout-persisted");
+        const afterFreshFailure = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(afterFreshFailure, undefined);
+        if (!afterFreshFailure) return;
+        assert.equal(afterFreshFailure.resumeCursor, null);
+        assert.deepEqual(readPendingContextRecovery(afterFreshFailure), pendingContextRecovery);
+        assert.equal(
+          (afterFreshFailure.runtimePayload as { cwd?: unknown }).cwd,
+          "/tmp/project-native-resume-timeout-persisted",
+        );
+        assert.deepEqual(
+          (afterFreshFailure.runtimePayload as { modelSelection?: unknown }).modelSelection,
+          modelSelection,
+        );
+      }),
+  );
+
+  it.effect("invalidates the persisted cursor when direct native resume start times out", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-direct-native-resume-timeout");
+      const badResumeCursor = { opaque: "bad-direct-native-resume-cursor" };
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-direct-native-resume-timeout",
+        runtimeMode: "full-access",
+      });
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "full-access",
+        resumeCursor: badResumeCursor,
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.startSession.mockImplementationOnce(() =>
+        Effect.fail(makeLocalResumeTimeout()),
+      );
+
+      const startExit = yield* provider
+        .startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(startExit), true);
+      assert.deepEqual(
+        (routing.codex.startSession.mock.calls[0]?.[0] as { resumeCursor?: unknown }).resumeCursor,
+        badResumeCursor,
+      );
+      const invalidated = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(invalidated, undefined);
+      if (!invalidated) return;
+      assert.equal(invalidated.resumeCursor, null);
+      assert.equal(readPendingContextRecovery(invalidated)?.sourceMessageId, null);
+      assert.equal(
+        (invalidated.runtimePayload as { cwd?: unknown }).cwd,
+        "/tmp/project-direct-native-resume-timeout",
+      );
+    }),
+  );
+
+  it.effect("rechecks a recovery marker created while resolving the send route", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-context-recovery-route-recheck");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-context-recovery-route-recheck",
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+      const pendingContextRecovery = session.pendingContextRecovery;
+      assert.notEqual(pendingContextRecovery, undefined);
+      if (!pendingContextRecovery) return;
+      yield* directory.upsert({
+        threadId,
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        runtimeMode: "full-access",
+        runtimePayload: { pendingContextRecovery: null },
+      });
+      routing.codex.hasSession.mockImplementationOnce(() =>
+        directory
+          .upsert({
+            threadId,
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            runtimeMode: "full-access",
+            resumeCursor: null,
+            runtimePayload: { pendingContextRecovery },
+          })
+          .pipe(Effect.orDie, Effect.as(true)),
+      );
+      routing.codex.sendTurn.mockClear();
+
+      const rawExit = yield* provider
+        .sendTurn({
+          threadId,
+          input: "must be stopped by the post-resolution check",
+          attachments: [],
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(rawExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(binding, undefined);
+      if (!binding) return;
+      assert.deepEqual(readPendingContextRecovery(binding), pendingContextRecovery);
+    }),
+  );
+
+  it.effect("requires the exact timed-out handoff and clears it only after acceptance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-native-resume-timeout-handoff");
+      const sourceMessageId = asMessageId("message-native-resume-timeout-handoff");
+      const modelSelection = createModelSelection(codexInstanceId, "gpt-5.6", [
+        { id: "reasoningEffort", value: "high" },
+      ]);
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-native-resume-timeout-handoff",
+        modelSelection,
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.startSession.mockImplementationOnce(() =>
+        Effect.fail(makeLocalResumeTimeout()),
+      );
+
+      const timeoutExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: sourceMessageId,
+          input: "resume and establish the bounded handoff",
+          attachments: [],
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(timeoutExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      const invalidated = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(invalidated, undefined);
+      if (!invalidated) return;
+      const pendingContextRecovery = readPendingContextRecovery(invalidated);
+      assert.notEqual(pendingContextRecovery, undefined);
+      if (!pendingContextRecovery) return;
+      assert.equal(pendingContextRecovery.sourceMessageId, sourceMessageId);
+
+      routing.codex.startSession.mockClear();
+      const freshSession = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+      assert.deepEqual(freshSession.pendingContextRecovery, pendingContextRecovery);
+
+      routing.codex.sendTurn.mockClear();
+      const rawExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: sourceMessageId,
+          input: "raw retry must not pass",
+          attachments: [],
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(rawExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+
+      const wrongIdentityExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: sourceMessageId,
+          input: "wrong recovery identity must not pass",
+          attachments: [],
+          contextRecovery: {
+            ...pendingContextRecovery,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(wrongIdentityExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+
+      yield* provider.sendTurn({
+        threadId,
+        messageId: sourceMessageId,
+        input: "bounded context handoff",
+        attachments: [],
+        contextRecovery: pendingContextRecovery,
+      });
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      const accepted = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(accepted, undefined);
+      if (!accepted) return;
+      assert.equal(readPendingContextRecovery(accepted), undefined);
+      assert.equal(
+        (accepted.runtimePayload as { cwd?: unknown }).cwd,
+        "/tmp/project-native-resume-timeout-handoff",
+      );
+      assert.deepEqual(
+        (accepted.runtimePayload as { modelSelection?: unknown }).modelSelection,
+        modelSelection,
+      );
+
+      const staleTagExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: sourceMessageId,
+          input: "stale handoff tag must not replay",
+          attachments: [],
+          contextRecovery: pendingContextRecovery,
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(staleTagExit), true);
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
     }),
   );

@@ -2771,13 +2771,40 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const staleErroredSessions = yield* sql<{
         readonly threadId: string;
         readonly lastError: string | null;
+        readonly failureKind: string | null;
+        readonly updatedAt: string;
       }>`
-        SELECT thread_id AS "threadId", last_error AS "lastError"
+        SELECT
+          thread_id AS "threadId",
+          last_error AS "lastError",
+          failure_kind AS "failureKind",
+          updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE status = 'error'
       `;
       for (const session of staleErroredSessions) {
         if (isProviderAuthenticationFailure(session.lastError ?? "")) continue;
+        if (session.failureKind === "local-control-timeout") {
+          // A fresh provider process already failed to start. Leaving its
+          // claimed/executing owner alive lets the expired lease replay that
+          // same terminal attempt on the next boot, even though the session
+          // marker correctly prevents a new owner from being minted.
+          yield* sql`
+            UPDATE thread_work_obligations
+            SET state = 'cancelled',
+                next_attempt_at = NULL,
+                claimed_at = NULL,
+                lease_expires_at = NULL,
+                blocked_reason = ${session.lastError ?? "provider startup timed out"},
+                updated_at = ${settledAt}
+            WHERE thread_id = ${session.threadId}
+              AND state IN ('executing', 'sleeping')
+              AND attempt > 0
+              AND created_at <= ${session.updatedAt}
+          `;
+          yield* refreshPendingWorkSummary(ThreadId.make(session.threadId));
+          continue;
+        }
         // `last_error` is deliberately preserved: it still explains what went
         // wrong, and the recovery scan reads it to classify the thread.
         yield* sql`
@@ -3192,6 +3219,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly sessionStatus: string | null;
           readonly sessionUpdatedAt: string | null;
           readonly sessionLastError: string | null;
+          readonly sessionFailureKind: string | null;
           readonly providerInstanceId: string | null;
           readonly interactionMode: string;
           readonly turnRuntimeErrors: number;
@@ -3215,6 +3243,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sessions.status AS "sessionStatus",
             sessions.updated_at AS "sessionUpdatedAt",
             sessions.last_error AS "sessionLastError",
+            sessions.failure_kind AS "sessionFailureKind",
             COALESCE(
               sessions.provider_instance_id,
               json_extract(threads.model_selection_json, '$.instanceId')
@@ -3310,6 +3339,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const isStartupResume =
             !authenticationFailure &&
             !isAgentContinuation &&
+            row.sessionFailureKind !== "local-control-timeout" &&
             (row.turnState === "incomplete" ||
               row.turnState === "error" ||
               diedBeforeProducingOutput) &&
@@ -3428,6 +3458,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             AND COALESCE(threads.settled_override, '') != 'settled'
             AND threads.pending_approval_count = 0
             AND threads.pending_user_input_count = 0
+            AND COALESCE(sessions.failure_kind, '') != 'local-control-timeout'
             AND turns.state = 'completed'
             AND turns.completed_at IS NOT NULL
             AND turns.completed_at >= ${oldestCompletedAt}

@@ -809,9 +809,122 @@ describe("ProviderRuntimeIngestion", () => {
             ORDER BY kind ASC, source_turn_id ASC
           `,
         ),
+      seedProviderRuntimePayload: (input: {
+        readonly threadId: ThreadId;
+        readonly providerInstanceId: ProviderInstanceId;
+        readonly runtimePayload: Readonly<Record<string, unknown>>;
+      }) =>
+        managedRuntime.runPromise(
+          sql`
+            INSERT INTO provider_session_runtime (
+              thread_id,
+              provider_name,
+              provider_instance_id,
+              adapter_key,
+              runtime_mode,
+              status,
+              last_seen_at,
+              resume_cursor_json,
+              runtime_payload_json
+            )
+            VALUES (
+              ${input.threadId},
+              ${"codex"},
+              ${input.providerInstanceId},
+              ${"codex"},
+              ${"approval-required"},
+              ${"running"},
+              ${"2026-08-27T12:00:00.000Z"},
+              NULL,
+              ${JSON.stringify(input.runtimePayload)}
+            )
+          `,
+        ),
+      readProviderRuntimePayload: (threadId: ThreadId) =>
+        managedRuntime
+          .runPromise(
+            sql<{ readonly runtimePayloadJson: string | null }>`
+              SELECT runtime_payload_json AS "runtimePayloadJson"
+              FROM provider_session_runtime
+              WHERE thread_id = ${threadId}
+            `,
+          )
+          .then((rows) => {
+            const serialized = rows[0]?.runtimePayloadJson;
+            return serialized === null || serialized === undefined
+              ? null
+              : (JSON.parse(serialized) as unknown);
+          }),
       drain,
     };
   }
+
+  it("clears only the exactly delivered persisted context recovery marker", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const providerInstanceId = ProviderInstanceId.make("codex-personal");
+    const sourceMessageId = asMessageId("message-context-recovery");
+    const pendingContextRecovery = {
+      version: 1,
+      kind: "native-resume-timeout",
+      sourceMessageId,
+      providerInstanceId,
+      createdAt: "2026-08-27T12:00:00.000Z",
+    } as const;
+    await harness.seedProviderRuntimePayload({
+      threadId,
+      providerInstanceId,
+      runtimePayload: {
+        pendingContextRecovery,
+        activeTurnId: "turn-context-recovery",
+        preserved: "keep-me",
+      },
+    });
+
+    harness.emit({
+      type: "message.delivered",
+      eventId: asEventId("delivery-context-recovery-wrong-message"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-08-27T12:00:01.000Z",
+      payload: { messageId: asMessageId("message-other") },
+    });
+    harness.emit({
+      type: "message.delivered",
+      eventId: asEventId("delivery-context-recovery-wrong-instance"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-other"),
+      threadId,
+      createdAt: "2026-08-27T12:00:02.000Z",
+      payload: { messageId: sourceMessageId },
+    });
+    await harness.drain();
+
+    expect(await harness.readProviderRuntimePayload(threadId)).toEqual({
+      pendingContextRecovery,
+      activeTurnId: "turn-context-recovery",
+      preserved: "keep-me",
+    });
+
+    harness.emit({
+      type: "message.delivered",
+      eventId: asEventId("delivery-context-recovery-exact"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      threadId,
+      createdAt: "2026-08-27T12:00:03.000Z",
+      payload: { messageId: sourceMessageId },
+    });
+    await harness.drain();
+
+    expect(await harness.readProviderRuntimePayload(threadId)).toEqual({
+      pendingContextRecovery: null,
+      activeTurnId: "turn-context-recovery",
+      preserved: "keep-me",
+    });
+    expect(harness.sendTurnCalls).toHaveLength(0);
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
