@@ -182,6 +182,7 @@ import {
   isPreviewSupportedInRuntime,
   setActivePreviewTab,
   useThreadPreviewState,
+  type DesktopPreviewOverlay,
 } from "../previewStateStore";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInvariant";
@@ -2369,6 +2370,16 @@ function ChatViewContent(props: ChatViewProps) {
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
   const activePreviewState = useThreadPreviewState(activeThreadRef);
+  // Flattened to a plain controller-per-tab map so the tab strip re-renders on
+  // a controller change alone, not on every navigation or zoom the overlay
+  // also carries.
+  const previewControllerByTabId = useMemo(() => {
+    const entries: Record<string, DesktopPreviewOverlay["controller"]> = {};
+    for (const [tabId, overlay] of Object.entries(activePreviewState.desktopByTabId)) {
+      entries[tabId] = overlay.controller;
+    }
+    return entries;
+  }, [activePreviewState.desktopByTabId]);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef),
   );
@@ -9221,6 +9232,7 @@ function ChatViewContent(props: ChatViewProps) {
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}
           previewSessions={activePreviewState.sessions}
+          previewControllerByTabId={previewControllerByTabId}
           floatingPreviewTabIds={floatingPreviewTabIds}
           terminalLabelsById={activeTerminalLabelsById}
           sideChatStatusByThreadId={sideChatStatusByThreadId}
@@ -9259,6 +9271,7 @@ function ChatViewContent(props: ChatViewProps) {
             activeSurfaceId={activeRightPanelSurface?.id ?? null}
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
+            previewControllerByTabId={previewControllerByTabId}
             floatingPreviewTabIds={floatingPreviewTabIds}
             terminalLabelsById={activeTerminalLabelsById}
             sideChatStatusByThreadId={sideChatStatusByThreadId}
