@@ -1,8 +1,10 @@
+// @effect-diagnostics globalDate:off - The download `done` callback is a
+// synchronous Electron callback with no Effect context to draw a clock from.
 // @effect-diagnostics nodeBuiltinImport:off - Electron raises the system save
 // panel the moment the will-download handler returns without a path, so the
 // directory and collision checks there have to be synchronous.
 import type { Session } from "electron";
-import { session } from "electron";
+import { Notification, session } from "electron";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
@@ -13,6 +15,8 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+
+import type { PreviewDownload } from "@t3tools/contracts";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
@@ -117,6 +121,8 @@ export class BrowserSession extends Context.Service<
       scope: string,
       directory: string,
     ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
+    /** Recently finished downloads, newest first. */
+    readonly recentDownloads: () => ReadonlyArray<PreviewDownload>;
     readonly clearCookies: () => Effect.Effect<void, BrowserSessionStorageClearError>;
     readonly clearCache: () => Effect.Effect<void, BrowserSessionCacheClearError>;
   }
@@ -151,6 +157,16 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    * genuinely being asked for and refused.
    */
   const reportedDeniedPermissions = new Set<string>();
+  /**
+   * Recently finished downloads, newest first.
+   *
+   * Suppressing the save panel also removed the only sign a download had
+   * happened — to the user *and* to the agent that asked for it. One agent
+   * re-fetched the same 28 MB video eight times because each silent success
+   * looked like a failure. This is what `preview_snapshot` reports back.
+   */
+  const recentDownloads: Array<PreviewDownload> = [];
+  const RECENT_DOWNLOAD_LIMIT = 20;
   const denyPermission = (permission: string): boolean => {
     if (!reportedDeniedPermissions.has(permission)) {
       reportedDeniedPermissions.add(permission);
@@ -194,6 +210,23 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 exists: NodeFS.existsSync,
               });
               item.setSavePath(savePath);
+              item.once("done", (_doneEvent, state) => {
+                const fileName = NodePath.basename(savePath);
+                recentDownloads.unshift({
+                  fileName,
+                  path: savePath,
+                  completedAt: new Date().toISOString(),
+                  succeeded: state === "completed",
+                });
+                recentDownloads.length = Math.min(recentDownloads.length, RECENT_DOWNLOAD_LIMIT);
+                if (state !== "completed" || !Notification.isSupported()) return;
+                // The panel used to be the confirmation. Without it a file
+                // arriving is invisible, so say so where the user is looking.
+                new Notification({
+                  title: "Download finished",
+                  body: `${fileName} — saved to ${NodePath.dirname(savePath)}`,
+                }).show();
+              });
             } catch {
               // Falling through to the save panel is the graceful failure here:
               // the user is asked where to put it rather than losing the file.
@@ -231,6 +264,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   return BrowserSession.of({
     getPartition,
     setDownloadDirectory,
+    recentDownloads: () => [...recentDownloads],
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
     getSession,
     clearCookies: Effect.fn("BrowserSession.clearCookies")(function* () {

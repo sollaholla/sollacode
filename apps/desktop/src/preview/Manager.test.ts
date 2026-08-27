@@ -82,6 +82,7 @@ const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession,
   BrowserSession.BrowserSession.of({
     setDownloadDirectory: () => Effect.void,
+    recentDownloads: () => [],
     getPartition: () => Effect.succeed("persist:t3code-preview-test"),
     isPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
     getSession: () => Effect.die("unexpected getSession"),

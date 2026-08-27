@@ -118,6 +118,28 @@ export const PreviewHumanVerification = Schema.Struct({
 });
 export type PreviewHumanVerification = typeof PreviewHumanVerification.Type;
 
+/**
+ * A file this browser finished downloading.
+ *
+ * Downloads complete without a save panel, so nothing on screen said they had
+ * happened. An agent with no confirmation re-tried instead: observed as the
+ * same 28 MB video fetched eight times over, byte-identical, because every
+ * attempt looked like a failure. Reporting the path is what closes that loop.
+ *
+ * Carried on the snapshot rather than on `PreviewAutomationStatus`: adding an
+ * array field to that struct tips its inference past a limit and collapses the
+ * open-result union's decoder services to `any`.
+ */
+export const PreviewDownload = Schema.Struct({
+  fileName: Schema.String,
+  path: Schema.String,
+  completedAt: Schema.String,
+  succeeded: Schema.Boolean,
+});
+export type PreviewDownload = typeof PreviewDownload.Type;
+
+const PreviewDownloadList = Schema.Array(PreviewDownload);
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -735,6 +757,11 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
+  /**
+   * Files this browser finished downloading, newest first. Optional for
+   * compatibility with hosts predating automatic downloads.
+   */
+  downloads: Schema.optional(PreviewDownloadList),
   screenshot: Schema.Struct({
     mimeType: Schema.Literal("image/jpeg"),
     data: Schema.String,
