@@ -5,6 +5,7 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildVoiceTranscriptCorrectionPrompt,
   buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import { normalizeCliError, sanitizeThreadTitle } from "./TextGenerationUtils.ts";
@@ -175,6 +176,51 @@ describe("buildThreadTitlePrompt", () => {
     expect(result.prompt).toContain("thread.png");
     expect(result.prompt).toContain("image/png");
     expect(result.prompt).toContain("67890 bytes");
+  });
+});
+
+describe("buildVoiceTranscriptCorrectionPrompt", () => {
+  it("asks for real grammar cleanup while protecting technical notation", () => {
+    const result = buildVoiceTranscriptCorrectionPrompt({
+      transcript: "The settings renders behind chat so I can't saw it",
+      conversationContext: "User: The Settings panel is hidden by the agent chat.",
+    });
+
+    expect(result.prompt).toContain("decisively correct likely recognition errors");
+    expect(result.prompt).toContain("correct obvious grammar problems");
+    expect(result.prompt).toContain(
+      "do not leave an obvious grammar or recognition error unchanged",
+    );
+    expect(result.prompt).toContain(
+      "preserve commands, paths, URLs, flags, identifiers, versions, units, and deliberate technical notation",
+    );
+    expect(result.prompt).toContain(
+      "Corrected: The settings render behind the chat, so I can't see them.",
+    );
+  });
+
+  it("calls out a bare leading decimal so the model resolves spoken point words from context", () => {
+    const result = buildVoiceTranscriptCorrectionPrompt({
+      transcript: "And .2 if it is a particular Codex thread keep its preview mounted",
+      conversationContext: "User: Point one, let the thread keep running in the background.",
+    });
+
+    expect(result.prompt).toContain("Detected artifact to resolve:");
+    expect(result.prompt).toContain("spoken words ('point to'/'point two') or an actual decimal");
+    expect(result.prompt).toContain("never silently delete an autoformatted token such as .2");
+    expect(result.prompt).toContain(
+      "Corrected: And point two, if it is a particular Codex thread, keep its preview mounted.",
+    );
+    expect(result.prompt).toContain("Corrected: Set opacity to .2 and keep package v0.2.1.");
+  });
+
+  it("does not claim a leading-decimal artifact when the transcript has only technical decimals", () => {
+    const result = buildVoiceTranscriptCorrectionPrompt({
+      transcript: "Keep version v0.2.1 and port 3000.",
+      conversationContext: "",
+    });
+
+    expect(result.prompt).not.toContain("Detected artifact to resolve:");
   });
 });
 

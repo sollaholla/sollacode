@@ -467,6 +467,7 @@ import {
 } from "../pushToTalk";
 import {
   buildVoiceTranscriptConversationContext,
+  cancelActiveVoiceTranscriptCorrection,
   correctVoiceTranscriptWithFallback,
 } from "../voiceTranscriptCorrection";
 import { resolveVoiceCuePolicy } from "../orchestrator/voiceCues";
@@ -496,6 +497,7 @@ function VoiceTranscriptionStatusChip({
       disabled={status === "recording"}
       onClick={() => {
         cancelActiveTranscription();
+        cancelActiveVoiceTranscriptCorrection();
       }}
       role="status"
       aria-live="polite"

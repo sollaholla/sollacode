@@ -3,7 +3,10 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   buildVoiceTranscriptConversationContext,
+  cancelActiveVoiceTranscriptCorrection,
   correctVoiceTranscriptWithFallback,
+  normalizeVoiceTranscriptSpeechArtifacts,
+  VOICE_TRANSCRIPT_CORRECTION_DEADLINE_MS,
 } from "./voiceTranscriptCorrection";
 
 const modelSelection = {
@@ -117,5 +120,81 @@ describe("correctVoiceTranscriptWithFallback", () => {
     await vi.advanceTimersByTimeAsync(25);
     await expect(timedOut).resolves.toBe("raw words");
     vi.useRealTimers();
+  });
+
+  it("allows a normal utility-model correction that takes a little over nine seconds", async () => {
+    expect(VOICE_TRANSCRIPT_CORRECTION_DEADLINE_MS).toBe(20_000);
+    vi.useFakeTimers();
+    const corrected = correctVoiceTranscriptWithFallback({
+      enabled: true,
+      transcript: "The settings renders behind chat.",
+      cwd: "/workspace",
+      conversationContext: "",
+      modelSelection,
+      request: () =>
+        new Promise<string>((resolve) => {
+          setTimeout(() => resolve("The settings render behind the chat."), 9_400);
+        }),
+    });
+    await vi.advanceTimersByTimeAsync(9_400);
+    await expect(corrected).resolves.toBe("The settings render behind the chat.");
+    vi.useRealTimers();
+  });
+
+  it("preserves an ambiguous leading decimal when model correction fails", async () => {
+    await expect(
+      correctVoiceTranscriptWithFallback({
+        enabled: true,
+        transcript: ".2",
+        cwd: "/workspace",
+        conversationContext: "",
+        modelSelection,
+        request: async () => {
+          throw new Error("offline");
+        },
+      }),
+    ).resolves.toBe(".2");
+  });
+
+  it("lets the visible cancel action interrupt the correction wait", async () => {
+    const correction = correctVoiceTranscriptWithFallback({
+      enabled: true,
+      transcript: "raw words",
+      cwd: "/workspace",
+      conversationContext: "",
+      modelSelection,
+      request: () => new Promise<string>(() => undefined),
+    });
+
+    expect(cancelActiveVoiceTranscriptCorrection()).toBe(true);
+    await expect(correction).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Voice transcript correction was cancelled.",
+    });
+    expect(cancelActiveVoiceTranscriptCorrection()).toBe(false);
+  });
+});
+
+describe("normalizeVoiceTranscriptSpeechArtifacts", () => {
+  it("restores point to only when .2 occupies a grammatical verb slot", () => {
+    expect(normalizeVoiceTranscriptSpeechArtifacts("Can you .2 the Settings button?")).toBe(
+      "Can you point to the Settings button?",
+    );
+    expect(normalizeVoiceTranscriptSpeechArtifacts("Please .2 it.")).toBe("Please point to it.");
+    expect(normalizeVoiceTranscriptSpeechArtifacts("I need you .2 the active tab.")).toBe(
+      "I need you to point to the active tab.",
+    );
+  });
+
+  it("preserves ambiguous decimals and technical notation", () => {
+    const technical =
+      "Set opacity to .2, run render(.2), keep v0.2.1 at /api/v0.2.1, and open https://example.test/v0.2.1.";
+    expect(normalizeVoiceTranscriptSpeechArtifacts(technical)).toBe(technical);
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2")).toBe(".2");
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2 seconds")).toBe(".2 seconds");
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2, .4, and .6")).toBe(".2, .4, and .6");
+    expect(normalizeVoiceTranscriptSpeechArtifacts("For .2, use cubic easing.")).toBe(
+      "For .2, use cubic easing.",
+    );
   });
 });

@@ -1,8 +1,10 @@
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as PubSub from "effect/PubSub";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -135,6 +137,49 @@ describe("makeTextGenerationFromRegistry", () => {
         },
       ]);
     }),
+  );
+
+  it.effect("interrupts a correction provider before the client deadline", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("slow_voice");
+      let interrupted = false;
+      const slow = makeStubInstance(
+        instanceId,
+        makeStubTextGeneration({
+          correctVoiceTranscript: () =>
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  interrupted = true;
+                }),
+              ),
+            ),
+        }),
+      );
+      const tg = TextGeneration.makeTextGenerationFromRegistry(makeStubRegistry([slow]));
+      const fiber = yield* tg
+        .correctVoiceTranscript({
+          cwd: process.cwd(),
+          transcript: "raw words",
+          conversationContext: "",
+          modelSelection: createModelSelection(instanceId, "slow-model"),
+        })
+        .pipe(Effect.result, Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(TextGeneration.VOICE_TRANSCRIPT_CORRECTION_TIMEOUT_MS);
+      const result = yield* Fiber.join(fiber);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(interrupted).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: "TextGenerationError",
+          operation: "correctVoiceTranscript",
+          detail: "Voice transcript correction timed out.",
+        });
+      }
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("fails with TextGenerationError when the instance is unknown", () =>
