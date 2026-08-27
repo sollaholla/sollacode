@@ -89,6 +89,7 @@ function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverl
     pictureInPicture: state.pictureInPicture,
     colorScheme: state.colorScheme,
     controller: state.controller,
+    agentActive: state.agentActive,
   };
 }
 

@@ -555,6 +555,15 @@ export interface DesktopPreviewTabState {
   pictureInPicture: boolean;
   colorScheme: DesktopPreviewColorScheme;
   controller: "human" | "agent" | "none" | "waiting-for-user";
+  /**
+   * The tab an agent is working in, sticky between its individual actions.
+   *
+   * `controller` is only "agent" for the milliseconds a CDP command is in
+   * flight, so a surface that watched it saw nothing between tool calls. This
+   * stays set on the last tab an agent drove until it drives a different one,
+   * which is what answers "which tab is it in?" while a turn runs.
+   */
+  agentActive: boolean;
   updatedAt: string;
 }
 
@@ -638,6 +647,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   pictureInPicture: Schema.Boolean,
   colorScheme: DesktopPreviewColorSchemeSchema,
   controller: Schema.Literals(["human", "agent", "none", "waiting-for-user"]),
+  agentActive: Schema.Boolean,
   updatedAt: Schema.String,
 });
 

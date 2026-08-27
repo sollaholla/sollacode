@@ -28,6 +28,8 @@ export interface DesktopPreviewOverlay {
   pictureInPicture: boolean;
   colorScheme: DesktopPreviewColorScheme;
   controller: "human" | "agent" | "none" | "waiting-for-user";
+  /** Sticky between an agent's individual actions, unlike `controller`. */
+  agentActive: boolean;
 }
 
 export interface ThreadPreviewState {
