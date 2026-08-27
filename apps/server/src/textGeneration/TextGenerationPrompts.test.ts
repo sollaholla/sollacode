@@ -222,6 +222,24 @@ describe("buildVoiceTranscriptCorrectionPrompt", () => {
 
     expect(result.prompt).not.toContain("Detected artifact to resolve:");
   });
+
+  it("repairs semantically incoherent sound-alikes without globally rewriting literal words", () => {
+    const result = buildVoiceTranscriptCorrectionPrompt({
+      transcript:
+        "Show the transcription in a short form with lip but then when hover over it expands fully",
+      conversationContext:
+        "User: The completed-transcription notification should show a shortened preview.",
+    });
+
+    expect(result.prompt).toContain("plausible-looking homophones, sound-alikes, or clipped words");
+    expect(result.prompt).toContain(
+      "do not preserve an incoherent phrase when one phonetically similar reading clearly fits",
+    );
+    expect(result.prompt).toContain(
+      "Corrected: Show the transcription in a short form with an ellipsis, but then, when you hover over it, it expands fully.",
+    );
+    expect(result.prompt).toContain("Corrected: Use a cup with a lip so it does not spill.");
+  });
 });
 
 describe("buildVmAgentTaskPrompt", () => {
