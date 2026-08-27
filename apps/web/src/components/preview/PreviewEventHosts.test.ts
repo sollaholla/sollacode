@@ -2,7 +2,7 @@
 
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -124,7 +124,8 @@ describe("applyPreviewListForEnvironment", () => {
     const cached = { sessions: [], serverEpoch: "server-a", revision: 1 };
     mocks.sessionsResult = AsyncResult.success(cached);
 
-    await act(async () => root.render(createElement(PreviewEventHosts)));
+    const renderHosts = () => createElement(StrictMode, null, createElement(PreviewEventHosts));
+    await act(async () => root.render(renderHosts()));
 
     expect(mocks.useAtomValue).toHaveBeenCalledWith(mocks.sessionsAtom);
     expect(mocks.refreshSessions).toHaveBeenCalledOnce();
@@ -132,11 +133,11 @@ describe("applyPreviewListForEnvironment", () => {
 
     const fresh = { sessions: [], serverEpoch: "server-b", revision: 2 };
     mocks.sessionsResult = AsyncResult.success(fresh, { waiting: true });
-    await act(async () => root.render(createElement(PreviewEventHosts)));
+    await act(async () => root.render(renderHosts()));
     expect(mocks.reconcilePreviewEnvironmentSessions).not.toHaveBeenCalled();
 
     mocks.sessionsResult = AsyncResult.success(fresh);
-    await act(async () => root.render(createElement(PreviewEventHosts)));
+    await act(async () => root.render(renderHosts()));
     expect(mocks.reconcilePreviewEnvironmentSessions).toHaveBeenCalledOnce();
     expect(mocks.reconcilePreviewEnvironmentSessions).toHaveBeenCalledWith(
       EnvironmentId.make("environment-a"),
