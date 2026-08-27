@@ -109,6 +109,39 @@ const ZOOM_LEVELS: ReadonlyArray<number> = [
   0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
 ];
 
+/**
+ * A short, actionable reason a screenshot could not be produced.
+ *
+ * The caller is usually an agent deciding whether to retry. "The page did not
+ * load" tells it to fix the page; a stack trace tells it nothing and invites
+ * another attempt.
+ */
+export function describeScreenshotFailure(cause: unknown): string {
+  // The Chromium reason is wrapped by the time it gets here — the operation
+  // error names the step, and the load failure it is carrying is nested
+  // underneath — so read the whole chain rather than only the top message.
+  const parts: string[] = [];
+  let current: unknown = cause;
+  for (let depth = 0; depth < 5 && current !== null && current !== undefined; depth += 1) {
+    parts.push(current instanceof Error ? current.message : String(current));
+    current =
+      typeof current === "object" && current !== null && "cause" in current
+        ? (current as { readonly cause: unknown }).cause
+        : null;
+  }
+  const text = parts.join(" ");
+  // `offscreenMirror.loadURL` is the last-resort capture re-fetching the page
+  // URL, which only fails when that URL cannot be loaded again at all.
+  if (
+    text.includes("ERR_") ||
+    text.includes("chrome-error://") ||
+    text.includes("offscreenMirror.loadURL")
+  ) {
+    return "The page itself did not load, so there was nothing to capture. Check the URL and whether its server is reachable, then navigate again.";
+  }
+  return "The screenshot could not be captured; the rest of this snapshot is complete.";
+}
+
 const DEFAULT_ZOOM_FACTOR = 1.0;
 const ZOOM_EPSILON = 0.001;
 const MAX_EVALUATION_BYTES = 64_000;
@@ -3841,6 +3874,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ),
           ),
         ),
+        // A picture is one field of a snapshot. Failing the whole call for it
+        // threw away the URL, text, accessibility tree and diagnostics that
+        // were gathered fine, and handed the caller a bare failure it could
+        // not act on — an agent cannot tell a page that will never render
+        // from a tool that is momentarily broken, so it retries forever. The
+        // last fallback re-loads the page URL in an offscreen window, which a
+        // dead server or a one-shot URL can never satisfy, so this is reached
+        // by ordinary pages, not just exotic ones.
+        Effect.catch((cause) =>
+          Effect.succeed({
+            screenshotError: describeScreenshotFailure(cause),
+          } as const),
+        ),
       );
       const [accessibility, diagnostics, timelines] = yield* Effect.all([
         send("Accessibility.getFullAXTree").pipe(
@@ -3876,7 +3922,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         // page, so say it is waiting on a person rather than letting the
         // agent conclude nothing happened and fetch it again.
         pendingDownloadApprovals: [...(snapshotTabs.get(tabId)?.pendingDownloadApprovals ?? [])],
-        screenshot,
+        ...("screenshotError" in screenshot
+          ? { screenshotError: screenshot.screenshotError }
+          : { screenshot }),
       };
     },
   );

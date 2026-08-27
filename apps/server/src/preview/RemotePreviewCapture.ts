@@ -1,4 +1,5 @@
 import {
+  PreviewAutomationScreenshotUnavailableError,
   ProviderInstanceId,
   type AuthSessionId,
   type EnvironmentId,
@@ -42,13 +43,28 @@ export function captureRemotePreviewSnapshot(input: {
       timeoutMs: 10_000,
     })
     .pipe(
-      Effect.map((snapshot) => ({
-        tabId: input.request.tabId,
-        url: snapshot.url,
-        title: snapshot.title,
-        loading: snapshot.loading,
-        capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
-        screenshot: snapshot.screenshot,
-      })),
+      // This feed exists to show the tab, so a snapshot with no picture is
+      // nothing to show. Failing lets the phone keep its last good frame and
+      // say why, rather than going blank. Agents are handed the snapshot
+      // itself, with `screenshotError` explaining the gap.
+      Effect.flatMap((snapshot) =>
+        snapshot.screenshot === undefined
+          ? Effect.fail(
+              new PreviewAutomationScreenshotUnavailableError({
+                environmentId: input.environmentId,
+                threadId: input.request.threadId,
+                tabId: input.request.tabId,
+                reason: snapshot.screenshotError ?? "No reason was reported.",
+              }),
+            )
+          : Effect.succeed({
+              tabId: input.request.tabId,
+              url: snapshot.url,
+              title: snapshot.title,
+              loading: snapshot.loading,
+              capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
+              screenshot: snapshot.screenshot,
+            }),
+      ),
     );
 }
