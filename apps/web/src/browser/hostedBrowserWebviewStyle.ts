@@ -17,7 +17,7 @@ export interface HostedBrowserWebviewWrapperStyle {
   readonly visibility?: "visible";
 }
 
-export const HIDDEN_BROWSER_WEBVIEW_OFFSET = -100_000;
+export const HIDDEN_BROWSER_WEBVIEW_VISIBLE_EDGE = 1;
 
 /**
  * A panel rect alone does not mean Chromium can present it: the owning app
@@ -84,15 +84,16 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
   }
 
   return {
-    left: HIDDEN_BROWSER_WEBVIEW_OFFSET,
-    top: HIDDEN_BROWSER_WEBVIEW_OFFSET,
+    // Keep a one-pixel edge in the foreground compositor. Moving an Electron
+    // guest fully offscreen makes Chromium defer its first paint/navigation
+    // until the user focuses the tab, even with background throttling off.
+    left: HIDDEN_BROWSER_WEBVIEW_VISIBLE_EDGE - hiddenSize.width,
+    top: 0,
     width: hiddenSize.width,
     height: hiddenSize.height,
-    zIndex: -1,
+    zIndex: 30,
     pointerEvents: "none",
-    // Keep the guest CSS-visible even while physically offscreen. Electron
-    // webviews can keep metadata/status alive under `visibility:hidden` while
-    // CDP Runtime/Input commands stall, which breaks offscreen automation.
+    opacity: 0.001,
     visibility: "visible",
   };
 }

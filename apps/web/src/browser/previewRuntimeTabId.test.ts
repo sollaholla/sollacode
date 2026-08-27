@@ -4,24 +4,38 @@ import { describe, expect, it } from "vite-plus/test";
 import { isCurrentPreviewRuntimeTab, previewRuntimeTabId } from "./previewRuntimeTabId";
 
 describe("previewRuntimeTabId", () => {
-  it("scopes process-local tab ids to their environment, thread, and server epoch", () => {
+  const durableTabId = "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445";
+
+  it("scopes durable tab ids to their environment and thread", () => {
     const base = {
       environmentId: EnvironmentId.make("environment-a"),
       threadId: ThreadId.make("thread-a"),
     };
 
-    expect(previewRuntimeTabId(base, "epoch-a", "tab_1")).not.toBe(
+    expect(previewRuntimeTabId(base, "epoch-a", durableTabId)).not.toBe(
       previewRuntimeTabId(
         { ...base, environmentId: EnvironmentId.make("environment-b") },
         "epoch-a",
-        "tab_1",
+        durableTabId,
       ),
     );
-    expect(previewRuntimeTabId(base, "epoch-a", "tab_1")).not.toBe(
-      previewRuntimeTabId({ ...base, threadId: ThreadId.make("thread-b") }, "epoch-a", "tab_1"),
+    expect(previewRuntimeTabId(base, "epoch-a", durableTabId)).not.toBe(
+      previewRuntimeTabId(
+        { ...base, threadId: ThreadId.make("thread-b") },
+        "epoch-a",
+        durableTabId,
+      ),
     );
-    expect(previewRuntimeTabId(base, "epoch-a", "tab_1")).not.toBe(
-      previewRuntimeTabId(base, "epoch-b", "tab_1"),
+  });
+
+  it("keeps a persisted UUID tab attached to the same guest across a server restart", () => {
+    const ref = {
+      environmentId: EnvironmentId.make("environment-a"),
+      threadId: ThreadId.make("thread-a"),
+    };
+
+    expect(previewRuntimeTabId(ref, "epoch-a", durableTabId)).toBe(
+      previewRuntimeTabId(ref, "epoch-b", durableTabId),
     );
   });
 
@@ -33,7 +47,7 @@ describe("previewRuntimeTabId", () => {
     expect(previewRuntimeTabId(ref, null, "tab_1")).toBe(previewRuntimeTabId(ref, null, "tab_1"));
   });
 
-  it("rejects a pinned operation target after the server epoch changes", () => {
+  it("retains the epoch fence for legacy process-local tab ids", () => {
     const ref = {
       environmentId: EnvironmentId.make("environment-a"),
       threadId: ThreadId.make("thread-a"),

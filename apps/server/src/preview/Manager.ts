@@ -184,8 +184,11 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   };
   const stateRef = yield* SynchronizedRef.make<ManagerState>(restoredState);
 
-  const listResultForState = (state: ManagerState, threadId: string) => ({
-    sessions: sessionsForThread(state, threadId)
+  const listResultForState = (state: ManagerState, threadId?: string) => ({
+    sessions: (threadId === undefined
+      ? [...state.sessions.values()]
+      : sessionsForThread(state, threadId)
+    )
       .map((session) => session.snapshot)
       .toSorted((left, right) => left.updatedAt.localeCompare(right.updatedAt)),
     serverEpoch,

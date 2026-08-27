@@ -1,6 +1,11 @@
 "use client";
 
-import type { PreviewViewportSetting, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type {
+  DesktopPreviewWebviewConfig,
+  PreviewViewportSetting,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -67,6 +72,7 @@ export function HostedBrowserWebview(props: {
   readonly browserProfileThreadId?: ThreadId | undefined;
   readonly tabId: string;
   readonly runtimeTabId: string;
+  readonly syncGeneration: number;
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly zoomFactor: number;
@@ -76,15 +82,24 @@ export function HostedBrowserWebview(props: {
     browserProfileThreadId,
     tabId,
     runtimeTabId,
+    syncGeneration,
     initialUrl,
     viewport,
     zoomFactor,
   } = props;
-  const config = usePreviewWebviewConfig(
+  const loadedConfig = usePreviewWebviewConfig(
     threadRef.environmentId,
     threadRef.threadId,
     browserProfileThreadId,
   );
+  const configRef = useRef<DesktopPreviewWebviewConfig | null>(loadedConfig);
+  if (configRef.current === null && loadedConfig !== null) {
+    configRef.current = loadedConfig;
+  }
+  // Partition, preload and web preferences are guest attach-time identity.
+  // Never remove or reattach a live guest because an SWR/reconnect temporarily
+  // loses the config value after the first successful resolution.
+  const config = configRef.current;
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -106,7 +121,12 @@ export function HostedBrowserWebview(props: {
       };
     }),
   );
-  const snapshotStageId = usePreviewBridge({ threadRef, tabId, runtimeTabId });
+  const snapshotStageId = usePreviewBridge({
+    threadRef,
+    tabId,
+    runtimeTabId,
+    syncGeneration,
+  });
   const active = presentation.visible && presentation.rect !== null;
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document !== "undefined" && document.visibilityState !== "hidden",
@@ -216,7 +236,7 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("render-process-gone", recoverGuest);
     };
-  }, [config, initialSrc, runtimeTabId, webviewGeneration]);
+  }, [config, initialSrc, runtimeTabId, syncGeneration, webviewGeneration]);
 
   useEffect(() => {
     const bridge = previewBridge;

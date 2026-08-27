@@ -2,8 +2,6 @@ import type { PreviewAutomationOpenInput, PreviewSessionSnapshot } from "@t3tool
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  DEFAULT_PREVIEW_AUTOMATION_VIEWPORT,
-  previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
@@ -59,21 +57,5 @@ describe("preview automation open readiness", () => {
         }),
       ),
     ).toBe(true);
-  });
-
-  it("gives newly-created automation tabs a stable desktop viewport", () => {
-    expect(previewAutomationDefaultViewport(false, snapshot({ _tag: "Idle" }))).toEqual(
-      DEFAULT_PREVIEW_AUTOMATION_VIEWPORT,
-    );
-  });
-
-  it("preserves reused and already-fixed browser viewports", () => {
-    expect(previewAutomationDefaultViewport(true, snapshot({ _tag: "Idle" }))).toBeNull();
-    expect(
-      previewAutomationDefaultViewport(false, {
-        ...snapshot({ _tag: "Idle" }),
-        viewport: { _tag: "freeform", width: 900, height: 600 },
-      }),
-    ).toBeNull();
   });
 });

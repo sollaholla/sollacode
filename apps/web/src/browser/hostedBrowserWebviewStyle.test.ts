@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  HIDDEN_BROWSER_WEBVIEW_OFFSET,
+  HIDDEN_BROWSER_WEBVIEW_VISIBLE_EDGE,
   isHostedBrowserWebviewPresented,
   resolveHostedBrowserWebviewWrapperStyle,
 } from "./hostedBrowserWebviewStyle";
@@ -49,7 +49,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     });
   });
 
-  it("keeps an inactive webview paintable while moving it offscreen", () => {
+  it("keeps an inactive webview compositor-active with only one pixel on-window", () => {
     const style = resolveHostedBrowserWebviewWrapperStyle({
       active: false,
       rect: { x: 12, y: 34, width: 800, height: 600 },
@@ -57,12 +57,13 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     });
 
     expect(style).toEqual({
-      left: HIDDEN_BROWSER_WEBVIEW_OFFSET,
-      top: HIDDEN_BROWSER_WEBVIEW_OFFSET,
+      left: HIDDEN_BROWSER_WEBVIEW_VISIBLE_EDGE - 393,
+      top: 0,
       width: 393,
       height: 852,
-      zIndex: -1,
+      zIndex: 30,
       pointerEvents: "none",
+      opacity: 0.001,
       visibility: "visible",
     });
   });

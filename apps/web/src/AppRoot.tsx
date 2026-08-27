@@ -15,11 +15,17 @@ const PreviewAutomationHosts = lazy(() =>
     default: module.PreviewAutomationHosts,
   })),
 );
+const PreviewEventHosts = lazy(() =>
+  import("./components/preview/PreviewEventHosts").then((module) => ({
+    default: module.PreviewEventHosts,
+  })),
+);
 
 export function DesktopRendererHosts() {
   if (!isElectron) return null;
   return (
     <Suspense fallback={null}>
+      <PreviewEventHosts />
       <PreviewAutomationHosts />
       <ElectronBrowserHost />
     </Suspense>

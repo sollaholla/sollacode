@@ -90,6 +90,30 @@ describe("desktopTabLifetime", () => {
     await vi.advanceTimersByTimeAsync(0);
   });
 
+  it("shares one native guest for a persisted tab across server epochs", async () => {
+    vi.useFakeTimers();
+    createTab.mockResolvedValue(undefined);
+    const threadRef = {
+      environmentId: EnvironmentId.make("environment-a"),
+      threadId: ThreadId.make("thread-a"),
+    };
+    const tabId = "tab_9be1ed02-7d29-4b42-b73b-ebbe32462445";
+    const beforeRestart = previewRuntimeTabId(threadRef, "epoch-a", tabId);
+    const afterRestart = previewRuntimeTabId(threadRef, "epoch-b", tabId);
+
+    const first = acquireDesktopTab(beforeRestart);
+    const second = acquireDesktopTab(afterRestart);
+    await Promise.all([first.ready, second.ready]);
+
+    expect(afterRestart).toBe(beforeRestart);
+    expect(createTab).toHaveBeenCalledOnce();
+
+    first.release();
+    second.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(closeTab).toHaveBeenCalledOnce();
+  });
+
   it("closes the final desktop tab lease without waiting for recording cleanup", async () => {
     vi.useFakeTimers();
     let resolveStop: (() => void) | undefined;

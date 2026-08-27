@@ -28,6 +28,7 @@ import { Atom } from "effect/unstable/reactivity";
 
 import {
   applyPreviewServerSnapshot,
+  beginPreviewSessionClose,
   readActivePreviewSessions,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
@@ -66,7 +67,6 @@ import {
   inspectPreviewHumanVerification,
 } from "./previewHumanVerification";
 import {
-  previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
@@ -369,7 +369,16 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           reconcilePreviewServerSessions(threadRef, result.value);
           state = readThreadPreviewState(threadRef);
         }
-        tabId = request.tabId ?? state.snapshot?.tabId ?? null;
+        const presentedHostedTabId = Object.keys(state.hostedSessions).findLast((hostedTabId) => {
+          const runtimeTabId = previewRuntimeTabId(threadRef, state.serverEpoch, hostedTabId);
+          return useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible;
+        });
+        tabId =
+          request.tabId ??
+          state.snapshot?.tabId ??
+          presentedHostedTabId ??
+          Object.keys(state.hostedSessions).at(-1) ??
+          null;
         const unavailableTarget = {
           requestId: request.requestId,
           operation: request.operation,
@@ -511,7 +520,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               if (
                 request.tabIdExplicit &&
                 request.tabId !== undefined &&
-                !state.sessions[request.tabId]
+                !state.sessions[request.tabId] &&
+                !state.hostedSessions[request.tabId]
               ) {
                 tabId = request.tabId;
                 throw new PreviewAutomationTargetUnavailableError({
@@ -524,9 +534,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 state,
                 request.tabId,
                 input.reuseExistingTab ?? true,
+                tabId ?? undefined,
               );
               let activeSnapshot = activeTabId
-                ? (state.sessions[activeTabId] ?? state.snapshot ?? undefined)
+                ? (state.sessions[activeTabId] ??
+                  state.hostedSessions[activeTabId] ??
+                  state.snapshot ??
+                  undefined)
                 : undefined;
               const reusedExistingTab = activeTabId !== null;
               tabId = activeTabId;
@@ -550,38 +564,6 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 readThreadPreviewState(threadRef).serverEpoch,
                 activeTabId,
               );
-              if (activeSnapshot) {
-                const defaultViewport = previewAutomationDefaultViewport(
-                  reusedExistingTab,
-                  activeSnapshot,
-                );
-                if (defaultViewport) {
-                  const resizeResult = await runBrowserViewportMutation(
-                    activeRuntimeTabId,
-                    async () => {
-                      assertPreviewRuntimeCurrent(
-                        threadRef,
-                        activeTabId,
-                        activeRuntimeTabId,
-                        request,
-                      );
-                      return await resize({
-                        environmentId,
-                        input: {
-                          threadId: threadRef.threadId,
-                          tabId: activeTabId,
-                          viewport: defaultViewport,
-                        },
-                      });
-                    },
-                  );
-                  if (resizeResult._tag === "Failure") {
-                    return raiseAtomCommandFailure(resizeResult);
-                  }
-                  activeSnapshot = resizeResult.value;
-                  updatePreviewServerSnapshot(threadRef, resizeResult.value);
-                }
-              }
               const shouldPresentPreview = shouldOpenPreviewMiniPlayer(input);
               if (shouldPresentPreview) {
                 usePreviewMiniPlayerStore.getState().open(threadRef, activeTabId);
@@ -679,6 +661,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               tabId = closeTabId;
               const closePlan = resolvePreviewAutomationClosePlan(state, closeTabId);
               if (closePlan.outcome === "already-closed") {
+                if (state.hostedSessions[closeTabId]) {
+                  beginPreviewSessionClose(threadRef, closeTabId);
+                }
                 const activeTabId = closePlan.activeTabId;
                 tabId = activeTabId;
                 return {

@@ -36,12 +36,16 @@ export function resolvePreviewAutomationThreadTarget(input: {
 
   const requestedTabId = input.requestedTabId;
   if (requestedTabId !== undefined) {
-    const owner = candidates.find(({ state }) => state.sessions[requestedTabId] !== undefined);
+    const owner = candidates.find(
+      ({ state }) =>
+        state.sessions[requestedTabId] !== undefined ||
+        state.hostedSessions[requestedTabId] !== undefined,
+    );
     if (owner) return owner.threadRef;
   }
 
   const presented = candidates.flatMap(({ threadRef, state }): PresentedPreviewTarget[] =>
-    Object.keys(state.sessions).flatMap((tabId) => {
+    Object.keys(state.hostedSessions).flatMap((tabId) => {
       const runtimeTabId = previewRuntimeTabId(threadRef, state.serverEpoch, tabId);
       const presentation = input.presentationsByRuntimeTabId[runtimeTabId];
       return presentation?.visible ? [{ threadRef, presentation }] : [];
