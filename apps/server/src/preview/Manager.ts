@@ -2,9 +2,9 @@
  * In-memory PreviewManager implementation.
  *
  * Sessions are keyed by `(threadId, tabId)`; a single thread can host
- * multiple tabs (browser-style). `open` always creates a new tab, while
- * closing the final tab replaces it with a fresh blank tab so an established
- * thread never loses its browser surface entirely.
+ * multiple tabs (browser-style). `open` always creates a new tab. Ordinary
+ * threads may close every tab and return to the surface picker; a named
+ * agent's browser-only thread retains one fresh blank tab.
  *
  * Events are published via Effect's `PubSub`, so subscriber failures are
  * isolated from the publishing call (a closed WS subscriber queue cannot
@@ -33,12 +33,14 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { PreviewSessionStore } from "../persistence/Services/PreviewSessions.ts";
+import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 
 export class PreviewManager extends Context.Service<
   PreviewManager,
@@ -73,8 +75,6 @@ interface ManagerState {
   /** Global monotonic revision establishing list/event ordering. */
   readonly revision: number;
 }
-
-const initialState: ManagerState = { sessions: new Map(), revision: 0 };
 
 type PreviewEventDraft = PreviewEvent extends infer Event
   ? Event extends { readonly revision: number }
@@ -156,6 +156,7 @@ const buildIdleSnapshot = (input: {
 export const make = Effect.gen(function* PreviewManagerMake() {
   const serverEpoch = NodeCrypto.randomUUID();
   const sessionStore = yield* PreviewSessionStore;
+  const agentStore = yield* VmAgentStore;
   // Rehydrate tabs persisted by the previous process so a restart does not
   // silently drop every open tab (clients keep their browser surfaces across
   // restarts and would otherwise render dead webviews). Restored snapshots,
@@ -459,6 +460,15 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const close: PreviewManager["Service"]["close"] = Effect.fn("PreviewManager.close")(
     function* (input) {
       const createdAt = yield* currentIsoTimestamp;
+      const retainBlankTab = yield* agentStore.getByThreadId(input.threadId).pipe(
+        Effect.map(Option.isSome),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("preview.agent-thread-lookup-failed", {
+            cause,
+            threadId: input.threadId,
+          }).pipe(Effect.as(true)),
+        ),
+      );
       return yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
         const eventsToEmit: PreviewEvent[] = [];
         const sessions = new Map(state.sessions);
@@ -494,7 +504,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         const threadStillHasTab = Array.from(sessions.values()).some(
           (session) => session.threadId === input.threadId,
         );
-        if (!threadStillHasTab) {
+        if (!threadStillHasTab && retainBlankTab) {
           // Allocate from the pre-close state so the replacement can never
           // reuse the identity of the tab that was just closed.
           const tabId = createPreviewTabId();
@@ -522,7 +532,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
         return Effect.gen(function* () {
           // Persist close in the same serialized order as the live state.
-          // Besides keeping the blank-tab invariant durable, this prevents a
+          // Besides keeping the agent blank-tab invariant durable, this prevents a
           // concurrent older status write or close from re-inserting a row we
           // have already removed.
           if (replacement) {

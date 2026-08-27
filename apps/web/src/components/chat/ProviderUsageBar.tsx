@@ -4,20 +4,26 @@ import type {
   OrchestrationThreadActivity,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderUsageResetOutcome,
   ServerProvider,
 } from "@t3tools/contracts";
+import { ExternalLinkIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { randomUUID } from "../../lib/utils";
 import {
   mergeProviderUsageEntry,
   providerUsageAccountKey,
   PROVIDER_USAGE_STALE_AFTER_MS,
   type PersistedProviderUsageEntry,
+  type PersistedProviderUsageResetCredit,
+  type PersistedProviderUsageResetCredits,
   type PersistedProviderUsageWindow,
   useProviderUsageStore,
 } from "../../providerUsageStore";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
@@ -65,9 +71,29 @@ export function providerUsageDetailsSide(isDraftHeroState: boolean): "top" | "bo
 
 export interface ProviderUsageSummary {
   provider: ServerProvider;
+  accountKey?: string | null;
   state: "available" | "stale" | "unavailable" | "unsupported";
   windows: ProviderUsageWindow[];
   reportedAt: string | null;
+  resetCredits?: ProviderUsageResetCredits | null;
+}
+
+export type ProviderUsageResetCredit = PersistedProviderUsageResetCredit;
+export type ProviderUsageResetCredits = PersistedProviderUsageResetCredits;
+
+export interface ProviderUsageExternalLink {
+  href: string;
+  label: string;
+}
+
+export function providerUsageExternalLink(
+  driver: ProviderDriverKind,
+): ProviderUsageExternalLink | null {
+  if (driver !== "grok") return null;
+  return {
+    href: "https://grok.com/automations?_s=usage",
+    label: "View Grok usage and resets",
+  };
 }
 
 const SUPPORTED_USAGE_DRIVERS = new Set(["codex", "claudeAgent", "grok"]);
@@ -167,6 +193,49 @@ function codexWindows(raw: unknown): ProviderUsageWindow[] {
     });
   }
   return windows;
+}
+
+function codexResetCredits(raw: unknown): ProviderUsageResetCredits | null {
+  const envelope = asRecord(raw);
+  const summary = asRecord(envelope?.rateLimitResetCredits);
+  const availableCount = finiteNumber(summary?.availableCount);
+  if (!summary || availableCount === null || availableCount <= 0) return null;
+
+  const credits = Array.isArray(summary.credits)
+    ? summary.credits.flatMap((rawCredit): ProviderUsageResetCredit[] => {
+        const credit = asRecord(rawCredit);
+        if (!credit || credit.status !== "available" || typeof credit.id !== "string") return [];
+        const title = typeof credit.title === "string" ? credit.title.trim() : "";
+        const description =
+          typeof credit.description === "string" && credit.description.trim()
+            ? credit.description.trim()
+            : null;
+        return [
+          {
+            id: credit.id,
+            title: title || "Full reset",
+            description,
+            expiresAt: epochMilliseconds(credit.expiresAt),
+          },
+        ];
+      })
+    : [];
+
+  // The backend may report only the count, or cap the detail rows. Codex's
+  // consume RPC intentionally accepts no credit id and selects the next one.
+  if (credits.length === 0) {
+    credits.push({
+      id: null,
+      title: availableCount === 1 ? "Full reset" : `${availableCount} full resets`,
+      description: null,
+      expiresAt: null,
+    });
+  }
+
+  return {
+    availableCount: Math.floor(availableCount),
+    credits,
+  };
 }
 
 const MINUTE_MS = 60_000;
@@ -602,10 +671,12 @@ export function deriveProviderUsageSummaries(
     const supported = SUPPORTED_USAGE_DRIVERS.has(provider.driver);
     const stale =
       report !== undefined && now - Date.parse(report.reportedAt) > PROVIDER_USAGE_STALE_AFTER_MS;
+    const resetCredits = report?.resetCredits ?? null;
     return {
       provider,
+      accountKey,
       state:
-        windows.length > 0
+        windows.length > 0 || resetCredits !== null
           ? stale
             ? "stale"
             : "available"
@@ -614,6 +685,7 @@ export function deriveProviderUsageSummaries(
             : "unsupported",
       windows,
       reportedAt: report?.reportedAt ?? null,
+      resetCredits,
     };
   });
 }
@@ -629,12 +701,14 @@ export function deriveProviderUsageReports(
     const accountKey = providerUsageAccountKey(provider, environmentId);
     if (accountKey === null) return;
     const windows = usageWindowsForDriver(provider.driver, raw);
-    if (windows.length === 0) return;
+    const resetCredits = provider.driver === "codex" ? codexResetCredits(raw) : null;
+    if (windows.length === 0 && resetCredits === null) return;
     reports = mergeProviderUsageEntry(reports, {
       accountKey,
       driver: provider.driver,
       windows,
       reportedAt,
+      ...(resetCredits ? { resetCredits } : {}),
     });
   };
 
@@ -680,6 +754,25 @@ function formatReset(resetAt: number | null): string | null {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(resetAt));
+}
+
+function usageResetOutcomeResult(outcome: ProviderUsageResetOutcome): {
+  readonly status: "success" | "error";
+  readonly message: string;
+} {
+  switch (outcome) {
+    case "reset":
+      return { status: "success", message: "Usage limits reset successfully." };
+    case "nothingToReset":
+      return {
+        status: "success",
+        message: "Your usage is already available, so the reset was not spent.",
+      };
+    case "noCredit":
+      return { status: "error", message: "No usage reset is currently available." };
+    case "alreadyRedeemed":
+      return { status: "error", message: "That usage reset was already redeemed." };
+  }
 }
 
 function formatReportedAt(reportedAt: string): string {
@@ -842,14 +935,54 @@ export function ProviderUsageDetails({
   isRefreshing = false,
   refreshError = null,
   onSwitchUser,
+  resetCredits = null,
+  onUseReset,
+  onDismissResetCredit,
+  externalUsageLink = null,
 }: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
   name: string;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   refreshError?: string | null;
   onSwitchUser?: () => void;
+  resetCredits?: ProviderUsageResetCredits | null;
+  externalUsageLink?: ProviderUsageExternalLink | null;
+  onUseReset?: (
+    creditId: string | undefined,
+    idempotencyKey: string,
+  ) => Promise<ProviderUsageResetOutcome>;
+  onDismissResetCredit?: (credit: ProviderUsageResetCredit) => void;
 }) {
   const nowMs = useMinuteTick();
+  const [pendingResetAttempt, setPendingResetAttempt] = useState<{
+    readonly credit: ProviderUsageResetCredit;
+    readonly idempotencyKey: string;
+  } | null>(null);
+  const [resetRequestState, setResetRequestState] = useState<
+    | { readonly status: "idle"; readonly message: null }
+    | { readonly status: "loading"; readonly message: null }
+    | { readonly status: "success" | "error"; readonly message: string }
+  >({ status: "idle", message: null });
+  const confirmUsageReset = () => {
+    if (!onUseReset || !pendingResetAttempt || resetRequestState.status === "loading") return;
+    setResetRequestState({ status: "loading", message: null });
+    void onUseReset(
+      pendingResetAttempt.credit.id ?? undefined,
+      pendingResetAttempt.idempotencyKey,
+    ).then(
+      (outcome) => {
+        onDismissResetCredit?.(pendingResetAttempt.credit);
+        setResetRequestState(usageResetOutcomeResult(outcome));
+        setPendingResetAttempt(null);
+      },
+      () => {
+        setResetRequestState({
+          status: "error",
+          message: "Usage reset was not confirmed. Retry to safely check the same request.",
+        });
+      },
+    );
+  };
   const hasUsage = windows.length > 0;
   const visibleState = isRefreshing ? "loading" : state;
   const statusLabel =
@@ -983,6 +1116,108 @@ export function ProviderUsageDetails({
               : "Usage has not been reported for this provider account yet."}
         </p>
       )}
+      {resetCredits ? (
+        <section
+          className="mt-4 border-border/60 border-t pt-3"
+          aria-label={`${name} usage resets`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-medium text-foreground text-xs">Usage limit resets</h4>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {resetCredits.availableCount} available
+              </p>
+            </div>
+          </div>
+          <ul className="mt-2 space-y-2">
+            {resetCredits.credits.map((credit, index) => {
+              const expires = formatReset(credit.expiresAt);
+              return (
+                <li
+                  key={credit.id ?? `next-reset-${index}`}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/25 px-2.5 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-foreground text-xs">
+                      {credit.title}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      {expires ? `Expires ${expires}` : (credit.description ?? "Ready to redeem")}
+                    </div>
+                  </div>
+                  {onUseReset ? (
+                    pendingResetAttempt?.credit === credit ? (
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="ghost"
+                          disabled={resetRequestState.status === "loading"}
+                          onClick={() => setPendingResetAttempt(null)}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          disabled={resetRequestState.status === "loading"}
+                          onClick={confirmUsageReset}
+                        >
+                          {resetRequestState.status === "loading" ? "Using…" : "Confirm"}
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        disabled={resetRequestState.status === "loading"}
+                        onClick={() => {
+                          setPendingResetAttempt({ credit, idempotencyKey: randomUUID() });
+                          setResetRequestState({ status: "idle", message: null });
+                        }}
+                      >
+                        Use reset
+                      </Button>
+                    )
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          {resetRequestState.message ? (
+            <p
+              className={`mt-2 text-xs ${
+                resetRequestState.status === "error"
+                  ? "text-red-700 dark:text-red-300"
+                  : "text-emerald-700 dark:text-emerald-300"
+              }`}
+              role={resetRequestState.status === "error" ? "alert" : "status"}
+            >
+              {resetRequestState.message}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+      {externalUsageLink ? (
+        <Button
+          size="xs"
+          variant="link"
+          className="mt-3 h-auto justify-start px-0 text-xs"
+          render={
+            <a
+              href={externalUsageLink.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`${externalUsageLink.label} (opens in a new tab)`}
+            />
+          }
+        >
+          {externalUsageLink.label}
+          <ExternalLinkIcon className="size-3" aria-hidden />
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -991,8 +1226,14 @@ export function ProviderUsageBadgeDetails(props: {
   readonly summary: ProviderUsageSummary;
   readonly onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
   readonly onSwitchUser?: (instanceId: ProviderInstanceId) => void;
+  readonly onUseReset?: (
+    provider: ServerProvider,
+    creditId: string | undefined,
+    idempotencyKey: string,
+  ) => Promise<ProviderUsageResetOutcome>;
+  readonly onDismissResetCredit?: (credit: ProviderUsageResetCredit) => void;
 }) {
-  const { summary, onRefreshProvider, onSwitchUser } = props;
+  const { summary, onRefreshProvider, onSwitchUser, onUseReset, onDismissResetCredit } = props;
   const { provider } = summary;
   const name = providerUsageName(provider);
   const windows =
@@ -1030,10 +1271,19 @@ export function ProviderUsageBadgeDetails(props: {
           state={summary.state}
           windows={[...windows]}
           reportedAt={summary.reportedAt}
+          resetCredits={summary.resetCredits ?? null}
+          externalUsageLink={providerUsageExternalLink(provider.driver)}
           isRefreshing={isRefreshing}
           refreshError={refreshError}
           {...(canRefresh ? { onRefresh: () => void refreshUsage() } : {})}
           {...(onSwitchUser ? { onSwitchUser: () => onSwitchUser(provider.instanceId) } : {})}
+          {...(onUseReset
+            ? {
+                onUseReset: (creditId: string | undefined, idempotencyKey: string) =>
+                  onUseReset(provider, creditId, idempotencyKey),
+              }
+            : {})}
+          {...(onDismissResetCredit ? { onDismissResetCredit } : {})}
         />
       </section>
     </div>
@@ -1046,12 +1296,20 @@ function ProviderUsageBadge({
   detailsSide,
   onRefreshProvider,
   onSwitchUser,
+  onUseReset,
+  onDismissResetCredit,
 }: {
   summary: ProviderUsageSummary;
   compactMetric: CompactProviderUsageMetric;
   detailsSide: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
   onSwitchUser?: (instanceId: ProviderInstanceId) => void;
+  onUseReset?: (
+    provider: ServerProvider,
+    creditId: string | undefined,
+    idempotencyKey: string,
+  ) => Promise<ProviderUsageResetOutcome>;
+  onDismissResetCredit?: (credit: ProviderUsageResetCredit) => void;
 }) {
   const nowMs = useMinuteTick();
   const [open, setOpen] = useState(false);
@@ -1149,6 +1407,8 @@ function ProviderUsageBadge({
           summary={summary}
           {...(onRefreshProvider ? { onRefreshProvider } : {})}
           {...(onSwitchUser ? { onSwitchUser } : {})}
+          {...(onUseReset ? { onUseReset } : {})}
+          {...(onDismissResetCredit ? { onDismissResetCredit } : {})}
         />
       </PopoverPopup>
     </Popover>
@@ -1163,9 +1423,15 @@ export function ProviderUsageBar(props: {
   detailsSide?: "top" | "bottom";
   onRefreshProvider?: (provider: ServerProvider) => Promise<void>;
   onSwitchUser?: (instanceId: ProviderInstanceId) => void;
+  onUseReset?: (
+    provider: ServerProvider,
+    creditId: string | undefined,
+    idempotencyKey: string,
+  ) => Promise<ProviderUsageResetOutcome>;
 }) {
   const persistedByAccountKey = useProviderUsageStore((state) => state.byAccountKey);
   const recordUsage = useProviderUsageStore((state) => state.record);
+  const dismissResetCredit = useProviderUsageStore((state) => state.dismissResetCredit);
   const reports = useMemo(
     () => deriveProviderUsageReports(props.providers, props.activities, props.environmentId),
     [props.activities, props.environmentId, props.providers],
@@ -1200,6 +1466,14 @@ export function ProviderUsageBar(props: {
           detailsSide={props.detailsSide ?? "top"}
           {...(props.onRefreshProvider ? { onRefreshProvider: props.onRefreshProvider } : {})}
           {...(props.onSwitchUser ? { onSwitchUser: props.onSwitchUser } : {})}
+          {...(props.onUseReset ? { onUseReset: props.onUseReset } : {})}
+          {...(summary.accountKey
+            ? {
+                onDismissResetCredit: (credit: ProviderUsageResetCredit) => {
+                  if (summary.accountKey) dismissResetCredit(summary.accountKey, credit);
+                },
+              }
+            : {})}
         />
       ))}
     </section>

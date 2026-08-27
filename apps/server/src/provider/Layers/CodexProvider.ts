@@ -90,13 +90,18 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
       return "ChatGPT Pro 5x Subscription";
     case "team":
       return "ChatGPT Team Subscription";
+    case "self_serve_business_prolite":
     case "self_serve_business_usage_based":
     case "business":
       return "ChatGPT Business Subscription";
+    case "ent26":
+    case "enterprise_cbp_automation":
     case "enterprise_cbp_usage_based":
     case "enterprise":
       return "ChatGPT Enterprise Subscription";
     case "edu":
+    case "edu_plus":
+    case "edu_pro":
       return "ChatGPT Edu Subscription";
     case "unknown":
       return "ChatGPT Subscription";
@@ -343,18 +348,19 @@ export function buildCodexInitializeParams(): CodexSchema.V1InitializeParams {
   };
 }
 
-const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+interface CodexAppServerConnectionInput {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly launchArgs?: string;
   readonly cwd: string;
-  readonly customModels?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
-}) {
+}
+
+const connectCodexAppServer = Effect.fn("CodexProvider.connectAppServer")(function* (
+  input: CodexAppServerConnectionInput,
+) {
   // `~` is not shell-expanded when env vars are set via `child_process.spawn`,
-  // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
-  // "CODEX_HOME points to '~/.codex_work', but that path does not exist".
-  // Expand here for parity with `CodexTextGeneration`/`CodexSessionRuntime`.
+  // so resolve isolated account homes before launching the provider.
   const resolvedHomePath = input.homePath ? expandHomePath(input.homePath) : undefined;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = {
@@ -392,20 +398,39 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
     Effect.provide(clientContext),
   );
-
   const initialize = yield* client
-    .request("initialize", {
-      clientInfo: {
-        name: "t3code_desktop",
-        title: "Solla Code Desktop",
-        version: "0.1.0",
-      },
-      capabilities: {
-        experimentalApi: true,
-      },
-    })
-    .pipe(Effect.withSpan("CodexProvider.probe.initialize"));
+    .request("initialize", buildCodexInitializeParams())
+    .pipe(Effect.withSpan("CodexProvider.appServer.initialize"));
   yield* client.notify("initialized", undefined);
+  return { client, initialize };
+});
+
+export const consumeCodexRateLimitResetCredit = Effect.fn(
+  "CodexProvider.consumeRateLimitResetCredit",
+)(function* (
+  input: CodexAppServerConnectionInput & {
+    readonly creditId?: string | undefined;
+    readonly idempotencyKey: string;
+  },
+) {
+  const { client } = yield* connectCodexAppServer(input);
+  return yield* client
+    .request("account/rateLimitResetCredit/consume", {
+      idempotencyKey: input.idempotencyKey,
+      ...(input.creditId ? { creditId: input.creditId } : {}),
+    })
+    .pipe(Effect.withSpan("CodexProvider.rateLimitResetCredit.consume"));
+});
+
+const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(function* (input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly launchArgs?: string;
+  readonly cwd: string;
+  readonly customModels?: ReadonlyArray<string>;
+  readonly environment?: NodeJS.ProcessEnv;
+}) {
+  const { client, initialize } = yield* connectCodexAppServer(input);
 
   // Extract the version string after the first '/' in userAgent, up to the next space or the end
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);

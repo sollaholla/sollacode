@@ -7,7 +7,7 @@ import { ActionApprovalError, ActionApprovalInput, ActionApprovalResult } from "
 
 export const ActionApprovalTool = Tool.make("request_action_approval", {
   description:
-    "Ask the user to approve a consequential external action before performing it, such as sending an email or message, publishing content, making a purchase, or changing an account. Supply the exact destination and content in preview, then wait. If the result is changes_requested, revise the action from feedback and call this tool again; do not perform the action until status is approved. Ordinary Agent-mode turns return approved automatically, but delegated agent and ephemeral-worker turns always require explicit human approval. This tool approves only the proposal -- the caller must perform the external action afterward.",
+    "Ask the user to approve a consequential external action before performing it, such as sending an email or message, publishing content, making a purchase, or changing an account. Supply the exact destination and content in preview. A human-gated request returns status pending immediately so it cannot block the T3 MCP connection: do not retry it, create a duplicate blocker or notification, or continue that action branch. End the turn; in Agent mode emit AGENT_STOP. Solla will start a fresh turn carrying the user's approval or corrections. Ordinary Agent-mode turns return approved automatically, but delegated agent and ephemeral-worker turns always require explicit human approval. This tool approves only the proposal -- the caller must perform the external action afterward.",
   parameters: ActionApprovalInput,
   success: ActionApprovalResult,
   failure: ActionApprovalError,

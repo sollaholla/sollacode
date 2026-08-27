@@ -128,11 +128,6 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
-          const userAgent = browserSession
-            .getUserAgent()
-            .replace(/Electron\/[\d.]+ /, "")
-            .replace(/\s*t3code\/[\d.]+/, "");
-          browserSession.setUserAgent(userAgent);
           browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
             callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
           });

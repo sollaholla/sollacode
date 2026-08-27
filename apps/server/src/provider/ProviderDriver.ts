@@ -25,6 +25,7 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  ProviderUsageResetOutcome,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -77,6 +78,20 @@ export interface ProviderInstance {
    * deliberately independent from provider sessions and active turns.
    */
   readonly accountAuth?: ProviderAccountAuthCapability | undefined;
+  /**
+   * Optional provider-native earned usage-reset redemption. Scheduled quota
+   * rollover timestamps remain read-only account-usage metadata; this
+   * capability is only present when the provider exposes an explicit consume
+   * operation.
+   */
+  readonly usageReset?: ProviderUsageResetCapability | undefined;
+}
+
+export interface ProviderUsageResetCapability {
+  readonly consume: (input: {
+    readonly creditId?: string | undefined;
+    readonly idempotencyKey: string;
+  }) => Effect.Effect<ProviderUsageResetOutcome, Error>;
 }
 
 export interface ProviderAccountAuthStatus {

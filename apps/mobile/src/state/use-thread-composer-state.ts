@@ -40,6 +40,8 @@ import { useSelectedThreadDetail } from "../state/use-thread-detail";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
+import { composerFocusRequestsAtom, consumeComposerFocusRequest } from "./composer-focus-requests";
+import { queuedTurnMessageIds, requestQueuedTurnPromotion } from "./thread-queued-turn-promotion";
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -77,6 +79,7 @@ export function useThreadComposerState() {
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const composerFocusRequests = useAtomValue(composerFocusRequestsAtom);
 
   useEffect(() => {
     ensureComposerDraftsLoaded();
@@ -99,6 +102,14 @@ export function useThreadComposerState() {
   const draftAttachments = selectedDraft?.attachments ?? [];
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
+  const composerFocusRequest = selectedThreadKey
+    ? (composerFocusRequests[selectedThreadKey] ?? null)
+    : null;
+  const onConsumeComposerFocusRequest = useCallback(() => {
+    if (selectedThreadKey && composerFocusRequest !== null) {
+      consumeComposerFocusRequest(selectedThreadKey, composerFocusRequest);
+    }
+  }, [composerFocusRequest, selectedThreadKey]);
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
   const runtimeMode = selectedDraft?.runtimeMode ?? selectedThread?.runtimeMode ?? null;
   const interactionMode = selectedDraft?.interactionMode ?? selectedThread?.interactionMode ?? null;
@@ -131,6 +142,21 @@ export function useThreadComposerState() {
   const activeThreadBusy =
     !!selectedThread &&
     (selectedThread.session?.status === "running" || selectedThread.session?.status === "starting");
+  const serverQueuedMessageIds = useMemo(
+    () =>
+      selectedThreadDetail
+        ? queuedTurnMessageIds({
+            messages: selectedThreadDetail.messages,
+            activities: selectedThreadDetail.activities,
+            activeWorkStartedAt,
+          })
+        : [],
+    [activeWorkStartedAt, selectedThreadDetail],
+  );
+  const hasQueuedSendNow =
+    activeThreadBusy &&
+    selectedThread?.session?.providerName?.toLowerCase() === "grok" &&
+    (selectedThreadQueueCount > 0 || serverQueuedMessageIds.length > 0);
 
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -143,6 +169,12 @@ export function useThreadComposerState() {
     const text = draft.text.trim();
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) {
+      if (hasQueuedSendNow) {
+        requestQueuedTurnPromotion({
+          environmentId: selectedThreadShell.environmentId,
+          threadId: selectedThreadShell.id,
+        });
+      }
       return null;
     }
 
@@ -169,7 +201,7 @@ export function useThreadComposerState() {
       );
       return null;
     }
-  }, [selectedThreadDetail, selectedThreadShell]);
+  }, [hasQueuedSendNow, selectedThreadDetail, selectedThreadShell]);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -291,7 +323,10 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
-    selectedThreadQueueCount,
+    selectedThreadQueueCount: selectedThreadQueueCount + serverQueuedMessageIds.length,
+    hasQueuedSendNow,
+    composerFocusRequest,
+    onConsumeComposerFocusRequest,
     activeWorkStartedAt,
     draftMessage,
     draftAttachments,

@@ -1,7 +1,6 @@
 "use client";
 
 import type { DesktopPreviewPointerEvent } from "@t3tools/contracts";
-import { MousePointer2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
@@ -10,6 +9,10 @@ import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { agentBrowserCursorOpacity, type BrowserController } from "./agentBrowserCursorLogic";
 
 const CURSOR_ACTIVE_MS = 700;
+/** The cursor is deliberately a fixed blue rather than the theme accent: it has
+ *  to stay recognisable as "the agent" on top of arbitrary web pages. */
+const AGENT_CURSOR_GLOW = "#3b82f6";
+const AGENT_CURSOR_GRADIENT_ID = "agent-browser-cursor-fill";
 
 export function AgentBrowserCursor(props: {
   readonly tabId: string;
@@ -66,13 +69,37 @@ function AgentBrowserCursorEvent(props: {
       {event.phase === "click" ? (
         <span
           key={event.sequence}
-          className="absolute left-0.5 top-0.5 size-4 animate-status-ping rounded-full bg-primary/25 motion-reduce:animate-none"
+          className="absolute left-0.5 top-0.5 size-4 animate-status-ping rounded-full motion-reduce:animate-none"
+          style={{ backgroundColor: `${AGENT_CURSOR_GLOW}59` }}
         />
       ) : null}
-      <MousePointer2
-        className="relative size-5 -translate-x-0.5 -translate-y-0.5 fill-background text-primary drop-shadow-sm"
-        strokeWidth={2}
-      />
+      <svg
+        viewBox="0 0 24 24"
+        className="relative size-5 -translate-x-0.5 -translate-y-0.5"
+        style={{
+          filter: `drop-shadow(0 0 4px ${AGENT_CURSOR_GLOW}) drop-shadow(0 0 11px ${AGENT_CURSOR_GLOW}8c)`,
+        }}
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id={AGENT_CURSOR_GRADIENT_ID} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#8ec9ff" />
+            <stop offset="55%" stopColor="#3b82f6" />
+            <stop offset="100%" stopColor="#1d4ed8" />
+          </linearGradient>
+        </defs>
+        {/* Stroked in its own fill colour with a round join so the arrow reads as
+            one solid, soft-cornered shape rather than a hairline outline. */}
+        <path
+          d="m4 4 7.07 17 2.51-7.39L21 11.07z"
+          fill={`url(#${AGENT_CURSOR_GRADIENT_ID})`}
+          stroke="#bfdcff"
+          strokeWidth={1.6}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          paintOrder="stroke"
+        />
+      </svg>
     </div>
   );
 }

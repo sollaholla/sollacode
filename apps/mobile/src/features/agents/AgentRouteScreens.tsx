@@ -3,13 +3,15 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   EnvironmentId,
   type VmAgent,
+  type VmAgentBlocker,
   type VmAgentAttentionSummary,
   type VmAgentCollaborationSnapshot,
   type VmAgentDelegationMessage,
   type VmAgentDelegationStatus,
   type VmAgentDelegationSummary,
-  type VmAgentNotification,
+  VmAgentId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,8 +23,11 @@ import { EmptyState } from "../../components/EmptyState";
 import { useEnvironments } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { transformComposerDraftText } from "../../state/use-composer-drafts";
 import { vmAgentEnvironment } from "../../state/vmAgents";
-import { MarkdownDocument } from "../files/FileMarkdownPreview";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+import { requestComposerFocus } from "../../state/composer-focus-requests";
+import { openMobileWaitingOnYouFollowUp } from "./mobileAgentAttentionFollowUp";
 import {
   boundedCollaborationPreview,
   delegationDirectionLabel,
@@ -68,23 +73,22 @@ function AgentAttentionIndicators(props: { readonly attention: VmAgentAttentionS
   if (!props.attention) return null;
   return (
     <View className="shrink-0 flex-row items-center gap-1.5">
+      {props.attention.unreadNotificationCount > 0 ? (
+        <View
+          accessibilityLabel={`${props.attention.unreadNotificationCount} unread agent alerts`}
+          className="min-h-6 min-w-6 items-center justify-center rounded-full bg-primary px-2"
+        >
+          <Text className="text-xs font-t3-bold text-primary-foreground">
+            {props.attention.unreadNotificationCount}
+          </Text>
+        </View>
+      ) : null}
       {props.attention.openBlockerCount > 0 ? (
         <View
           accessibilityLabel={`${props.attention.openBlockerCount} waiting on you`}
           className="size-8 items-center justify-center rounded-full bg-amber-500/12"
         >
           <SymbolView name="hand.raised.fill" size={17} tintColor="#d97706" />
-        </View>
-      ) : null}
-      {props.attention.unreadNotificationCount > 0 ? (
-        <View
-          accessibilityLabel={`${props.attention.unreadNotificationCount} unread notifications`}
-          className="min-h-8 min-w-8 flex-row items-center justify-center gap-1 rounded-full bg-primary px-2"
-        >
-          <SymbolView name="bell.badge.fill" size={14} tintColor="#ffffff" />
-          <Text className="text-xs font-t3-bold text-primary-foreground">
-            {props.attention.unreadNotificationCount}
-          </Text>
         </View>
       ) : null}
     </View>
@@ -144,36 +148,57 @@ function AgentEnvironmentSection(props: {
               ?.activeDelegations ?? 0;
           const agentAttention =
             attention.find((entry) => entry.vmAgentId === agent.vmAgentId) ?? null;
+          const openDetails = () =>
+            navigation.navigate("Agent", {
+              environmentId: String(props.environmentId),
+              agentId: String(agent.vmAgentId),
+            });
           return (
-            <Pressable
+            <View
               key={agent.vmAgentId}
-              accessibilityLabel={`Open ${agent.name} on ${props.label}`}
-              accessibilityRole="button"
-              className="min-h-14 min-w-0 flex-row items-center gap-3 rounded-2xl border border-border bg-sheet px-4 py-3 active:bg-subtle"
-              onPress={() =>
-                navigation.navigate("Agent", {
-                  environmentId: String(props.environmentId),
-                  agentId: String(agent.vmAgentId),
-                })
-              }
+              className="min-h-14 min-w-0 flex-row items-center rounded-2xl border border-border bg-sheet"
             >
-              <View className="size-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                <Text className="text-base font-t3-bold text-primary">
-                  {agent.name.slice(0, 1).toUpperCase()}
-                </Text>
-              </View>
-              <View className="min-w-0 flex-1">
-                <Text className="text-base font-t3-bold text-foreground" numberOfLines={1}>
-                  {agent.name}
-                </Text>
-                <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                  {agent.purpose}
-                </Text>
-              </View>
-              <AgentAttentionIndicators attention={agentAttention} />
-              {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
-              <StatusChip value={agent.status} />
-            </Pressable>
+              <Pressable
+                accessibilityLabel={`Open ${agent.name} chat on ${props.label}`}
+                accessibilityRole="button"
+                className="min-w-0 flex-1 flex-row items-center gap-3 rounded-l-2xl px-4 py-3 active:bg-subtle"
+                onPress={() => {
+                  if (!agent.threadId) {
+                    openDetails();
+                    return;
+                  }
+                  navigation.navigate("Thread", {
+                    environmentId: String(props.environmentId),
+                    threadId: String(agent.threadId),
+                  });
+                }}
+              >
+                <View className="size-10 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                  <Text className="text-base font-t3-bold text-primary">
+                    {agent.name.slice(0, 1).toUpperCase()}
+                  </Text>
+                </View>
+                <View className="min-w-0 flex-1">
+                  <Text className="text-base font-t3-bold text-foreground" numberOfLines={1}>
+                    {agent.name}
+                  </Text>
+                  <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+                    {agent.purpose}
+                  </Text>
+                </View>
+                <AgentAttentionIndicators attention={agentAttention} />
+                {activeWork > 0 ? <StatusChip value={`${activeWork} active`} /> : null}
+                <StatusChip value={agent.status} />
+              </Pressable>
+              <Pressable
+                accessibilityLabel={`Open ${agent.name} details`}
+                accessibilityRole="button"
+                className="min-h-14 w-12 shrink-0 items-center justify-center rounded-r-2xl active:bg-subtle"
+                onPress={openDetails}
+              >
+                <SymbolView name="ellipsis" size={20} tintColor="#737373" />
+              </Pressable>
+            </View>
           );
         })
       )}
@@ -324,9 +349,6 @@ function CollaborationSection(props: {
   const item = collaborationQuery.data;
   const snapshot = item?.type === "snapshot" ? item : null;
   const delegations = relatedDelegations(snapshot, props.agent.vmAgentId);
-  const collaborators =
-    snapshot?.agents.filter((candidate) => candidate.vmAgentId !== props.agent.vmAgentId) ?? [];
-  const hasMoreAgents = snapshot?.hasMoreAgents === true;
   const hasMoreDelegations = snapshot?.hasMoreDelegations === true;
   const selected =
     delegations.find((entry) => entry.delegation.delegationId === selectedId) ??
@@ -523,9 +545,9 @@ function CollaborationSection(props: {
     <View className="min-w-0 gap-3">
       <View className="min-w-0 flex-row flex-wrap items-center justify-between gap-2">
         <View className="min-w-0 flex-1">
-          <Text className="text-lg font-t3-bold text-foreground">Collaboration</Text>
+          <Text className="text-lg font-t3-bold text-foreground">Activity</Text>
           <Text className="text-sm text-foreground-muted">
-            The named root persists; each worker run is bounded.
+            Delegated work, questions, and results. Start new work in chat.
           </Text>
         </View>
         <Pressable
@@ -551,61 +573,6 @@ function CollaborationSection(props: {
           >
             <Text className="font-t3-bold text-foreground">Retry</Text>
           </Pressable>
-        </View>
-      ) : null}
-      {snapshot ? (
-        <View className="min-w-0 gap-2">
-          <Text className="text-xs font-t3-bold uppercase text-foreground-muted">
-            Available collaborators
-          </Text>
-          {collaborators.length === 0 && !hasMoreAgents ? (
-            <View className="rounded-2xl border border-border bg-sheet p-4">
-              <Text className="text-sm text-foreground-muted">
-                No other named agents are online. The root can still create a bounded ephemeral
-                sub-agent through chat.
-              </Text>
-            </View>
-          ) : (
-            collaborators.map((candidate) => (
-              <View
-                key={candidate.vmAgentId}
-                className="min-w-0 gap-2 rounded-2xl border border-border bg-sheet p-3"
-              >
-                <View className="min-w-0 flex-row flex-wrap items-center gap-2">
-                  <Text className="min-w-0 flex-1 font-t3-bold text-foreground" numberOfLines={1}>
-                    {candidate.name}
-                  </Text>
-                  <StatusChip value={candidate.availability} />
-                  {candidate.activeDelegations > 0 ? (
-                    <StatusChip value={`${candidate.activeDelegations} active`} />
-                  ) : null}
-                </View>
-                <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                  {candidate.purpose}
-                </Text>
-                {candidate.capabilities.length > 0 ? (
-                  <View className="min-w-0 flex-row flex-wrap gap-1">
-                    {candidate.capabilities.map((capability) => (
-                      <StatusChip key={capability} value={capability} />
-                    ))}
-                  </View>
-                ) : null}
-                {candidate.providerInstanceId || candidate.model ? (
-                  <Text className="text-xs text-foreground-muted" numberOfLines={1}>
-                    {[candidate.providerInstanceId, candidate.model].filter(Boolean).join(" · ")}
-                  </Text>
-                ) : null}
-              </View>
-            ))
-          )}
-          {hasMoreAgents ? (
-            <View className="rounded-xl border border-border bg-screen/50 px-3 py-2">
-              <Text className="text-xs text-foreground-muted">
-                This host has additional agents outside the bounded live roster, so some targets are
-                not shown here.
-              </Text>
-            </View>
-          ) : null}
         </View>
       ) : null}
       {snapshot === null && collaborationQuery.error === null ? (
@@ -866,217 +833,216 @@ function CollaborationSection(props: {
   );
 }
 
-function notificationPreview(body: string): string {
-  return body.replace(/\s+/g, " ").trim();
-}
-
-function AgentInboxSection(props: {
-  readonly environmentId: EnvironmentId;
-  readonly agent: VmAgent;
-}) {
-  const [folder, setFolder] = useState<"inbox" | "archive">("inbox");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const workspaceAtom = useMemo(
-    () =>
-      vmAgentEnvironment.workspace({
-        environmentId: props.environmentId,
-        input: { vmAgentId: props.agent.vmAgentId },
-      }),
-    [props.agent.vmAgentId, props.environmentId],
-  );
-  const result = useAtomValue(workspaceAtom);
-  const item = Option.getOrNull(AsyncResult.value(result));
-  const workspace = item?.type === "snapshot" ? item : null;
-  const notifications = workspace?.notifications ?? [];
-  const visible = notifications.filter((notification) =>
-    folder === "inbox" ? notification.archivedAt === null : notification.archivedAt !== null,
-  );
-  const selected =
-    visible.find((notification) => notification.notificationId === selectedId) ?? null;
-  const updateNotification = useAtomCommand(vmAgentEnvironment.updateNotification, {
-    reportFailure: false,
-  });
-
-  const mutate = async (
-    notification: VmAgentNotification,
-    patch: { readonly read?: boolean; readonly archived?: boolean },
-  ) => {
-    setPendingId(notification.notificationId);
-    setError(null);
-    const updated = await updateNotification({
-      environmentId: props.environmentId,
-      input: {
-        vmAgentId: props.agent.vmAgentId,
-        notificationId: notification.notificationId,
-        ...patch,
-      },
-    });
-    setPendingId(null);
-    if (updated._tag === "Failure") {
-      setError("The inbox item could not be updated.");
-      return;
-    }
-    if (patch.archived !== undefined) setSelectedId(null);
-  };
-
-  const open = (notification: VmAgentNotification) => {
-    setSelectedId(notification.notificationId);
-    if (notification.readAt === null) void mutate(notification, { read: true });
-  };
-
-  const inboxCount = notifications.filter(
-    (notification) => notification.archivedAt === null,
-  ).length;
-  const archiveCount = notifications.length - inboxCount;
-
-  return (
-    <View className="min-w-0 gap-3">
-      <View className="min-w-0 gap-1">
-        <Text className="text-lg font-t3-bold text-foreground">Inbox</Text>
-        <Text className="text-sm text-foreground-muted">
-          Read agent updates, mark them unread, or archive finished items.
-        </Text>
-      </View>
-      <View className="min-w-0 flex-row gap-2">
-        {(
-          [
-            ["inbox", "Inbox", inboxCount],
-            ["archive", "Archive", archiveCount],
-          ] as const
-        ).map(([value, label, count]) => (
-          <Pressable
-            key={value}
-            accessibilityRole="button"
-            accessibilityState={{ selected: folder === value }}
-            className={`min-h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl border px-3 ${
-              folder === value ? "border-primary bg-primary/10" : "border-border bg-sheet"
-            }`}
-            onPress={() => {
-              setFolder(value);
-              setSelectedId(null);
-            }}
-          >
-            <SymbolView
-              name={value === "inbox" ? "tray" : "archivebox.fill"}
-              size={16}
-              tintColor={folder === value ? "#2563eb" : "#737373"}
-            />
-            <Text className="font-t3-bold text-foreground">
-              {label} · {count}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      {result._tag === "Failure" ? (
-        <View className="rounded-2xl border border-red-500/25 bg-sheet p-4">
-          <Text className="text-sm text-red-700 dark:text-red-300">
-            The inbox is unavailable while this host reconnects.
-          </Text>
-        </View>
-      ) : visible.length === 0 ? (
-        <View className="rounded-2xl border border-border bg-sheet p-4">
-          <Text className="text-sm text-foreground-muted">
-            {folder === "archive" ? "No archived messages." : "Your inbox is clear."}
-          </Text>
-        </View>
-      ) : (
-        <View className="min-w-0 gap-2">
-          {visible.map((notification) => (
-            <Pressable
-              key={notification.notificationId}
-              accessibilityRole="button"
-              className={`min-h-16 min-w-0 gap-1 rounded-2xl border px-4 py-3 active:bg-subtle ${
-                selected?.notificationId === notification.notificationId
-                  ? "border-primary bg-primary/5"
-                  : "border-border bg-sheet"
-              }`}
-              onPress={() => open(notification)}
-            >
-              <View className="min-w-0 flex-row items-center gap-2">
-                {notification.readAt === null ? (
-                  <View className="size-2 shrink-0 rounded-full bg-primary" />
-                ) : null}
-                <Text
-                  className={`min-w-0 flex-1 text-base text-foreground ${
-                    notification.readAt === null ? "font-t3-bold" : "font-t3-medium"
-                  }`}
-                  numberOfLines={1}
-                >
-                  {notification.title}
-                </Text>
-              </View>
-              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                {notificationPreview(notification.body)}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {selected ? (
-        <View className="min-w-0 gap-4 rounded-2xl border border-border bg-sheet p-4">
-          <View className="min-w-0 gap-1">
-            <Text className="text-lg font-t3-bold text-foreground">{selected.title}</Text>
-            <Text className="text-xs text-foreground-muted">
-              {new Date(selected.createdAt).toLocaleString()}
-            </Text>
-          </View>
-          <View className="min-w-0 rounded-xl border border-border bg-screen p-4">
-            <MarkdownDocument markdown={selected.body} />
-          </View>
-          <View className="min-w-0 flex-row flex-wrap justify-end gap-2">
-            <Pressable
-              accessibilityRole="button"
-              className="min-h-11 justify-center rounded-xl border border-border px-4 disabled:opacity-50"
-              disabled={pendingId === selected.notificationId}
-              onPress={() => void mutate(selected, { read: selected.readAt === null })}
-            >
-              <Text className="font-t3-bold text-foreground">
-                {selected.readAt === null ? "Mark read" : "Mark unread"}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              className="min-h-11 justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
-              disabled={pendingId === selected.notificationId}
-              onPress={() =>
-                void mutate(selected, {
-                  archived: folder !== "archive",
-                  ...(folder === "archive" ? {} : { read: true }),
-                })
-              }
-            >
-              <Text className="font-t3-bold text-primary-foreground">
-                {folder === "archive" ? "Restore" : "Archive"}
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
-      {error ? <Text className="text-sm text-red-600 dark:text-red-300">{error}</Text> : null}
-    </View>
-  );
-}
-
 type AgentRouteProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly agentId: string;
 }>;
 
+type AgentRulesRouteProps = StaticScreenProps<{
+  readonly environmentId: string;
+  readonly agentId: string;
+}>;
+
+export function AgentRulesRouteScreen({ route }: AgentRulesRouteProps) {
+  const environmentId = EnvironmentId.make(route.params.environmentId);
+  const vmAgentId = VmAgentId.make(route.params.agentId);
+  const rulesAtom = useMemo(
+    () => vmAgentEnvironment.rules({ environmentId, input: { vmAgentId } }),
+    [environmentId, vmAgentId],
+  );
+  const result = useAtomValue(rulesAtom);
+  const rules = Option.getOrNull(AsyncResult.value(result));
+  const updateRules = useAtomCommand(vmAgentEnvironment.updateRules, { reportFailure: false });
+  const [baseline, setBaseline] = useState("");
+  const [draft, setDraft] = useState("");
+  const [initializedFor, setInitializedFor] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (rules === null || initializedFor === rules.vmAgentId) return;
+    setBaseline(rules.content);
+    setDraft(rules.content);
+    setInitializedFor(rules.vmAgentId);
+  }, [initializedFor, rules]);
+
+  const loadError =
+    result._tag === "Failure"
+      ? (() => {
+          const error = Cause.squash(result.cause);
+          return error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "Could not load this agent's rules.";
+        })()
+      : null;
+  const dirty = draft !== baseline;
+
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    const saved = await updateRules({
+      environmentId,
+      input: { vmAgentId, content: draft },
+    });
+    if (saved._tag === "Success") {
+      setBaseline(saved.value.content);
+      setDraft(saved.value.content);
+    } else {
+      const error = Cause.squash(saved.cause);
+      setSaveError(
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : "Could not save this agent's rules.",
+      );
+    }
+    setSaving(false);
+  };
+
+  return (
+    <ScrollView
+      className="flex-1 bg-screen"
+      contentInsetAdjustmentBehavior="automatic"
+      keyboardShouldPersistTaps="handled"
+      contentContainerClassName="min-w-0 gap-4 px-4 py-5"
+    >
+      <View className="min-w-0 gap-1">
+        <Text className="text-xl font-t3-bold text-foreground">Rules</Text>
+        <Text className="text-sm leading-5 text-foreground-muted">
+          Edit AGENTS.md for this agent's isolated working directory. CLAUDE.md points to it, so new
+          turns read one source of truth automatically.
+        </Text>
+      </View>
+      <View className="min-w-0 overflow-hidden rounded-2xl border border-border bg-sheet">
+        <View className="min-w-0 flex-row items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <Text className="font-t3-bold text-foreground">AGENTS.md</Text>
+          <Text className="text-xs text-foreground-muted">
+            {draft.length.toLocaleString()} / 100,000
+          </Text>
+        </View>
+        <TextInput
+          accessibilityLabel="Agent rules"
+          className="min-h-96 rounded-none border-0 bg-transparent font-mono text-sm leading-5"
+          editable={loadError === null && rules !== null && !saving}
+          multiline
+          placeholder={
+            rules === null && loadError === null
+              ? "Loading rules…"
+              : "Add durable agent instructions…"
+          }
+          textAlignVertical="top"
+          value={draft}
+          onChangeText={setDraft}
+        />
+      </View>
+      {loadError ? (
+        <Text className="text-sm text-red-600 dark:text-red-300">{loadError}</Text>
+      ) : null}
+      {saveError ? (
+        <Text className="text-sm text-red-600 dark:text-red-300">{saveError}</Text>
+      ) : null}
+      <View className="min-w-0 flex-row gap-2">
+        <Pressable
+          accessibilityRole="button"
+          className="min-h-12 flex-1 items-center justify-center rounded-xl border border-border px-4 disabled:opacity-50"
+          disabled={!dirty || saving}
+          onPress={() => setDraft(baseline)}
+        >
+          <Text className="font-t3-bold text-foreground">Reset</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          className="min-h-12 flex-1 items-center justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
+          disabled={!dirty || saving}
+          onPress={() => void save()}
+        >
+          <Text className="font-t3-bold text-primary-foreground">
+            {saving ? "Saving…" : "Save"}
+          </Text>
+        </Pressable>
+      </View>
+    </ScrollView>
+  );
+}
+
 export function AgentRouteScreen({ route }: AgentRouteProps) {
   const navigation = useNavigation();
   const environmentId = EnvironmentId.make(route.params.environmentId);
+  const vmAgentId = VmAgentId.make(route.params.agentId);
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
     [environmentId],
   );
   const result = useAtomValue(agentsAtom);
+  const workspaceAtom = useMemo(
+    () => vmAgentEnvironment.workspace({ environmentId, input: { vmAgentId } }),
+    [environmentId, vmAgentId],
+  );
+  const workspaceResult = useAtomValue(workspaceAtom);
+  const resolveBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
+    reportFailure: false,
+  });
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [busyBlockerId, setBusyBlockerId] = useState<string | null>(null);
+  const [attentionError, setAttentionError] = useState<string | null>(null);
   const latest = Option.getOrNull(AsyncResult.value(result));
+  const workspaceItem = Option.getOrNull(AsyncResult.value(workspaceResult));
+  const workspace = workspaceItem?.type === "snapshot" ? workspaceItem : null;
   const agent =
     latest?.type === "snapshot"
       ? (latest.agents.find((candidate) => candidate.vmAgentId === route.params.agentId) ?? null)
       : null;
+  const openBlockers = useMemo(
+    () =>
+      (workspace?.blockers ?? [])
+        .filter((blocker) => blocker.resolvedAt === null)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    [workspace?.blockers],
+  );
+
+  const followUpOnBlocker = async (blocker: VmAgentBlocker) => {
+    if (!agent?.threadId || busyBlockerId !== null) return;
+    setBusyBlockerId(blocker.blockerId);
+    setAttentionError(null);
+    try {
+      const draftKey = scopedThreadKey(environmentId, agent.threadId);
+      await openMobileWaitingOnYouFollowUp({
+        blockerTitle: blocker.title,
+        draftKey,
+        environmentId: String(environmentId),
+        threadId: String(agent.threadId),
+        transformDraftText: transformComposerDraftText,
+        requestFocus: requestComposerFocus,
+        navigate: (params) => navigation.navigate("Thread", params),
+      });
+    } catch (error) {
+      setAttentionError(error instanceof Error ? error.message : "The follow-up could not open.");
+    } finally {
+      setBusyBlockerId(null);
+    }
+  };
+
+  const settleBlocker = async (blocker: VmAgentBlocker, dismissed: boolean) => {
+    if (busyBlockerId !== null) return;
+    setBusyBlockerId(blocker.blockerId);
+    setAttentionError(null);
+    const outcome = await resolveBlocker({
+      environmentId,
+      input: {
+        vmAgentId,
+        blockerId: blocker.blockerId,
+        ...(dismissed ? { dismissed: true } : {}),
+      },
+    });
+    if (outcome._tag === "Failure") {
+      setAttentionError(
+        dismissed
+          ? "This request could not be dismissed."
+          : "This request could not be marked resolved.",
+      );
+    }
+    setBusyBlockerId(null);
+  };
 
   if (result._tag === "Failure") {
     return (
@@ -1119,33 +1085,138 @@ export function AgentRouteScreen({ route }: AgentRouteProps) {
         <View className="min-w-0 flex-row flex-wrap gap-2">
           <StatusChip value={`control: ${agent.controlMode}`} />
         </View>
-        <Pressable
-          accessibilityRole="button"
-          className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
-          disabled={agent.threadId === null}
-          onPress={() => {
+        <View className="min-w-0 flex-row flex-wrap gap-2">
+          <Pressable
+            accessibilityRole="button"
+            className="min-h-11 flex-1 items-center justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
+            disabled={agent.threadId === null}
+            onPress={() => {
+              if (!agent.threadId) return;
+              navigation.navigate("Thread", {
+                environmentId: String(environmentId),
+                threadId: String(agent.threadId),
+              });
+            }}
+          >
+            <Text className="font-t3-bold text-primary-foreground">Open chat</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            className="min-h-11 flex-1 items-center justify-center rounded-xl border border-border px-4 disabled:opacity-50"
+            disabled={agent.threadId === null}
+            onPress={() => {
+              if (!agent.threadId) return;
+              navigation.navigate("ThreadBrowser", {
+                environmentId: String(environmentId),
+                threadId: String(agent.threadId),
+              });
+            }}
+          >
+            <Text className="font-t3-bold text-foreground">Browser</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            className="min-h-11 flex-1 items-center justify-center rounded-xl border border-border px-4"
+            onPress={() =>
+              navigation.navigate("AgentRules", {
+                environmentId: String(environmentId),
+                agentId: String(vmAgentId),
+              })
+            }
+          >
+            <Text className="font-t3-bold text-foreground">Rules</Text>
+          </Pressable>
+        </View>
+      </View>
+      {openBlockers.length > 0 ? (
+        <View className="min-w-0 gap-3">
+          <View className="min-w-0 flex-row items-center gap-2 px-1">
+            <SymbolView name="hand.raised.fill" size={18} tintColor="#d97706" />
+            <Text className="text-base font-t3-bold text-foreground">Waiting on you</Text>
+          </View>
+          {openBlockers.map((blocker) => {
+            const isBusy = busyBlockerId === blocker.blockerId;
+            return (
+              <View
+                key={blocker.blockerId}
+                className="min-w-0 gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/8 p-4"
+              >
+                <View className="min-w-0 gap-1">
+                  <Text className="text-base font-t3-bold text-foreground">{blocker.title}</Text>
+                  <Text className="text-sm leading-5 text-foreground-muted">{blocker.detail}</Text>
+                </View>
+                <View className="min-w-0 flex-row flex-wrap gap-2">
+                  <Pressable
+                    accessibilityLabel={`Follow up on ${blocker.title}`}
+                    accessibilityRole="button"
+                    className="min-h-11 items-center justify-center rounded-xl bg-primary px-4 disabled:opacity-50"
+                    disabled={busyBlockerId !== null || agent.threadId === null}
+                    onPress={() => void followUpOnBlocker(blocker)}
+                  >
+                    <Text className="font-t3-bold text-primary-foreground">
+                      {isBusy ? "Opening…" : "Follow up"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel={`Mark ${blocker.title} resolved`}
+                    accessibilityRole="button"
+                    className="min-h-11 items-center justify-center rounded-xl border border-border bg-sheet px-4 disabled:opacity-50"
+                    disabled={busyBlockerId !== null}
+                    onPress={() => void settleBlocker(blocker, false)}
+                  >
+                    <Text className="font-t3-bold text-foreground">Mark resolved</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel={`Dismiss ${blocker.title}`}
+                    accessibilityRole="button"
+                    className="min-h-11 items-center justify-center px-2 disabled:opacity-50"
+                    disabled={busyBlockerId !== null}
+                    onPress={() => void settleBlocker(blocker, true)}
+                  >
+                    <Text className="font-t3-bold text-foreground-muted">Dismiss</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })}
+          {attentionError ? (
+            <Text className="px-1 text-sm text-red-600 dark:text-red-300">{attentionError}</Text>
+          ) : null}
+        </View>
+      ) : null}
+      <Pressable
+        accessibilityLabel="Show delegated activity"
+        accessibilityRole="button"
+        accessibilityState={{ expanded: activityOpen }}
+        className="min-h-14 min-w-0 flex-row items-center gap-3 rounded-2xl border border-border bg-sheet px-4 active:bg-subtle"
+        onPress={() => setActivityOpen((open) => !open)}
+      >
+        <SymbolView name="arrow.triangle.branch" size={20} tintColor="#737373" />
+        <View className="min-w-0 flex-1">
+          <Text className="font-t3-bold text-foreground">Delegated activity</Text>
+          <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+            Questions, results, and handoff history
+          </Text>
+        </View>
+        <SymbolView
+          name={activityOpen ? "chevron.up" : "chevron.down"}
+          size={16}
+          tintColor="#737373"
+        />
+      </Pressable>
+      {activityOpen ? (
+        <CollaborationSection
+          environmentId={environmentId}
+          agent={agent}
+          onOpenChat={() => {
             if (!agent.threadId) return;
             navigation.navigate("Thread", {
               environmentId: String(environmentId),
               threadId: String(agent.threadId),
             });
           }}
-        >
-          <Text className="font-t3-bold text-primary-foreground">Open agent chat</Text>
-        </Pressable>
-      </View>
-      <AgentInboxSection environmentId={environmentId} agent={agent} />
-      <CollaborationSection
-        environmentId={environmentId}
-        agent={agent}
-        onOpenChat={() => {
-          if (!agent.threadId) return;
-          navigation.navigate("Thread", {
-            environmentId: String(environmentId),
-            threadId: String(agent.threadId),
-          });
-        }}
-      />
+        />
+      ) : null}
     </ScrollView>
   );
 }

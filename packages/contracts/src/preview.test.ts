@@ -6,6 +6,7 @@ import {
   PreviewEvent,
   PreviewNavStatus,
   PreviewSessionSnapshot,
+  PreviewRemoteSnapshotResult,
   PreviewViewportSetting,
 } from "./preview.ts";
 import {
@@ -20,11 +21,13 @@ import {
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
+  PreviewAutomationUploadInput,
 } from "./previewAutomation.ts";
 import { WsPreviewCloseRpc } from "./rpc.ts";
 
 const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
 const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
+const decodeRemoteSnapshot = Schema.decodeUnknownSync(PreviewRemoteSnapshotResult);
 const decodeNavStatus = Schema.decodeUnknownSync(PreviewNavStatus);
 const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
@@ -37,6 +40,7 @@ const decodeResizeResult = Schema.decodeUnknownSync(PreviewAutomationResizeResul
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
+const decodeUploadInput = Schema.decodeUnknownSync(PreviewAutomationUploadInput);
 
 describe("preview close RPC compatibility", () => {
   it("proves a legacy Schema.Void client erases the authoritative result", () => {
@@ -230,6 +234,26 @@ describe("PreviewSessionSnapshot", () => {
   });
 });
 
+describe("PreviewRemoteSnapshotResult", () => {
+  it("accepts the bounded mobile frame without browser diagnostic payloads", () => {
+    const frame = decodeRemoteSnapshot({
+      tabId: "preview-thread-1",
+      url: "https://example.com/",
+      title: "Example",
+      loading: false,
+      capturedAt: "2026-08-26T00:00:00.000Z",
+      screenshot: {
+        mimeType: "image/jpeg",
+        data: "encoded-frame",
+        width: 1024,
+        height: 640,
+      },
+    });
+    expect(frame.screenshot.width).toBe(1024);
+    expect(frame).not.toHaveProperty("visibleText");
+  });
+});
+
 describe("PreviewViewportSetting", () => {
   it("decodes fill, freeform, and preset modes", () => {
     expect(decodeViewport({ _tag: "fill" })).toEqual({ _tag: "fill" });
@@ -304,7 +328,30 @@ describe("PreviewAutomationHost", () => {
       }).supportedOperations,
     ).toEqual(["status", "resize"]);
     expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("close");
+    expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("upload");
     expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("close");
+    expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("upload");
+  });
+});
+
+describe("PreviewAutomationUploadInput", () => {
+  it("accepts absolute local paths and an optional file-input locator", () => {
+    expect(
+      decodeUploadInput({
+        paths: ["/tmp/MedXRNativePrototype.apk"],
+        locator: "css=input[type=file]",
+      }),
+    ).toEqual({
+      paths: ["/tmp/MedXRNativePrototype.apk"],
+      locator: "css=input[type=file]",
+    });
+  });
+
+  it("rejects an empty file list or competing target modes", () => {
+    expect(() => decodeUploadInput({ paths: [] })).toThrow();
+    expect(() =>
+      decodeUploadInput({ paths: ["/tmp/file"], locator: "css=input", selector: "input" }),
+    ).toThrow();
   });
 });
 
@@ -354,6 +401,59 @@ describe("PreviewAutomationStatus", () => {
         viewport: { width: 412, height: 915 },
       }).viewport,
     ).toEqual({ width: 412, height: 915 });
+  });
+
+  it("accepts a typed human-verification handoff while remaining compatible with old hosts", () => {
+    const status = decodeAutomationStatus({
+      available: true,
+      visible: true,
+      tabId: "preview-t",
+      url: "https://suno.com/create",
+      title: "Verify you are human",
+      loading: false,
+      humanVerification: {
+        state: "human_verification_required",
+        kind: "bot-detection",
+        code: "600010",
+        detectedAt: "2026-08-26T12:00:00.000Z",
+        url: "https://suno.com/create",
+        retryCount: 0,
+        retryAvailable: false,
+        message: "Automation is paused for this tab.",
+        compatibilityCheckUrl: "https://debug.challenges.cloudflare.com/",
+        feedbackUrl:
+          "https://developers.cloudflare.com/turnstile/troubleshooting/feedback-reports/",
+        diagnostic: {
+          browserProduct: null,
+          browserVersion: null,
+          browserUserAgent: null,
+          embeddedBrowser: true,
+          headedBrowser: true,
+          automationAvailable: true,
+          cdpAttached: true,
+          viewportMode: null,
+          colorSchemeOverride: null,
+          userAgentOverride: null,
+          canvasOverride: null,
+          webglOverride: null,
+          extensionsEnabled: null,
+          proxyOrVpn: null,
+          cfMitigated: null,
+          responseStatusCode: null,
+          challengesCloudflareReachable: null,
+          rayId: null,
+          qrIdentifier: null,
+          systemClockIso: "2026-08-26T12:00:00.000Z",
+          systemClockCorrect: null,
+        },
+      },
+    });
+
+    expect(status.humanVerification).toMatchObject({
+      state: "human_verification_required",
+      kind: "bot-detection",
+      code: "600010",
+    });
   });
 });
 

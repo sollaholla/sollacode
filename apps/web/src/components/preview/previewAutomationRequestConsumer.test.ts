@@ -10,6 +10,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  PreviewAutomationHumanVerificationHostError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
@@ -319,6 +320,66 @@ describe("previewAutomationRequestConsumer", () => {
     ).toMatchObject({
       _tag: "PreviewAutomationTimeoutError",
       detail: { tabId: "tab-1", timeoutMs: 2_500 },
+    });
+  });
+
+  it("preserves a human-verification gate and its privacy-safe diagnostics", () => {
+    const verification = {
+      state: "human_verification_required" as const,
+      kind: "bot-detection" as const,
+      code: "600010",
+      detectedAt: "2026-08-26T12:00:00.000Z",
+      url: "https://suno.com/create",
+      retryCount: 0,
+      retryAvailable: false,
+      message: "Automation is paused for this tab.",
+      compatibilityCheckUrl: "https://debug.challenges.cloudflare.com/" as const,
+      feedbackUrl:
+        "https://developers.cloudflare.com/turnstile/troubleshooting/feedback-reports/" as const,
+      diagnostic: {
+        browserProduct: "Chrome",
+        browserVersion: "140.0.0.0",
+        browserUserAgent: "Mozilla/5.0 Chrome/140.0.0.0",
+        embeddedBrowser: true,
+        headedBrowser: true,
+        automationAvailable: true,
+        cdpAttached: true,
+        viewportMode: null,
+        colorSchemeOverride: null,
+        userAgentOverride: null,
+        canvasOverride: null,
+        webglOverride: null,
+        extensionsEnabled: null,
+        proxyOrVpn: null,
+        cfMitigated: null,
+        responseStatusCode: null,
+        challengesCloudflareReachable: null,
+        rayId: null,
+        qrIdentifier: null,
+        systemClockIso: "2026-08-26T12:00:00.000Z",
+        systemClockCorrect: null,
+      },
+    };
+    const error = new PreviewAutomationHumanVerificationHostError({
+      requestId: "request-challenge",
+      operation: "click",
+      environmentId,
+      threadId,
+      tabId,
+      verification,
+    });
+
+    expect(
+      serializePreviewAutomationError(error, {
+        requestId: "request-challenge",
+        operation: "click",
+        environmentId,
+        threadId,
+        tabId,
+      }),
+    ).toMatchObject({
+      _tag: "PreviewAutomationHumanVerificationRequiredError",
+      detail: { tabId: "tab-1", verification },
     });
   });
 

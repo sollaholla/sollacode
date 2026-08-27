@@ -1,4 +1,3 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentId,
   VmAgent,
@@ -10,17 +9,9 @@ import type {
   VmAgentDelegationSummary,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import {
-  ChevronLeftIcon,
-  PlusIcon,
-  RotateCwIcon,
-  SendIcon,
-  StopCircleIcon,
-  UsersIcon,
-} from "lucide-react";
+import { ChevronLeftIcon, RotateCwIcon, SendIcon, StopCircleIcon, UsersIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { useComposerDraftStore } from "~/composerDraftStore";
 import { cn } from "~/lib/utils";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -39,12 +30,6 @@ import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 
 import { BoundedCollaborationText } from "./BoundedCollaborationText";
-import {
-  CreateDelegationDialog,
-  EPHEMERAL_DELEGATION_TARGET,
-  type AgentCollaborationDraft,
-} from "./CreateDelegationDialog";
-
 const TERMINAL_DELEGATION_STATUSES = new Set<VmAgentDelegationStatus>([
   "completed",
   "failed",
@@ -241,7 +226,7 @@ export function emptyDelegationListCopy(hasMoreDelegations: boolean): {
       }
     : {
         title: "No handoffs yet",
-        detail: "Give a bounded task to a named agent or a one-off helper.",
+        detail: "Delegated work, questions, and results will appear here.",
       };
 }
 
@@ -252,7 +237,7 @@ const DelegationList = memo(function DelegationList(props: {
   readonly vmAgentId: string;
   readonly onSelect: (delegationId: string) => void;
   readonly onButtonRef: (delegationId: string, element: HTMLButtonElement | null) => void;
-  readonly onCreate: () => void;
+  readonly onOpenChat: () => void;
 }) {
   const emptyCopy = emptyDelegationListCopy(props.hasMoreDelegations);
   return (
@@ -311,8 +296,8 @@ const DelegationList = memo(function DelegationList(props: {
             <p className="text-sm font-medium">{emptyCopy.title}</p>
             <p className="mt-1 max-w-64 text-xs text-muted-foreground">{emptyCopy.detail}</p>
           </div>
-          <Button type="button" size="sm" variant="outline" onClick={props.onCreate}>
-            <PlusIcon /> New handoff
+          <Button type="button" size="sm" variant="outline" onClick={props.onOpenChat}>
+            Open chat
           </Button>
         </div>
       )}
@@ -323,11 +308,8 @@ const DelegationList = memo(function DelegationList(props: {
 export function AgentCollaborationPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly agent: VmAgent;
-  readonly draft: AgentCollaborationDraft;
-  readonly onDraftChange: (draft: AgentCollaborationDraft) => void;
   readonly onOpenChat: () => void;
 }) {
-  const [createOpen, setCreateOpen] = useState(false);
   const [selectedDelegationId, setSelectedDelegationId] = useState<string | null>(null);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [messageDrafts, setMessageDrafts] = useState<Readonly<Record<string, string>>>({});
@@ -346,7 +328,6 @@ export function AgentCollaborationPanel(props: {
   const detailBackButtonRef = useRef<HTMLButtonElement | null>(null);
   const delegationButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingResponsiveFocus = useRef<"detail" | "list" | null>(null);
-  const setComposerPrompt = useComposerDraftStore((state) => state.setPrompt);
   const collaborationAtom = useMemo(
     () => vmAgentEnvironment.collaboration({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
@@ -355,10 +336,6 @@ export function AgentCollaborationPanel(props: {
   const snapshot = collaborationQuery.data?.type === "snapshot" ? collaborationQuery.data : null;
   const delegations = useMemo(
     () => agentDelegationsFor(snapshot, props.agent.vmAgentId),
-    [props.agent.vmAgentId, snapshot],
-  );
-  const collaborators = useMemo(
-    () => (snapshot?.agents ?? []).filter((agent) => agent.vmAgentId !== props.agent.vmAgentId),
     [props.agent.vmAgentId, snapshot],
   );
   const selectedSummary =
@@ -403,8 +380,6 @@ export function AgentCollaborationPanel(props: {
   const currentMessageDraft = selectedDelegationKey
     ? (messageDrafts[selectedDelegationKey] ?? "")
     : "";
-  const openCreate = useCallback(() => setCreateOpen(true), []);
-
   const setDelegationButtonRef = useCallback(
     (delegationId: string, element: HTMLButtonElement | null) => {
       if (element === null) {
@@ -423,30 +398,6 @@ export function AgentCollaborationPanel(props: {
     setHistoryRequest(null);
     setError(null);
   }, []);
-
-  const draftDelegationRequest = () => {
-    if (!props.agent.threadId || !props.draft.task.trim()) return;
-    const selectedTarget =
-      props.draft.targetId === EPHEMERAL_DELEGATION_TARGET
-        ? null
-        : collaborators.find((agent) => agent.vmAgentId === props.draft.targetId);
-    if (
-      props.draft.targetId !== EPHEMERAL_DELEGATION_TARGET &&
-      (!selectedTarget || !selectedTarget.canReceiveDelegation)
-    ) {
-      return;
-    }
-    const threadRef = scopeThreadRef(props.environmentId, props.agent.threadId);
-    const existing = useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt.trim();
-    const target = selectedTarget
-      ? `to @${selectedTarget.handle}`
-      : "to a one-off ephemeral helper";
-    const request = `Delegate this task ${target} and collaborate until the work is complete:\n\n${props.draft.task.trim()}`;
-    setComposerPrompt(threadRef, existing ? `${existing}\n\n${request}` : request);
-    props.onDraftChange({ ...props.draft, task: "" });
-    setCreateOpen(false);
-    props.onOpenChat();
-  };
 
   const submitMessage = async () => {
     if (!selectedSummary || !currentMessageDraft.trim() || pendingOperation) return;
@@ -590,13 +541,19 @@ export function AgentCollaborationPanel(props: {
     <div className="@container/collaboration flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <header className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 sm:px-4">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold">Collaborate</h2>
+          <h2 className="text-base font-semibold">Activity</h2>
           <p className="hidden truncate text-xs text-muted-foreground sm:block">
-            Delegate bounded work and keep the conversation in one place.
+            Delegated work, questions, and results. Start new work in chat.
           </p>
         </div>
-        <Button type="button" size="sm" className="shrink-0" onClick={openCreate}>
-          <PlusIcon /> {props.draft.task.trim() ? "Continue draft" : "New handoff"}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="shrink-0"
+          onClick={props.onOpenChat}
+        >
+          Open chat
         </Button>
       </header>
 
@@ -630,7 +587,7 @@ export function AgentCollaborationPanel(props: {
               vmAgentId={props.agent.vmAgentId}
               onSelect={chooseDelegation}
               onButtonRef={setDelegationButtonRef}
-              onCreate={openCreate}
+              onOpenChat={props.onOpenChat}
             />
           )}
         </div>
@@ -908,17 +865,6 @@ export function AgentCollaborationPanel(props: {
           )}
         </section>
       </div>
-
-      <CreateDelegationDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        collaborators={collaborators}
-        draft={props.draft}
-        onDraftChange={props.onDraftChange}
-        onReview={draftDelegationRequest}
-        threadAvailable={props.agent.threadId !== null}
-        hasMoreCollaborators={snapshot?.hasMoreAgents === true}
-      />
 
       <AlertDialog
         open={cancelConfirmation !== null}

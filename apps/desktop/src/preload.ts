@@ -1,7 +1,9 @@
 import type {
   DesktopBridge,
+  DesktopPreviewHumanVerificationSignal,
   DesktopOrchestratorBubbleState,
   DesktopPreviewPointerEvent,
+  DesktopPreviewNewTabRequest,
   DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
 } from "@t3tools/contracts";
@@ -124,8 +126,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   revealFile: (path) => ipcRenderer.invoke(IpcChannels.REVEAL_FILE_CHANNEL, path),
   writeComposerClipboard: (input) =>
     ipcRenderer.invoke(IpcChannels.WRITE_COMPOSER_CLIPBOARD_CHANNEL, input),
-  setPushToTalkSystemAudioMuted: (muted) =>
-    ipcRenderer.invoke(IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL, muted),
+  setVoiceCaptureSystemAudioMuted: (input) =>
+    ipcRenderer.invoke(IpcChannels.SET_VOICE_CAPTURE_SYSTEM_AUDIO_MUTED_CHANNEL, input),
   transcribeVoice: (input) => ipcRenderer.invoke(IpcChannels.TRANSCRIBE_VOICE_CHANNEL, input),
   captureRemoteControlFrame: (input) =>
     ipcRenderer.invoke(IpcChannels.REMOTE_CONTROL_CAPTURE_FRAME_CHANNEL, input),
@@ -266,6 +268,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL, { tabId, input }),
       type: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, { tabId, input }),
+      upload: (tabId, input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_UPLOAD_CHANNEL, { tabId, input }),
       press: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, { tabId, input }),
       scroll: (tabId, input) =>
@@ -296,6 +300,41 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.on(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
       return () =>
         ipcRenderer.removeListener(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
+    },
+    onNewTabRequested: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, request: unknown) => {
+        if (typeof request !== "object" || request === null) return;
+        const sourceTabId = "sourceTabId" in request ? request.sourceTabId : undefined;
+        const url = "url" in request ? request.url : undefined;
+        if (typeof sourceTabId !== "string" || typeof url !== "string") return;
+        listener({ sourceTabId, url } satisfies DesktopPreviewNewTabRequest);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_NEW_TAB_REQUEST_CHANNEL, wrappedListener);
+      return () =>
+        ipcRenderer.removeListener(IpcChannels.PREVIEW_NEW_TAB_REQUEST_CHANNEL, wrappedListener);
+    },
+    onHumanVerificationSignal: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, signal: unknown) => {
+        if (typeof signal !== "object" || signal === null) return;
+        const record = signal as Record<string, unknown>;
+        if (
+          (record["kind"] !== "cf-mitigated-challenge" &&
+            record["kind"] !== "cloudflare-reachability") ||
+          typeof record["webContentsId"] !== "number" ||
+          !Number.isInteger(record["webContentsId"]) ||
+          typeof record["url"] !== "string" ||
+          typeof record["observedAt"] !== "string"
+        ) {
+          return;
+        }
+        listener(signal as DesktopPreviewHumanVerificationSignal);
+      };
+      ipcRenderer.on(IpcChannels.PREVIEW_HUMAN_VERIFICATION_SIGNAL_CHANNEL, wrappedListener);
+      return () =>
+        ipcRenderer.removeListener(
+          IpcChannels.PREVIEW_HUMAN_VERIFICATION_SIGNAL_CHANNEL,
+          wrappedListener,
+        );
     },
   },
   orchestratorBubble: {

@@ -213,7 +213,8 @@ it.effect("report_blocker records a standing request and echoes the blocker", ()
     );
     assert.strictEqual(harness.raised.length, 1);
     assert.strictEqual(result.blocker?.blockerId, "blocker-raised");
-    assert.include(result.status, "standing request");
+    assert.include(result.status, "standing alert");
+    assert.include(result.status, "do not call notify_user");
   }),
 );
 

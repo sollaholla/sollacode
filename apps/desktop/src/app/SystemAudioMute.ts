@@ -8,8 +8,11 @@ const MAX_RECORDING_MUTE_MS = 125_000;
 type RunAppleScript = (script: string) => string;
 
 export interface SystemAudioMuteController {
-  readonly setRecordingActive: (active: boolean) => boolean;
+  readonly setCaptureActive: (owner: VoiceCaptureAudioMuteOwner, active: boolean) => boolean;
+  readonly restoreAll: () => boolean;
 }
+
+export type VoiceCaptureAudioMuteOwner = "dictation" | "orchestrator";
 
 export function makeSystemAudioMuteController(input: {
   readonly platform: NodeJS.Platform;
@@ -35,8 +38,10 @@ export function makeSystemAudioMuteController(input: {
 
   let originalMuted: boolean | null = null;
   let cancelSafetyRestore: (() => void) | null = null;
+  const activeOwners = new Set<VoiceCaptureAudioMuteOwner>();
 
   const restore = (): boolean => {
+    activeOwners.clear();
     if (originalMuted === null) return platform === "darwin";
     const shouldRemainMuted = originalMuted;
     originalMuted = null;
@@ -53,9 +58,14 @@ export function makeSystemAudioMuteController(input: {
   };
 
   return {
-    setRecordingActive(active) {
+    setCaptureActive(owner, active) {
       if (platform !== "darwin") return false;
-      if (!active) return restore();
+      if (!active) {
+        activeOwners.delete(owner);
+        return activeOwners.size > 0 || restore();
+      }
+      if (activeOwners.has(owner)) return true;
+      activeOwners.add(owner);
       if (originalMuted !== null) return true;
 
       let wasMuted = false;
@@ -70,6 +80,7 @@ export function makeSystemAudioMuteController(input: {
         });
         return true;
       } catch {
+        activeOwners.delete(owner);
         if (!wasMuted) {
           try {
             runAppleScript("set volume output muted false");
@@ -81,16 +92,21 @@ export function makeSystemAudioMuteController(input: {
         return false;
       }
     },
+    restoreAll: restore,
   };
 }
 
 let systemAudioMuteController: SystemAudioMuteController | null = null;
 
 process.once("exit", () => {
-  systemAudioMuteController?.setRecordingActive(false);
+  systemAudioMuteController?.restoreAll();
 });
 
-export function setPushToTalkSystemAudioMuted(platform: NodeJS.Platform, muted: boolean): boolean {
+export function setVoiceCaptureSystemAudioMuted(
+  platform: NodeJS.Platform,
+  owner: VoiceCaptureAudioMuteOwner,
+  muted: boolean,
+): boolean {
   systemAudioMuteController ??= makeSystemAudioMuteController({ platform });
-  return systemAudioMuteController.setRecordingActive(muted);
+  return systemAudioMuteController.setCaptureActive(owner, muted);
 }

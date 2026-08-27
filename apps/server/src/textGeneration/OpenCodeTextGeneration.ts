@@ -24,6 +24,7 @@ import {
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildPlanRefreshPrompt,
+  buildVoiceTranscriptCorrectionPrompt,
   buildVmAgentTaskPrompt,
 } from "./TextGenerationPrompts.ts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -32,6 +33,7 @@ import {
   sanitizePrTitle,
   sanitizeThreadTitle,
   sanitizePlanRefreshSteps,
+  sanitizeCorrectedVoiceTranscript,
 } from "./TextGenerationUtils.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 
@@ -43,6 +45,7 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generateBranchName",
   "generateThreadTitle",
   "generatePlanRefresh",
+  "correctVoiceTranscript",
   "generateVmAgentTaskPrompt",
 ]);
 
@@ -260,6 +263,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateBranchName"
       | "generateThreadTitle"
       | "generatePlanRefresh"
+      | "correctVoiceTranscript"
       | "generateVmAgentTaskPrompt";
   }) =>
     sharedServerMutex.withPermit(
@@ -641,6 +645,21 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const correctVoiceTranscript: TextGeneration.TextGeneration["Service"]["correctVoiceTranscript"] =
+    Effect.fn("OpenCodeTextGeneration.correctVoiceTranscript")(function* (input) {
+      const { prompt, outputSchema } = buildVoiceTranscriptCorrectionPrompt(input);
+      const generated = yield* runOpenCodeJson({
+        operation: "correctVoiceTranscript",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson: outputSchema,
+        modelSelection: input.modelSelection,
+      });
+      return {
+        transcript: sanitizeCorrectedVoiceTranscript(generated.transcript, input.transcript),
+      };
+    });
+
   const generateVmAgentTaskPrompt: TextGeneration.TextGeneration["Service"]["generateVmAgentTaskPrompt"] =
     Effect.fn("OpenCodeTextGeneration.generateVmAgentTaskPrompt")(function* (input) {
       const { prompt, outputSchema } = buildVmAgentTaskPrompt(input);
@@ -658,6 +677,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    correctVoiceTranscript,
     generatePlanRefresh,
     generateVmAgentTaskPrompt,
   } satisfies TextGeneration.TextGeneration["Service"];

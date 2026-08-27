@@ -2,16 +2,28 @@
 
 Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation whose collaborative browser keeps its own persistent logins. They are separate from ordinary coding threads and from the orchestrator.
 
+Each newly created agent also receives its own durable working directory below the environment's
+agents folder. Its files and local instructions, including an agent-specific `AGENTS.md`, no longer
+land in the directory shared by every other agent. On upgrade, an existing agent is pointed at a
+deterministic dedicated directory and its shared-root `AGENTS.md` is copied only when the new
+directory has no rules file. Other ambiguous legacy files stay untouched at the old shared root.
+
 When an agent consults a project by opening a new thread, that thread is marked with an agent icon. Its browser keeps separate tabs but intentionally reuses the creating agent's cookies, storage, and HTTP cache so authenticated work can continue without another sign-in. A shared-browser indicator appears on both the thread and browser toolbar; ordinary user-created threads remain isolated.
 
 ## Workspace views
 
-Open an agent and use the tabs in its header:
+Opening an agent goes directly to its conversation. The header keeps only contextual controls:
 
-- **Chat** is the agent's single persistent conversation. A follow-up waits behind active work; it does not create a parallel session.
-- **Tasks** contains durable prompts. A task can be manual, run once at a specific time, or repeat at a minute interval. **Build with AI** turns a plain-language request into a title, self-contained prompt, schedule, completion criteria, and notification policy using the agent thread's selected provider and model.
-- **Artifact** is one structured surface owned by the agent. The initial Schedule artifact follows task and run state automatically. An agent can replace it with metrics, a checklist, a table, a timeline, or cards.
-- **Inbox** contains durable notifications from task runs and the agent. Its message list shows subjects and previews beside a Markdown-rendered reading pane. Opening a message marks it read; it can be marked unread again, archived when finished (with confirmation, singly via each row's checkmark or in bulk through multi-select), or restored to the inbox. Archived messages are deleted 48 hours after they were archived. With browser notification permission, new items also appear as desktop notifications while Solla Code is running.
+- **Chat** is the agent's single persistent conversation and primary workspace. A follow-up waits behind active work; it does not create a parallel session.
+- **Activity** is on demand under the agent tools menu. It contains bounded handoff history, questions, results, follow-ups, and cancellation controls. New delegation starts in Chat.
+- **Scheduled work** is on demand under agent tools. It contains durable prompts that run manually, once, or at a minute interval. **Build with AI** turns a plain-language request into a title, self-contained prompt, schedule, completion criteria, and notification policy using the configured **Utility AI model**. It does not silently fall back to Codex merely because the agent has a Codex-compatible workspace.
+- **Dashboard** appears only when the agent owns a meaningful structured view such as metrics, a checklist, a table, a timeline, or cards. The default schedule view is omitted because it duplicates Scheduled work.
+- Waiting-on-you requests and independent alerts share one compact stack at the live end of Chat. The newest card stays visible and hovering or focusing it reveals one more card, so attention never becomes a wall across the workspace. Waiting-on-you cards keep their Open, Follow up, resolve, and dismiss actions there. Follow up references that request in the composer for a correction without resolving it. Completions, failures, and direct informational messages raise an unread bell on the agent row; opening that agent scrolls the newest alert into view and marks it read only once its card is visible. There is no separate inbox to manage.
+- **Browser** is a contextual side-panel control. It appears when the agent has browser tabs, a remote window, or an open browser panel instead of occupying a permanent peer tab.
+
+On mobile, tapping an agent opens Chat directly. The trailing details control opens agent identity
+and an on-demand **Delegated activity** section, so collaboration history is not subscribed or
+rendered until it is requested.
 
 Tasks, notifications, and collaboration state are stored by the environment. Web, desktop, and
 mobile group agents by their connected host, so a phone connected over LAN, relay, or Tailscale can
@@ -22,6 +34,20 @@ switches to an agent with the same id on another host.
 
 An agent's browser sidebar always retains one tab. Closing the final page replaces it with a blank
 tab instead of showing the general surface picker, and that blank tab survives an app restart.
+Ordinary chats are not browser-only: closing their final browser tab returns to the complete surface
+picker for Browser, Terminal, Files, Diff, and Side Chat.
+
+Links that explicitly target a new browser tab open as a sibling Solla Code browser tab in the same
+thread. The original page stays in place, and the new tab is persisted and selected like one opened
+with the Browser `+` control. OAuth-style popup windows remain real child windows so sign-in flows
+can communicate with and return to their opener; popup permission is present when Electron creates
+the guest rather than being added after its first navigation.
+
+The desktop guest uses the native user agent produced by its bundled Electron and Chromium runtime,
+along with the real platform, languages, cookies, cache, and storage. Solla Code does not rewrite
+that value: even removing an embedded-app token changes the browser integrity signal and can break
+production verification. It does not invent a Chrome version, spoof a device fingerprint, hide
+automation from a site, or bypass CAPTCHA and anti-abuse decisions.
 
 Custom agents and their delegated workers use this built-in collaborative browser as their browser-
 control surface. Computer control, Chrome or browser-extension control, and standalone browser
@@ -29,6 +55,23 @@ automation are not fallbacks for a closed preview, a failed tool call, or a logi
 The agent keeps the relevant page open here and raises a blocker when the user must sign in or
 complete another human-only step. If the built-in preview is unavailable, it reports that limitation
 or raises a blocker instead of substituting a different browser-control surface.
+
+Cloudflare Turnstile, CAPTCHA, and comparable anti-bot pages are explicit human handoffs. When the
+preview detects a `300*` or `600*` challenge-family error, a visible Turnstile failure, or a
+Cloudflare-mitigated Challenge Page, it pauses agent interaction for that tab and keeps the same
+profile, cookies, page, and network path staged for the user. The user completes the page manually
+and chooses **Check again** before automation can resume. **Check again** performs a read-only page
+inspection; it does not refresh or retry the challenge. Solla Code does not spoof browser APIs,
+hide automation, rotate network identity, or automate production challenges. Because the preview is
+an embedded Chromium surface with automation attached, manual completion is best-effort; the card
+links to Cloudflare's official compatibility checker and feedback process. Remote clients can still
+view and manually control the staged tab, while detection and the automation gate are enforced by
+the desktop host that owns the browser process.
+
+Websites that need a local file use the built-in `preview_upload` action. The agent supplies a known
+absolute path and targets the page's file input; Solla Code validates the file and attaches it through
+the collaborative browser without opening the operating-system picker or taking over the desktop.
+The agent then submits the page and verifies the visible upload result in the same tab.
 
 The browser tools also make tab ownership explicit. Before opening another page on a domain that is
 already present, the agent receives the matching tab IDs and must either select one to reuse or
@@ -46,10 +89,10 @@ cast icon so the remote view is still obvious.
 
 ## Collaboration
 
-The **Collaborate** view is a bounded handoff workspace. Its list and conversation panes scroll
-independently, and narrow windows switch between them with a Back action, so a long request or
-result never stretches the surrounding app. **New handoff** opens a focused target picker; named
-agent availability and capabilities stay visible there without crowding the active conversation.
+The on-demand **Activity** view is a bounded handoff workspace. Its list and conversation panes
+scroll independently, and narrow windows switch between them with a Back action, so a long request
+or result never stretches the surrounding app. New handoffs are requested naturally in Chat rather
+than through a second composer.
 
 - A root agent can ask another named agent for help or create a short-lived ephemeral sub-agent.
 - Delegation is requested through the root chat, so normal tools and approval policy remain in
@@ -71,7 +114,7 @@ not inferred from a matching name or handle.
 A user-created task is approved immediately. A custom agent can use its `agent_workspace` tool to create or update tasks on the user's behalf:
 
 - One-off work can be activated by the agent.
-- Recurring work created or materially changed by the agent is always saved as a draft with **approval needed**. Select **Approve** in Tasks before it can run.
+- Recurring work created or materially changed by the agent is always saved as a draft with **approval needed**. Select **Approve** in Scheduled work before it can run.
 
 The server scheduler is independent of an open page. When work becomes due it:
 
@@ -84,16 +127,18 @@ Claims and run identifiers survive a server restart. A missed repeating interval
 
 ## Notifications
 
-Inbox preferences independently control completions, failures, and direct agent messages. Direct agent messages are limited to ten per hour. Task notification policy can be **always**, **failure**, or **never**.
+Agent policy independently controls completions, failures, and direct agent messages. Direct agent messages are limited to ten per hour. Task notification policy can be **always**, **failure**, or **never**.
 
-Browser/desktop notifications require permission from the operating system or browser. The Inbox remains the durable source of truth when permission is denied or no client is open.
+A **Waiting on you** request is already durable user attention, so it never also creates an inbox or desktop notification. Agent instructions reserve `notify_user` for independent informational updates that require no user action and explicitly forbid pairing it with `report_blocker`. Environments upgrading from an older build remove the obsolete `blocker:*` notification copies during migration.
 
-The Agents list shows a numbered notification bubble for each agent's unread, unarchived inbox items. A raised-hand icon means that agent has at least one unresolved **Waiting on you** request. A spinning dashed circle means the agent's chat is mid-turn right now. These indicators are scoped to their owning environment and update without downloading every agent's message body.
+Native desktop delivery is a separate, per-device opt-in under **Settings → Agents → Desktop agent alerts**. Enabling it is the only path that requests operating-system or browser permission. An unfocused agent can send a native alert only when both that setting and the host permission are already granted; denied, undecided, and unsupported clients make no delivery attempt. The durable in-chat alert remains available either way.
+
+The Agents list shows a numbered notification bubble for each agent's unread, unarchived alerts. A raised-hand icon means that agent has at least one unresolved **Waiting on you** request. A spinning dashed circle means the agent's chat is mid-turn right now. These indicators are scoped to their owning environment and update without downloading every agent's message body.
 
 ## Artifact safety
 
 Artifacts are declarative data, not agent-authored HTML or JavaScript. The UI only renders the supported schedule, metrics, checklist, table, timeline, and cards shapes. This keeps artifacts portable across local, remote, and tunnel connections without running arbitrary code.
 
-This custom-agent **Artifact** tab is not a [thread artifact](./thread-artifacts.md). A thread
+This custom-agent **Dashboard** is not a [thread artifact](./thread-artifacts.md). A thread
 artifact is a revisioned file bundle published by any chat and may contain an isolated web preview;
 the custom-agent artifact is one declarative workspace view owned by that named agent.

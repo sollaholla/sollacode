@@ -251,6 +251,13 @@ it has been uploaded and already turned into a user turn.
 The cure is to stop sending it: the microphone is closed for as long as the
 orchestrator is speaking, so its voice cannot reach the server at all.
 
+The inverse is protected too. While the orchestrator is actively listening to
+you, Solla Code temporarily mutes device playback so another tab or application
+cannot become part of your turn. Dictation and orchestrator listening hold
+independent mute leases, so overlapping capture cannot restore audio early; the
+last capture owner releases the original system state on stop, blur, teardown,
+or failure.
+
 **On a phone or tablet this is automatic.** The speaker is centimetres from the
 microphone there, so echo is the normal case rather than the exception, and
 leaving it to a setting meant the runaway conversation happened first and the

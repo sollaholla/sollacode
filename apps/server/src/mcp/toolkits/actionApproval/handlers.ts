@@ -64,16 +64,12 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
     turnId: thread.value.session?.activeTurnId ?? thread.value.latestTurn?.turnId ?? null,
   });
   switch (outcome.status) {
-    case "approved":
-      return { status: "approved" as const, approvalMode: "user" as const };
-    case "changes_requested":
+    case "pending":
       return {
-        status: "changes_requested" as const,
+        status: "pending" as const,
         approvalMode: "user" as const,
-        feedback: outcome.feedback,
+        requestId: outcome.requestId,
       };
-    case "cancelled":
-      return { status: "cancelled" as const, approvalMode: "none" as const };
     case "unsupported":
       return { status: "approval_unavailable" as const, approvalMode: "none" as const };
   }

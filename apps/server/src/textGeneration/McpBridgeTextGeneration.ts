@@ -11,6 +11,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPlanRefreshPrompt,
+  buildVoiceTranscriptCorrectionPrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
   buildVmAgentTaskPrompt,
@@ -18,6 +19,7 @@ import {
 import {
   sanitizeCommitSubject,
   sanitizePlanRefreshSteps,
+  sanitizeCorrectedVoiceTranscript,
   sanitizePrTitle,
   sanitizeThreadTitle,
 } from "./TextGenerationUtils.ts";
@@ -28,6 +30,7 @@ type Operation =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generatePlanRefresh"
+  | "correctVoiceTranscript"
   | "generateVmAgentTaskPrompt";
 
 function errorDetail(cause: unknown): string {
@@ -205,6 +208,21 @@ export function makeMcpBridgeTextGeneration(
           modelSelection: input.modelSelection,
         });
         return { steps: sanitizePlanRefreshSteps(generated.steps) };
+      },
+    ),
+    correctVoiceTranscript: Effect.fn("McpBridgeTextGeneration.correctVoiceTranscript")(
+      function* (input) {
+        const { prompt, outputSchema } = buildVoiceTranscriptCorrectionPrompt(input);
+        const generated = yield* runJson({
+          operation: "correctVoiceTranscript",
+          cwd: input.cwd,
+          prompt,
+          outputSchema,
+          modelSelection: input.modelSelection,
+        });
+        return {
+          transcript: sanitizeCorrectedVoiceTranscript(generated.transcript, input.transcript),
+        };
       },
     ),
     generateVmAgentTaskPrompt: Effect.fn("McpBridgeTextGeneration.generateVmAgentTaskPrompt")(

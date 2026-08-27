@@ -156,6 +156,10 @@ export interface VmAgentWorkspaceStoreShape {
     vmAgentId: VmAgentId,
     taskId: VmAgentTaskId,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+  /** Delete completed workspace tasks older than the cutoff and return affected agents. */
+  readonly purgeCompletedTasks: (input: {
+    readonly cutoff: IsoDateTime;
+  }) => Effect.Effect<ReadonlyArray<VmAgentId>, ProjectionRepositoryError>;
   readonly runTaskNow: (input: {
     readonly vmAgentId: VmAgentId;
     readonly taskId: VmAgentTaskId;
@@ -187,12 +191,6 @@ export interface VmAgentWorkspaceStoreShape {
   readonly markNotificationRead: (input: {
     readonly vmAgentId: VmAgentId;
     readonly notificationId: VmAgentNotificationId;
-    readonly readAt: IsoDateTime;
-  }) => Effect.Effect<void, ProjectionRepositoryError>;
-  /** Mark every notification sharing one dedupe key as read. */
-  readonly markNotificationsReadByDedupeKey: (input: {
-    readonly vmAgentId: VmAgentId;
-    readonly dedupeKey: string;
     readonly readAt: IsoDateTime;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly updateNotification: (input: {

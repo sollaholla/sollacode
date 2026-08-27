@@ -96,12 +96,19 @@ function injectInitializeInstructions(value: unknown, instructions: string): boo
   return true;
 }
 
-function withMcpInitializeInstructions(
+function removeInvalidStructuredContent(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.result)) return false;
+  const result = value.result;
+  if (!("structuredContent" in result) || isRecord(result.structuredContent)) return false;
+  delete result.structuredContent;
+  return true;
+}
+
+function normalizeMcpJsonResponse(
   response: HttpServerResponse.HttpServerResponse,
   invocation: McpInvocationContext.McpInvocationScope | undefined,
 ): HttpServerResponse.HttpServerResponse {
   if (
-    invocation === undefined ||
     response.status !== 200 ||
     response.body._tag !== "Uint8Array" ||
     !response.body.contentType.includes("json") ||
@@ -112,14 +119,21 @@ function withMcpInitializeInstructions(
 
   try {
     const payload = JSON.parse(new TextDecoder().decode(response.body.body)) as unknown;
-    const instructions = mcpServerInstructionsForScope(invocation);
+    const instructions =
+      invocation === undefined ? undefined : mcpServerInstructionsForScope(invocation);
     let changed = false;
     if (Array.isArray(payload)) {
       for (const entry of payload) {
-        changed = injectInitializeInstructions(entry, instructions) || changed;
+        if (instructions !== undefined) {
+          changed = injectInitializeInstructions(entry, instructions) || changed;
+        }
+        changed = removeInvalidStructuredContent(entry) || changed;
       }
     } else {
-      changed = injectInitializeInstructions(payload, instructions);
+      if (instructions !== undefined) {
+        changed = injectInitializeInstructions(payload, instructions);
+      }
+      changed = removeInvalidStructuredContent(payload) || changed;
     }
     return changed
       ? HttpServerResponse.setBody(
@@ -136,7 +150,7 @@ export const normalizeMcpHttpResponse = (
   response: HttpServerResponse.HttpServerResponse,
   invocation?: McpInvocationContext.McpInvocationScope,
 ): HttpServerResponse.HttpServerResponse => {
-  const normalized = withMcpInitializeInstructions(response, invocation);
+  const normalized = normalizeMcpJsonResponse(response, invocation);
   const bodyIsEmpty =
     normalized.body._tag === "Empty" ||
     (normalized.body._tag === "Uint8Array" && normalized.body.contentLength === 0) ||
@@ -249,7 +263,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
             onSuccess: ({ encodedResult }) => {
               const snapshot = encodedResult as {
                 readonly screenshot: {
-                  readonly mimeType: "image/png";
+                  readonly mimeType: "image/jpeg";
                   readonly data: string;
                   readonly width: number;
                   readonly height: number;

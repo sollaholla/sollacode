@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   type PreviewAutomationHost,
+  PreviewHumanVerification,
   PreviewAutomationOperation,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
@@ -113,6 +114,26 @@ export class PreviewAutomationRecordingNotActiveError extends Schema.TaggedError
   }
 }
 
+export class PreviewAutomationHumanVerificationHostError extends Schema.TaggedErrorClass<PreviewAutomationHumanVerificationHostError>()(
+  "PreviewAutomationHumanVerificationHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: PreviewTabId,
+    verification: PreviewHumanVerification,
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationHumanVerificationRequiredError" as const;
+  }
+
+  override get message(): string {
+    return `Human verification is required in preview tab ${this.tabId}. Automation is paused; keep this tab staged for the user and do not retry the challenge.`;
+  }
+}
+
 export class PreviewAutomationTargetNotEditableHostError extends Schema.TaggedErrorClass<PreviewAutomationTargetNotEditableHostError>()(
   "PreviewAutomationTargetNotEditableHostError",
   {
@@ -211,6 +232,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationViewportTimeoutError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
+  PreviewAutomationHumanVerificationHostError,
   PreviewAutomationTargetNotEditableHostError,
   PreviewAutomationOperationError,
 ]);

@@ -41,6 +41,11 @@ import {
   useThreadOutboxShellStatuses,
 } from "./use-thread-outbox";
 import { useRemoteConnectionStatus } from "./use-remote-environment-registry";
+import { setPendingConnectionError } from "./use-remote-environment-registry";
+import {
+  clearQueuedTurnPromotionRequest,
+  queuedTurnPromotionRequestsAtom,
+} from "./thread-queued-turn-promotion";
 
 export const dispatchingQueuedMessageIdAtom = Atom.make<MessageId | null>(null).pipe(
   Atom.keepAlive,
@@ -83,6 +88,9 @@ function settingsCommandId(message: QueuedThreadMessage, setting: string): Comma
 
 export function useThreadOutboxDrain(): void {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const promoteQueuedTurns = useAtomCommand(threadEnvironment.promoteQueuedTurns, {
+    reportFailure: false,
+  });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -93,6 +101,7 @@ export function useThreadOutboxDrain(): void {
     reportFailure: false,
   });
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
+  const queuedTurnPromotionRequests = useAtomValue(queuedTurnPromotionRequestsAtom);
   const editingQueuedMessageIds = useAtomValue(editingQueuedMessageIdsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const shellStatuses = useThreadOutboxShellStatuses();
@@ -103,6 +112,7 @@ export function useThreadOutboxDrain(): void {
   const retryAttemptRef = useRef(new Map<MessageId, number>());
   const retryNotBeforeRef = useRef(new Map<MessageId, number>());
   const retryTimersRef = useRef(new Map<MessageId, ReturnType<typeof setTimeout>>());
+  const promotingThreadKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     ensureThreadOutboxLoaded();
@@ -402,5 +412,44 @@ export function useThreadOutboxDrain(): void {
     sendQueuedMessage,
     shellStatuses,
     threads,
+  ]);
+
+  useEffect(() => {
+    if (dispatchingQueuedMessageId !== null || promotingThreadKeyRef.current !== null) return;
+
+    for (const [threadKey, request] of Object.entries(queuedTurnPromotionRequests)) {
+      if ((queuedMessagesByThreadKey[threadKey] ?? []).length > 0) continue;
+      const environment = connectedEnvironments.find(
+        (candidate) => candidate.environmentId === request.environmentId,
+      );
+      if (environment?.connectionState !== "connected") continue;
+
+      promotingThreadKeyRef.current = threadKey;
+      void promoteQueuedTurns({
+        environmentId: request.environmentId,
+        input: { threadId: request.threadId },
+      })
+        .then((result) => {
+          if (AsyncResult.isFailure(result)) {
+            const error = Cause.squash(result.cause);
+            setPendingConnectionError(
+              error instanceof Error
+                ? error.message
+                : "Queued messages could not be sent immediately.",
+            );
+          }
+        })
+        .finally(() => {
+          promotingThreadKeyRef.current = null;
+          clearQueuedTurnPromotionRequest(request);
+        });
+      return;
+    }
+  }, [
+    connectedEnvironments,
+    dispatchingQueuedMessageId,
+    promoteQueuedTurns,
+    queuedMessagesByThreadKey,
+    queuedTurnPromotionRequests,
   ]);
 }

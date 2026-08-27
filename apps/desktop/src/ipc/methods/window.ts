@@ -21,7 +21,7 @@ import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
-import { setPushToTalkSystemAudioMuted as setSystemAudioMutedForPushToTalk } from "../../app/SystemAudioMute.ts";
+import { setVoiceCaptureSystemAudioMuted as setSystemAudioMutedForVoiceCapture } from "../../app/SystemAudioMute.ts";
 import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
@@ -336,13 +336,16 @@ export const writeComposerClipboard = DesktopIpc.makeIpcMethod({
   }),
 });
 
-export const setPushToTalkSystemAudioMuted = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.SET_PUSH_TO_TALK_SYSTEM_AUDIO_MUTED_CHANNEL,
-  payload: Schema.Boolean,
+export const setVoiceCaptureSystemAudioMuted = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SET_VOICE_CAPTURE_SYSTEM_AUDIO_MUTED_CHANNEL,
+  payload: Schema.Struct({
+    owner: Schema.Literals(["dictation", "orchestrator"]),
+    muted: Schema.Boolean,
+  }),
   result: Schema.Boolean,
-  handler: Effect.fn("desktop.ipc.window.setPushToTalkSystemAudioMuted")(function* (muted) {
+  handler: Effect.fn("desktop.ipc.window.setVoiceCaptureSystemAudioMuted")(function* (input) {
     const platform = yield* HostProcessPlatform;
-    return setSystemAudioMutedForPushToTalk(platform, muted);
+    return setSystemAudioMutedForVoiceCapture(platform, input.owner, input.muted);
   }),
 });
 

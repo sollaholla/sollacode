@@ -56,6 +56,35 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
+it("removes non-object structured tool output from MCP responses", () => {
+  for (const structuredContent of [null, ["invalid"], "invalid"] as const) {
+    const response = McpHttpServer.normalizeMcpHttpResponse(
+      HttpServerResponse.jsonUnsafe({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "completed" }], structuredContent },
+      }),
+    );
+    expect(response.body._tag).toBe("Uint8Array");
+    if (response.body._tag !== "Uint8Array") continue;
+    const payload = JSON.parse(new TextDecoder().decode(response.body.body));
+    expect(payload.result.structuredContent).toBeUndefined();
+    expect(payload.result.content).toEqual([{ type: "text", text: "completed" }]);
+  }
+
+  const valid = McpHttpServer.normalizeMcpHttpResponse(
+    HttpServerResponse.jsonUnsafe({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [], structuredContent: { ok: true } },
+    }),
+  );
+  expect(valid.body._tag).toBe("Uint8Array");
+  if (valid.body._tag !== "Uint8Array") return;
+  const payload = JSON.parse(new TextDecoder().decode(valid.body.body));
+  expect(payload.result.structuredContent).toEqual({ ok: true });
+});
+
 it("adds scope-aware host instructions only to MCP initialize responses", () => {
   const initialize = HttpServerResponse.jsonUnsafe({
     jsonrpc: "2.0",
@@ -226,7 +255,7 @@ it.effect("registers annotated tools and preserves authenticated request context
                   networkEntries: [],
                   actionTimeline: [],
                   screenshot: {
-                    mimeType: "image/png",
+                    mimeType: "image/jpeg",
                     data: Buffer.from("png").toString("base64"),
                     width: 10,
                     height: 5,
@@ -294,7 +323,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(snapshot.structuredContent).toMatchObject({
-        screenshot: { mimeType: "image/png", width: 10, height: 5 },
+        screenshot: { mimeType: "image/jpeg", width: 10, height: 5 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
         alternateTabId,
@@ -307,8 +336,8 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(press.isError).toBe(false);
-      expect(press.structuredContent).toBeNull();
-      expect(press.content).toEqual([{ type: "text", text: "null" }]);
+      expect(press.structuredContent).toEqual({});
+      expect(press.content).toEqual([{ type: "text", text: "{}" }]);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

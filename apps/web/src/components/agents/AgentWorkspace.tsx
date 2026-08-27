@@ -2,46 +2,49 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type VmAgent, VmAgentId } from "@t3tools/contracts";
 import {
-  BellIcon,
+  ChevronLeftIcon,
+  EllipsisIcon,
   GitForkIcon,
   GlobeIcon,
   LayoutDashboardIcon,
   ListTodoIcon,
-  MessageSquareIcon,
+  ScrollTextIcon,
 } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { useThreadPreviewState } from "../../previewStateStore";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { cn } from "../../lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
-import {
-  EMPTY_AGENT_COLLABORATION_DRAFT,
-  type AgentCollaborationDraft,
-} from "./CreateDelegationDialog";
-import { agentCollaborationDraftKey } from "./agentCollaborationDraft";
-import {
-  AgentArtifactPanel,
-  AgentBlockerBanner,
-  AgentNotificationsPanel,
-  AgentTasksPanel,
-  useAgentSystemNotifications,
-} from "./AgentWorkspacePanels";
+import { AgentRulesPanel } from "./AgentRulesPanel";
+import { AgentAttentionStack } from "./AgentAttentionStack";
+import { resolveInlineAgentAttention, resolveInlineAgentNotification } from "./agentNotifications";
+import { hasAgentDashboard } from "./agentWorkspaceNavigation";
+import { AgentArtifactPanel, AgentTasksPanel } from "./AgentWorkspacePanels";
 
-type AgentWorkspaceView = "chat" | "collaborate" | "tasks" | "artifact" | "notifications";
+export type AgentWorkspaceView = "chat" | "activity" | "tasks" | "dashboard" | "rules";
+
+const VIEW_LABELS: Record<AgentWorkspaceView, string> = {
+  chat: "Chat",
+  activity: "Activity",
+  tasks: "Scheduled work",
+  dashboard: "Dashboard",
+  rules: "Rules",
+};
 
 /**
  * The full surface for one agent: its single-thread chat (the real {@link
  * ChatView} — model picker, effort, usage, everything). The agent's browser is
- * the chat's collaborative preview panel, so the chat IS the workspace; the
- * other views (tasks, artifact, inbox) sit behind the header switch.
+ * the chat's collaborative preview panel, so the chat IS the workspace;
+ * contextual history and settings stay behind one compact tools menu.
  */
 export function AgentWorkspace(props: {
   readonly agentId: string;
@@ -61,9 +64,6 @@ function AgentWorkspaceResolved(props: {
 }) {
   const { environmentId } = props;
   const [view, setView] = useState<AgentWorkspaceView>("chat");
-  const [collaborationDrafts, setCollaborationDrafts] = useState<
-    Readonly<Record<string, AgentCollaborationDraft>>
-  >({});
 
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId, input: {} }),
@@ -86,20 +86,47 @@ function AgentWorkspaceResolved(props: {
   const workspaceResult = useAtomValue(workspaceAtom);
   const workspaceItem = Option.getOrNull(AsyncResult.value(workspaceResult));
   const workspace = workspaceItem?.type === "snapshot" ? workspaceItem : null;
-  const unreadCount =
-    workspace?.notifications.filter(
-      (notification) => notification.readAt === null && notification.archivedAt === null,
-    ).length ?? 0;
-  useAgentSystemNotifications(agent, workspace);
+  const agentKey = `${environmentId}:${props.agentId}`;
+  const [revealedNotification, setRevealedNotification] = useState<{
+    readonly agentKey: string;
+    readonly notificationId: string | null;
+  }>({ agentKey, notificationId: null });
+  useEffect(() => {
+    if (view !== "chat" || workspace === null) return;
+    setRevealedNotification((current) => {
+      const currentId = current.agentKey === agentKey ? current.notificationId : null;
+      const next = resolveInlineAgentNotification(workspace.notifications, currentId);
+      const nextId = next?.notificationId ?? null;
+      if (current.agentKey === agentKey && current.notificationId === nextId) return current;
+      return { agentKey, notificationId: nextId };
+    });
+  }, [agentKey, view, workspace]);
+  const inlineNotification =
+    revealedNotification.agentKey === agentKey
+      ? (workspace?.notifications.find(
+          (notification) => notification.notificationId === revealedNotification.notificationId,
+        ) ?? null)
+      : null;
+  const inlineAttention = useMemo(
+    () => resolveInlineAgentAttention(workspace?.blockers ?? [], inlineNotification),
+    [inlineNotification, workspace?.blockers],
+  );
   // The agent's browser is the chat's right panel. Track whether it is open so
   // the header's Browser button reads as a toggle.
   const agentThreadId = agent?.threadId ?? null;
+  const agentThreadRef = useMemo(
+    () => (agentThreadId ? { environmentId, threadId: agentThreadId } : null),
+    [agentThreadId, environmentId],
+  );
+  const previewState = useThreadPreviewState(agentThreadRef);
   const browserPanelOpen = useRightPanelStore((state) =>
     agentThreadId
       ? (state.byThreadKey[scopedThreadKey({ environmentId, threadId: agentThreadId })]?.isOpen ??
         false)
       : false,
   );
+  const browserAvailable = browserPanelOpen || Object.keys(previewState.sessions).length > 0;
+  const dashboardAvailable = hasAgentDashboard(workspace);
   const toggleBrowserPanel = () => {
     if (!agentThreadId) return;
     const threadRef = { environmentId, threadId: agentThreadId };
@@ -130,10 +157,6 @@ function AgentWorkspaceResolved(props: {
     return <CenteredNote text="This agent no longer exists." />;
   }
 
-  const collaborationDraftStorageKey = agentCollaborationDraftKey(environmentId, agent.vmAgentId);
-  const collaborationDraft =
-    collaborationDrafts[collaborationDraftStorageKey] ?? EMPTY_AGENT_COLLABORATION_DRAFT;
-
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
       {/* Same inset every other top-level header carries: with the sidebar
@@ -150,86 +173,125 @@ function AgentWorkspaceResolved(props: {
           "pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
-        <div className="min-w-0 md:flex-1">
-          <h1 className="truncate text-sm font-semibold">{agent.name}</h1>
-          <p className="truncate text-xs text-muted-foreground">{agent.purpose}</p>
+        <div className="flex min-w-0 items-center gap-2 md:flex-1">
+          {view !== "chat" ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="shrink-0"
+              aria-label="Back to agent chat"
+              title="Back to chat"
+              onClick={() => setView("chat")}
+            >
+              <ChevronLeftIcon />
+            </Button>
+          ) : null}
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold">{agent.name}</h1>
+            <p className="truncate text-xs text-muted-foreground">
+              {view === "chat" ? agent.purpose : VIEW_LABELS[view]}
+            </p>
+          </div>
         </div>
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1 md:shrink-0 md:flex-nowrap">
-          <ViewButton
-            active={view === "chat"}
-            label="Chat"
-            icon={<MessageSquareIcon className="size-3.5" />}
-            onClick={() => setView("chat")}
-          />
-          <ViewButton
-            active={view === "collaborate"}
-            label="Collaborate"
-            icon={<GitForkIcon className="size-3.5" />}
-            onClick={() => setView("collaborate")}
-          />
-          <ViewButton
-            active={view === "tasks"}
-            label="Tasks"
-            icon={<ListTodoIcon className="size-3.5" />}
-            onClick={() => setView("tasks")}
-          />
-          <ViewButton
-            active={view === "artifact"}
-            label="Artifact"
-            icon={<LayoutDashboardIcon className="size-3.5" />}
-            onClick={() => setView("artifact")}
-          />
-          <ViewButton
-            active={view === "notifications"}
-            label="Inbox"
-            icon={<BellIcon className="size-3.5" />}
-            onClick={() => setView("notifications")}
-            badge={unreadCount}
-          />
-          <span className="mx-1 h-5 w-px shrink-0 bg-border" />
-          <ViewButton
-            active={view === "chat" && browserPanelOpen}
-            label="Browser"
-            icon={<GlobeIcon className="size-3.5" />}
-            onClick={toggleBrowserPanel}
-          />
+        <div className="flex min-w-0 items-center justify-end gap-1 md:shrink-0">
+          {browserAvailable ? (
+            <Button
+              type="button"
+              size="xs"
+              variant={view === "chat" && browserPanelOpen ? "secondary" : "outline"}
+              aria-label="Browser"
+              aria-pressed={view === "chat" && browserPanelOpen}
+              title="Browser"
+              onClick={toggleBrowserPanel}
+            >
+              <GlobeIcon className="size-3.5" />
+              <span className="hidden @3xl/header-actions:inline">Browser</span>
+            </Button>
+          ) : null}
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Agent tools"
+                  title="Agent tools"
+                />
+              }
+            >
+              <EllipsisIcon />
+            </MenuTrigger>
+            <MenuPopup align="end" className="w-52">
+              <MenuItem
+                className={view === "activity" ? "bg-foreground/[0.08]" : undefined}
+                onClick={() => setView("activity")}
+              >
+                <GitForkIcon /> Activity
+              </MenuItem>
+              <MenuItem
+                className={view === "tasks" ? "bg-foreground/[0.08]" : undefined}
+                onClick={() => setView("tasks")}
+              >
+                <ListTodoIcon /> Scheduled work
+              </MenuItem>
+              <MenuItem
+                className={view === "rules" ? "bg-foreground/[0.08]" : undefined}
+                onClick={() => setView("rules")}
+              >
+                <ScrollTextIcon /> Rules
+              </MenuItem>
+              {dashboardAvailable ? (
+                <MenuItem
+                  className={view === "dashboard" ? "bg-foreground/[0.08]" : undefined}
+                  onClick={() => setView("dashboard")}
+                >
+                  <LayoutDashboardIcon /> Dashboard
+                </MenuItem>
+              ) : null}
+            </MenuPopup>
+          </Menu>
         </div>
       </header>
 
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {agent.threadId ? (
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-            <AgentBlockerBanner
-              environmentId={environmentId}
-              workspace={workspace}
-              threadRef={{ environmentId, threadId: agent.threadId }}
-              onRevealChat={() => setView("chat")}
-            />
             {view === "chat" ? (
-              <AgentChatSurface environmentId={environmentId} threadId={agent.threadId} />
-            ) : view === "collaborate" ? (
+              <AgentChatSurface
+                environmentId={environmentId}
+                threadId={agent.threadId}
+                inlineNotice={
+                  inlineAttention.items.length === 0
+                    ? null
+                    : {
+                        id: inlineAttention.items
+                          .map((item) => `${item.id}:${item.occurredAt}`)
+                          .join("|"),
+                        content: (
+                          <AgentAttentionStack
+                            environmentId={environmentId}
+                            attention={inlineAttention}
+                            threadRef={{ environmentId, threadId: agent.threadId }}
+                            onRevealChat={() => setView("chat")}
+                          />
+                        ),
+                      }
+                }
+              />
+            ) : view === "activity" ? (
               <AgentCollaborationPanel
                 environmentId={environmentId}
                 agent={agent}
-                draft={collaborationDraft}
-                onDraftChange={(draft) =>
-                  setCollaborationDrafts((current) => ({
-                    ...current,
-                    [collaborationDraftStorageKey]: draft,
-                  }))
-                }
                 onOpenChat={() => setView("chat")}
               />
             ) : view === "tasks" ? (
               <AgentTasksPanel environmentId={environmentId} agent={agent} workspace={workspace} />
-            ) : view === "artifact" ? (
-              <AgentArtifactPanel workspace={workspace} />
+            ) : view === "rules" ? (
+              <AgentRulesPanel environmentId={environmentId} agent={agent} />
             ) : (
-              <AgentNotificationsPanel
-                environmentId={environmentId}
-                agent={agent}
-                workspace={workspace}
-              />
+              <AgentArtifactPanel workspace={workspace} />
             )}
           </div>
         ) : (
@@ -239,38 +301,6 @@ function AgentWorkspaceResolved(props: {
         )}
       </div>
     </div>
-  );
-}
-
-/**
- * Header action in the app's established workspace-header style: an outline
- * pill whose label collapses to icon-only when the header container is thin
- * (the same `@container/header-actions` pattern the chat header's Actions /
- * Remote control buttons use).
- */
-function ViewButton(props: {
-  readonly active: boolean;
-  readonly label: string;
-  readonly icon: ReactNode;
-  readonly onClick: () => void;
-  readonly badge?: number;
-}) {
-  return (
-    <Button
-      type="button"
-      size="xs"
-      variant={props.active ? "secondary" : "outline"}
-      aria-label={props.label}
-      aria-pressed={props.active}
-      title={props.label}
-      onClick={props.onClick}
-    >
-      {props.icon}
-      <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-        {props.label}
-      </span>
-      {props.badge ? <Badge size="sm">{props.badge}</Badge> : null}
-    </Button>
   );
 }
 

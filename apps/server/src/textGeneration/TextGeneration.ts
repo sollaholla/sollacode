@@ -82,6 +82,17 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export interface VoiceTranscriptCorrectionGenerationInput {
+  cwd: string;
+  transcript: string;
+  conversationContext: string;
+  modelSelection: ModelSelection;
+}
+
+export interface VoiceTranscriptCorrectionGenerationResult {
+  transcript: string;
+}
+
 export type PlanRefreshStepStatus = "pending" | "inProgress" | "completed";
 
 export interface PlanRefreshStep {
@@ -121,6 +132,9 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  correctVoiceTranscript(
+    input: VoiceTranscriptCorrectionGenerationInput,
+  ): Promise<VoiceTranscriptCorrectionGenerationResult>;
   generatePlanRefresh(input: PlanRefreshGenerationInput): Promise<PlanRefreshGenerationResult>;
   generateVmAgentTaskPrompt(
     input: VmAgentTaskPromptGenerationInput,
@@ -161,6 +175,11 @@ export class TextGeneration extends Context.Service<
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
 
+    /** Correct likely speech-recognition errors without changing the user's intent. */
+    readonly correctVoiceTranscript: (
+      input: VoiceTranscriptCorrectionGenerationInput,
+    ) => Effect.Effect<VoiceTranscriptCorrectionGenerationResult, TextGenerationError>;
+
     /**
      * Re-derive the plan's task list from the conversation so far.
      */
@@ -183,6 +202,7 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
+  | "correctVoiceTranscript"
   | "generatePlanRefresh"
   | "generateVmAgentTaskPrompt";
 
@@ -230,6 +250,10 @@ export const makeTextGenerationFromRegistry = (
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+      ),
+    correctVoiceTranscript: (input) =>
+      resolveInstance(registry, "correctVoiceTranscript", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.correctVoiceTranscript(input)),
       ),
     generatePlanRefresh: (input) =>
       resolveInstance(registry, "generatePlanRefresh", input.modelSelection.instanceId).pipe(

@@ -9,6 +9,8 @@
 import type {
   ProviderInstanceId,
   ProviderDriverKind,
+  ProviderUsageResetError,
+  ProviderUsageResetOutcome,
   ServerProvider,
   ServerProviderUpdateState,
 } from "@t3tools/contracts";
@@ -48,6 +50,12 @@ export interface ProviderRegistryShape {
   readonly refreshInstance: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+  readonly consumeUsageReset: (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly creditId?: string | undefined;
+    readonly idempotencyKey: string;
+  }) => Effect.Effect<ProviderUsageResetOutcome, ProviderUsageResetError>;
 
   /**
    * Record an account-usage snapshot emitted by a live provider session.

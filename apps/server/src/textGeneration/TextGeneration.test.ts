@@ -21,6 +21,8 @@ const makeStubTextGeneration = (
     generatePrContent: () => Effect.die("generatePrContent stub not configured for this test"),
     generateBranchName: () => Effect.die("generateBranchName stub not configured for this test"),
     generateThreadTitle: () => Effect.die("generateThreadTitle stub not configured for this test"),
+    correctVoiceTranscript: () =>
+      Effect.die("correctVoiceTranscript stub not configured for this test"),
     generatePlanRefresh: () => Effect.die("generatePlanRefresh stub not configured for this test"),
     generateVmAgentTaskPrompt: () =>
       Effect.die("generateVmAgentTaskPrompt stub not configured for this test"),
@@ -97,6 +99,41 @@ describe("makeTextGenerationFromRegistry", () => {
 
       expect(result.branch).toBe("personal-branch");
       expect(personalCalls).toEqual(["Refactor the routing layer"]);
+    }),
+  );
+
+  it.effect("routes voice correction through its dedicated model selection", () =>
+    Effect.gen(function* () {
+      const fastId = ProviderInstanceId.make("codex_fast_voice");
+      const calls: TextGeneration.VoiceTranscriptCorrectionGenerationInput[] = [];
+      const fast = makeStubInstance(
+        fastId,
+        makeStubTextGeneration({
+          correctVoiceTranscript: (input) => {
+            calls.push(input);
+            return Effect.succeed({ transcript: "Open the Veera Medical project." });
+          },
+        }),
+      );
+      const tg = TextGeneration.makeTextGenerationFromRegistry(makeStubRegistry([fast]));
+      const modelSelection = createModelSelection(fastId, "gpt-5-mini");
+
+      const result = yield* tg.correctVoiceTranscript({
+        cwd: process.cwd(),
+        transcript: "Open the Vera medical project.",
+        conversationContext: "User: We are working on Veera Medical.",
+        modelSelection,
+      });
+
+      expect(result.transcript).toBe("Open the Veera Medical project.");
+      expect(calls).toEqual([
+        {
+          cwd: process.cwd(),
+          transcript: "Open the Vera medical project.",
+          conversationContext: "User: We are working on Veera Medical.",
+          modelSelection,
+        },
+      ]);
     }),
   );
 

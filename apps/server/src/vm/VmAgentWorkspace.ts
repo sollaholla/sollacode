@@ -518,16 +518,9 @@ export const make = Effect.gen(function* () {
         now,
       })
       .pipe(Effect.mapError(operationError("raising a blocker")));
-    // A blocker is a standing request for the user, so it also knocks: reuses
-    // the task-blocked notification kind (preference-gated like every other),
-    // deduped on the blocker id so re-reports refresh silently.
-    yield* notify({
-      vmAgentId: input.vmAgentId,
-      kind: "task-blocked",
-      title: `Waiting on you: ${input.title}`,
-      body: input.detail,
-      dedupeKey: `blocker:${blocker.blockerId}`,
-    }).pipe(Effect.orElseSucceed(() => false));
+    // A blocker is already durable, visible attention. It must not also enter
+    // the notification inbox: that produced two cards and two sidebar badges
+    // for one request, and could deliver a second desktop alert for it.
     yield* publish(input.vmAgentId);
     yield* publishAttention();
     return blocker;
@@ -545,22 +538,6 @@ export const make = Effect.gen(function* () {
         now: yield* nowIso,
       })
       .pipe(Effect.mapError(operationError("resolving a blocker")));
-    // The alert that announced this request has served its purpose the moment
-    // the request stops standing. Leaving it unread left the agent showing a
-    // notification badge for something the user had just dealt with, and the
-    // only way to clear it was to open and read a message about work already
-    // done. Keyed on the dedupe key `raiseBlocker` writes, so it clears the
-    // re-reported copies too. Best-effort: the blocker is genuinely resolved
-    // whether or not its alert could be tidied up.
-    if (Option.isSome(resolved)) {
-      yield* store
-        .markNotificationsReadByDedupeKey({
-          vmAgentId: input.vmAgentId,
-          dedupeKey: `blocker:${input.blockerId}`,
-          readAt: yield* nowIso,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
-    }
     yield* publish(input.vmAgentId);
     yield* publishAttention();
     return resolved;

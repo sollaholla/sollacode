@@ -130,12 +130,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   public readonly closeImpl = vi.fn(() => Promise.resolve(undefined));
 
   readonly options: CodexSessionRuntimeOptions;
+  private readonly startFailure: CodexErrors.CodexAppServerRequestTimeoutError | undefined;
 
-  constructor(options: CodexSessionRuntimeOptions) {
+  constructor(
+    options: CodexSessionRuntimeOptions,
+    startFailure?: CodexErrors.CodexAppServerRequestTimeoutError,
+  ) {
     this.options = options;
+    this.startFailure = startFailure;
   }
 
   start() {
+    if (this.startFailure) return Effect.fail(this.startFailure);
     return Effect.promise(() => this.startImpl());
   }
 
@@ -198,7 +204,10 @@ function makeRuntimeFactory() {
   };
 }
 
-function makeScopedRuntimeFactory(options?: { readonly failConstruction?: boolean }) {
+function makeScopedRuntimeFactory(options?: {
+  readonly failConstruction?: boolean;
+  readonly failStart?: boolean;
+}) {
   const runtimes: Array<FakeCodexRuntime> = [];
   const releasedThreadIds: Array<ThreadId> = [];
 
@@ -218,7 +227,16 @@ function makeScopedRuntimeFactory(options?: { readonly failConstruction?: boolea
         });
       }
 
-      const runtime = new FakeCodexRuntime(runtimeOptions);
+      const runtime = new FakeCodexRuntime(
+        runtimeOptions,
+        options?.failStart
+          ? new CodexErrors.CodexAppServerRequestTimeoutError({
+              method: "thread/resume",
+              requestId: "startup-timeout-test",
+              timeoutMillis: 90_000,
+            })
+          : undefined,
+      );
       runtimes.push(runtime);
       return runtime;
     }),
@@ -1224,6 +1242,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             itemId: "item-user-input-1",
             threadId: "thread-1",
             turnId: "turn-1",
+            isBlocking: true,
             questions: [
               {
                 id: "sandbox_mode",
@@ -1421,6 +1440,55 @@ scopedFailureLayer("CodexAdapterLive scoped startup failure", (it) => {
         asThreadId("thread-fail"),
       ]);
       NodeAssert.equal(yield* adapter.hasSession(asThreadId("thread-fail")), false);
+    }),
+  );
+});
+
+const scopedStartTimeoutRuntimeFactory = makeScopedRuntimeFactory({ failStart: true });
+const scopedStartTimeoutLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: scopedStartTimeoutRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+scopedStartTimeoutLayer("CodexAdapterLive scoped startup timeout", (it) => {
+  it.effect("reaps the app-server scope when thread/resume times out", () =>
+    Effect.gen(function* () {
+      scopedStartTimeoutRuntimeFactory.releasedThreadIds.length = 0;
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-start-timeout");
+
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      if (result.failure._tag === "ProviderAdapterRequestError") {
+        NodeAssert.equal(result.failure.failureKind, "local-control-timeout");
+        NodeAssert.equal(result.failure.method, "thread/resume");
+      }
+      NodeAssert.equal(
+        scopedStartTimeoutRuntimeFactory.lastRuntime?.closeImpl.mock.calls.length,
+        1,
+      );
+      NodeAssert.deepStrictEqual(scopedStartTimeoutRuntimeFactory.releasedThreadIds, [threadId]);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), false);
     }),
   );
 });

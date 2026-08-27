@@ -122,6 +122,10 @@ import {
   type PendingThreadTitles,
 } from "./threadTitleOverrides";
 import { createThreadCreationIntentGuard } from "./threadCreationIntentGuard";
+import {
+  beginVoiceCaptureSystemAudioMute,
+  shouldMuteSystemAudioForOrchestrator,
+} from "./systemAudioMute";
 
 /**
  * Whether the last thing voice reported was a fault or just an explanation.
@@ -2253,6 +2257,32 @@ export function useOrchestratorSession(): OrchestratorSessionApi {
   // finished playing so nothing is cut off and nothing has to be restarted by
   // hand.
   stateRef.current = state;
+  const systemAudioMuteLeaseRef = useRef<object | null>(null);
+
+  useEffect(() => {
+    const bridge = window.desktopBridge;
+    if (
+      bridge === undefined ||
+      !shouldMuteSystemAudioForOrchestrator({
+        state,
+        working,
+        enabled: settings.pushToTalkMutesSystemAudio,
+      })
+    ) {
+      return;
+    }
+    const lease = {};
+    systemAudioMuteLeaseRef.current = lease;
+    const release = beginVoiceCaptureSystemAudioMute({
+      setMuted: (muted) => bridge.setVoiceCaptureSystemAudioMuted({ owner: "orchestrator", muted }),
+      superseded: () =>
+        systemAudioMuteLeaseRef.current !== null && systemAudioMuteLeaseRef.current !== lease,
+    });
+    return () => {
+      if (systemAudioMuteLeaseRef.current === lease) systemAudioMuteLeaseRef.current = null;
+      release();
+    };
+  }, [settings.pushToTalkMutesSystemAudio, state, working]);
 
   useEffect(() => {
     if (!pendingRestartRef.current) return;

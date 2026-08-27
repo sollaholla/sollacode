@@ -66,6 +66,9 @@ export interface ThreadDetailScreenProps {
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
   readonly selectedThreadQueueCount: number;
+  readonly hasQueuedSendNow: boolean;
+  readonly composerFocusRequest: number | null;
+  readonly onConsumeComposerFocusRequest: () => void;
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: LayoutVariant;
   readonly usesAutomaticContentInsets?: boolean;
@@ -224,6 +227,25 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const isSplitLayout = layoutVariant === "split";
   const contentMaxWidth = isSplitLayout ? CHAT_CONTENT_MAX_WIDTH : undefined;
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
+  useEffect(() => {
+    if (props.composerFocusRequest === null) return;
+    let active = true;
+    let frame = 0;
+    const focusComposer = () => {
+      if (!active) return;
+      if (composerEditorRef.current) {
+        composerEditorRef.current.focus();
+        props.onConsumeComposerFocusRequest();
+        return;
+      }
+      frame = requestAnimationFrame(focusComposer);
+    };
+    frame = requestAnimationFrame(focusComposer);
+    return () => {
+      active = false;
+      cancelAnimationFrame(frame);
+    };
+  }, [props.composerFocusRequest, props.onConsumeComposerFocusRequest]);
   useStreamingHaptics(props.selectedThread.id, props.selectedThreadFeed);
   const selectedProviderSkills = useMemo(
     () =>
@@ -429,6 +451,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               selectedThread={props.selectedThread}
               serverConfig={props.serverConfig}
               queueCount={props.selectedThreadQueueCount}
+              hasQueuedSendNow={props.hasQueuedSendNow}
               activeThreadBusy={props.activeThreadBusy}
               environmentId={props.environmentId}
               projectCwd={props.projectWorkspaceRoot}

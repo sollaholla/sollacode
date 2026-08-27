@@ -618,6 +618,11 @@ function ThreadRouteContent(
         environmentId: environmentIdRaw ?? "",
         threadId: threadId ?? "",
       }),
+    onOpenBrowser: () =>
+      navigation.navigate("ThreadBrowser", {
+        environmentId: environmentIdRaw ?? "",
+        threadId: threadId ?? "",
+      }),
     onRunProjectScript: handleRunProjectScript,
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
@@ -683,6 +688,15 @@ function ThreadRouteContent(
         onPress: handleOpenFilesInspector,
       });
     }
+    actions.push({
+      accessibilityLabel: "Open browser",
+      icon: "safari",
+      onPress: () =>
+        navigation.navigate("ThreadBrowser", {
+          environmentId: environmentIdRaw ?? "",
+          threadId: threadId ?? "",
+        }),
+    });
     actions.push({
       accessibilityLabel: "Open artifacts",
       icon: "shippingbox",
@@ -788,6 +802,9 @@ function ThreadRouteContent(
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
+          hasQueuedSendNow={composer.hasQueuedSendNow}
+          composerFocusRequest={composer.composerFocusRequest}
+          onConsumeComposerFocusRequest={composer.onConsumeComposerFocusRequest}
           layoutVariant={layout.variant}
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}

@@ -421,6 +421,49 @@ it.layer(stores())("VmAgentWorkspaceStore: retention policy", (it) => {
   );
 });
 
+it.layer(stores())("VmAgentWorkspaceStore: completed task retention", (it) => {
+  it.effect("deletes only expired completed workspace tasks", () =>
+    Effect.gen(function* () {
+      const agents = yield* VmAgentStore;
+      const store = yield* VmAgentWorkspaceStore;
+      yield* agents.insert(agent);
+
+      const createTask = (id: string, status: VmAgentTask["status"], at: string) =>
+        store.createTask({
+          taskId: VmAgentTaskId.make(id),
+          vmAgentId,
+          title: id,
+          prompt: "Retain or purge this task.",
+          completionCriteria: [],
+          status,
+          schedule: null,
+          nextRunAt: null,
+          createdBy: "user",
+          approvalState: "approved",
+          notificationPolicy: "never",
+          artifactId: null,
+          createdAt: at,
+        });
+
+      const expiredTaskId = VmAgentTaskId.make("completed-expired");
+      const boundaryTaskId = VmAgentTaskId.make("completed-at-boundary");
+      const activeTaskId = VmAgentTaskId.make("active-old");
+      yield* createTask(expiredTaskId, "completed", "2026-08-21T10:00:00.000Z");
+      yield* createTask(boundaryTaskId, "completed", "2026-08-21T11:00:00.000Z");
+      yield* createTask(activeTaskId, "active", "2026-08-21T10:00:00.000Z");
+
+      const affectedAgentIds = yield* store.purgeCompletedTasks({
+        cutoff: "2026-08-21T11:00:00.000Z",
+      });
+
+      assert.deepStrictEqual(affectedAgentIds, [vmAgentId]);
+      assert.isTrue(Option.isNone(yield* store.getTask(vmAgentId, expiredTaskId)));
+      assert.isTrue(Option.isSome(yield* store.getTask(vmAgentId, boundaryTaskId)));
+      assert.isTrue(Option.isSome(yield* store.getTask(vmAgentId, activeTaskId)));
+    }),
+  );
+});
+
 it.layer(stores())("VmAgentWorkspaceStore: blockers", (it) => {
   it.effect("raises once per obstacle, refreshes on re-report, resolves once", () =>
     Effect.gen(function* () {

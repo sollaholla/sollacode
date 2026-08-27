@@ -146,6 +146,12 @@ const AgentRouteScreen = deferredScreen(
       require("./features/agents/AgentRouteScreens") as typeof import("./features/agents/AgentRouteScreens")
     ).AgentRouteScreen,
 );
+const AgentRulesRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/agents/AgentRouteScreens") as typeof import("./features/agents/AgentRouteScreens")
+    ).AgentRulesRouteScreen,
+);
 const ThreadArtifactsRouteScreen = deferredScreen(
   () =>
     (
@@ -157,6 +163,12 @@ const ThreadArtifactRouteScreen = deferredScreen(
     (
       require("./features/artifacts/ThreadArtifactRouteScreens") as typeof import("./features/artifacts/ThreadArtifactRouteScreens")
     ).ThreadArtifactRouteScreen,
+);
+const ThreadBrowserRouteScreen = deferredScreen(
+  () =>
+    (
+      require("./features/preview/ThreadBrowserRouteScreen") as typeof import("./features/preview/ThreadBrowserRouteScreen")
+    ).ThreadBrowserRouteScreen,
 );
 const AddProjectDestinationRoute = deferredScreen(
   () =>
@@ -609,6 +621,14 @@ export const RootStack = createNativeStackNavigator({
         title: "Artifact",
       },
     }),
+    ThreadBrowser: createNativeStackScreen({
+      screen: ThreadBrowserRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/browser`,
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Browser",
+      },
+    }),
     GitOverview: createNativeStackScreen({
       screen: GitOverviewSheet,
       linking: `${THREAD_LINKING_PREFIX}/git`,
@@ -672,6 +692,14 @@ export const RootStack = createNativeStackNavigator({
       options: {
         ...GLASS_HEADER_OPTIONS,
         title: "Agent",
+      },
+    }),
+    AgentRules: createNativeStackScreen({
+      screen: AgentRulesRouteScreen,
+      linking: "agents/:environmentId/:agentId/rules",
+      options: {
+        ...GLASS_HEADER_OPTIONS,
+        title: "Rules",
       },
     }),
     SettingsSheet: createNativeStackScreen({

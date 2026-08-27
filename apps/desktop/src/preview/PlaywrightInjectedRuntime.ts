@@ -192,7 +192,7 @@ export const playwrightInjectedRuntimeInstallExpression = Effect.fn(
     stableRafCount: 1,
     browserName: PLAYWRIGHT_BROWSER_NAME,
     shouldPrependErrorPrefix: false,
-    isUtilityWorld: false,
+    isUtilityWorld: true,
     customEngines: [],
   }).pipe(
     Effect.mapError(

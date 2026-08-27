@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ExternalLinkIcon, LoaderCircleIcon, ShieldAlertIcon } from "lucide-react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
@@ -55,6 +56,11 @@ import {
   useActiveBrowserRecordingTabIds,
 } from "~/browser/browserRecording";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { Button } from "~/components/ui/button";
+import {
+  inspectPreviewHumanVerification,
+  usePreviewHumanVerification,
+} from "./previewHumanVerification";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -72,6 +78,7 @@ const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, visible }: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
+  const [checkingVerification, setCheckingVerification] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
@@ -100,6 +107,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const runtimeTabId = tabId
     ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
     : null;
+  const humanVerification = usePreviewHumanVerification(runtimeTabId);
   const recordingRuntimeTabId =
     tabId && runtimeTabId
       ? activeRecordingTabIds.has(runtimeTabId)
@@ -172,8 +180,66 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   );
 
   const handleRefresh = useCallback(() => {
+    if (humanVerification) return;
     if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
+  }, [humanVerification, runtimeTabId]);
+
+  const handleCheckHumanVerification = useCallback(async () => {
+    const bridge = previewBridge;
+    if (!bridge || !runtimeTabId) return;
+    setCheckingVerification(true);
+    try {
+      const result = await inspectPreviewHumanVerification({
+        runtimeTabId,
+        force: true,
+        evaluate: (expression) =>
+          bridge.automation.evaluate(runtimeTabId, {
+            expression,
+            awaitPromise: true,
+            returnByValue: true,
+          }),
+      });
+      toastManager.add(
+        result
+          ? {
+              type: "warning",
+              title: "Verification is still active",
+              description: "Finish the challenge manually in this tab, then check again.",
+            }
+          : {
+              type: "success",
+              title: "Browser automation resumed",
+              description: "The verification gate is no longer visible in this tab.",
+            },
+      );
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not check the verification page",
+        description: error instanceof Error ? error.message : "The browser tab is unavailable.",
+      });
+    } finally {
+      setCheckingVerification(false);
+    }
   }, [runtimeTabId]);
+
+  const handleOpenVerificationResource = useCallback(
+    async (resourceUrl: string) => {
+      const result = await openPreviewSession({
+        openPreview: open,
+        threadRef,
+        url: resourceUrl,
+      });
+      if (result._tag === "Failure") {
+        toastManager.add({
+          type: "error",
+          title: "Could not open the Cloudflare resource",
+          description: "The original verification tab was left unchanged.",
+        });
+      }
+    },
+    [open, threadRef],
+  );
 
   const handleZoomIn = useCallback(() => {
     if (previewBridge && runtimeTabId) void previewBridge.zoomIn(runtimeTabId);
@@ -618,7 +684,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         loadProgress={loadProgress}
         canGoBack={canGoBack}
         canGoForward={canGoForward}
-        refreshDisabled={refreshDisabled}
+        refreshDisabled={refreshDisabled || humanVerification !== null}
         sharedBrowserProfile={thread?.browserProfileThreadId != null}
         focusUrlNonce={focusUrlNonce}
         onBack={handleBack}
@@ -682,12 +748,75 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           <AgentBrowserCursor
             tabId={runtimeTabId}
             zoomFactor={desktopOverlay.zoomFactor}
-            controller={controller}
+            // While automation is holding off for the user, no agent is driving,
+            // so the agent cursor stays hidden.
+            controller={controller === "waiting-for-user" ? "none" : controller}
           />
         ) : null}
         {controller !== "none" ? (
           <div className="pointer-events-none absolute left-3 top-3 z-40 rounded-full border border-border/70 bg-background/90 px-2.5 py-1 text-[11px] font-medium shadow-sm backdrop-blur">
-            {controller === "agent" ? "Agent controlling browser" : "Human control"}
+            {controller === "agent"
+              ? "Agent controlling browser"
+              : controller === "waiting-for-user"
+                ? "Waiting for you to finish typing"
+                : "Human control"}
+          </div>
+        ) : null}
+        {humanVerification ? (
+          <div className="absolute inset-x-3 top-3 z-50 mx-auto max-w-2xl rounded-xl border border-amber-500/40 bg-background/95 p-3 shadow-xl backdrop-blur">
+            <div className="flex items-start gap-2.5">
+              <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-amber-500/12 text-amber-500">
+                <ShieldAlertIcon className="size-4" aria-hidden />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <p className="text-sm font-semibold">Human verification needed</p>
+                  {humanVerification.code ? (
+                    <span className="rounded bg-amber-500/12 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                      {humanVerification.code}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Automation is paused for this tab. Complete the challenge manually here, keeping
+                  this page and network connection in place. Because this is an embedded browser
+                  with automation attached, manual completion is best-effort.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Button
+                    size="xs"
+                    type="button"
+                    disabled={checkingVerification}
+                    onClick={() => void handleCheckHumanVerification()}
+                  >
+                    {checkingVerification ? (
+                      <LoaderCircleIcon className="animate-spin motion-reduce:animate-none" />
+                    ) : null}
+                    Check again
+                  </Button>
+                  <Button
+                    size="xs"
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      void handleOpenVerificationResource(humanVerification.compatibilityCheckUrl)
+                    }
+                  >
+                    Compatibility check <ExternalLinkIcon />
+                  </Button>
+                  <Button
+                    size="xs"
+                    type="button"
+                    variant="ghost"
+                    onClick={() =>
+                      void handleOpenVerificationResource(humanVerification.feedbackUrl)
+                    }
+                  >
+                    Report issue <ExternalLinkIcon />
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
         {navStatus._tag === "LoadFailed" ? (

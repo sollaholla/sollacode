@@ -146,7 +146,7 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
       return {
         action: input.action,
         status:
-          "Blocker recorded as a standing request the user sees until it is resolved. Re-reporting the same title refreshes it; call resolve_blocker when it no longer blocks you.",
+          "Blocker recorded as the standing alert the user sees until it is resolved. No separate notification is needed: do not call notify_user for this request. Re-reporting the same title refreshes it; call resolve_blocker when it no longer blocks you.",
         blocker,
       };
     }

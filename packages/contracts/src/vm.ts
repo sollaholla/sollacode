@@ -138,6 +138,21 @@ export const VmAgentRef = Schema.Struct({
 });
 export type VmAgentRef = Schema.Codec.Encoded<typeof VmAgentRef>;
 
+/** The editable root instructions for one agent; CLAUDE.md imports this file. */
+export const VmAgentRules = Schema.Struct({
+  vmAgentId: VmAgentId,
+  fileName: Schema.Literal("AGENTS.md"),
+  content: Schema.String.check(Schema.isMaxLength(100_000)),
+  exists: Schema.Boolean,
+});
+export type VmAgentRules = typeof VmAgentRules.Type;
+
+export const VmAgentRulesUpdateInput = Schema.Struct({
+  vmAgentId: VmAgentId,
+  content: Schema.String.check(Schema.isMaxLength(100_000)),
+});
+export type VmAgentRulesUpdateInput = Schema.Codec.Encoded<typeof VmAgentRulesUpdateInput>;
+
 export const VmAgentListResult = Schema.Struct({
   agents: Schema.Array(VmAgent),
 });

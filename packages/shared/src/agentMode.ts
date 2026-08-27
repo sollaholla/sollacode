@@ -3,6 +3,10 @@
 export const AGENT_STOP_TOKEN = "AGENT_STOP";
 
 const AGENT_STOP_TRAILING_WRAPPER_PATTERN = /[\s.!?,;:…*_`~'"“”‘’)\]}>]*/u;
+const AGENT_STOP_LINE_PREFIX_PATTERN = /^[\t *_`~'"“”‘’([{<]*$/u;
+const AGENT_STOP_PREFIX_WRAPPER_PATTERN = /[\t *_`~'"“”‘’([{<]*$/u;
+const AGENT_STOP_INLINE_PREFIX_PATTERN = /[.!?…—–]$/u;
+const AGENT_STOP_STREAM_CONTEXT_CHARS = 96;
 
 const AGENT_TRAILING_HIDDEN_METADATA_PATTERN =
   /\s*<oai-mem-citation\b[^>]*>[\s\S]*?<\/oai-mem-citation>\s*$/u;
@@ -17,7 +21,7 @@ export const AGENT_CONTINUE_PROMPT =
   "work, known defect, failed check, unverified claim, or planned step remains, keep working on the " +
   "next concrete action. Only when all requested work is fully finished and verified, or a concrete " +
   "blocker truly requires user input after you have exhausted safe alternatives, summarize the final state " +
-  `and end your message with \`${AGENT_STOP_TOKEN}\`. Otherwise continue, and do not stop to ask ` +
+  `and end your message with \`${AGENT_STOP_TOKEN}\` on a new line by itself. Otherwise continue, and do not stop to ask ` +
   "questions you can resolve yourself. The app honors that stop signal immediately, so never emit it until " +
   "this completion check is genuinely satisfied.";
 
@@ -34,6 +38,93 @@ export function containsAgentStopToken(text: string): boolean {
 export interface AgentStopSignoff {
   readonly hasStop: boolean;
   readonly text: string;
+}
+
+export interface AgentStopStreamState {
+  readonly tail: string;
+  readonly stopped: boolean;
+}
+
+export interface AgentStopStreamResult {
+  readonly delta: string;
+  readonly emittedStop: boolean;
+  readonly state: AgentStopStreamState;
+}
+
+export const INITIAL_AGENT_STOP_STREAM_STATE: AgentStopStreamState = {
+  tail: "",
+  stopped: false,
+};
+
+/**
+ * A control token must look like a signoff, not like a protocol name inside
+ * ordinary progress prose. A standalone line is unambiguous. For older
+ * providers that append the token to their closing sentence, accept it only
+ * after sentence-ending punctuation. In particular, a path-like mention such
+ * as `queued follow-ups/AGENT_STOP` is not a stop command.
+ */
+function hasAgentStopControlPrefix(text: string, tokenIndex: number): boolean {
+  const previousCharacter = text[tokenIndex - 1];
+  if (previousCharacter !== undefined && /[A-Za-z0-9_]/u.test(previousCharacter)) {
+    return false;
+  }
+
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", tokenIndex - 1), text.lastIndexOf("\r", tokenIndex - 1)) + 1;
+  const linePrefix = text.slice(lineStart, tokenIndex);
+  return (
+    AGENT_STOP_LINE_PREFIX_PATTERN.test(linePrefix) ||
+    AGENT_STOP_INLINE_PREFIX_PATTERN.test(linePrefix.replace(AGENT_STOP_PREFIX_WRAPPER_PATTERN, ""))
+  );
+}
+
+/**
+ * Finds the Agent control token while assistant text is still streaming.
+ *
+ * Providers may split the token across deltas or immediately concatenate more
+ * prose (`AGENT_STOPI'll ...`). Once the token is complete, it owns the stream
+ * boundary: retain the token itself, discard anything after it, and suppress
+ * later deltas while the provider interruption settles.
+ */
+export function consumeAgentStopStreamDelta(
+  state: AgentStopStreamState,
+  delta: string,
+): AgentStopStreamResult {
+  if (state.stopped || delta.length === 0) {
+    return {
+      delta: state.stopped ? "" : delta,
+      emittedStop: false,
+      state,
+    };
+  }
+
+  const combined = `${state.tail}${delta}`;
+  let searchFrom = 0;
+  while (searchFrom < combined.length) {
+    const tokenIndex = combined.indexOf(AGENT_STOP_TOKEN, searchFrom);
+    if (tokenIndex < 0) break;
+    if (hasAgentStopControlPrefix(combined, tokenIndex)) {
+      const deltaStop = Math.max(
+        0,
+        Math.min(delta.length, tokenIndex + AGENT_STOP_TOKEN.length - state.tail.length),
+      );
+      return {
+        delta: delta.slice(0, deltaStop),
+        emittedStop: true,
+        state: { tail: "", stopped: true },
+      };
+    }
+    searchFrom = tokenIndex + AGENT_STOP_TOKEN.length;
+  }
+
+  return {
+    delta,
+    emittedStop: false,
+    state: {
+      tail: combined.slice(-AGENT_STOP_STREAM_CONTEXT_CHARS),
+      stopped: false,
+    },
+  };
 }
 
 /**
@@ -84,8 +175,7 @@ function extractTerminalStopSignoff(
   const tokenIndex = visibleText.lastIndexOf(AGENT_STOP_TOKEN);
   if (tokenIndex < 0) return { hasStop: false, text };
 
-  const previousCharacter = visibleText[tokenIndex - 1];
-  if (previousCharacter !== undefined && /[A-Za-z0-9_]/u.test(previousCharacter)) {
+  if (!hasAgentStopControlPrefix(visibleText, tokenIndex)) {
     return { hasStop: false, text };
   }
   const trailing = visibleText.slice(tokenIndex + AGENT_STOP_TOKEN.length);
@@ -167,7 +257,14 @@ const AGENT_STOP_LENIENT_WINDOW_CHARS = 300;
 export function emittedAgentStop(text: string): boolean {
   if (containsAgentStopToken(text)) return true;
   const windowText = text.trimEnd().slice(-AGENT_STOP_LENIENT_WINDOW_CHARS);
-  return new RegExp(`(^|[^A-Za-z0-9_])${AGENT_STOP_TOKEN}([^A-Za-z0-9_]|$)`, "u").test(windowText);
+  let searchFrom = 0;
+  while (searchFrom < windowText.length) {
+    const tokenIndex = windowText.indexOf(AGENT_STOP_TOKEN, searchFrom);
+    if (tokenIndex < 0) return false;
+    if (hasAgentStopControlPrefix(windowText, tokenIndex)) return true;
+    searchFrom = tokenIndex + AGENT_STOP_TOKEN.length;
+  }
+  return false;
 }
 
 /** Strips the control token before assistant text is reused as prompt context. */

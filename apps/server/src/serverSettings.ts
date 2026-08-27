@@ -3,7 +3,7 @@
  *
  * Owns persistence, validation, and change notification of settings that affect
  * server-side behavior (binary paths, streaming mode, env mode, custom models,
- * text generation model selection).
+ * Utility AI model selection).
  *
  * Follows the same pattern as `keybindings.ts`: JSON file + Cache + PubSub +
  * Semaphore + FileSystem.watch for concurrency and external edit detection.
@@ -60,7 +60,10 @@ import {
   orchestratorApiKeySecretName,
 } from "./orchestrator/OrchestratorSecretNames.ts";
 
-export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
+export {
+  resolveSourceControlWriterModelSelection,
+  resolveUtilityAiModelSelection,
+} from "@t3tools/shared/serverSettings";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));

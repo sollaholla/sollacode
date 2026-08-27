@@ -331,7 +331,14 @@ workspaceLayer("VmAgentWorkspace", (it) => {
           detail: "The agent needs a human sign-in.",
         });
         assert.strictEqual(latest()?.openBlockerCount, 1);
-        assert.strictEqual(latest()?.unreadNotificationCount, 2);
+        // Waiting-on-you is already durable attention. It must not also add an
+        // inbox row or increment the independent notification badge.
+        assert.strictEqual(latest()?.unreadNotificationCount, 1);
+        assert.isUndefined(
+          (yield* workspace.snapshot(agent.vmAgentId)).notifications.find((notification) =>
+            notification.title.startsWith("Waiting on you:"),
+          ),
+        );
         yield* workspace.resolveBlocker({
           vmAgentId: agent.vmAgentId,
           blockerId: blocker.blockerId,
@@ -339,10 +346,6 @@ workspaceLayer("VmAgentWorkspace", (it) => {
         });
         assert.strictEqual(latest()?.openBlockerCount, 0);
         assert.strictEqual(latest()?.unreadNotificationCount, 1);
-        const blockerNotification = (yield* workspace.snapshot(agent.vmAgentId)).notifications.find(
-          (notification) => notification.title === "Waiting on you: Sign-in required",
-        );
-        assert.isNotNull(blockerNotification?.readAt ?? null);
         unsubscribe();
       }),
   );

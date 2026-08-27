@@ -140,6 +140,7 @@ describe("closePreviewSession", () => {
         closeResult: closeResult.value,
         listPreviews,
         openBlankPreview,
+        retainBlankTab: true,
         threadRef,
       }),
     ).resolves.toBe(true);
@@ -148,5 +149,29 @@ describe("closePreviewSession", () => {
     expect(readThreadPreviewState(threadRef).sessions).toEqual({
       [replacement.tabId]: replacement,
     });
+  });
+
+  it("leaves an ordinary legacy thread empty after its final tab closes", async () => {
+    const listPreviews = vi.fn(async () =>
+      AsyncResult.success({
+        sessions: [],
+        serverEpoch: "legacy-epoch",
+        revision: 2,
+      }),
+    );
+    const openBlankPreview = vi.fn(async () => AsyncResult.success(snapshot));
+
+    await expect(
+      reconcileLegacyPreviewClose({
+        closeResult: undefined,
+        listPreviews,
+        openBlankPreview,
+        retainBlankTab: false,
+        threadRef,
+      }),
+    ).resolves.toBe(false);
+    expect(listPreviews).toHaveBeenCalledOnce();
+    expect(openBlankPreview).not.toHaveBeenCalled();
+    expect(readThreadPreviewState(threadRef).sessions).toEqual({});
   });
 });

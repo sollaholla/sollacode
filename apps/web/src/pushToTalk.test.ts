@@ -6,10 +6,10 @@ import {
   isPushToTalkReleaseEvent,
   isPushToTalkShortcut,
   raceWithTranscriptionCancellation,
+  restorePushToTalkFocus,
   resolveVisiblePushToTalkStatus,
   shouldHandlePushToTalkForSurface,
   shouldRouteTranscriptToTerminal,
-  shouldStopPushToTalkAfterFocusOut,
   startRecorderWithCue,
   withTranscriptionDeadline,
 } from "./pushToTalk";
@@ -88,29 +88,23 @@ describe("shouldHandlePushToTalkForSurface", () => {
   });
 });
 
-describe("shouldStopPushToTalkAfterFocusOut", () => {
-  it("keeps recording through focus changes inside a still-focused document", () => {
-    expect(
-      shouldStopPushToTalkAfterFocusOut({
-        relatedTarget: null,
-        documentHasFocus: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldStopPushToTalkAfterFocusOut({
-        relatedTarget: {} as EventTarget,
-        documentHasFocus: false,
-      }),
-    ).toBe(false);
+describe("restorePushToTalkFocus", () => {
+  it("restores a still-mounted chord target without invoking the fallback", () => {
+    const focus = vi.fn();
+    const fallback = vi.fn();
+
+    expect(restorePushToTalkFocus({ isConnected: true, focus }, fallback)).toBe("target");
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(fallback).not.toHaveBeenCalled();
   });
 
-  it("stops when focus really left the document", () => {
-    expect(
-      shouldStopPushToTalkAfterFocusOut({
-        relatedTarget: null,
-        documentHasFocus: false,
-      }),
-    ).toBe(true);
+  it("falls back when a live update replaced the original target", () => {
+    const focus = vi.fn();
+    const fallback = vi.fn();
+
+    expect(restorePushToTalkFocus({ isConnected: false, focus }, fallback)).toBe("fallback");
+    expect(focus).not.toHaveBeenCalled();
+    expect(fallback).toHaveBeenCalledOnce();
   });
 });
 

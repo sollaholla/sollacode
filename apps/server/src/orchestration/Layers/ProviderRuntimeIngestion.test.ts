@@ -443,6 +443,7 @@ function createProviderServiceHarness() {
     readonly input: ProviderSessionStartInput;
   }> = [];
   const sendTurnCalls: ProviderSendTurnInput[] = [];
+  const interruptTurnCalls: Array<Parameters<ProviderServiceShape["interruptTurn"]>[0]> = [];
   let shouldFailNextSendTurn = false;
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
@@ -483,7 +484,10 @@ function createProviderServiceHarness() {
           turnId: TurnId.make(`handoff-turn-${sendTurnCalls.length}`),
         };
       }),
-    interruptTurn: () => unsupported(),
+    interruptTurn: (input) =>
+      Effect.sync(() => {
+        interruptTurnCalls.push(input);
+      }),
     promoteQueuedTurn: () => unsupported(),
     stopTask: () => unsupported(),
     respondToRequest: () => unsupported(),
@@ -544,6 +548,7 @@ function createProviderServiceHarness() {
     setSession,
     startSessionCalls,
     sendTurnCalls,
+    interruptTurnCalls,
     failNextSendTurn: () => {
       shouldFailNextSendTurn = true;
     },
@@ -763,10 +768,13 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readThreadShell: (threadId: ThreadId) =>
+        managedRuntime.runPromise(snapshotQuery.getThreadShellById(threadId)),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       startSessionCalls: provider.startSessionCalls,
       sendTurnCalls: provider.sendTurnCalls,
+      interruptTurnCalls: provider.interruptTurnCalls,
       failNextSendTurn: provider.failNextSendTurn,
       runtimeObservations,
       openPreviewTab,
@@ -993,6 +1001,77 @@ describe("ProviderRuntimeIngestion", () => {
     ).toHaveLength(1);
   });
 
+  it("does not start browser housekeeping while human input is pending", async () => {
+    const harness = await createHarness({ interactionMode: "agent" });
+    const threadId = asThreadId("thread-1");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-human-gate-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T13:00:00.000Z",
+      turnId: asTurnId("turn-human-gate"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-human-gate",
+    );
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-human-gate-request"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      turnId: asTurnId("turn-human-gate"),
+      requestId: ApprovalRequestId.make("action-approval:human-gate"),
+      createdAt: "2026-08-25T13:00:30.000Z",
+      payload: {
+        questions: [
+          {
+            id: "t3_action_approval",
+            header: "Approval",
+            question: "Authorize this action?",
+            options: [{ label: "Approve", description: "Perform the action." }],
+          },
+        ],
+      },
+    });
+    await harness.drain();
+    const pendingShell = await harness.readThreadShell(threadId);
+    expect(Option.getOrThrow(pendingShell).hasPendingUserInput).toBe(true);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-human-gate-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId,
+      createdAt: "2026-08-25T13:01:00.000Z",
+      turnId: asTurnId("turn-human-gate"),
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const completedShell = await harness.readThreadShell(threadId);
+    expect(Option.getOrThrow(completedShell).hasPendingUserInput).toBe(true);
+    expect(
+      thread?.messages.filter((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:"),
+      ),
+    ).toEqual([]);
+    expect(await harness.readBrowserTabCleanupState(threadId)).toEqual([
+      {
+        tabSetJson: '["tab-test-1"]',
+        lastProcessedTurnId: null,
+        lastProcessedStartSequence: 0,
+      },
+    ]);
+  });
+
   it("durably ignores an older completion replay after a newer turn", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");
@@ -1189,6 +1268,82 @@ describe("ProviderRuntimeIngestion", () => {
         String(message.id).startsWith("browser-tab-cleanup-message:"),
       ),
     ).toBe(false);
+  });
+
+  it("does not enqueue browser cleanup after a streamed Agent stop and late success", async () => {
+    const harness = await createHarness({ interactionMode: "agent" });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-browser-agent-stopped");
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-browser-agent-stopped-started"),
+      provider: ProviderDriverKind.make("grok"),
+      threadId,
+      createdAt: "2026-08-25T15:00:00.000Z",
+      turnId,
+    });
+    await harness.drain();
+    harness.openPreviewTab(threadId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-browser-agent-stopped-delta"),
+      provider: ProviderDriverKind.make("grok"),
+      threadId,
+      createdAt: "2026-08-25T15:00:30.000Z",
+      turnId,
+      itemId: asItemId("item-browser-agent-stopped"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Everything requested is complete.\n\nAGENT_STOP",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-browser-agent-stopped-item-completed"),
+      provider: ProviderDriverKind.make("grok"),
+      threadId,
+      createdAt: "2026-08-25T15:00:31.000Z",
+      turnId,
+      itemId: asItemId("item-browser-agent-stopped"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+    await harness.drain();
+    expect(harness.interruptTurnCalls).toEqual([{ threadId, turnId }]);
+
+    // Grok's cancelled prompt can still settle its ACP request as a late
+    // success. The streamed control stop is authoritative for housekeeping,
+    // but it is not a failed user turn: keep the successful terminal state and
+    // suppress only synthetic cleanup/continuation work.
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-browser-agent-stopped-late-success"),
+      provider: ProviderDriverKind.make("grok"),
+      threadId,
+      createdAt: "2026-08-25T15:01:00.000Z",
+      turnId,
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("ready");
+    expect(thread?.latestTurn?.state).toBe("completed");
+    expect(
+      thread?.messages.some((message) =>
+        String(message.id).startsWith("browser-tab-cleanup-message:"),
+      ),
+    ).toBe(false);
+    expect(await harness.readThreadWork(threadId)).toEqual([]);
+    expect(await harness.readBrowserTabCleanupState(threadId)).toEqual([
+      {
+        tabSetJson: '["tab-test-1"]',
+        lastProcessedTurnId: null,
+        lastProcessedStartSequence: 0,
+      },
+    ]);
   });
 
   it("releases the thread when usage is exhausted and no failover target has quota", async () => {
@@ -2075,6 +2230,120 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("interrupts Agent mode at a streamed stop token and drops concatenated prose", async () => {
+    const harness = await createHarness({ interactionMode: "agent" });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-agent-stop-prefix"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop"),
+      itemId: asItemId("item-agent-stop"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Finished.\n\nAGENT_",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-agent-stop-suffix"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop"),
+      itemId: asItemId("item-agent-stop"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "STOPI'll continue working.",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-agent-stop-late-delta"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop"),
+      itemId: asItemId("item-agent-stop"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: " This must not be projected.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-agent-stop-completed"),
+      provider: ProviderDriverKind.make("grok"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop"),
+      itemId: asItemId("item-agent-stop"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    expect(
+      thread?.messages.find((message) => message.id === "assistant:item-agent-stop")?.text,
+    ).toBe("Finished.\n\nAGENT_STOP");
+    expect(harness.interruptTurnCalls).toEqual([
+      {
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-agent-stop"),
+      },
+    ]);
+  });
+
+  it("does not interrupt Agent mode for a stop-token mention in progress prose", async () => {
+    const harness = await createHarness({ interactionMode: "agent" });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-agent-stop-progress-mention"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop-progress-mention"),
+      itemId: asItemId("item-agent-stop-progress-mention"),
+      payload: {
+        streamKind: "assistant_text",
+        delta:
+          "I’m auditing the microphone and queued follow-ups/AGENT_STOP before the browser pass.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-agent-stop-progress-mention-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-agent-stop-progress-mention"),
+      itemId: asItemId("item-agent-stop-progress-mention"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    expect(
+      thread?.messages.find(
+        (message) => message.id === "assistant:item-agent-stop-progress-mention",
+      )?.text,
+    ).toBe("I’m auditing the microphone and queued follow-ups/AGENT_STOP before the browser pass.");
+    expect(harness.interruptTurnCalls).toEqual([]);
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {

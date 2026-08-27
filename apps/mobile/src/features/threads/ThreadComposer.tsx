@@ -68,6 +68,7 @@ import {
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
+import { resolveThreadComposerPrimaryAction } from "./threadComposerPrimaryAction";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -99,6 +100,7 @@ export interface ThreadComposerProps {
   readonly selectedThread: OrchestrationThreadShell;
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
+  readonly hasQueuedSendNow: boolean;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -278,7 +280,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const [previewImageUri, setPreviewImageUri] = useState<string | null>(null);
   const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
   const isExpanded = isFocused;
-  const canSend = hasContent;
+  const primaryAction = resolveThreadComposerPrimaryAction({
+    activeThreadBusy: props.activeThreadBusy,
+    connectionConnected: props.connectionState === "connected",
+    hasContent,
+    hasQueuedSendNow: props.hasQueuedSendNow,
+    queueCount: props.queueCount,
+  });
+  const { canSend, sendLabel, showStopAction } = primaryAction;
 
   const onPressImage = useCallback(
     (uri: string) => {
@@ -304,14 +313,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     setIsFocused(false);
     onExpandedChange?.(false);
   }, [onExpandedChange]);
-  const showStopAction =
-    props.selectedThread.session?.status === "running" ||
-    props.selectedThread.session?.status === "starting";
-
-  const sendLabel =
-    props.connectionState !== "connected" || props.activeThreadBusy || props.queueCount > 0
-      ? "Queue"
-      : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
   const currentRuntimeMode = props.selectedThread.runtimeMode;
   const currentInteractionMode = props.selectedThread.interactionMode ?? "default";

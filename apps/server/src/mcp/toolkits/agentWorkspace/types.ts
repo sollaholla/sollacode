@@ -24,7 +24,7 @@ export const AgentWorkspaceInput = Schema.Struct({
     "update_artifact",
   ]).annotate({
     description:
-      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. resolve_blocker clears one you raised once it no longer blocks you.",
+      "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you.",
   }),
   taskId: Schema.optional(Schema.String).annotate({
     description: "Task id for update_task or complete_task.",
@@ -34,7 +34,10 @@ export const AgentWorkspaceInput = Schema.Struct({
   completionCriteria: Schema.optional(VmAgentTask.fields.completionCriteria),
   schedule: Schema.optional(Schema.NullOr(VmAgentTaskSchedule)),
   notificationPolicy: Schema.optional(VmAgentTaskNotificationPolicy),
-  notificationBody: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
+  notificationBody: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))).annotate({
+    description:
+      "notify_user only: an independent informational update that requires no user action. Never use this to repeat or announce a report_blocker request; the waiting-on-you card is already the alert.",
+  }),
   artifactDefinition: Schema.optional(VmAgentArtifactDefinition),
   blockerId: Schema.optional(Schema.String).annotate({
     description:

@@ -9,8 +9,10 @@ import {
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Path from "effect/Path";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -130,7 +132,11 @@ const run = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    McpInvocationContext.McpInvocationContext | ServerConfig.ServerConfig | Services
+    | McpInvocationContext.McpInvocationContext
+    | ServerConfig.ServerConfig
+    | FileSystem.FileSystem
+    | Path.Path
+    | Services
   >,
   layer: Layer.Layer<Services>,
   capabilities?: Set<McpInvocationContext.McpCapability>,

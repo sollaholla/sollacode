@@ -30,6 +30,11 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
+  consumeAgentStopStreamDelta,
+  INITIAL_AGENT_STOP_STREAM_STATE,
+  type AgentStopStreamState,
+} from "@t3tools/shared/agentMode";
+import {
   browserTabCleanupIds,
   browserTabCleanupPrompt,
   decideBrowserTabCleanup,
@@ -68,6 +73,11 @@ import { PreviewManager } from "../../preview/Manager.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
+const providerAssistantStreamKey = (
+  threadId: ThreadId,
+  turnId: TurnId,
+  itemId: string | undefined,
+) => `${providerTurnKey(threadId, turnId)}:${itemId ?? "turn"}`;
 
 interface AssistantSegmentState {
   baseKey: string;
@@ -87,6 +97,8 @@ const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY = 10_000;
 const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL = Duration.hours(24);
 const CONTEXT_COMPACTION_METRIC_CACHE_CAPACITY = 10_000;
 const CONTEXT_COMPACTION_METRIC_TTL = Duration.hours(2);
+const AGENT_STOP_STREAM_CACHE_CAPACITY = 10_000;
+const AGENT_STOP_STREAM_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -923,6 +935,23 @@ const make = Effect.gen(function* () {
       ),
   });
 
+  const agentStopStreamStateByTurnKey = yield* Cache.make<string, AgentStopStreamState>({
+    capacity: AGENT_STOP_STREAM_CACHE_CAPACITY,
+    timeToLive: AGENT_STOP_STREAM_TTL,
+    lookup: () => Effect.succeed(INITIAL_AGENT_STOP_STREAM_STATE),
+  });
+
+  // Keep this separate from the per-item parser state. Browser cleanup is
+  // planned from a later turn.completed event, after the item that emitted the
+  // control stop may already have been finalized and forgotten. The turn-level
+  // marker closes that race without treating ordinary mentions of AGENT_STOP
+  // as control flow.
+  const emittedAgentStopByTurnKey = yield* Cache.make<string, boolean>({
+    capacity: AGENT_STOP_STREAM_CACHE_CAPACITY,
+    timeToLive: AGENT_STOP_STREAM_TTL,
+    lookup: () => Effect.succeed(false),
+  });
+
   const bufferedProposedPlanById = yield* Cache.make<string, { text: string; createdAt: string }>({
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
@@ -977,6 +1006,15 @@ const make = Effect.gen(function* () {
       readonly turnId: TurnId;
       readonly updatedAt: string;
     }) {
+      // Housekeeping must never supersede an unanswered human decision. A
+      // cleanup reminder is implemented as a synthetic follow-up turn; starting
+      // it while an action approval or provider question is open changes the
+      // thread's latest turn and can make the still-live prompt disappear from
+      // clients. The next substantive turn will establish a fresh tab baseline.
+      if (input.thread.hasPendingUserInput || input.thread.hasPendingApprovals) {
+        return { _tag: "None" } as const;
+      }
+
       // Plan before the ready session is committed so an Agent continuation and
       // its housekeeping follow-up can settle atomically. The projected row is
       // still authoritative: a late raw success after Stop sees interrupted
@@ -2041,10 +2079,15 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      const turnEmittedAgentStop =
+        event.type === "turn.completed" && eventTurnId !== undefined
+          ? yield* Cache.get(emittedAgentStopByTurnKey, providerTurnKey(thread.id, eventTurnId))
+          : false;
       const browserTabCleanupPlan =
         event.type === "turn.completed" &&
         shouldApplyThreadLifecycle &&
         normalizeRuntimeTurnState(event.payload.state) === "completed" &&
+        !turnEmittedAgentStop &&
         eventTurnId !== undefined
           ? yield* planBrowserTabCleanup({
               thread,
@@ -2204,7 +2247,27 @@ const make = Effect.gen(function* () {
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
-      if (assistantDelta && assistantDelta.length > 0) {
+      let projectedAssistantDelta = assistantDelta;
+      let streamedAgentStop = false;
+      const assistantTurnId = toTurnId(event.turnId) ?? thread.session?.activeTurnId ?? undefined;
+      if (
+        projectedAssistantDelta !== undefined &&
+        thread.interactionMode === "agent" &&
+        assistantTurnId !== undefined
+      ) {
+        // Agent messages within one provider turn are separate stream
+        // segments (for example, a progress update followed by the final
+        // answer). Never carry a partial control-token candidate from one
+        // assistant item into the next.
+        const streamKey = providerAssistantStreamKey(thread.id, assistantTurnId, event.itemId);
+        const streamState = yield* Cache.get(agentStopStreamStateByTurnKey, streamKey);
+        const consumed = consumeAgentStopStreamDelta(streamState, projectedAssistantDelta);
+        yield* Cache.set(agentStopStreamStateByTurnKey, streamKey, consumed.state);
+        projectedAssistantDelta = consumed.delta;
+        streamedAgentStop = consumed.emittedStop;
+      }
+
+      if (projectedAssistantDelta && projectedAssistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
@@ -2220,7 +2283,10 @@ const make = Effect.gen(function* () {
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
         );
         if (assistantDeliveryMode === "buffered") {
-          const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
+          const spillChunk = yield* appendBufferedAssistantText(
+            assistantMessageId,
+            projectedAssistantDelta,
+          );
           if (spillChunk.length > 0) {
             yield* orchestrationEngine.dispatch({
               type: "thread.message.assistant.delta",
@@ -2238,11 +2304,33 @@ const make = Effect.gen(function* () {
             commandId: yield* providerCommandId(event, "assistant-delta"),
             threadId: thread.id,
             messageId: assistantMessageId,
-            delta: assistantDelta,
+            delta: projectedAssistantDelta,
             ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
         }
+      }
+
+      if (streamedAgentStop && assistantTurnId !== undefined) {
+        yield* Cache.set(
+          emittedAgentStopByTurnKey,
+          providerTurnKey(thread.id, assistantTurnId),
+          true,
+        );
+        yield* providerService
+          .interruptTurn({
+            threadId: thread.id,
+            turnId: assistantTurnId,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("agent-stop.stream-interrupt-failed", {
+                threadId: thread.id,
+                turnId: assistantTurnId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
       }
 
       const pauseForUserTurnId =

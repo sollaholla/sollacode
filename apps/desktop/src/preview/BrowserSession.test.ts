@@ -63,6 +63,18 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("preserves Electron's native user agent for browser integrity checks", () =>
+    Effect.gen(function* () {
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const partition = yield* browserSessions.getPartition("scope-a");
+      const browserSession = yield* browserSessions.getSession("scope-a");
+
+      assert.strictEqual(browserSession as unknown, sessions.get(partition));
+      assert.strictEqual(sessions.get(partition)?.getUserAgent.mock.calls.length, 0);
+      assert.strictEqual(sessions.get(partition)?.setUserAgent.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("grants clipboard-sanitized-write through both the request and check handlers", () =>
     Effect.gen(function* () {
       const browserSessions = yield* BrowserSession.BrowserSession;

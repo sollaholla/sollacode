@@ -1,10 +1,13 @@
+import * as NodeOS from "node:os";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -27,13 +30,15 @@ import {
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
+  HostRepairStartError,
+  MessageId,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   ProviderAccountSwitchError,
   ORCHESTRATION_WS_METHODS,
-  type ProjectId,
+  ProjectId,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -56,6 +61,7 @@ import {
   type TerminalMetadataStreamItem,
   type VmAgentStreamItem,
   type VmAgentAttentionStreamItem,
+  type VmAgentId,
   VmAgentNotFoundError,
   VmAgentWorkspaceOperationError,
   type VmAgentWorkspaceStreamItem,
@@ -101,6 +107,11 @@ import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as RemoteControlBroker from "./remoteControl/RemoteControlBroker.ts";
 import * as VmManager from "./vm/VmManager.ts";
 import * as VmAgentWorkspace from "./vm/VmAgentWorkspace.ts";
+import {
+  readVmAgentRulesFile,
+  resolveVmAgentRulesPath,
+  writeVmAgentRulesFile,
+} from "./vm/VmAgentRules.ts";
 import * as VmAgentTaskScheduler from "./vm/VmAgentTaskScheduler.ts";
 import * as VmAgentCollaboration from "./vm/VmAgentCollaboration.ts";
 import {
@@ -112,6 +123,7 @@ import {
 import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import { captureRemotePreviewSnapshot } from "./preview/RemotePreviewCapture.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -132,6 +144,7 @@ import * as ByteBoundedResyncBuffer from "./stream/ByteBoundedResyncBuffer.ts";
 import * as ProjectionLiveBuffer from "./stream/ProjectionLiveBuffer.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import { buildHostRepairPrompt, hostRepairWorkspaceName } from "./hostRepair.ts";
 import { ThreadArtifactService } from "./artifacts/ThreadArtifactService.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -549,6 +562,8 @@ const makeWsRpcLayer = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const threadSubscriptionRegistry =
         yield* ThreadSubscriptionRegistry.ThreadSubscriptionRegistry;
@@ -703,6 +718,59 @@ const makeWsRpcLayer = (
       const serverEventId = randomUUID.pipe(Effect.map(EventId.make));
       const serverCommandId = (tag: string) =>
         randomUUID.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
+
+      const resolveVmAgentRulesFile = Effect.fn("Ws.resolveVmAgentRulesFile")(function* (
+        vmAgentId: VmAgentId,
+      ) {
+        const agent = yield* vmAgentStore.getById(vmAgentId).pipe(
+          Effect.mapError(
+            (error) =>
+              new VmAgentWorkspaceOperationError({
+                operation: "resolving agent rules",
+                detail: error.message,
+              }),
+          ),
+        );
+        if (Option.isNone(agent)) {
+          return yield* new VmAgentNotFoundError({ vmAgentId });
+        }
+        if (agent.value.threadId === null) {
+          return yield* new VmAgentWorkspaceOperationError({
+            operation: "resolving agent rules",
+            detail: "The agent has no dedicated chat session.",
+          });
+        }
+        const thread = yield* projectionSnapshotQuery.getThreadShellById(agent.value.threadId).pipe(
+          Effect.mapError(
+            (error) =>
+              new VmAgentWorkspaceOperationError({
+                operation: "resolving agent rules",
+                detail: error.message,
+              }),
+          ),
+        );
+        if (Option.isNone(thread) || thread.value.worktreePath === null) {
+          return yield* new VmAgentWorkspaceOperationError({
+            operation: "resolving agent rules",
+            detail: "The agent does not have a dedicated working directory yet.",
+          });
+        }
+        const rulesPath = resolveVmAgentRulesPath(
+          path,
+          config.agentsWorkspaceDir,
+          thread.value.worktreePath,
+        );
+        if (rulesPath === null) {
+          return yield* new VmAgentWorkspaceOperationError({
+            operation: "resolving agent rules",
+            detail: "The agent working directory is not isolated below the agents directory.",
+          });
+        }
+        return {
+          rulesPath,
+          claudeRulesPath: path.join(path.dirname(rulesPath), "CLAUDE.md"),
+        };
+      });
 
       const loadAuthAccessSnapshot = () =>
         Effect.all({
@@ -1271,6 +1339,115 @@ const makeWsRpcLayer = (
           );
       };
 
+      const startHostRepair = Effect.fn("Ws.startHostRepair")(
+        function* (input: { readonly sourceThreadId: ThreadId }) {
+          const sourceThread = yield* projectionSnapshotQuery
+            .getThreadShellById(input.sourceThreadId)
+            .pipe(Effect.map(Option.getOrUndefined));
+          if (!sourceThread) {
+            return yield* new HostRepairStartError({
+              detail: `Source thread ${input.sourceThreadId} no longer exists.`,
+            });
+          }
+
+          const utilityModelSelection = ServerSettings.resolveUtilityAiModelSelection(
+            yield* serverSettings.getSettings.pipe(
+              Effect.mapError(
+                (error) =>
+                  new HostRepairStartError({
+                    detail: `Could not resolve the Utility AI model: ${error.message}`,
+                  }),
+              ),
+            ),
+          );
+
+          const descriptor = yield* serverEnvironment.getDescriptor;
+          const projectTitle = hostRepairWorkspaceName(NodeOS.hostname());
+          const workspaceRoot = path.join(NodeOS.homedir(), projectTitle);
+          const existingProject = yield* projectionSnapshotQuery
+            .getActiveProjectByWorkspaceRoot(workspaceRoot)
+            .pipe(Effect.map(Option.getOrUndefined));
+          const reusedProject = existingProject !== undefined;
+          const projectId = existingProject?.id ?? ProjectId.make(yield* randomUUID);
+          const createdAt = yield* nowIso;
+
+          if (!existingProject) {
+            const createProject = yield* normalizeDispatchCommand({
+              type: "project.create",
+              commandId: yield* serverCommandId("host-repair-project-create"),
+              projectId,
+              title: projectTitle,
+              workspaceRoot,
+              createWorkspaceRootIfMissing: true,
+              defaultModelSelection: utilityModelSelection,
+              createdAt,
+            });
+            yield* dispatchNormalizedCommand(createProject);
+          }
+
+          const existingThreadId = yield* projectionSnapshotQuery
+            .getFirstActiveThreadIdByProjectId(projectId)
+            .pipe(Effect.map(Option.getOrUndefined));
+          const reusedThread = existingThreadId !== undefined;
+          const threadId = existingThreadId ?? ThreadId.make(yield* randomUUID);
+
+          if (!existingThreadId) {
+            const createThread = yield* normalizeDispatchCommand({
+              type: "thread.create",
+              commandId: yield* serverCommandId("host-repair-thread-create"),
+              threadId,
+              projectId,
+              title: "Fix storage and orphaned workers",
+              modelSelection: utilityModelSelection,
+              runtimeMode: "approval-required",
+              interactionMode: "agent",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            });
+            yield* dispatchNormalizedCommand(createThread);
+          }
+
+          const startTurn = yield* normalizeDispatchCommand({
+            type: "thread.turn.start",
+            commandId: yield* serverCommandId("host-repair-turn-start"),
+            threadId,
+            message: {
+              messageId: MessageId.make(yield* randomUUID),
+              role: "user",
+              text: buildHostRepairPrompt({
+                environmentLabel: descriptor.label,
+                platform: `${descriptor.platform.os}/${descriptor.platform.arch}`,
+                triggeringError: sourceThread.session?.lastError ?? null,
+              }),
+              attachments: [],
+            },
+            modelSelection: utilityModelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "agent",
+            createdAt,
+          });
+          yield* dispatchNormalizedCommand(startTurn);
+
+          return {
+            projectId,
+            threadId,
+            projectTitle,
+            workspaceRoot,
+            reusedProject,
+            reusedThread,
+          };
+        },
+        Effect.catchCause((cause) =>
+          Effect.fail(
+            new HostRepairStartError({
+              detail: Cause.pretty(cause).split("\n")[0] || "Host repair could not be started.",
+              cause: Cause.squash(cause),
+            }),
+          ),
+        ),
+      );
+
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
@@ -1709,6 +1886,20 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverConsumeProviderUsageReset]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverConsumeProviderUsageReset,
+            Effect.gen(function* () {
+              const outcome = yield* providerRegistry.consumeUsageReset({
+                instanceId: input.instanceId,
+                idempotencyKey: input.idempotencyKey,
+                ...(input.creditId ? { creditId: input.creditId } : {}),
+              });
+              const providers = yield* providerRegistry.refreshInstance(input.instanceId);
+              return { outcome, providers };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverStartProviderAccountSwitch]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverStartProviderAccountSwitch,
@@ -1808,6 +1999,12 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.voiceTranscriptCorrect]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.voiceTranscriptCorrect,
+            textGeneration.correctVoiceTranscript(input),
+            { "rpc.aggregate": "voice" },
+          ),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
@@ -1849,6 +2046,10 @@ const makeWsRpcLayer = (
           ),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRetryResourceTelemetry, resourceTelemetry.retry, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverStartHostRepair]: (input) =>
+          observeRpcEffect(WS_METHODS.serverStartHostRepair, startHostRepair(input), {
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverSignalProcess]: (input) =>
@@ -2478,6 +2679,22 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.previewList, previewManager.list(input), {
             "rpc.aggregate": "preview",
           }),
+        [WS_METHODS.previewRemoteSnapshot]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewRemoteSnapshot,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+              return yield* captureRemotePreviewSnapshot({
+                broker: previewAutomationBroker,
+                environmentId,
+                sessionId: currentSessionId,
+                request: input,
+                issuedAt,
+              });
+            }),
+            { "rpc.aggregate": "preview" },
+          ),
         [WS_METHODS.previewReportStatus]: (input) =>
           observeRpcEffect(WS_METHODS.previewReportStatus, previewManager.reportStatus(input), {
             "rpc.aggregate": "preview",
@@ -2578,7 +2795,10 @@ const makeWsRpcLayer = (
             WS_METHODS.vmAgentCreate,
             Effect.gen(function* () {
               // Create the agent's dedicated chat thread first, then the agent.
-              const threadId = yield* createAgentThread(input.name);
+              const threadId = yield* createAgentThread(input.name).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+              );
               const agent = yield* vmManager.create({ ...input, threadId });
               yield* vmAgentWorkspace
                 .ensure(agent.vmAgentId)
@@ -2650,6 +2870,52 @@ const makeWsRpcLayer = (
                 return buffer.stream;
               }),
             ),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentRulesGet]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentRulesGet,
+            Effect.gen(function* () {
+              const { rulesPath } = yield* resolveVmAgentRulesFile(input.vmAgentId);
+              return yield* readVmAgentRulesFile({
+                fileSystem,
+                rulesPath,
+                vmAgentId: input.vmAgentId,
+              }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new VmAgentWorkspaceOperationError({
+                      operation: "reading agent rules",
+                      detail: error.detail,
+                    }),
+                ),
+              );
+            }),
+            { "rpc.aggregate": "vm-workspace" },
+          ),
+        [WS_METHODS.vmAgentRulesUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentRulesUpdate,
+            Effect.gen(function* () {
+              const { claudeRulesPath, rulesPath } = yield* resolveVmAgentRulesFile(
+                input.vmAgentId,
+              );
+              return yield* writeVmAgentRulesFile({
+                claudeRulesPath,
+                content: input.content,
+                fileSystem,
+                rulesPath,
+                vmAgentId: input.vmAgentId,
+              }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new VmAgentWorkspaceOperationError({
+                      operation: "saving agent rules",
+                      detail: error.detail,
+                    }),
+                ),
+              );
+            }),
             { "rpc.aggregate": "vm-workspace" },
           ),
         [WS_METHODS.vmAgentAttentionSubscribe]: () =>
@@ -2795,13 +3061,24 @@ const makeWsRpcLayer = (
                   detail: "The agent chat session no longer exists.",
                 });
               }
+              const modelSelection = ServerSettings.resolveUtilityAiModelSelection(
+                yield* serverSettings.getSettings.pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new VmAgentWorkspaceOperationError({
+                        operation: "resolving Utility AI model for task drafting",
+                        detail: error.message,
+                      }),
+                  ),
+                ),
+              );
               return yield* textGeneration.generateVmAgentTaskPrompt({
-                cwd: config.agentsWorkspaceDir,
+                cwd: thread.value.worktreePath ?? config.agentsWorkspaceDir,
                 agentName: agent.value.name,
                 agentPurpose: agent.value.purpose,
                 request: input.request,
                 currentTime: yield* nowIso,
-                modelSelection: thread.value.modelSelection,
+                modelSelection,
               });
             }),
             { "rpc.aggregate": "vm-workspace" },

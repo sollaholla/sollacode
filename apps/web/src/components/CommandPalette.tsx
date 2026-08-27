@@ -539,7 +539,9 @@ function CommandPaletteDialog(props: {
         // keyboard. With a soft one it means dismissing the palette pops a
         // keyboard over the thread, which is not what closing a dialog asks
         // for.
-        if (shouldRestoreComposerFocus({ usesOnScreenKeyboard })) {
+        if (
+          shouldRestoreComposerFocus({ previewFocused: isPreviewFocused(), usesOnScreenKeyboard })
+        ) {
           composerHandleRef?.current?.focusAtEnd();
         }
         return false;

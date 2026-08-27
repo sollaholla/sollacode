@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   browserTabCleanupIds,
   browserTabCleanupPrompt,
+  browserTabCleanupSourceTurnId,
   decideBrowserTabCleanup,
   isBrowserTabCleanupMessageId,
 } from "./browserTabCleanup.ts";
@@ -16,6 +17,15 @@ describe("browser tab cleanup", () => {
     });
     expect(isBrowserTabCleanupMessageId(ids.messageId)).toBe(true);
     expect(isBrowserTabCleanupMessageId("agent-auto-resume-message:thread-1:turn-2")).toBe(false);
+    expect(browserTabCleanupSourceTurnId({ threadId: "thread-1", messageId: ids.messageId })).toBe(
+      "turn-2",
+    );
+    expect(
+      browserTabCleanupSourceTurnId({
+        threadId: "another-thread",
+        messageId: ids.messageId,
+      }),
+    ).toBeNull();
   });
 
   it("seeds an unknown baseline and compares normalized sets", () => {

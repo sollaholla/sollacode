@@ -325,6 +325,14 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId }) => environmentId,
       },
     }),
+    consumeProviderUsageReset: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:consume-provider-usage-reset",
+      tag: WS_METHODS.serverConsumeProviderUsageReset,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.instanceId}`,
+      },
+    }),
     startProviderAccountSwitch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:start-provider-account-switch",
       tag: WS_METHODS.serverStartProviderAccountSwitch,
@@ -396,6 +404,14 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    correctVoiceTranscript: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:voice-transcript-correct",
+      tag: WS_METHODS.voiceTranscriptCorrect,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,
@@ -403,6 +419,14 @@ export function createServerEnvironmentAtoms<R, E>(
     retryResourceTelemetry: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-resource-telemetry",
       tag: WS_METHODS.serverRetryResourceTelemetry,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    startHostRepair: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:start-host-repair",
+      tag: WS_METHODS.serverStartHostRepair,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,

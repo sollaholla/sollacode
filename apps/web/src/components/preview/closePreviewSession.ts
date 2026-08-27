@@ -49,10 +49,11 @@ interface ReconcileLegacyPreviewCloseInput<ListError, OpenError> {
   readonly closeResult: PreviewCloseResult | undefined;
   readonly listPreviews: () => Promise<AtomCommandResult<PreviewListResult, ListError>>;
   readonly openBlankPreview: () => Promise<AtomCommandResult<PreviewSessionSnapshot, OpenError>>;
+  readonly retainBlankTab: boolean;
   readonly threadRef: ScopedThreadRef;
 }
 
-/** Restores the one-tab invariant for servers whose close RPC still returns void. */
+/** Restores the agent-only one-tab invariant for servers whose close RPC still returns void. */
 export async function reconcileLegacyPreviewClose<ListError, OpenError>(
   input: ReconcileLegacyPreviewCloseInput<ListError, OpenError>,
 ): Promise<boolean> {
@@ -61,7 +62,7 @@ export async function reconcileLegacyPreviewClose<ListError, OpenError>(
   const listed = await input.listPreviews();
   if (listed._tag === "Failure") return false;
   reconcilePreviewServerSessions(input.threadRef, listed.value);
-  if (listed.value.sessions.length > 0) return false;
+  if (!input.retainBlankTab || listed.value.sessions.length > 0) return false;
 
   const opened = await input.openBlankPreview();
   if (opened._tag === "Failure") return false;

@@ -45,6 +45,20 @@ declare global {
   }
 }
 
+/**
+ * `webview` has no dash, so React treats it as a plain HTML element rather than
+ * a custom one — and React drops unknown attributes whose value is a boolean.
+ * Passing `allowpopups` as a JSX boolean therefore never reaches the DOM, and
+ * without the attribute Chromium blocks every `window.open` from the guest
+ * *before* Electron's window-open handler runs. The page receives a null
+ * WindowProxy, which is why OAuth popups ("Sign in with Google") read as dead
+ * clicks. React's own JSX types declare the attribute boolean, hence the cast.
+ *
+ * Applied declaratively rather than through the ref: Electron reads the
+ * attribute while attaching the guest, which can race a ref callback.
+ */
+const ALLOW_POPUPS_ATTRIBUTE = { allowpopups: "" } as unknown as { allowpopups?: boolean };
+
 export function HostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
   readonly browserProfileThreadId?: ThreadId | undefined;
@@ -122,7 +136,6 @@ export function HostedBrowserWebview(props: {
     const webview = node as ElectronWebview | null;
     webviewRef.current = webview;
     applyHostedBrowserWebviewAudio(webview, audibleRef.current);
-    if (node && !node.hasAttribute("allowpopups")) node.setAttribute("allowpopups", "true");
   }, []);
 
   useLayoutEffect(() => {
@@ -335,6 +348,7 @@ export function HostedBrowserWebview(props: {
         <webview
           key={webviewGeneration}
           ref={setWebviewRef}
+          {...ALLOW_POPUPS_ATTRIBUTE}
           src={webviewGeneration === 0 ? initialSrc : recoverySrc}
           partition={config.partition}
           webpreferences={config.webPreferences}

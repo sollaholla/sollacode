@@ -12,6 +12,43 @@ export function toJsonSchemaObject(schema: Schema.Top): unknown {
   return document.schema;
 }
 
+function flattenJsonSchemaAllOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(flattenJsonSchemaAllOf);
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  const source = value as Record<string, unknown>;
+  const flattened = Object.fromEntries(
+    Object.entries(source)
+      .filter(([key]) => key !== "allOf")
+      .map(([key, entry]) => [key, flattenJsonSchemaAllOf(entry)]),
+  );
+  if (!Array.isArray(source.allOf)) {
+    return flattened;
+  }
+
+  // Effect Schema represents stacked refinements (for example an integer with
+  // both minimum and maximum checks) as `allOf`. Codex structured outputs do
+  // not accept that keyword, but do accept the same validation keywords on the
+  // schema node itself. Effect's refinement fragments are independent objects,
+  // so a shallow merge preserves their conjunction without weakening it.
+  for (const conjunct of source.allOf) {
+    const normalized = flattenJsonSchemaAllOf(conjunct);
+    if (normalized !== null && typeof normalized === "object" && !Array.isArray(normalized)) {
+      Object.assign(flattened, normalized);
+    }
+  }
+  return flattened;
+}
+
+/** Convert Effect Schema output to the strict JSON-Schema subset accepted by Codex. */
+export function toCodexJsonSchemaObject(schema: Schema.Top): unknown {
+  return flattenJsonSchemaAllOf(toJsonSchemaObject(schema));
+}
+
 /** Truncate a text section to `maxChars`, appending a `[truncated]` marker when needed. */
 export function limitSection(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -61,6 +98,12 @@ export function sanitizeThreadTitle(raw: string): string {
   }
 
   return `${normalized.slice(0, 47).trimEnd()}...`;
+}
+
+export function sanitizeCorrectedVoiceTranscript(generated: string, original: string): string {
+  const corrected = generated.trim();
+  if (corrected.length === 0 || corrected.length > 8_000) return original;
+  return corrected;
 }
 
 const PLAN_REFRESH_MAX_STEPS = 40;

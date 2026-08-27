@@ -199,14 +199,14 @@ describe("ProviderCommandReactor", () => {
       ).toBe("proceed");
     });
 
-    it("gives up once a genuinely later user turn exists", () => {
+    it("keeps an older real user send when a later one is queued", () => {
       expect(
         classifyTurnStartRecovery({
           sourceMessage: userMessage,
           messageId,
           hasLaterRealUserTurn: true,
         }),
-      ).toBe("superseded");
+      ).toBe("proceed");
     });
 
     it("gives up when the message is not a real user send", () => {
@@ -1040,6 +1040,146 @@ describe("ProviderCommandReactor", () => {
         (message) => message.role === "user" && message.inputOrigin === "agent-loop",
       ),
     ).toHaveLength(2);
+  });
+
+  it("cancels persisted browser cleanup when its source turn signed off", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const threadId = ThreadId.make("thread-1");
+    const sourceTurnId = asTurnId("turn-browser-cleanup-source-stopped");
+    const sourceMessageId = asMessageId("user-browser-cleanup-source-stopped");
+    const assistantMessageId = asMessageId("assistant-browser-cleanup-source-stopped");
+    const cleanupMessageId = asMessageId(`browser-tab-cleanup-message:${threadId}:${sourceTurnId}`);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("cmd-browser-cleanup-source-agent-mode"),
+        threadId,
+        interactionMode: "agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-browser-cleanup-source-turn"),
+        threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Complete the requested work and stop.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-browser-cleanup-source-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-browser-cleanup-source-assistant-delta"),
+        threadId,
+        messageId: assistantMessageId,
+        delta: "Everything requested is complete.\n\nAGENT_STOP",
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-browser-cleanup-source-assistant-complete"),
+        threadId,
+        messageId: assistantMessageId,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-browser-cleanup-source-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    // Model the crash-window backstop directly: the cleanup turn was already
+    // persisted before the stop marker won ingestion's planning race.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-browser-cleanup-persisted-before-stop"),
+        threadId,
+        message: {
+          messageId: cleanupMessageId,
+          role: "user",
+          text: "Browser tab check: close tabs you no longer need.",
+          inputOrigin: "agent-loop",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.startReactor();
+
+    const cleanupSourceTurnId = activeTurnWorkSourceId(cleanupMessageId);
+    await waitFor(async () => {
+      const cleanup = await Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: cleanupSourceTurnId,
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+      return cleanup?.state === "cancelled";
+    });
+
+    const cleanup = await Effect.runPromise(
+      harness.threadWorkObligations
+        .getByKey({
+          threadId,
+          sourceTurnId: cleanupSourceTurnId,
+          kind: "active-turn-recovery",
+        })
+        .pipe(Effect.map(Option.getOrUndefined)),
+    );
+    expect(cleanup?.blockedReason).toContain("signed off with Agent stop");
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it("recovers an already-projected Agent continuation after a server restart", async () => {
@@ -2269,6 +2409,60 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
+  it("stops after one local Codex control-plane startup timeout", async () => {
+    const harness = await createHarness({
+      startSessionEffect: () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "thread/resume",
+            detail: "Codex App Server did not respond to 'thread/resume' within 90000ms.",
+            failureKind: "local-control-timeout",
+          }),
+        ),
+    });
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-local-control-timeout");
+    const sourceTurnId = activeTurnWorkSourceId(messageId);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-local-control-timeout"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: "start once",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitFor(async () => {
+      const work = await Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({ threadId, sourceTurnId, kind: "active-turn-recovery" })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+      return work?.state === "cancelled";
+    });
+
+    const cancelled = await Effect.runPromise(
+      harness.threadWorkObligations
+        .getByKey({ threadId, sourceTurnId, kind: "active-turn-recovery" })
+        .pipe(Effect.map(Option.getOrUndefined)),
+    );
+    expect(cancelled?.attempt).toBe(1);
+    expect(cancelled?.blockedReason).toContain("Provider startup timed out");
+    expect(cancelled?.blockedReason).not.toContain("Gave up after");
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
   it("surfaces a missing Claude binary as a short error and stops retrying", async () => {
     const harness = await createHarness({
       startSessionEffect: () =>
@@ -3168,13 +3362,22 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(async () => (await obligationState("steer-msg-3")) === "executing");
 
-    // Message 4 mid-turn 2 with a refused steer, then the user presses Stop:
-    // the parked message survives the interrupt sweep and delivers once the
-    // provider reports the turn gone.
+    // Messages 4 and 5 arrive mid-turn 2 and both steers are refused. Stop must
+    // preserve the entire parked batch, then the scheduler must deliver it in
+    // original FIFO order rather than keeping only the newest correction.
     refuseSteerFor.add("steer-msg-4");
     await dispatchTurn("cmd-steer-msg4", "steer-msg-4", "after stop", "2026-01-01T00:00:07.000Z");
     await waitFor(() => harness.sendTurn.mock.calls.length === 5); // refused steer attempt
     expect(await obligationState("steer-msg-4")).toBe("pending");
+    refuseSteerFor.add("steer-msg-5");
+    await dispatchTurn(
+      "cmd-steer-msg5",
+      "steer-msg-5",
+      "also after stop",
+      "2026-01-01T00:00:07.500Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 6); // second refused steer attempt
+    expect(await obligationState("steer-msg-5")).toBe("pending");
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.interrupt",
@@ -3185,9 +3388,37 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     expect(await obligationState("steer-msg-4")).toBe("pending");
+    expect(await obligationState("steer-msg-5")).toBe("pending");
+    const attemptsBeforeRelease = harness.sendTurn.mock.calls.length;
     providerIdle();
     await setSession("cmd-steer-idle-2", "ready", null, "2026-01-01T00:00:09.000Z");
-    await waitFor(() => deliveredMessageIds().includes("steer-msg-4"));
+    await waitFor(() => harness.sendTurn.mock.calls.length === attemptsBeforeRelease + 1);
+    expect(deliveredMessageIds()[attemptsBeforeRelease]).toBe("steer-msg-4");
+
+    await setSession(
+      "cmd-steer-running-3",
+      "running",
+      asTurnId("turn-live-3"),
+      "2026-01-01T00:00:10.000Z",
+    );
+    providerIdle();
+    await setSession("cmd-steer-idle-3", "ready", null, "2026-01-01T00:00:11.000Z");
+    await waitFor(() => harness.sendTurn.mock.calls.length === attemptsBeforeRelease + 2);
+    expect(deliveredMessageIds()[attemptsBeforeRelease + 1]).toBe("steer-msg-5");
+
+    await setSession(
+      "cmd-steer-running-4",
+      "running",
+      asTurnId("turn-live-4"),
+      "2026-01-01T00:00:12.000Z",
+    );
+    providerIdle();
+    await setSession("cmd-steer-idle-4", "ready", null, "2026-01-01T00:00:13.000Z");
+    await waitFor(
+      async () =>
+        (await obligationState("steer-msg-4")) === "completed" &&
+        (await obligationState("steer-msg-5")) === "completed",
+    );
     // The steered message was consumed by the live turn — it must not be
     // re-delivered as its own turn afterwards.
     expect(deliveredMessageIds().filter((messageId) => messageId === "steer-msg-2")).toHaveLength(
@@ -5517,6 +5748,78 @@ describe("ProviderCommandReactor", () => {
     );
     await harness.drain();
     expect(harness.respondToUserInput).not.toHaveBeenCalled();
+  });
+
+  it("resumes a durable action approval in a fresh turn without blocking the MCP lane", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const requestId = asApprovalRequestId("action-approval:durable-request-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-durable-action-approval-requested"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-durable-action-approval-requested"),
+          tone: "approval",
+          kind: "user-input.requested",
+          summary: "Action approval requested",
+          payload: {
+            requestId,
+            questions: [],
+            actionApproval: {
+              actionKind: "publish_content",
+              summary: "Publish Pawstalgia video to YouTube",
+              preview: "Destination: @PawstalgiaTunes\nTitle: Gloria's Rainy Cottage",
+            },
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.make("cmd-durable-action-approval-respond"),
+        threadId: ThreadId.make("thread-1"),
+        requestId,
+        answers: { t3_action_approval: "Approve" },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+      return (
+        thread?.messages.some(
+          (message) => message.id === `action-approval-response:${requestId}`,
+        ) === true
+      );
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === requestId,
+      ),
+    ).toBe(true);
+    expect(
+      thread?.messages.find((message) => message.id === `action-approval-response:${requestId}`)
+        ?.text,
+    ).toContain("Proceed with exactly that action now");
+    expect(
+      thread?.messages.find((message) => message.id === `action-approval-response:${requestId}`)
+        ?.text,
+    ).toContain("Gloria's Rainy Cottage");
   });
 
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {

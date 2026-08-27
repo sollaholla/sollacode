@@ -46,6 +46,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  "upload",
   "close",
 ] as const;
 
@@ -67,6 +68,56 @@ const PreviewAutomationTabTargetFields = {
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+export const PREVIEW_HUMAN_VERIFICATION_COMPATIBILITY_URL =
+  "https://debug.challenges.cloudflare.com/" as const;
+export const PREVIEW_HUMAN_VERIFICATION_FEEDBACK_URL =
+  "https://developers.cloudflare.com/turnstile/troubleshooting/feedback-reports/" as const;
+
+/**
+ * A challenge page that must remain in the user's hands. The nullable
+ * diagnostics are deliberately explicit: hosts report only facts they can
+ * observe and never guess at VPN, extension, reachability, or challenge
+ * internals.
+ */
+export const PreviewHumanVerification = Schema.Struct({
+  state: Schema.Literal("human_verification_required"),
+  kind: Schema.Literals(["embedded-turnstile", "full-page-challenge", "bot-detection"]),
+  code: Schema.NullOr(Schema.String.check(Schema.isMaxLength(32))),
+  detectedAt: Schema.String,
+  url: Schema.String.check(Schema.isMaxLength(2_048)),
+  retryCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).check(
+    Schema.isLessThanOrEqualTo(1),
+  ),
+  retryAvailable: Schema.Boolean,
+  message: Schema.String.check(Schema.isMaxLength(1_000)),
+  compatibilityCheckUrl: Schema.Literal(PREVIEW_HUMAN_VERIFICATION_COMPATIBILITY_URL),
+  feedbackUrl: Schema.Literal(PREVIEW_HUMAN_VERIFICATION_FEEDBACK_URL),
+  diagnostic: Schema.Struct({
+    browserProduct: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+    browserVersion: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+    browserUserAgent: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1_024))),
+    embeddedBrowser: Schema.Boolean,
+    headedBrowser: Schema.Boolean,
+    automationAvailable: Schema.Boolean,
+    cdpAttached: Schema.NullOr(Schema.Boolean),
+    viewportMode: Schema.NullOr(Schema.Literals(["fill", "freeform", "preset"])),
+    colorSchemeOverride: Schema.NullOr(Schema.Literals(["system", "light", "dark"])),
+    userAgentOverride: Schema.NullOr(Schema.Boolean),
+    canvasOverride: Schema.NullOr(Schema.Boolean),
+    webglOverride: Schema.NullOr(Schema.Boolean),
+    extensionsEnabled: Schema.NullOr(Schema.Boolean),
+    proxyOrVpn: Schema.NullOr(Schema.Boolean),
+    cfMitigated: Schema.NullOr(Schema.Boolean),
+    responseStatusCode: Schema.NullOr(Schema.Int),
+    challengesCloudflareReachable: Schema.NullOr(Schema.Boolean),
+    rayId: Schema.NullOr(Schema.String.check(Schema.isMaxLength(128))),
+    qrIdentifier: Schema.NullOr(Schema.String.check(Schema.isMaxLength(256))),
+    systemClockIso: Schema.String,
+    systemClockCorrect: Schema.NullOr(Schema.Boolean),
+  }),
+});
+export type PreviewHumanVerification = typeof PreviewHumanVerification.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -78,6 +129,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewportSetting: Schema.optional(PreviewViewportSetting),
   /** Measured guest-page viewport in CSS pixels when a webview is ready. */
   viewport: Schema.optional(PreviewRenderedViewportSize),
+  /** Optional for compatibility with hosts predating challenge handoff. */
+  humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -457,6 +510,51 @@ export const PreviewAutomationTypeInput = Schema.Struct({
   });
 export type PreviewAutomationTypeInput = typeof PreviewAutomationTypeInput.Type;
 
+const LocalUploadPath = Schema.String.check(Schema.isTrimmed())
+  .check(Schema.isNonEmpty({ description: "Absolute local path to an existing file." }))
+  .check(Schema.isMaxLength(4096))
+  .annotate({
+    description:
+      "Absolute path to a file on the browser host. The desktop validates that each path exists and is a regular file before exposing it to the page.",
+  });
+
+export const PreviewAutomationUploadInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  paths: Schema.Array(LocalUploadPath)
+    .check(Schema.isMinLength(1))
+    .check(Schema.isMaxLength(20))
+    .annotate({
+      description: "One to twenty absolute local file paths to attach to the page file input.",
+    }),
+  selector: Schema.optional(LegacySelector).annotate({
+    description:
+      "Legacy CSS selector for an input[type=file]. Omit both selector and locator to use the first file input in the page.",
+  }),
+  locator: Schema.optional(Locator).annotate({
+    description:
+      "Playwright locator for an input[type=file]. Omit both selector and locator to use the first file input in the page.",
+  }),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter(
+      (input) =>
+        !(input.selector !== undefined && input.locator !== undefined) ||
+        "Provide at most one of selector or locator.",
+    ),
+  )
+  .annotate({
+    description:
+      "Assigns local files directly to a page file input without opening the operating-system picker.",
+  });
+export type PreviewAutomationUploadInput = typeof PreviewAutomationUploadInput.Type;
+
+export const PreviewAutomationUploadResult = Schema.Struct({
+  fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
+  fileNames: Schema.Array(Schema.String),
+});
+export type PreviewAutomationUploadResult = typeof PreviewAutomationUploadResult.Type;
+
 export const PreviewAutomationPressInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   key: Schema.String.check(Schema.isTrimmed())
@@ -611,6 +709,8 @@ export const PreviewAutomationNetworkEntry = Schema.Struct({
   status: Schema.NullOr(Schema.Number),
   failed: Schema.Boolean,
   errorText: Schema.optional(Schema.String),
+  /** True when Cloudflare marked an HTML response as a Challenge Page. */
+  cfMitigated: Schema.optional(Schema.Boolean),
   timestamp: Schema.String,
 });
 export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
@@ -636,11 +736,13 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
   screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
+    mimeType: Schema.Literal("image/jpeg"),
     data: Schema.String,
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /** Optional for compatibility with hosts predating challenge handoff. */
+  humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 
@@ -851,6 +953,19 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
   }
 }
 
+export class PreviewAutomationHumanVerificationRequiredError extends Schema.TaggedErrorClass<PreviewAutomationHumanVerificationRequiredError>()(
+  "PreviewAutomationHumanVerificationRequiredError",
+  {
+    ...PreviewAutomationRequestErrorFields,
+    ...PreviewAutomationRemoteDiagnosticFields,
+    verification: PreviewHumanVerification,
+  },
+) {
+  override get message(): string {
+    return `Preview automation ${this.operation} is paused because tab ${this.tabId ?? "unassigned"} requires human verification.`;
+  }
+}
+
 export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<PreviewAutomationExecutionError>()(
   "PreviewAutomationExecutionError",
   {
@@ -963,6 +1078,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationHumanVerificationRequiredError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationTargetNotEditableError,

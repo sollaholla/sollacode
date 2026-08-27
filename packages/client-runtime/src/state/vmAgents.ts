@@ -342,6 +342,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
     staleTimeMs: 2_000,
     idleTtlMs: 60_000,
   });
+  const rules = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:vm-agents:rules",
+    tag: WS_METHODS.vmAgentRulesGet,
+    staleTimeMs: 0,
+    idleTtlMs: 60_000,
+  });
 
   return {
     // Keyed by the empty payload — one registry stream per environment.
@@ -359,6 +365,7 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       transform: (stream) =>
         resubscribeVmStreamOnApplicationActive(resubscribeOnTerminalResync(stream)),
     }),
+    rules,
     attention: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:vm-agents:attention",
       tag: WS_METHODS.vmAgentAttentionSubscribe,
@@ -434,6 +441,12 @@ export function createVmAgentEnvironmentAtoms<R, E>(
     generateTaskPrompt: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:task-generate-prompt",
       tag: WS_METHODS.vmAgentTaskGeneratePrompt,
+      scheduler: workspaceScheduler,
+      concurrency: perAgentSerial,
+    }),
+    updateRules: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:rules-update",
+      tag: WS_METHODS.vmAgentRulesUpdate,
       scheduler: workspaceScheduler,
       concurrency: perAgentSerial,
     }),

@@ -169,7 +169,12 @@ export function resolveThreadOutboxDeliveryAction(input: {
   if (!input.threadExists) {
     return input.shellStatus === "live" ? "remove" : "wait";
   }
-  return input.environmentConnected && !input.threadBusy ? "send" : "wait";
+  // A busy thread is exactly when a follow-up must reach the server: the
+  // orchestrator persists it in the provider's pending-turn queue, where the
+  // user can either let it run naturally or promote the complete batch now.
+  // Keeping it only in the device outbox made mobile follow-ups invisible to
+  // the active provider until the old turn ended.
+  return input.environmentConnected ? "send" : "wait";
 }
 
 /**

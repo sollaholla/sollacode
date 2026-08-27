@@ -18,11 +18,25 @@ export interface PersistedProviderUsageWindow {
   readonly detail?: string;
 }
 
+export interface PersistedProviderUsageResetCredit {
+  readonly id: string | null;
+  readonly title: string;
+  readonly description: string | null;
+  readonly expiresAt: number | null;
+}
+
+export interface PersistedProviderUsageResetCredits {
+  readonly availableCount: number;
+  readonly credits: readonly PersistedProviderUsageResetCredit[];
+}
+
 export interface PersistedProviderUsageEntry {
   readonly accountKey: string;
   readonly driver: ProviderDriverKind;
   readonly windows: readonly PersistedProviderUsageWindow[];
   readonly reportedAt: string;
+  readonly resetCredits?: PersistedProviderUsageResetCredits | null;
+  readonly dismissedResetCreditKeys?: readonly string[];
 }
 
 const CODEX_RESET_TIME_JITTER_MS = 60_000;
@@ -76,9 +90,44 @@ function mergeUsageWindow(
   return nextCycleIsLater && (previousCycleElapsed || nextCycleHasStarted) ? next : previous;
 }
 
+export function providerUsageResetCreditKey(credit: PersistedProviderUsageResetCredit): string {
+  if (credit.id) return `id:${credit.id}`;
+  return `anonymous:${JSON.stringify([credit.title, credit.description, credit.expiresAt])}`;
+}
+
+function mergeResetCredits(
+  previous: PersistedProviderUsageResetCredits | null | undefined,
+  next: PersistedProviderUsageResetCredits | null | undefined,
+  dismissedKeys: ReadonlySet<string>,
+): PersistedProviderUsageResetCredits | null {
+  if (!previous && !next) return null;
+  const creditsByKey = new Map<string, PersistedProviderUsageResetCredit>();
+  for (const credit of previous?.credits ?? []) {
+    creditsByKey.set(providerUsageResetCreditKey(credit), credit);
+  }
+  for (const credit of next?.credits ?? []) {
+    creditsByKey.set(providerUsageResetCreditKey(credit), credit);
+  }
+
+  const credits = Array.from(creditsByKey.entries()).flatMap(([key, credit]) =>
+    dismissedKeys.has(key) ? [] : [credit],
+  );
+  const reportedAvailableCount = Math.max(previous?.availableCount ?? 0, next?.availableCount ?? 0);
+  let dismissedReportedCount = 0;
+  for (const [key, credit] of creditsByKey) {
+    if (!dismissedKeys.has(key)) continue;
+    // A count-only row represents the complete anonymous inventory. Once the
+    // user acts on it, an incomplete refresh must not recreate it.
+    dismissedReportedCount += credit.id === null ? reportedAvailableCount : 1;
+  }
+  const availableCount = Math.max(credits.length, reportedAvailableCount - dismissedReportedCount);
+  return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
+}
+
 interface ProviderUsageState {
   readonly byAccountKey: Readonly<Record<string, PersistedProviderUsageEntry>>;
   record: (entry: PersistedProviderUsageEntry) => void;
+  dismissResetCredit: (accountKey: string, credit: PersistedProviderUsageResetCredit) => void;
 }
 
 function normalizeIdentityPart(value: string): string {
@@ -128,14 +177,52 @@ export function mergeProviderUsageEntry(
       );
     }
   }
+  const dismissedResetCreditKeys = Array.from(
+    new Set([
+      ...(previous?.dismissedResetCreditKeys ?? []),
+      ...(entry.dismissedResetCreditKeys ?? []),
+    ]),
+  );
+  const resetCredits = mergeResetCredits(
+    previous?.resetCredits,
+    entry.resetCredits,
+    new Set(dismissedResetCreditKeys),
+  );
   const merged = {
     ...entry,
     windows: Array.from(windowsByKey.values()),
+    resetCredits,
+    dismissedResetCreditKeys,
     reportedAt:
       previous && previous.reportedAt > entry.reportedAt ? previous.reportedAt : entry.reportedAt,
   };
   if (previous && JSON.stringify(previous) === JSON.stringify(merged)) return state;
   return { ...state, [entry.accountKey]: merged };
+}
+
+export function dismissProviderUsageResetCredit(
+  state: Readonly<Record<string, PersistedProviderUsageEntry>>,
+  accountKey: string,
+  credit: PersistedProviderUsageResetCredit,
+): Readonly<Record<string, PersistedProviderUsageEntry>> {
+  const previous = state[accountKey];
+  if (!previous) return state;
+  const creditKey = providerUsageResetCreditKey(credit);
+  if (previous.dismissedResetCreditKeys?.includes(creditKey)) return state;
+  const dismissedResetCreditKeys = [...(previous.dismissedResetCreditKeys ?? []), creditKey];
+  const resetCredits = mergeResetCredits(
+    previous.resetCredits,
+    null,
+    new Set(dismissedResetCreditKeys),
+  );
+  return {
+    ...state,
+    [accountKey]: {
+      ...previous,
+      resetCredits,
+      dismissedResetCreditKeys,
+    },
+  };
 }
 
 function isPersistedWindow(value: unknown): value is PersistedProviderUsageWindow {
@@ -164,6 +251,34 @@ function isPersistedWindow(value: unknown): value is PersistedProviderUsageWindo
   );
 }
 
+function isPersistedResetCredit(value: unknown): value is PersistedProviderUsageResetCredit {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PersistedProviderUsageResetCredit>;
+  return (
+    (candidate.id === null || typeof candidate.id === "string") &&
+    typeof candidate.title === "string" &&
+    candidate.title.length > 0 &&
+    (candidate.description === null || typeof candidate.description === "string") &&
+    (candidate.expiresAt === null ||
+      (typeof candidate.expiresAt === "number" &&
+        Number.isFinite(candidate.expiresAt) &&
+        candidate.expiresAt > 0))
+  );
+}
+
+function isPersistedResetCredits(value: unknown): value is PersistedProviderUsageResetCredits {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<PersistedProviderUsageResetCredits>;
+  return (
+    typeof candidate.availableCount === "number" &&
+    Number.isSafeInteger(candidate.availableCount) &&
+    candidate.availableCount > 0 &&
+    Array.isArray(candidate.credits) &&
+    candidate.credits.length > 0 &&
+    candidate.credits.every(isPersistedResetCredit)
+  );
+}
+
 function parseStoredEntries(): Readonly<Record<string, PersistedProviderUsageEntry>> {
   if (typeof window === "undefined") return {};
   try {
@@ -181,7 +296,15 @@ function parseStoredEntries(): Readonly<Record<string, PersistedProviderUsageEnt
           Array.isArray(candidate.windows) &&
           candidate.windows.every(isPersistedWindow) &&
           typeof candidate.reportedAt === "string" &&
-          Number.isFinite(Date.parse(candidate.reportedAt))
+          Number.isFinite(Date.parse(candidate.reportedAt)) &&
+          (candidate.resetCredits === undefined ||
+            candidate.resetCredits === null ||
+            isPersistedResetCredits(candidate.resetCredits)) &&
+          (candidate.dismissedResetCreditKeys === undefined ||
+            (Array.isArray(candidate.dismissedResetCreditKeys) &&
+              candidate.dismissedResetCreditKeys.every(
+                (key) => typeof key === "string" && key.length > 0,
+              )))
         );
       }),
     );
@@ -204,6 +327,13 @@ export const useProviderUsageStore = create<ProviderUsageState>((set) => ({
   record: (entry) =>
     set((state) => {
       const byAccountKey = mergeProviderUsageEntry(state.byAccountKey, entry);
+      if (byAccountKey === state.byAccountKey) return state;
+      persistEntries(byAccountKey);
+      return { byAccountKey };
+    }),
+  dismissResetCredit: (accountKey, credit) =>
+    set((state) => {
+      const byAccountKey = dismissProviderUsageResetCredit(state.byAccountKey, accountKey, credit);
       if (byAccountKey === state.byAccountKey) return state;
       persistEntries(byAccountKey);
       return { byAccountKey };

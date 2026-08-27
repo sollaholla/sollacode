@@ -23,6 +23,7 @@
  */
 import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -36,11 +37,16 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
-import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  consumeCodexRateLimitResetCredit,
+  makePendingCodexProvider,
+} from "../Layers/CodexProvider.ts";
+import { resolveCodexLaunchArgs } from "../Layers/codexLaunchArgs.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
+import { AUTH_PROBE_TIMEOUT_MS, type ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
@@ -221,6 +227,23 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        usageReset: {
+          consume: ({ creditId, idempotencyKey }) =>
+            consumeCodexRateLimitResetCredit({
+              binaryPath: effectiveConfig.binaryPath,
+              homePath: effectiveConfig.homePath,
+              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+              cwd: process.cwd(),
+              environment: processEnv,
+              idempotencyKey,
+              ...(creditId ? { creditId } : {}),
+            }).pipe(
+              Effect.scoped,
+              Effect.timeout(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.map((response) => response.outcome),
+            ),
+        },
         accountAuth: {
           binaryPath: effectiveConfig.binaryPath,
           environment: accountEnvironment,

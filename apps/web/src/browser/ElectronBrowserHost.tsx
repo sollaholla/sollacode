@@ -12,16 +12,20 @@ import { isElectron } from "~/env";
 import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
 import { useThreadShells } from "~/state/entities";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { previewEnvironment } from "~/state/preview";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
+import { openRequestedPreviewTab } from "~/components/preview/openRequestedPreviewTab";
 
 export function ElectronBrowserHost() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const threadShells = useThreadShells();
+  const openPreview = useAtomCommand(previewEnvironment.open);
   const browserProfileByThreadKey = useMemo(
     () =>
       new Map(
@@ -93,6 +97,19 @@ export function ElectronBrowserHost() {
       useBrowserPointerStore.getState().apply(event);
     });
   }, []);
+
+  useEffect(() => {
+    const preview = window.desktopBridge?.preview;
+    if (!preview) return;
+    return preview.onNewTabRequested((request) => {
+      void openRequestedPreviewTab({
+        sourceRuntimeTabId: request.sourceTabId,
+        url: request.url,
+        sessions,
+        openPreview,
+      });
+    });
+  }, [openPreview, sessions]);
 
   if (!isElectron) return null;
   return (

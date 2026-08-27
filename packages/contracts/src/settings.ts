@@ -93,9 +93,20 @@ export const ClientSettingsSchema = Schema.Struct({
   // in their own sidebar section below the orchestrator). On by default; turning
   // it off hides the entire surface without deleting any agents.
   agentStackEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Native agent alerts are opt-in per client. Durable in-app alerts remain
+  // available when this is off; this controls only operating-system delivery.
+  agentDesktopNotificationsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   autoSendVoiceTranscription: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  voiceTranscriptionCorrectionEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  voiceTranscriptionCorrectionModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -134,10 +145,9 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  // Whether holding push-to-talk on the desktop mutes the machine's output for
-  // the duration of the recording. On by default — music bleeding into a
-  // dictation is the surprise — but it is the only place the app touches
-  // system volume, so it must be possible to turn off.
+  // Whether desktop voice capture mutes the machine's output while the user is
+  // speaking. Shared by push-to-talk and Orchestrator listening; output is
+  // restored while the Orchestrator speaks. The persisted name stays stable.
   pushToTalkMutesSystemAudio: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
@@ -187,6 +197,17 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 
 export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
+
+export const MIN_ATTACHMENT_RETENTION_HOURS = 1;
+export const MAX_ATTACHMENT_RETENTION_HOURS = 8_760;
+export const DEFAULT_ATTACHMENT_RETENTION_HOURS = 48;
+export const AttachmentRetentionHours = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_ATTACHMENT_RETENTION_HOURS,
+    maximum: MAX_ATTACHMENT_RETENTION_HOURS,
+  }),
+);
+export type AttachmentRetentionHours = typeof AttachmentRetentionHours.Type;
 
 const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
@@ -696,6 +717,9 @@ export const OrchestratorSettings = Schema.Struct({
 export type OrchestratorSettings = typeof OrchestratorSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  attachmentRetentionHours: AttachmentRetentionHours.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ATTACHMENT_RETENTION_HOURS)),
+  ),
   autoCompactionThresholdPercentage: AutoCompactionThresholdPercentage.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_AUTO_COMPACTION_THRESHOLD_PERCENTAGE)),
   ),
@@ -899,6 +923,7 @@ export type OrchestratorSettingsPatch = typeof OrchestratorSettingsPatch.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
+  attachmentRetentionHours: Schema.optionalKey(AttachmentRetentionHours),
   autoCompactionThresholdPercentage: Schema.optionalKey(AutoCompactionThresholdPercentage),
   claudeTokenOptimizerEnabled: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -952,6 +977,7 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   agentStackEnabled: Schema.optionalKey(Schema.Boolean),
+  agentDesktopNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   autoSendVoiceTranscription: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
@@ -981,6 +1007,11 @@ export const ClientSettingsPatch = Schema.Struct({
     ),
   ),
   pushToTalkMutesSystemAudio: Schema.optionalKey(Schema.Boolean),
+  voiceTranscriptionCorrectionEnabled: Schema.optionalKey(Schema.Boolean),
+  // This client setting is replaced atomically, not deep-merged. Requiring the
+  // complete selection keeps persisted client state from losing its provider
+  // or model when a patch is spread into the current settings object.
+  voiceTranscriptionCorrectionModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(

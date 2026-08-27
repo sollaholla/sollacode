@@ -45,13 +45,25 @@ export function isModelSelectionProviderEnabled(
   );
 }
 
+/**
+ * Resolve the model used by app-owned AI utilities such as title, plan, and
+ * task drafting. The persisted field keeps its legacy name for settings-file
+ * compatibility; callers use this helper so utility work cannot accidentally
+ * inherit the model of whichever conversation happened to trigger it.
+ */
+export function resolveUtilityAiModelSelection(
+  settings: Pick<ServerSettings, "textGenerationModelSelection">,
+): ModelSelection {
+  return settings.textGenerationModelSelection;
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers?: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
   const selection = settings.sourceControlWriterModelSelection;
   if (!selection || !isModelSelectionProviderEnabled(settings, selection)) {
-    return settings.textGenerationModelSelection;
+    return resolveUtilityAiModelSelection(settings);
   }
   if (providers === undefined) {
     return selection;
@@ -60,7 +72,7 @@ export function resolveSourceControlWriterModelSelection(
   const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
   return provider?.enabled === true && isProviderAvailable(provider)
     ? selection
-    : settings.textGenerationModelSelection;
+    : resolveUtilityAiModelSelection(settings);
 }
 
 export interface PersistedServerObservabilitySettings {

@@ -13,9 +13,12 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  agentDesktopNotificationsEnabled: false,
   agentStackEnabled: true,
   autoOpenPlanSidebar: false,
   autoSendVoiceTranscription: false,
+  voiceTranscriptionCorrectionEnabled: false,
+  voiceTranscriptionCorrectionModelSelection: null,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],

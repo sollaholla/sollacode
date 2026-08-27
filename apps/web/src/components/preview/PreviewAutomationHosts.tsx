@@ -14,6 +14,7 @@ import {
   type PreviewAutomationResizeResult,
   type PreviewAutomationSetColorSchemeInput,
   type PreviewAutomationSetColorSchemeResult,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
   type PreviewAutomationStatus,
@@ -45,6 +46,7 @@ import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
+import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -52,11 +54,16 @@ import { previewBridge } from "./previewBridge";
 import { closePreviewSession, reconcileLegacyPreviewClose } from "./closePreviewSession";
 import {
   PreviewAutomationOperationError,
+  PreviewAutomationHumanVerificationHostError,
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
 } from "./previewAutomationErrors";
+import {
+  getPreviewHumanVerification,
+  inspectPreviewHumanVerification,
+} from "./previewHumanVerification";
 import {
   previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
@@ -229,7 +236,13 @@ const currentStatus = async (
   };
   if (runtimeTabId && tabId && previewBridge && state.desktopByTabId[tabId]) {
     const status = await previewBridge.automation.status(runtimeTabId);
-    return { ...status, tabId, visible, ...viewportStatus };
+    return {
+      ...status,
+      tabId,
+      visible,
+      ...viewportStatus,
+      humanVerification: getPreviewHumanVerification(runtimeTabId),
+    };
   }
   const navStatus = snapshot?.navStatus;
   return {
@@ -239,6 +252,7 @@ const currentStatus = async (
     url: navStatus && navStatus._tag !== "Idle" ? navStatus.url : null,
     title: navStatus && navStatus._tag !== "Idle" ? navStatus.title : null,
     loading: navStatus?._tag === "Loading",
+    humanVerification: runtimeTabId ? getPreviewHumanVerification(runtimeTabId) : null,
     ...viewportStatus,
   };
 };
@@ -290,6 +304,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     input: initialAutomationHost,
   });
   const listPreviews = useAtomQueryRunner(previewEnvironment.list, {
+    reportFailure: false,
+  });
+  const listAgents = useAtomQueryRunner(vmAgentEnvironment.agents, {
     reportFailure: false,
   });
   const open = useAtomCommand(previewEnvironment.open, {
@@ -366,9 +383,59 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             runtimeTabId,
           };
         };
+        type ReadyTab = Awaited<ReturnType<typeof requireReadyTab>>;
+        const inspectReadyTab = async (
+          ready: ReadyTab,
+          options: {
+            readonly snapshot?: PreviewAutomationSnapshot | null;
+            readonly force?: boolean;
+          } = {},
+        ) =>
+          await inspectPreviewHumanVerification({
+            runtimeTabId: ready.runtimeTabId,
+            evaluate: (expression) =>
+              ready.bridge.automation.evaluate(ready.runtimeTabId, {
+                expression,
+                awaitPromise: true,
+                returnByValue: true,
+              }),
+            ...options,
+          });
+        const requireAutomatableTab = async () => {
+          const ready = await requireReadyTab();
+          const verification = getPreviewHumanVerification(ready.runtimeTabId);
+          if (verification) {
+            throw new PreviewAutomationHumanVerificationHostError({
+              requestId: request.requestId,
+              operation: request.operation,
+              environmentId,
+              threadId: request.threadId,
+              tabId: ready.tabId,
+              verification,
+            });
+          }
+          return ready;
+        };
+        const inspectAfterAction = async (ready: ReadyTab) => {
+          try {
+            await inspectReadyTab(ready);
+          } catch {
+            // Challenge inspection is diagnostic. The page action already
+            // completed, so a transient guest replacement cannot rewrite its
+            // result; the next status/snapshot will inspect again.
+          }
+        };
         switch (request.operation) {
-          case "status":
-            return await currentStatus(threadRef, tabId);
+          case "status": {
+            const status = await currentStatus(threadRef, tabId);
+            try {
+              const ready = await requireReadyTab();
+              const humanVerification = await inspectReadyTab(ready);
+              return { ...status, humanVerification } satisfies PreviewAutomationStatus;
+            } catch {
+              return status;
+            }
+          }
           case "open": {
             return await runPreviewAutomationLifecycleMutation(threadRef, async () => {
               const input = request.input as PreviewAutomationOpenInput;
@@ -520,6 +587,17 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 await waitForPreviewPresentation(activeRuntimeTabId);
               }
               if (reusedExistingTab && resolvedInputUrl && previewBridge) {
+                const verification = getPreviewHumanVerification(activeRuntimeTabId);
+                if (verification) {
+                  throw new PreviewAutomationHumanVerificationHostError({
+                    requestId: request.requestId,
+                    operation: request.operation,
+                    environmentId,
+                    threadId: request.threadId,
+                    tabId: activeTabId,
+                    verification,
+                  });
+                }
                 assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
                 await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
                 await waitForNavigationReadiness(
@@ -532,7 +610,12 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                   request.timeoutMs,
                 );
               }
-              const status = await currentStatus(threadRef, activeTabId);
+              const ready = await requireReadyTab();
+              const humanVerification = await inspectReadyTab(ready).catch(() => null);
+              const status = {
+                ...(await currentStatus(threadRef, activeTabId)),
+                humanVerification,
+              } satisfies PreviewAutomationStatus;
               return reusedExistingTab
                 ? ({
                     outcome: "reused",
@@ -590,6 +673,22 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                     : `${closeTabId} was already closed.`,
                 } satisfies PreviewAutomationCloseResult;
               }
+              const closeRuntimeTabId = previewRuntimeTabId(
+                threadRef,
+                state.serverEpoch,
+                closeTabId,
+              );
+              const verification = getPreviewHumanVerification(closeRuntimeTabId);
+              if (verification) {
+                throw new PreviewAutomationHumanVerificationHostError({
+                  requestId: request.requestId,
+                  operation: request.operation,
+                  environmentId,
+                  threadId: request.threadId,
+                  tabId: closeTabId,
+                  verification,
+                });
+              }
               const closingSnapshot = closePlan.snapshot;
               const previousSessionCount = closePlan.previousSessionCount;
               const miniPlayer = selectThreadPreviewMiniPlayer(
@@ -614,8 +713,14 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 // failure cannot turn the committed close into a destructive
                 // close retry.
                 await runPreviewAutomationPostCloseRefresh(async () => {
+                  const agents = await listAgents({ environmentId, input: {} });
+                  const retainBlankTab =
+                    agents._tag === "Success" &&
+                    agents.value.type === "snapshot" &&
+                    agents.value.agents.some((agent) => agent.threadId === request.threadId);
                   await reconcileLegacyPreviewClose({
                     closeResult: closed.value,
+                    retainBlankTab,
                     threadRef,
                     listPreviews: async () => {
                       registry.refresh(previewEnvironment.list(listTarget));
@@ -650,7 +755,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             });
           }
           case "navigate": {
-            const ready = await requireReadyTab();
+            const ready = await requireAutomatableTab();
             const input = request.input as PreviewAutomationNavigateInput;
             const resolution = resolveBrowserNavigationTarget(
               environmentId,
@@ -669,7 +774,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               input.readiness ?? "load",
               input.timeoutMs ?? request.timeoutMs,
             );
-            return await currentStatus(threadRef, ready.tabId);
+            const humanVerification = await inspectReadyTab(ready).catch(() => null);
+            return {
+              ...(await currentStatus(threadRef, ready.tabId)),
+              humanVerification,
+            } satisfies PreviewAutomationStatus;
           }
           case "resize": {
             const ready = await requireReadyTab();
@@ -762,49 +871,74 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "snapshot": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.snapshot(ready.runtimeTabId);
+            const snapshot = await ready.bridge.automation.snapshot(ready.runtimeTabId);
+            const humanVerification = await inspectReadyTab(ready, { snapshot }).catch(() =>
+              getPreviewHumanVerification(ready.runtimeTabId),
+            );
+            return { ...snapshot, humanVerification } satisfies PreviewAutomationSnapshot;
           }
           case "click": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.click(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.click(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.click>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "type": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.type(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.type(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.type>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
+          }
+          case "upload": {
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.upload(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.upload>[1],
+            );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "press": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.press(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.press(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.press>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "scroll": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.scroll(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.scroll(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "evaluate": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.evaluate(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.evaluate(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "waitFor": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.waitFor(
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.waitFor(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
             );
+            await inspectAfterAction(ready);
+            return result;
           }
           case "recordingStart": {
             const ready = await requireReadyTab();
@@ -858,7 +992,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         });
       }
     },
-    [closePreview, environmentId, listPreviews, open, registry, resize],
+    [closePreview, environmentId, listAgents, listPreviews, open, registry, resize],
   );
   const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);

@@ -109,6 +109,7 @@ const fileSystemLayer = FileSystem.layerNoop({
     Effect.sync(() => {
       writeFile(path, data);
     }),
+  stat: () => Effect.succeed({ type: "File", size: 1n } as never),
 });
 
 const layer = PreviewManager.layer.pipe(
@@ -353,6 +354,330 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("emits guest new-tab links without navigating the source tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const loadURL = vi.fn(async () => undefined);
+        let openHandler:
+          | ((details: {
+              readonly url: string;
+              readonly disposition: string;
+              readonly features: string;
+              readonly frameName: string;
+              readonly postBody?: { readonly data: ReadonlyArray<unknown> };
+            }) => unknown)
+          | undefined;
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/source",
+          getTitle: () => "Source",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL,
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn((handler) => {
+            openHandler = handler;
+          }),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+        const requests: Array<{ readonly sourceTabId: string; readonly url: string }> = [];
+
+        yield* manager.subscribeNewTabRequests((request) =>
+          Effect.sync(() => {
+            requests.push(request);
+          }),
+        );
+        yield* manager.createTab("runtime-source");
+        yield* manager.registerWebview("runtime-source", 42);
+
+        expect(
+          openHandler?.({
+            url: "https://example.com/next",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "",
+          }),
+        ).toEqual({ action: "deny" });
+        yield* Effect.yieldNow;
+
+        expect(requests).toEqual([
+          { sourceTabId: "runtime-source", url: "https://example.com/next" },
+        ]);
+        expect(loadURL).not.toHaveBeenCalled();
+
+        // The regression this exists for: Google Identity Services opens a
+        // sized popup that Chromium does not report as `new-window`. Denying it
+        // returned a null WindowProxy, GSI logged "Failed to open popup window
+        // … Maybe blocked by the browser?", and Sign in with Google looked dead.
+        expect(
+          openHandler?.({
+            url: "https://accounts.google.com/gsi/select?client_id=x",
+            disposition: "foreground-tab",
+            features: "width=500,height=600",
+            frameName: "",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+        });
+        expect(requests).toHaveLength(1);
+
+        // Scripted OAuth clients often use an unnamed/_blank child without
+        // popup-shaped features. It still needs a synchronous WindowProxy.
+        expect(
+          openHandler?.({
+            url: "https://example.com/target-blank",
+            disposition: "new-window",
+            features: "noopener,noreferrer",
+            frameName: "_blank",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+        });
+        expect(requests).toHaveLength(1);
+
+        expect(
+          openHandler?.({
+            url: "https://accounts.example.com/oauth",
+            disposition: "new-window",
+            features: "popup,width=500,height=700",
+            frameName: "oauth-login",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+        });
+        expect(requests).toHaveLength(1);
+
+        // OAuth clients commonly create a named about:blank child first and
+        // navigate it only after obtaining a provider URL. It still needs a
+        // real opener from its first instant or the flow becomes a dead click.
+        expect(
+          openHandler?.({
+            url: "about:blank",
+            disposition: "new-window",
+            features: "",
+            frameName: "oauth-login",
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+        });
+        expect(requests).toHaveLength(1);
+
+        // Form-backed OAuth launches carry a POST body. That body cannot be
+        // reconstructed by the renderer's asynchronous sibling-tab path.
+        expect(
+          openHandler?.({
+            url: "https://accounts.example.com/oauth",
+            disposition: "foreground-tab",
+            features: "",
+            frameName: "_blank",
+            postBody: { data: [] },
+          }),
+        ).toEqual({
+          action: "allow",
+          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+        });
+        expect(requests).toHaveLength(1);
+      }),
+    ),
+  );
+
+  effectIt.effect("forwards both halves of push-to-talk when a guest owns keyboard focus", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const sendInputEvent = vi.fn();
+        const mainWindowListeners = new Map<
+          string,
+          (event: Electron.Event, input: Electron.Input) => void
+        >();
+        const mainWebContents = {
+          sendInputEvent,
+          on: vi.fn(
+            (event: string, listener: (event: Electron.Event, input: Electron.Input) => void) => {
+              mainWindowListeners.set(event, listener);
+            },
+          ),
+          off: vi.fn(),
+        };
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          webContents: mainWebContents,
+        } as never);
+
+        let beforeInput:
+          | ((event: { preventDefault: () => void }, input: Electron.Input) => void)
+          | undefined;
+        fromId.mockReturnValue({
+          id: 42,
+          hostWebContents: mainWebContents,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn((event: string, listener: typeof beforeInput) => {
+            if (event === "before-input-event") beforeInput = listener;
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("runtime-source");
+        yield* manager.registerWebview("runtime-source", 42);
+
+        const pressInput: Electron.Input = {
+          type: "keyDown",
+          key: "d",
+          code: "KeyD",
+          isAutoRepeat: false,
+          isComposing: false,
+          shift: false,
+          control: false,
+          alt: false,
+          meta: true,
+          location: 0,
+          modifiers: ["meta"],
+        };
+        const press = vi.fn();
+        beforeInput?.({ preventDefault: press }, pressInput);
+        yield* Effect.yieldNow;
+
+        const release = vi.fn();
+        beforeInput?.(
+          { preventDefault: release },
+          {
+            type: "keyUp",
+            key: "Meta",
+            code: "MetaLeft",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 1,
+            modifiers: [],
+          },
+        );
+        yield* Effect.yieldNow;
+
+        expect(press).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledOnce();
+        expect(sendInputEvent.mock.calls).toEqual([
+          [
+            {
+              type: "keyDown",
+              keyCode: "d",
+              modifiers: ["meta"],
+            },
+          ],
+          [
+            {
+              type: "keyUp",
+              keyCode: "Meta",
+              modifiers: [],
+            },
+          ],
+        ]);
+
+        sendInputEvent.mockClear();
+
+        // The next press begins in the composer. Before it is released, focus
+        // moves into the guest. The desktop must join those two halves and
+        // forward the release even though the guest never saw the press.
+        mainWindowListeners.get("before-input-event")?.({} as Electron.Event, pressInput);
+        const crossFocusRelease = vi.fn();
+        beforeInput?.(
+          { preventDefault: crossFocusRelease },
+          {
+            type: "keyUp",
+            key: "Meta",
+            code: "MetaLeft",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 1,
+            modifiers: [],
+          },
+        );
+        yield* Effect.yieldNow;
+
+        expect(crossFocusRelease).toHaveBeenCalledOnce();
+        expect(sendInputEvent.mock.calls).toEqual([
+          [
+            {
+              type: "keyUp",
+              keyCode: "Meta",
+              modifiers: [],
+            },
+          ],
+        ]);
+      }),
+    ),
+  );
+
+  effectIt.effect("does not dereference the main WebContents after its window closes", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let closed = false;
+        let onClosed: (() => void) | undefined;
+        const mainWebContents = {
+          isDestroyed: vi.fn(() => closed),
+          on: vi.fn(),
+          off: vi.fn(),
+        };
+        const window = {
+          isDestroyed: () => closed,
+          once: vi.fn((event: string, listener: () => void) => {
+            if (event === "closed") onClosed = listener;
+          }),
+          get webContents() {
+            if (closed) throw new Error("Object has been destroyed");
+            return mainWebContents;
+          },
+        };
+
+        yield* manager.setMainWindow(window as never);
+        closed = true;
+
+        expect(() => onClosed?.()).not.toThrow();
+        expect(mainWebContents.off).not.toHaveBeenCalled();
+      }),
+    ),
+  );
+
   effectIt.effect("mirrors Electron's effective zoom across registration and navigation", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -583,6 +908,13 @@ describe("PreviewManager", () => {
         expect(
           yield* manager.automationEvaluate("tab_control_lease", { expression: "1 + 1" }),
         ).toBe(2);
+        expect(sendCommand).toHaveBeenCalledWith(
+          "Runtime.evaluate",
+          expect.objectContaining({
+            expression: "1 + 1",
+            userGesture: false,
+          }),
+        );
         expect(attach).toHaveBeenCalledTimes(1);
         expect(detach).toHaveBeenCalledTimes(1);
 
@@ -673,6 +1005,175 @@ describe("PreviewManager", () => {
         expect(replacementListenerSpies.ipc.off).not.toHaveBeenCalled();
         expect(capturePage).toHaveBeenCalledOnce();
         expect(recreated.webContentsId).toBeNull();
+      }),
+    ),
+  );
+
+  effectIt.effect("interrupts a pending control command before closing its tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let attached = false;
+        let markEvaluationStarted: (() => void) | undefined;
+        const evaluationStarted = new Promise<void>((resolve) => {
+          markEvaluationStarted = resolve;
+        });
+        const sendCommand = vi.fn((method: string) => {
+          if (method === "Runtime.evaluate") {
+            markEvaluationStarted?.();
+            return new Promise<never>(() => undefined);
+          }
+          return Promise.resolve({});
+        });
+        const detach = vi.fn(() => {
+          attached = false;
+        });
+        const webContents = {
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => attached,
+            attach: vi.fn(() => {
+              attached = true;
+            }),
+            detach,
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        };
+        fromId.mockReturnValue(webContents as never);
+
+        yield* manager.createTab("tab_pending_close");
+        yield* manager.registerWebview("tab_pending_close", 42);
+        const action = yield* manager
+          .automationEvaluate("tab_pending_close", { expression: "location.href" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => evaluationStarted);
+
+        yield* manager.closeTab("tab_pending_close");
+        const actionExit = yield* Fiber.await(action);
+
+        expect(Exit.isFailure(actionExit)).toBe(true);
+        if (Exit.isFailure(actionExit)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(actionExit.cause))).toMatchObject({
+            _tag: "PreviewWebContentsNotFoundError",
+            tabId: "tab_pending_close",
+            webContentsId: 42,
+          });
+        }
+        expect(detach).toHaveBeenCalledOnce();
+      }),
+    ),
+  );
+
+  effectIt.effect("settles pending automation without touching a destroyed guest", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let destroyed = false;
+        let attached = false;
+        let destroyedListener: (() => void) | undefined;
+        let markEvaluationStarted: (() => void) | undefined;
+        const evaluationStarted = new Promise<void>((resolve) => {
+          markEvaluationStarted = resolve;
+        });
+        const sendCommand = vi.fn((method: string) => {
+          if (method === "Runtime.evaluate") {
+            markEvaluationStarted?.();
+            return new Promise<never>(() => undefined);
+          }
+          return Promise.resolve({});
+        });
+        const off = vi.fn(() => {
+          if (destroyed) throw new Error("Object has been destroyed");
+        });
+        const ipcOff = vi.fn(() => {
+          if (destroyed) throw new Error("Object has been destroyed");
+        });
+        const debuggerOff = vi.fn(() => {
+          if (destroyed) throw new Error("Object has been destroyed");
+        });
+        const detach = vi.fn(() => {
+          if (destroyed) throw new Error("Object has been destroyed");
+          attached = false;
+        });
+        const webContents = {
+          id: 42,
+          isDestroyed: () => destroyed,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn((event: string, listener: () => void) => {
+            if (event === "destroyed") destroyedListener = listener;
+          }),
+          off,
+          ipc: { on: vi.fn(), off: ipcOff },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => attached,
+            attach: vi.fn(() => {
+              attached = true;
+            }),
+            detach,
+            sendCommand,
+            on: vi.fn(),
+            off: debuggerOff,
+          },
+        };
+        fromId.mockReturnValue(webContents as never);
+        const detachedState = yield* Deferred.make<void>();
+
+        yield* manager.createTab("tab_destroyed_during_command");
+        yield* manager.registerWebview("tab_destroyed_during_command", 42);
+        yield* manager.subscribeStateChanges((tabId, state) =>
+          tabId === "tab_destroyed_during_command" && state.webContentsId === null
+            ? Deferred.succeed(detachedState, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        );
+        const action = yield* manager
+          .automationEvaluate("tab_destroyed_during_command", { expression: "location.href" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => evaluationStarted);
+
+        destroyed = true;
+        destroyedListener?.();
+        yield* Deferred.await(detachedState);
+        const actionExit = yield* Fiber.await(action);
+
+        expect(Exit.isFailure(actionExit)).toBe(true);
+        if (Exit.isFailure(actionExit)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(actionExit.cause))).toMatchObject({
+            _tag: "PreviewWebContentsNotFoundError",
+            tabId: "tab_destroyed_during_command",
+            webContentsId: 42,
+          });
+        }
+        expect(off).not.toHaveBeenCalled();
+        expect(ipcOff).not.toHaveBeenCalled();
+        expect(debuggerOff).not.toHaveBeenCalled();
+        expect(detach).not.toHaveBeenCalled();
+        expect(yield* manager.automationStatus("tab_destroyed_during_command")).toMatchObject({
+          available: false,
+          tabId: "tab_destroyed_during_command",
+        });
       }),
     ),
   );
@@ -855,9 +1356,36 @@ describe("PreviewManager", () => {
             resize: () => {
               throw new Error("unexpected resize");
             },
-            toPNG: () => stagedPng,
+            toJPEG: (quality: number) => {
+              expect(quality).toBe(78);
+              return stagedPng;
+            },
           };
         });
+        const stagedImage = {
+          getSize: () => ({ width: 800, height: 600 }),
+          resize: () => {
+            throw new Error("unexpected resize");
+          },
+          toJPEG: (quality: number) => {
+            expect(quality).toBe(78);
+            return stagedPng;
+          },
+        };
+        let presentedFrameAvailable = false;
+        let presentedFrame:
+          | ((image: typeof stagedImage, dirtyRect: Electron.Rectangle) => void)
+          | undefined;
+        const beginFrameSubscription = vi.fn(
+          (
+            _onlyDirty: boolean,
+            callback: (image: typeof stagedImage, dirtyRect: Electron.Rectangle) => void,
+          ) => {
+            if (!presentedFrameAvailable) throw new Error("presentation unavailable");
+            presentedFrame = callback;
+          },
+        );
+        const endFrameSubscription = vi.fn();
         let debuggerScreenshotAvailable = true;
         let debuggerScreencastAvailable = false;
         const previewSession = {};
@@ -897,7 +1425,10 @@ describe("PreviewManager", () => {
           if (method === "Accessibility.getFullAXTree") return { nodes: [] };
           return {};
         });
-        const invalidate = vi.fn();
+        const invalidate = vi.fn(() => {
+          if (!presentedFrameAvailable) return;
+          presentedFrame?.(stagedImage, { x: 0, y: 0, width: 800, height: 600 });
+        });
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -938,6 +1469,8 @@ describe("PreviewManager", () => {
             ),
           },
           invalidate,
+          beginFrameSubscription,
+          endFrameSubscription,
           capturePage,
         } as never);
 
@@ -963,14 +1496,15 @@ describe("PreviewManager", () => {
           stayAwake: true,
         });
         expect(snapshot.screenshot).toEqual({
-          mimeType: "image/png",
+          mimeType: "image/jpeg",
           data: debuggerPng,
           width: 800,
           height: 600,
         });
         expect(snapshot.visibleText).toBe("Example");
         expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
-          format: "png",
+          format: "jpeg",
+          quality: 78,
           fromSurface: true,
           captureBeyondViewport: false,
           clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
@@ -978,12 +1512,16 @@ describe("PreviewManager", () => {
 
         yield* manager.setUiActivity("tab_hidden_snapshot", "test", false);
         debuggerScreenshotAvailable = false;
-        nativeScreenshotAvailable = true;
+        presentedFrameAvailable = true;
         const stagedSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
-        expect(capturePage).toHaveBeenCalledTimes(2);
+        // A synchronous presentation callback can win before capturePage is
+        // even started, avoiding the native promise that hangs on occluded macOS guests.
+        expect(capturePage).toHaveBeenCalledOnce();
         expect(invalidate).toHaveBeenCalledOnce();
+        expect(beginFrameSubscription).toHaveBeenCalledWith(false, expect.any(Function));
+        expect(endFrameSubscription).toHaveBeenCalledOnce();
         expect(stagedSnapshot.screenshot).toEqual({
-          mimeType: "image/png",
+          mimeType: "image/jpeg",
           data: stagedPng.toString("base64"),
           width: 800,
           height: 600,
@@ -992,16 +1530,18 @@ describe("PreviewManager", () => {
         expect(states.at(-1)?.snapshotStageId).toBeNull();
 
         nativeScreenshotAvailable = false;
+        presentedFrameAvailable = false;
         debuggerScreencastAvailable = true;
         const screencastSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
         expect(screencastSnapshot.screenshot).toEqual({
-          mimeType: "image/png",
+          mimeType: "image/jpeg",
           data: debuggerPng,
           width: 800,
           height: 600,
         });
         expect(sendCommand).toHaveBeenCalledWith("Page.startScreencast", {
-          format: "png",
+          format: "jpeg",
+          quality: 78,
           maxWidth: 800,
           maxHeight: 600,
           everyNthFrame: 1,
@@ -1015,7 +1555,10 @@ describe("PreviewManager", () => {
           resize: () => {
             throw new Error("unexpected resize");
           },
-          toPNG: () => mirrorPng,
+          toJPEG: (quality: number) => {
+            expect(quality).toBe(78);
+            return mirrorPng;
+          },
         };
         let paintListener:
           | ((event: unknown, dirtyRect: Electron.Rectangle, image: typeof mirrorImage) => void)
@@ -1060,7 +1603,7 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust("3 seconds");
         const mirrorSnapshot = yield* Fiber.join(mirrorSnapshotFiber);
         expect(mirrorSnapshot.screenshot).toEqual({
-          mimeType: "image/png",
+          mimeType: "image/jpeg",
           data: mirrorPng.toString("base64"),
           width: 800,
           height: 600,
@@ -1172,7 +1715,7 @@ describe("PreviewManager", () => {
         expect(capturePage).toHaveBeenCalledOnce();
         expect(snapshot.visibleText).toBe("Example");
         expect(snapshot.screenshot).toEqual({
-          mimeType: "image/png",
+          mimeType: "image/jpeg",
           data: debuggerPng,
           width: 800,
           height: 600,
@@ -1187,7 +1730,10 @@ describe("PreviewManager", () => {
         const png = Buffer.from("snapshot-after-navigation");
         const capturePage = vi.fn(async () => ({
           getSize: () => ({ width: 800, height: 600 }),
-          toPNG: () => png,
+          toJPEG: (quality: number) => {
+            expect(quality).toBe(78);
+            return png;
+          },
         }));
         let evaluationAttempts = 0;
         const sendCommand = vi.fn(async (method: string) => {
@@ -2121,6 +2667,17 @@ describe("PreviewManager", () => {
         yield* Fiber.join(click);
 
         expect(activity).toEqual(["move", "click", "mousePressed"]);
+        expect(
+          sendCommand.mock.calls
+            .filter(([method]) => method === "Input.dispatchMouseEvent")
+            .map(([, params]) => params?.type),
+        ).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
+        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: 120,
+          y: 80,
+          button: "none",
+        });
         expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
           type: "mousePressed",
           x: 120,
@@ -2139,41 +2696,32 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("types in background webviews and enables native key input", () =>
+  effectIt.effect("keeps Playwright out of the main world and renews it after navigation", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        let failKeyDown = false;
-        let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+        const listeners = new Map<string, (...args: unknown[]) => void>();
+        let nextExecutionContextId = 100;
         const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-          if (
-            failKeyDown &&
-            method === "Input.dispatchKeyEvent" &&
-            (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
-          ) {
-            throw new Error("key dispatch failed");
+          if (method === "Page.getFrameTree") {
+            return { frameTree: { frame: { id: "main-frame" } } };
           }
-          if (
-            method === "Input.dispatchKeyEvent" &&
-            (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
-          ) {
-            humanInput?.(
-              {},
-              {
-                kind: "key",
-                key: params["key"],
-                code: params["code"] ?? "Digit1",
-              },
-            );
+          if (method === "Page.createIsolatedWorld") {
+            nextExecutionContextId += 1;
+            return { executionContextId: nextExecutionContextId };
           }
-          return method === "Runtime.evaluate" ? { result: { value: { ok: true } } } : undefined;
+          if (method !== "Runtime.evaluate") return undefined;
+          const expression = String(params?.["expression"] ?? "");
+          if (expression.includes("const module = { exports: {} };")) {
+            return { result: { value: true } };
+          }
+          if (expression === "Boolean(globalThis.__t3PlaywrightInjected)") {
+            return { result: { value: false } };
+          }
+          if (expression.includes("target.scrollBy")) {
+            return { result: { value: { ok: true } } };
+          }
+          return { result: { value: null } };
         });
-        const restoreFocus = vi.fn();
-        const focus = vi.fn();
-        getFocusedWebContents.mockReturnValue({
-          id: 7,
-          isDestroyed: () => false,
-          focus: restoreFocus,
-        } as never);
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -2182,17 +2730,13 @@ describe("PreviewManager", () => {
           getTitle: () => "Example",
           isLoading: () => false,
           isDevToolsOpened: () => false,
-          focus,
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
-          on: vi.fn(),
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, listener);
+          }),
           off: vi.fn(),
-          ipc: {
-            on: vi.fn((channel: string, listener: typeof humanInput) => {
-              if (channel === "preview:human-input") humanInput = listener;
-            }),
-            off: vi.fn(),
-          },
+          ipc: { on: vi.fn(), off: vi.fn() },
           send: webviewSend,
           navigationHistory: { canGoBack: () => false, canGoForward: () => false },
           setWindowOpenHandler: vi.fn(),
@@ -2205,108 +2749,363 @@ describe("PreviewManager", () => {
           },
         } as never);
 
-        yield* manager.createTab("tab_input");
-        yield* manager.registerWebview("tab_input", 42);
-        yield* manager.automationType("tab_input", { text: "hello", clear: true });
-        yield* manager.automationType("tab_input", { text: "", clear: true });
-        yield* manager.automationPress("tab_input", { key: "x" });
-
-        const calls = sendCommand.mock.calls;
-        const methods = calls.map(([method]) => method);
-        const enableIndex = methods.indexOf("Input.setIgnoreInputEvents");
-        const focusOnIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === true,
-        );
-        const keyDownIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Input.dispatchKeyEvent" && params?.["type"] === "keyDown",
-        );
-        const keyUpIndex = calls.findIndex(
-          ([method, params]) => method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-        );
-        const focusOffIndex = calls.findIndex(
-          ([method, params]) =>
-            method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false,
-        );
-        const typeEvaluation = sendCommand.mock.calls.find(
-          ([method, params]) =>
-            method === "Runtime.evaluate" &&
-            typeof params === "object" &&
-            params !== null &&
-            "expression" in params &&
-            typeof params.expression === "string" &&
-            params.expression.includes('document.execCommand("insertText"'),
-        );
-        expect(typeEvaluation).toBeDefined();
-        const clearOnlyEvaluation = sendCommand.mock.calls.find(
-          ([method, params]) =>
-            method === "Runtime.evaluate" &&
-            typeof params === "object" &&
-            params !== null &&
-            "expression" in params &&
-            typeof params.expression === "string" &&
-            params.expression.includes('const text = ""') &&
-            params.expression.includes("Object.getOwnPropertyDescriptor"),
-        );
-        expect(clearOnlyEvaluation).toBeDefined();
-        expect(methods).not.toContain("Input.insertText");
-        expect(enableIndex).toBeGreaterThanOrEqual(0);
-        expect(focus).toHaveBeenCalledOnce();
-        expect(restoreFocus).toHaveBeenCalledOnce();
-        expect(methods).toContain("Page.bringToFront");
-        expect(enableIndex).toBeLessThan(focusOnIndex);
-        expect(focusOnIndex).toBeLessThan(keyDownIndex);
-        expect(keyDownIndex).toBeLessThan(keyUpIndex);
-        expect(keyUpIndex).toBeLessThan(focusOffIndex);
+        yield* manager.createTab("tab_utility_world");
+        yield* manager.registerWebview("tab_utility_world", 42);
+        yield* manager.automationScroll("tab_utility_world", {
+          selector: "#target",
+          deltaY: 10,
+        });
+        yield* manager.automationScroll("tab_utility_world", {
+          selector: "#target",
+          deltaY: 20,
+        });
         expect(
-          calls.filter(
+          yield* manager.automationEvaluate("tab_utility_world", {
+            expression: "Boolean(globalThis.__t3PlaywrightInjected)",
+          }),
+        ).toBe(false);
+
+        listeners.get("did-start-navigation")?.(
+          {} as Electron.Event,
+          "https://example.com/next",
+          false,
+          true,
+        );
+        yield* manager.automationScroll("tab_utility_world", {
+          selector: "#target",
+          deltaY: 30,
+        });
+
+        const isolatedWorldCalls = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.createIsolatedWorld",
+        );
+        expect(isolatedWorldCalls).toEqual([
+          [
+            "Page.createIsolatedWorld",
+            { frameId: "main-frame", worldName: "t3-preview-playwright" },
+          ],
+          [
+            "Page.createIsolatedWorld",
+            { frameId: "main-frame", worldName: "t3-preview-playwright" },
+          ],
+        ]);
+        const runtimeEvaluations = sendCommand.mock.calls.filter(
+          ([method]) => method === "Runtime.evaluate",
+        );
+        const installEvaluations = runtimeEvaluations.filter(([, params]) =>
+          String(params?.["expression"] ?? "").includes("const module = { exports: {} };"),
+        );
+        expect(installEvaluations.map(([, params]) => params?.["contextId"])).toEqual([101, 102]);
+        expect(installEvaluations.every(([, params]) => params?.["userGesture"] === false)).toBe(
+          true,
+        );
+        const locatorEvaluations = runtimeEvaluations.filter(([, params]) =>
+          String(params?.["expression"] ?? "").includes("target.scrollBy"),
+        );
+        expect(locatorEvaluations.map(([, params]) => params?.["contextId"])).toEqual([
+          101, 101, 102,
+        ]);
+        const mainWorldEvaluation = runtimeEvaluations.find(
+          ([, params]) => params?.["expression"] === "Boolean(globalThis.__t3PlaywrightInjected)",
+        );
+        expect(mainWorldEvaluation?.[1]).toMatchObject({
+          userGesture: false,
+          returnByValue: true,
+        });
+        expect(mainWorldEvaluation?.[1]).not.toHaveProperty("contextId");
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "uses native CDP text input in background webviews and preserves key cleanup",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let failKeyDown = false;
+          let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+          const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (
+              failKeyDown &&
+              method === "Input.dispatchKeyEvent" &&
+              (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
+            ) {
+              throw new Error("key dispatch failed");
+            }
+            if (
+              method === "Input.dispatchKeyEvent" &&
+              (params?.["type"] === "keyDown" || params?.["type"] === "rawKeyDown")
+            ) {
+              humanInput?.(
+                {},
+                {
+                  kind: "key",
+                  key: params["key"],
+                  code: params["code"] ?? "Digit1",
+                },
+              );
+            }
+            return method === "Runtime.evaluate" ? { result: { value: { ok: true } } } : undefined;
+          });
+          const restoreFocus = vi.fn();
+          const previousFocusTarget = {
+            id: 7,
+            isDestroyed: () => false,
+            focus: restoreFocus,
+          };
+          // Model focus faithfully rather than pinning one answer: focusing the
+          // guest makes it the focused WebContents, which is exactly what the
+          // restore guard reads back after the dispatch.
+          let focusedWebContents: { id: number } | null = previousFocusTarget;
+          const focus = vi.fn(() => {
+            focusedWebContents = { id: 42 };
+          });
+          restoreFocus.mockImplementation(() => {
+            focusedWebContents = previousFocusTarget;
+          });
+          getFocusedWebContents.mockImplementation(() => focusedWebContents as never);
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            focus,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: {
+              on: vi.fn((channel: string, listener: typeof humanInput) => {
+                if (channel === "preview:human-input") humanInput = listener;
+              }),
+              off: vi.fn(),
+            },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+
+          yield* manager.createTab("tab_input");
+          yield* manager.registerWebview("tab_input", 42);
+          yield* manager.automationType("tab_input", { text: "hello", clear: true });
+          yield* manager.automationType("tab_input", { text: "", clear: true });
+          yield* manager.automationPress("tab_input", { key: "x" });
+
+          const calls = sendCommand.mock.calls;
+          const methods = calls.map(([method]) => method);
+          const enableIndex = methods.indexOf("Input.setIgnoreInputEvents");
+          const focusOnIndex = calls.findIndex(
             ([method, params]) =>
-              method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-          ),
-        ).toHaveLength(1);
-        expect(sendCommand).toHaveBeenCalledWith("Input.setIgnoreInputEvents", { ignore: false });
+              method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === true,
+          );
+          const xKeyDownIndex = calls.findIndex(
+            ([method, params]) =>
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "keyDown" &&
+              params?.["key"] === "x",
+          );
+          const xKeyUpIndex = calls.findIndex(
+            ([method, params]) =>
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "keyUp" &&
+              params?.["key"] === "x",
+          );
+          const focusOffIndex = calls.findIndex(
+            ([method, params]) =>
+              method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false,
+          );
+          const insertTextIndex = calls.findIndex(
+            ([method, params]) => method === "Input.insertText" && params?.["text"] === "hello",
+          );
+          const backspaceDownIndex = calls.findIndex(
+            ([method, params]) =>
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "rawKeyDown" &&
+              params?.["key"] === "Backspace",
+          );
+          const backspaceUpIndex = calls.findIndex(
+            ([method, params]) =>
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "keyUp" &&
+              params?.["key"] === "Backspace",
+          );
+          const legacyTypingExpressions = calls.filter(
+            ([method, params]) =>
+              method === "Runtime.evaluate" &&
+              typeof params?.["expression"] === "string" &&
+              [
+                "execCommand",
+                "Object.getOwnPropertyDescriptor",
+                "InputEvent",
+                "dispatchEvent",
+              ].some((legacy) => (params["expression"] as string).includes(legacy)),
+          );
+          expect(legacyTypingExpressions).toEqual([]);
+          expect(sendCommand).toHaveBeenCalledWith("Input.insertText", { text: "hello" });
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+            type: "rawKeyDown",
+            key: "Backspace",
+            code: "Backspace",
+            modifiers: 0,
+            windowsVirtualKeyCode: 8,
+            location: 0,
+            isKeypad: false,
+          });
+          expect(enableIndex).toBeGreaterThanOrEqual(0);
+          // Focus emulation alone does not deliver `Input.insertText` to a
+          // hidden guest, so the guest must really be focused for the dispatch
+          // and handed back afterwards.
+          expect(focus).toHaveBeenCalledTimes(3);
+          expect(restoreFocus).toHaveBeenCalledTimes(3);
+          expect(methods).toContain("Page.bringToFront");
+          expect(enableIndex).toBeLessThan(focusOnIndex);
+          expect(focusOnIndex).toBeLessThan(insertTextIndex);
+          expect(insertTextIndex).toBeLessThan(focusOffIndex);
+          expect(backspaceDownIndex).toBeGreaterThan(insertTextIndex);
+          expect(backspaceDownIndex).toBeLessThan(backspaceUpIndex);
+          expect(xKeyDownIndex).toBeLessThan(xKeyUpIndex);
+          expect(
+            calls.filter(
+              ([method, params]) =>
+                method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
+            ),
+          ).toHaveLength(2);
+          expect(sendCommand).toHaveBeenCalledWith("Input.setIgnoreInputEvents", { ignore: false });
 
-        sendCommand.mockClear();
-        failKeyDown = true;
-        const failedPress = yield* Effect.exit(manager.automationPress("tab_input", { key: "y" }));
+          // A user clicking into the visible preview mid-dispatch must win.
+          // Handing focus back to whoever held it before would drop their next
+          // keystroke or paste into the composer instead of the page.
+          const restoreCallsBeforeStolenFocus = restoreFocus.mock.calls.length;
+          focus.mockImplementationOnce(() => {
+            focusedWebContents = { id: 99 };
+          });
+          yield* manager.automationPress("tab_input", { key: "z" });
+          expect(restoreFocus.mock.calls.length).toBe(restoreCallsBeforeStolenFocus);
+          focusedWebContents = previousFocusTarget;
 
-        expect(Exit.isFailure(failedPress)).toBe(true);
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-          type: "keyUp",
-          key: "y",
-          code: "KeyY",
-          modifiers: 0,
-          windowsVirtualKeyCode: 89,
-          location: 0,
-          isKeypad: false,
+          sendCommand.mockClear();
+          failKeyDown = true;
+          const failedPress = yield* Effect.exit(
+            manager.automationPress("tab_input", { key: "y" }),
+          );
+
+          expect(Exit.isFailure(failedPress)).toBe(true);
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key: "y",
+            code: "KeyY",
+            modifiers: 0,
+            windowsVirtualKeyCode: 89,
+            location: 0,
+            isKeypad: false,
+          });
+          expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: false,
+          });
+          expect(restoreFocus).toHaveBeenCalledTimes(4);
+          expect(
+            sendCommand.mock.calls.filter(
+              ([method, params]) =>
+                method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
+            ),
+          ).toHaveLength(1);
+
+          sendCommand.mockClear();
+          failKeyDown = false;
+          yield* manager.automationPress("tab_input", { key: "!" });
+          expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
+            type: "keyDown",
+            key: "!",
+            code: "Digit1",
+            modifiers: 0,
+            windowsVirtualKeyCode: 49,
+            location: 0,
+            isKeypad: false,
+            text: "!",
+            unmodifiedText: "!",
+          });
+          expect(restoreFocus).toHaveBeenCalledTimes(5);
+        }),
+      ),
+  );
+
+  effectIt.effect("uploads local files through a page file input without an OS picker", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+          if (method === "Page.getFrameTree") {
+            return { frameTree: { frame: { id: "drive-main-frame" } } };
+          }
+          if (method === "Page.createIsolatedWorld") return { executionContextId: 77 };
+          if (method !== "Runtime.evaluate") return undefined;
+          if (String(params?.["expression"] ?? "").includes("const module = { exports: {} };")) {
+            return { result: { value: true } };
+          }
+          return params?.["returnByValue"] === false
+            ? { result: { objectId: "file-input-object" } }
+            : { result: { value: { ok: true } } };
         });
-        expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
-          enabled: false,
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://drive.google.com",
+          getTitle: () => "Drive",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_upload");
+        yield* manager.registerWebview("tab_upload", 42);
+        const result = yield* manager.automationUpload("tab_upload", {
+          paths: ["/tmp/MedXRNativePrototype.apk"],
+          selector: "input[type='file']",
         });
-        expect(restoreFocus).toHaveBeenCalledTimes(2);
+
+        expect(result).toEqual({
+          fileCount: 1,
+          fileNames: ["MedXRNativePrototype.apk"],
+        });
+        expect(sendCommand).toHaveBeenCalledWith("DOM.setFileInputFiles", {
+          files: ["/tmp/MedXRNativePrototype.apk"],
+          objectId: "file-input-object",
+        });
         expect(
-          sendCommand.mock.calls.filter(
-            ([method, params]) =>
-              method === "Input.dispatchKeyEvent" && params?.["type"] === "keyUp",
-          ),
-        ).toHaveLength(1);
-
-        sendCommand.mockClear();
-        failKeyDown = false;
-        yield* manager.automationPress("tab_input", { key: "!" });
-        expect(sendCommand).toHaveBeenCalledWith("Input.dispatchKeyEvent", {
-          type: "keyDown",
-          key: "!",
-          code: "Digit1",
-          modifiers: 0,
-          windowsVirtualKeyCode: 49,
-          location: 0,
-          isKeypad: false,
-          text: "!",
-          unmodifiedText: "!",
-        });
-        expect(restoreFocus).toHaveBeenCalledTimes(3);
+          sendCommand.mock.calls
+            .filter(
+              ([method, params]) =>
+                method === "Runtime.evaluate" &&
+                String(params?.["expression"] ?? "").includes("__t3PlaywrightInjected"),
+            )
+            .every(
+              ([, params]) => params?.["contextId"] === 77 && params?.["userGesture"] === false,
+            ),
+        ).toBe(true);
       }),
     ),
   );

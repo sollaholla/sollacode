@@ -75,6 +75,8 @@ import Migration0059 from "./Migrations/059_VmAgentNotificationArchive.ts";
 import Migration0060 from "./Migrations/060_ThreadAgentProvenance.ts";
 import Migration0061 from "./Migrations/061_ProjectionPendingTurnQueue.ts";
 import Migration0062 from "./Migrations/062_BrowserTabCleanupState.ts";
+import Migration0063 from "./Migrations/063_PurgeDeletedThreadData.ts";
+import Migration0064 from "./Migrations/064_RemoveBlockerNotifications.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -149,6 +151,8 @@ export const migrationEntries = [
   [60, "ThreadAgentProvenance", Migration0060],
   [61, "ProjectionPendingTurnQueue", Migration0061],
   [62, "BrowserTabCleanupState", Migration0062],
+  [63, "PurgeDeletedThreadData", Migration0063],
+  [64, "RemoveBlockerNotifications", Migration0064],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

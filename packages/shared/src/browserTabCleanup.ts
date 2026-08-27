@@ -1,4 +1,4 @@
-import { CommandId, MessageId } from "@t3tools/contracts";
+import { CommandId, MessageId, TurnId } from "@t3tools/contracts";
 
 const BROWSER_TAB_CLEANUP_MESSAGE_ID_PREFIX = "browser-tab-cleanup-message:";
 
@@ -15,6 +15,16 @@ export const browserTabCleanupIds = (input: {
 
 export const isBrowserTabCleanupMessageId = (messageId: string): boolean =>
   messageId.startsWith(BROWSER_TAB_CLEANUP_MESSAGE_ID_PREFIX);
+
+export const browserTabCleanupSourceTurnId = (input: {
+  readonly threadId: string;
+  readonly messageId: string;
+}): TurnId | null => {
+  const prefix = `${BROWSER_TAB_CLEANUP_MESSAGE_ID_PREFIX}${input.threadId}:`;
+  if (!input.messageId.startsWith(prefix)) return null;
+  const sourceTurnId = input.messageId.slice(prefix.length);
+  return sourceTurnId.length > 0 ? TurnId.make(sourceTurnId) : null;
+};
 
 export const browserTabCleanupPrompt = (tabCount: number): string =>
   [

@@ -2,6 +2,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -22,6 +23,7 @@ import {
   TerminalNotRunningError,
   type OrchestrationCommand,
   type OrchestrationEvent,
+  type OrchestrationProject,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
   ProjectId,
@@ -73,6 +75,7 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
+import { hostRepairWorkspaceName } from "./hostRepair.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { makeRoutesLayer } from "./server.ts";
 import { coalesceThreadStreamItems, resolveAvailableEditorsForConfig } from "./ws.ts";
@@ -364,6 +367,7 @@ const buildAppUnderTest = (options?: {
     repositoryIdentityResolver?: Partial<
       RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]
     >;
+    workspacePaths?: WorkspacePaths.WorkspacePaths["Service"];
     nativeTelemetryClient?: Partial<NativeTelemetryClient.NativeTelemetryClient["Service"]>;
     desktopTelemetryReceiver?: Partial<
       DesktopTelemetryReceiver.DesktopTelemetryReceiver["Service"]
@@ -507,19 +511,22 @@ const buildAppUnderTest = (options?: {
     const gitManagerLayer = Layer.mock(GitManager.GitManager)({
       ...options?.layers?.gitManager,
     });
+    const workspacePathsLayer = options?.layers?.workspacePaths
+      ? Layer.succeed(WorkspacePaths.WorkspacePaths, options.layers.workspacePaths)
+      : WorkspacePaths.layer;
     const workspaceEntriesLayer = WorkspaceEntries.layer.pipe(
-      Layer.provide(WorkspacePaths.layer),
+      Layer.provide(workspacePathsLayer),
       Layer.provideMerge(vcsDriverRegistryLayer),
     );
     const workspaceAndProjectServicesLayer = Layer.mergeAll(
-      WorkspacePaths.layer,
+      workspacePathsLayer,
       workspaceEntriesLayer,
       WorkspaceFileSystem.layer.pipe(
-        Layer.provide(WorkspacePaths.layer),
+        Layer.provide(workspacePathsLayer),
         Layer.provide(workspaceEntriesLayer),
       ),
       ProjectFaviconResolver.layer.pipe(
-        Layer.provide(WorkspacePaths.layer),
+        Layer.provide(workspacePathsLayer),
         Layer.provide(T3ProjectFileLoader.layer),
       ),
     );
@@ -3570,6 +3577,159 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.isAtLeast(response.sequence, 0);
       assert.equal(stat.type, "Directory");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("starts host repair through websocket and reuses its hostname workspace", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const dispatchedCommands: OrchestrationCommand[] = [];
+      const normalizedWorkspaceRoots: Array<{
+        readonly workspaceRoot: string;
+        readonly createIfMissing: boolean;
+      }> = [];
+      let repairProject: OrchestrationProject | null = null;
+      let repairThreadId: ThreadId | null = null;
+      const sourceError = "ENOSPC: provider startup exhausted the host disk";
+      const now = "2026-08-26T12:00:00.000Z";
+
+      yield* buildAppUnderTest({
+        layers: {
+          workspacePaths: {
+            normalizeWorkspaceRoot: (workspaceRoot, options) =>
+              Effect.sync(() => {
+                normalizedWorkspaceRoots.push({
+                  workspaceRoot,
+                  createIfMissing: options?.createIfMissing === true,
+                });
+                return workspaceRoot;
+              }),
+            resolveRelativePathWithinRoot: (input) =>
+              Effect.succeed({
+                absolutePath: path.join(input.workspaceRoot, input.relativePath),
+                relativePath: input.relativePath,
+              }),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                threadId === defaultThreadId
+                  ? Option.some(
+                      makeDefaultOrchestrationThreadShell({
+                        id: defaultThreadId,
+                        session: {
+                          threadId: defaultThreadId,
+                          status: "error",
+                          providerName: "codex",
+                          runtimeMode: "full-access",
+                          activeTurnId: null,
+                          lastError: sourceError,
+                          updatedAt: now,
+                        },
+                      }),
+                    )
+                  : Option.none(),
+              ),
+            getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
+              Effect.sync(() =>
+                repairProject?.workspaceRoot === workspaceRoot
+                  ? Option.some(repairProject)
+                  : Option.none(),
+              ),
+            getFirstActiveThreadIdByProjectId: (projectId) =>
+              Effect.sync(() =>
+                repairProject?.id === projectId && repairThreadId !== null
+                  ? Option.some(repairThreadId)
+                  : Option.none(),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                if (command.type === "project.create") {
+                  repairProject = {
+                    id: command.projectId,
+                    title: command.title,
+                    workspaceRoot: command.workspaceRoot,
+                    defaultModelSelection: command.defaultModelSelection ?? null,
+                    scripts: [],
+                    createdAt: command.createdAt,
+                    updatedAt: command.createdAt,
+                    deletedAt: null,
+                  };
+                }
+                if (command.type === "thread.create") {
+                  repairThreadId = command.threadId;
+                }
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const first = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverStartHostRepair]({ sourceThreadId: defaultThreadId }),
+        ),
+      );
+      const second = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverStartHostRepair]({ sourceThreadId: defaultThreadId }),
+        ),
+      );
+
+      const projectCreates = dispatchedCommands.filter(
+        (command) => command.type === "project.create",
+      );
+      const threadCreates = dispatchedCommands.filter(
+        (command) => command.type === "thread.create",
+      );
+      const turnStarts = dispatchedCommands.filter(
+        (command) => command.type === "thread.turn.start",
+      );
+      const projectCreate = projectCreates[0];
+      const threadCreate = threadCreates[0];
+      const firstTurn = turnStarts[0];
+      if (
+        projectCreate?.type !== "project.create" ||
+        threadCreate?.type !== "thread.create" ||
+        firstTurn?.type !== "thread.turn.start"
+      ) {
+        return assert.fail("Expected host repair project, thread, and turn commands");
+      }
+
+      const expectedProjectTitle = hostRepairWorkspaceName(NodeOS.hostname());
+      const expectedWorkspaceRoot = path.join(NodeOS.homedir(), expectedProjectTitle);
+      assert.equal(first.projectTitle, expectedProjectTitle);
+      assert.equal(first.workspaceRoot, expectedWorkspaceRoot);
+      assert.equal(first.reusedProject, false);
+      assert.equal(first.reusedThread, false);
+      assert.equal(second.projectId, first.projectId);
+      assert.equal(second.threadId, first.threadId);
+      assert.equal(second.reusedProject, true);
+      assert.equal(second.reusedThread, true);
+      assert.equal(projectCreates.length, 1);
+      assert.equal(threadCreates.length, 1);
+      assert.equal(turnStarts.length, 2);
+      assert.deepEqual(normalizedWorkspaceRoots, [
+        { workspaceRoot: expectedWorkspaceRoot, createIfMissing: true },
+      ]);
+      assert.equal(projectCreate.title, expectedProjectTitle);
+      assert.equal(projectCreate.workspaceRoot, expectedWorkspaceRoot);
+      assert.equal(projectCreate.createWorkspaceRootIfMissing, true);
+      assert.equal(threadCreate.projectId, projectCreate.projectId);
+      assert.equal(threadCreate.runtimeMode, "approval-required");
+      assert.equal(threadCreate.interactionMode, "agent");
+      assert.equal(firstTurn.threadId, threadCreate.threadId);
+      assert.equal(firstTurn.runtimeMode, "approval-required");
+      assert.equal(firstTurn.interactionMode, "agent");
+      assert.include(firstTurn.message.text, sourceError);
+      assert.include(firstTurn.message.text, "exact PID, parent PID, process start time");
+      assert.include(firstTurn.message.text, "Never kill by a broad name/path pattern");
+      assert.include(firstTurn.message.text, "live userdata database as read-only");
+      assert.include(firstTurn.message.text, "exact before/after measurements");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

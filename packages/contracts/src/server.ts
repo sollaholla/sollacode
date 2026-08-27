@@ -428,6 +428,33 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
+export const HostRepairStartInput = Schema.Struct({
+  sourceThreadId: ThreadId,
+});
+export type HostRepairStartInput = typeof HostRepairStartInput.Type;
+
+export const HostRepairStartResult = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  projectTitle: TrimmedNonEmptyString,
+  workspaceRoot: TrimmedNonEmptyString,
+  reusedProject: Schema.Boolean,
+  reusedThread: Schema.Boolean,
+});
+export type HostRepairStartResult = typeof HostRepairStartResult.Type;
+
+export class HostRepairStartError extends Schema.TaggedErrorClass<HostRepairStartError>()(
+  "HostRepairStartError",
+  {
+    detail: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Could not start the host-repair agent: ${this.detail}`;
+  }
+}
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -580,6 +607,40 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
   providers: ServerProviders,
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
+
+export const ProviderUsageResetOutcome = Schema.Literals([
+  "reset",
+  "nothingToReset",
+  "noCredit",
+  "alreadyRedeemed",
+]);
+export type ProviderUsageResetOutcome = typeof ProviderUsageResetOutcome.Type;
+
+export const ProviderUsageResetInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  idempotencyKey: TrimmedNonEmptyString,
+  creditId: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type ProviderUsageResetInput = typeof ProviderUsageResetInput.Type;
+
+export const ProviderUsageResetResult = Schema.Struct({
+  outcome: ProviderUsageResetOutcome,
+  providers: ServerProviders,
+});
+export type ProviderUsageResetResult = typeof ProviderUsageResetResult.Type;
+
+export class ProviderUsageResetError extends Schema.TaggedErrorClass<ProviderUsageResetError>()(
+  "ProviderUsageResetError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider usage reset failed for ${this.instanceId}: ${this.reason}`;
+  }
+}
 
 export const ProviderAccountSwitchStatus = Schema.Literals([
   "logging_out",

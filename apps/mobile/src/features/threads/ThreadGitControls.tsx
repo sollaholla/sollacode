@@ -67,6 +67,7 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
 type HeaderItem = Record<string, unknown>;
 type HeaderItems = HeaderItem[];
 type ThreadGitHeaderActionItems = {
+  readonly browser: HeaderItem;
   readonly terminal: HeaderItem;
   readonly files: HeaderItem;
   readonly artifacts: HeaderItem;
@@ -105,6 +106,7 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
   readonly onOpenTerminal: (terminalId?: string | null) => void;
   readonly onOpenNewTerminal: () => void;
   readonly onOpenArtifacts: () => void;
+  readonly onOpenBrowser: () => void;
   readonly onRunProjectScript: (script: ProjectScript) => Promise<void>;
 };
 
@@ -253,6 +255,16 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 
   return useMemo(
     () => ({
+      browser: {
+        accessibilityLabel: "Open browser",
+        icon: { name: "safari", type: "sfSymbol" },
+        identifier: "thread-right-browser",
+        label: "Browser",
+        onPress: props.onOpenBrowser,
+        sharesBackground: true,
+        type: "button",
+        variant: "plain",
+      },
       terminal: {
         accessibilityLabel: "Open terminal",
         disabled: !props.canOpenTerminal,
@@ -396,6 +408,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       props.gitStatus,
       props.onOpenNewTerminal,
       props.onOpenArtifacts,
+      props.onOpenBrowser,
       props.onOpenTerminal,
       props.onRunProjectScript,
       props.projectScripts,
@@ -409,6 +422,7 @@ export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): Hea
   return useMemo(
     () =>
       [
+        actionItems.browser,
         actionItems.git,
         actionItems.artifacts,
         actionItems.files,
@@ -423,6 +437,7 @@ export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): He
   return useMemo(
     () =>
       [
+        actionItems.browser,
         actionItems.artifacts,
         actionItems.files,
         actionItems.git,
@@ -447,6 +462,14 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           accessibilityLabel={props.auxiliaryPaneControl.accessibilityLabel}
           icon="sidebar.right"
           onPress={props.auxiliaryPaneControl.onPress}
+          separateBackground
+        />
+      ) : null}
+      {showActionControls ? (
+        <NativeHeaderToolbar.Button
+          accessibilityLabel="Open browser"
+          icon="safari"
+          onPress={props.onOpenBrowser}
           separateBackground
         />
       ) : null}
