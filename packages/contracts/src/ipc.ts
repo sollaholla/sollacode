@@ -1484,6 +1484,8 @@ export interface DesktopPreviewBridge {
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
   automation: {
+    /** Keep every preview guest running as foreground while an agent is actively using it. */
+    renewForeground: () => Promise<void>;
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput, expiresAt?: number) => Promise<void>;

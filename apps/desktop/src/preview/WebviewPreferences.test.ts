@@ -43,9 +43,9 @@ function parseWebPreferences(input: string): Record<string, unknown> {
 describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
   const parsed = parseWebPreferences(PREVIEW_WEBVIEW_PREFERENCES);
 
-  it("contains exactly the three security-critical keys", () => {
+  it("contains exactly the required security and background-liveness keys", () => {
     expect(Object.keys(parsed).toSorted()).toEqual(
-      ["contextIsolation", "nodeIntegration", "sandbox"].toSorted(),
+      ["backgroundThrottling", "contextIsolation", "nodeIntegration", "sandbox"].toSorted(),
     );
   });
 
@@ -68,6 +68,10 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
 
   it("disables nodeIntegration (defense in depth — page never gets Node)", () => {
     expect(parsed["nodeIntegration"]).toBe("false");
+  });
+
+  it("keeps auth hydration and page timers alive while the preview is backgrounded", () => {
+    expect(parsed["backgroundThrottling"]).toBe("false");
   });
 
   it("contains no whitespace (Electron's parser does not trim)", () => {

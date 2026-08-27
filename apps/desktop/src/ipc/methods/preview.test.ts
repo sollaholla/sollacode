@@ -84,6 +84,20 @@ describe("preview IPC methods", () => {
     );
   });
 
+  effectIt.effect("renews automation foreground through the preview manager", () => {
+    const renewAutomationForeground = vi.fn(() => Effect.void);
+    const manager = PreviewManager.PreviewManager.of({ renewAutomationForeground } as never);
+
+    return Effect.map(
+      PreviewIpc.automationRenewForeground
+        .handler(undefined)
+        .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
+      () => {
+        expect(renewAutomationForeground).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   effectIt.effect("interrupts focus-taking automation at its caller deadline", () =>
     Effect.gen(function* () {
       let interrupted = false;

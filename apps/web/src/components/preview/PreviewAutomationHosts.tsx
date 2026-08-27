@@ -90,6 +90,14 @@ import {
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
+const renewPreviewAutomationForeground = (): Promise<void> => {
+  const automation = previewBridge?.automation;
+  if (!automation) {
+    return Promise.reject(new Error("Desktop preview automation bridge is unavailable."));
+  }
+  return automation.renewForeground();
+};
+
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
 
 const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
@@ -1021,6 +1029,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         connectionAtom: automationConnectionAtom,
         environmentId,
         requestHandlerAtom,
+        renewAutomationForeground: renewPreviewAutomationForeground,
         respond: (response) =>
           respondToAutomation({
             environmentId,

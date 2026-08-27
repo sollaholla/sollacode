@@ -49,7 +49,7 @@ const {
 } = vi.hoisted(() => ({
   browserWindowConstructor: vi.fn(),
   createFromPath: vi.fn((): { readonly isEmpty: () => boolean } => ({ isEmpty: () => false })),
-  fromId: vi.fn((_id?: number) => null),
+  fromId: vi.fn((_id?: number): Electron.WebContents | null => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
   showItemInFolder: vi.fn(),
@@ -477,6 +477,943 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("dispatches navigation without waiting for a background load to settle", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const loadURL = vi.fn(() => new Promise<void>(() => undefined));
+        const listeners = new Map<string, (...args: never[]) => void>();
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://instagram.com/",
+          getTitle: () => "Instagram",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL,
+          on: vi.fn((event: string, listener: (...args: never[]) => void) => {
+            listeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_background_navigation");
+        yield* manager.registerWebview("tab_background_navigation", 42);
+        yield* manager.navigate("tab_background_navigation", "https://youtube.com/");
+
+        expect(loadURL).toHaveBeenCalledWith("https://youtube.com/");
+        // Electron can deliver title/stop callbacks queued by Instagram after
+        // the YouTube load was dispatched but before its first start event.
+        listeners.get("page-title-updated")?.();
+        listeners.get("did-stop-loading")?.();
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_background_navigation")).toMatchObject({
+          url: "https://youtube.com/",
+          title: "Instagram",
+          loading: true,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "foregrounds every live tab immediately and releases the fleet one minute after activity",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const guests = new Map<
+            number,
+            {
+              readonly setBackgroundThrottling: ReturnType<typeof vi.fn>;
+              readonly invalidate: ReturnType<typeof vi.fn>;
+              readonly sendCommand: ReturnType<typeof vi.fn>;
+              readonly webContents: Electron.WebContents;
+            }
+          >();
+          const makeGuest = (id: number) => {
+            const setBackgroundThrottling = vi.fn();
+            const invalidate = vi.fn();
+            const sendCommand = vi.fn(
+              async (_method: string, _params?: Record<string, unknown>): Promise<unknown> =>
+                undefined,
+            );
+            const webContents = {
+              id,
+              isDestroyed: () => false,
+              getType: () => "webview",
+              getURL: () => `https://example-${id}.com/`,
+              getTitle: () => `Example ${id}`,
+              isLoading: () => false,
+              isDevToolsOpened: () => false,
+              getZoomFactor: () => 1,
+              setZoomFactor: vi.fn(),
+              setBackgroundThrottling,
+              invalidate,
+              on: vi.fn(),
+              off: vi.fn(),
+              ipc: { on: vi.fn(), off: vi.fn() },
+              send: webviewSend,
+              navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+              setWindowOpenHandler: vi.fn(),
+              debugger: {
+                isAttached: () => false,
+                attach: vi.fn(),
+                detach: vi.fn(),
+                sendCommand,
+                on: vi.fn(),
+                off: vi.fn(),
+              },
+            } as unknown as Electron.WebContents;
+            const guest = { setBackgroundThrottling, invalidate, sendCommand, webContents };
+            guests.set(id, guest);
+            return guest;
+          };
+          const first = makeGuest(41);
+          const second = makeGuest(42);
+          fromId.mockImplementation((id) =>
+            id === undefined ? null : (guests.get(id)?.webContents ?? null),
+          );
+
+          yield* manager.createTab("tab_first");
+          yield* manager.registerWebview("tab_first", 41);
+          yield* manager.createTab("tab_second");
+          yield* manager.registerWebview("tab_second", 42);
+          yield* manager.renewAutomationForeground();
+
+          for (const guest of [first, second]) {
+            expect(guest.setBackgroundThrottling).toHaveBeenCalledWith(false);
+            expect(guest.invalidate).toHaveBeenCalledOnce();
+            expect(guest.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+              enabled: true,
+            });
+          }
+
+          // A guest attached after the lease starts inherits foreground
+          // semantics before registration completes.
+          const third = makeGuest(43);
+          yield* manager.createTab("tab_third");
+          yield* manager.registerWebview("tab_third", 43);
+          expect(third.setBackgroundThrottling).toHaveBeenCalledWith(false);
+          expect(third.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: true,
+          });
+
+          // A renewal resets the one-minute idle boundary without repeating
+          // expensive debugger work for guests that are already foregrounded.
+          yield* TestClock.adjust(59_000);
+          yield* manager.renewAutomationForeground();
+          expect(first.invalidate).toHaveBeenCalledOnce();
+          yield* TestClock.adjust(59_999);
+          yield* Effect.yieldNow;
+          expect(
+            first.sendCommand.mock.calls.some(
+              ([method, params]) =>
+                method === "Emulation.setFocusEmulationEnabled" && params?.enabled === false,
+            ),
+          ).toBe(false);
+
+          yield* TestClock.adjust(1);
+          yield* Effect.yieldNow;
+          for (const guest of [first, second, third]) {
+            expect(guest.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+              enabled: false,
+            });
+          }
+
+          // The first request after idling reactivates every tab before its
+          // preview operation can continue.
+          yield* manager.renewAutomationForeground();
+          for (const guest of [first, second, third]) {
+            const focusCalls = guest.sendCommand.mock.calls.filter(
+              ([method]) => method === "Emulation.setFocusEmulationEnabled",
+            );
+            expect(focusCalls.at(-1)?.[1]).toEqual({ enabled: true });
+          }
+        }),
+      ),
+  );
+
+  effectIt.effect("reactivates a tab whose registration crosses the foreground lease expiry", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let resolveActivationStarted: (() => void) | undefined;
+        let resolveActivation: (() => void) | undefined;
+        const activationStarted = new Promise<void>((resolve) => {
+          resolveActivationStarted = resolve;
+        });
+        const continueActivation = new Promise<void>((resolve) => {
+          resolveActivation = resolve;
+        });
+        let blockLateGuestActivation = true;
+        const guests = new Map<number, Electron.WebContents>();
+        const makeGuest = (id: number) => {
+          const invalidate = vi.fn();
+          const sendCommand = vi.fn(
+            async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+              if (
+                id === 42 &&
+                blockLateGuestActivation &&
+                method === "Emulation.setFocusEmulationEnabled" &&
+                params?.enabled === true
+              ) {
+                blockLateGuestActivation = false;
+                resolveActivationStarted?.();
+                await continueActivation;
+              }
+              return undefined;
+            },
+          );
+          const webContents = {
+            id,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => `https://example-${id}.com/`,
+            getTitle: () => `Example ${id}`,
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as unknown as Electron.WebContents;
+          guests.set(id, webContents);
+          return { invalidate, sendCommand };
+        };
+        makeGuest(41);
+        const lateGuest = makeGuest(42);
+        fromId.mockImplementation((id) => (id === undefined ? null : (guests.get(id) ?? null)));
+
+        yield* manager.createTab("tab_initial");
+        yield* manager.registerWebview("tab_initial", 41);
+        yield* manager.renewAutomationForeground();
+        yield* TestClock.adjust(59_999);
+
+        yield* manager.createTab("tab_late");
+        const registration = yield* Effect.forkChild(manager.registerWebview("tab_late", 42), {
+          startImmediately: true,
+        });
+        yield* Effect.promise(() => activationStarted);
+
+        // Expiry is now queued behind the registration activation. Before
+        // this handoff was serialized, release cleared the fleet and the
+        // late activation added a stale id after it had already finished.
+        yield* TestClock.adjust(1);
+        yield* Effect.yieldNow;
+        resolveActivation?.();
+        yield* Fiber.join(registration);
+        yield* Effect.yieldNow;
+
+        yield* manager.renewAutomationForeground();
+        const enabledCalls = lateGuest.sendCommand.mock.calls.filter(
+          ([method, params]) =>
+            method === "Emulation.setFocusEmulationEnabled" && params?.enabled === true,
+        );
+        expect(enabledCalls).toHaveLength(2);
+        expect(lateGuest.invalidate).toHaveBeenCalledTimes(2);
+      }),
+    ),
+  );
+
+  effectIt.effect("releases a partially foregrounded fleet after activation fails", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const guests = new Map<
+          number,
+          {
+            readonly invalidate: ReturnType<typeof vi.fn>;
+            readonly sendCommand: ReturnType<typeof vi.fn>;
+            readonly webContents: Electron.WebContents;
+          }
+        >();
+        const makeGuest = (id: number, failActivation: boolean) => {
+          const invalidate = vi.fn();
+          const sendCommand = vi.fn(
+            async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+              if (
+                failActivation &&
+                method === "Emulation.setFocusEmulationEnabled" &&
+                params?.enabled === true
+              ) {
+                throw new Error("focus emulation unavailable");
+              }
+              return undefined;
+            },
+          );
+          const webContents = {
+            id,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => `https://example-${id}.com/`,
+            getTitle: () => `Example ${id}`,
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as unknown as Electron.WebContents;
+          guests.set(id, { invalidate, sendCommand, webContents });
+        };
+        makeGuest(41, true);
+        makeGuest(42, false);
+        fromId.mockImplementation((id) =>
+          id === undefined ? null : (guests.get(id)?.webContents ?? null),
+        );
+
+        yield* manager.createTab("tab_broken");
+        yield* manager.registerWebview("tab_broken", 41);
+        yield* manager.createTab("tab_healthy");
+        yield* manager.registerWebview("tab_healthy", 42);
+
+        const activation = yield* Effect.exit(manager.renewAutomationForeground());
+        expect(Exit.isFailure(activation)).toBe(true);
+        const healthy = guests.get(42)!;
+        expect(healthy.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+          enabled: true,
+        });
+        expect(healthy.invalidate).toHaveBeenCalledOnce();
+
+        yield* TestClock.adjust(60_000);
+        yield* Effect.yieldNow;
+        expect(healthy.sendCommand.mock.calls.at(-1)).toEqual([
+          "Emulation.setFocusEmulationEnabled",
+          { enabled: false },
+        ]);
+      }),
+    ),
+  );
+
+  effectIt.effect("fails a new registration closed when active foregrounding fails", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let failFocusEmulation = true;
+        const states: PreviewManager.PreviewTabState[] = [];
+        const sendCommand = vi.fn(
+          async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+            if (
+              failFocusEmulation &&
+              method === "Emulation.setFocusEmulationEnabled" &&
+              params?.enabled === true
+            ) {
+              throw new Error("focus emulation unavailable");
+            }
+            return undefined;
+          },
+        );
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.subscribeStateChanges((_tabId, state) =>
+          Effect.sync(() => {
+            states.push(state);
+          }),
+        );
+        yield* manager.renewAutomationForeground();
+        yield* manager.createTab("tab_registration_failure");
+        const registration = yield* Effect.exit(
+          manager.registerWebview("tab_registration_failure", 42),
+        );
+        expect(Exit.isFailure(registration)).toBe(true);
+        expect(yield* manager.automationStatus("tab_registration_failure")).toMatchObject({
+          available: false,
+        });
+        expect(states.at(-1)?.webContentsId).toBe(42);
+
+        failFocusEmulation = false;
+        yield* manager.renewAutomationForeground();
+        expect(yield* manager.automationStatus("tab_registration_failure")).toMatchObject({
+          available: true,
+        });
+        expect(states.at(-1)?.webContentsId).toBe(42);
+      }),
+    ),
+  );
+
+  effectIt.effect("clears foreground readiness on debugger detach and retries reactivation", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let attached = false;
+        let detachListener: ((event: Electron.Event, reason: string) => void) | undefined;
+        let focusAttempts = 0;
+        const attach = vi.fn(() => {
+          attached = true;
+        });
+        const sendCommand = vi.fn(
+          async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+            if (method === "Emulation.setFocusEmulationEnabled" && params?.enabled === true) {
+              focusAttempts += 1;
+              if (focusAttempts === 2) throw new Error("reattach focus failed");
+            }
+            return undefined;
+          },
+        );
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => attached,
+            attach,
+            detach: vi.fn(() => {
+              attached = false;
+            }),
+            sendCommand,
+            on: vi.fn((event: string, listener: typeof detachListener) => {
+              if (event === "detach") detachListener = listener;
+            }),
+            off: vi.fn((event: string, listener: typeof detachListener) => {
+              if (event === "detach" && detachListener === listener) detachListener = undefined;
+            }),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_debugger_detach");
+        yield* manager.registerWebview("tab_debugger_detach", 42);
+        yield* manager.renewAutomationForeground();
+        expect(focusAttempts).toBe(1);
+
+        attached = false;
+        detachListener?.({} as Electron.Event, "target_closed");
+        yield* Effect.promise(() => vi.waitFor(() => expect(focusAttempts).toBe(2)));
+        expect(yield* manager.automationStatus("tab_debugger_detach")).toMatchObject({
+          available: false,
+        });
+
+        yield* manager.renewAutomationForeground();
+        expect(focusAttempts).toBe(3);
+        expect(attach).toHaveBeenCalledTimes(2);
+        expect(yield* manager.automationStatus("tab_debugger_detach")).toMatchObject({
+          available: true,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("does not settle a same-URL reload from queued old-page events", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const url = "https://youtube.com/";
+        let loading = false;
+        const reload = vi.fn(() => {
+          loading = true;
+        });
+        const listeners = new Map<string, (...args: unknown[]) => void>();
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => url,
+          getTitle: () => "YouTube",
+          isLoading: () => loading,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          reload,
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_same_url");
+        yield* manager.registerWebview("tab_same_url", 42);
+        yield* manager.navigate("tab_same_url", url);
+        expect(reload).toHaveBeenCalledOnce();
+
+        // Both callbacks may already be queued from the document that was
+        // visible before reload() was dispatched.
+        loading = false;
+        listeners.get("page-title-updated")?.();
+        listeners.get("did-stop-loading")?.();
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_same_url")).toMatchObject({
+          url,
+          loading: true,
+        });
+
+        loading = true;
+        listeners.get("did-start-navigation")?.({}, url, false, true);
+        listeners.get("did-stop-loading")?.();
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_same_url")).toMatchObject({
+          url,
+          loading: true,
+        });
+
+        listeners.get("did-navigate")?.({}, url);
+        loading = false;
+        listeners.get("did-stop-loading")?.();
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_same_url")).toMatchObject({
+          url,
+          title: "YouTube",
+          loading: false,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("settles a started navigation at its redirected main-frame URL", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let currentUrl = "https://old.example/";
+        let loading = false;
+        let rejectLoad: ((cause: unknown) => void) | undefined;
+        const loadURL = vi.fn(() => {
+          loading = true;
+          return new Promise<void>((_resolve, reject) => {
+            rejectLoad = reject;
+          });
+        });
+        const listeners = new Map<string, (...args: unknown[]) => void>();
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => currentUrl,
+          getTitle: () => (currentUrl.includes("final") ? "Final" : "Old"),
+          isLoading: () => loading,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL,
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_redirect");
+        yield* manager.registerWebview("tab_redirect", 42);
+        yield* manager.navigate("tab_redirect", "https://start.example/");
+
+        loading = false;
+        listeners.get("did-navigate")?.({}, "https://old.example/");
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_redirect")).toMatchObject({
+          url: "https://start.example/",
+          loading: true,
+        });
+
+        loading = true;
+        listeners.get("did-start-navigation")?.({}, "https://start.example/", false, true);
+        rejectLoad?.(new Error("ERR_ABORTED (-3)"));
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_redirect")).toMatchObject({
+          url: "https://start.example/",
+          loading: true,
+        });
+
+        currentUrl = "https://final.example/";
+        loading = false;
+        listeners.get("did-navigate")?.({}, currentUrl);
+        yield* Effect.yieldNow;
+
+        expect(yield* manager.automationStatus("tab_redirect")).toMatchObject({
+          url: "https://final.example/",
+          title: "Final",
+          loading: false,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("publishes a redirected main-frame failure after the target starts", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const requestedUrl = "https://start.example/";
+        const redirectedUrl = "https://final.example/";
+        const listeners = new Map<string, (...args: unknown[]) => void>();
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://old.example/",
+          getTitle: () => "Old",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL: vi.fn(() => new Promise<void>(() => undefined)),
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            listeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_redirect_failure");
+        yield* manager.registerWebview("tab_redirect_failure", 42);
+        yield* manager.navigate("tab_redirect_failure", requestedUrl);
+
+        // A queued failure from the previous page is not evidence about the
+        // requested navigation until its matching main-frame start arrives.
+        listeners.get("did-fail-load")?.(
+          {},
+          -102,
+          "ERR_CONNECTION_REFUSED",
+          "https://old.example/",
+          true,
+        );
+        yield* Effect.yieldNow;
+        expect(yield* manager.automationStatus("tab_redirect_failure")).toMatchObject({
+          url: requestedUrl,
+          loading: true,
+        });
+
+        listeners.get("did-start-navigation")?.({}, requestedUrl, false, true);
+        listeners.get("did-fail-load")?.({}, -105, "ERR_NAME_NOT_RESOLVED", redirectedUrl, true);
+        yield* Effect.yieldNow;
+
+        expect(yield* manager.automationStatus("tab_redirect_failure")).toMatchObject({
+          url: redirectedUrl,
+          loading: false,
+          loadFailure: {
+            code: -105,
+            description: "ERR_NAME_NOT_RESOLVED",
+          },
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("never turns a pre-start aborted target into the old page", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://tiktok.com/",
+          getTitle: () => "TikTok",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL: vi.fn(async () => {
+            throw new Error("ERR_ABORTED (-3)");
+          }),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_aborted_before_start");
+        yield* manager.registerWebview("tab_aborted_before_start", 42);
+        yield* manager.navigate("tab_aborted_before_start", "https://youtube.com/");
+        yield* Effect.yieldNow;
+
+        expect(yield* manager.automationStatus("tab_aborted_before_start")).toMatchObject({
+          url: "https://youtube.com/",
+          title: "TikTok",
+          loading: false,
+          loadFailure: {
+            code: -3,
+            description: "ERR_ABORTED",
+          },
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "reconciles failed loads without letting an old attempt overwrite a newer one",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let currentUrl = "https://instagram.com/";
+          let rejectFirst: ((cause: unknown) => void) | undefined;
+          let resolveSecond: (() => void) | undefined;
+          const loadURL = vi.fn((url: string) => {
+            if (url.includes("first")) {
+              return new Promise<void>((_resolve, reject) => {
+                rejectFirst = reject;
+              });
+            }
+            return new Promise<void>((resolve) => {
+              resolveSecond = () => {
+                currentUrl = url;
+                resolve();
+              };
+            });
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => currentUrl,
+            getTitle: () => (currentUrl.includes("second") ? "Second" : "Instagram"),
+            isLoading: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            loadURL,
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+
+          yield* manager.createTab("tab_navigation_attempts");
+          yield* manager.registerWebview("tab_navigation_attempts", 42);
+          yield* manager.navigate("tab_navigation_attempts", "https://first.example/");
+          yield* manager.navigate("tab_navigation_attempts", "https://second.example/");
+
+          rejectFirst?.(new Error("ERR_NAME_NOT_RESOLVED (-105)"));
+          yield* Effect.yieldNow;
+          expect(yield* manager.automationStatus("tab_navigation_attempts")).toMatchObject({
+            url: "https://second.example/",
+            loading: true,
+          });
+
+          resolveSecond?.();
+          yield* Effect.yieldNow;
+          expect(yield* manager.automationStatus("tab_navigation_attempts")).toMatchObject({
+            url: "https://second.example/",
+            title: "Second",
+            loading: false,
+          });
+        }),
+      ),
+  );
+
+  effectIt.effect("publishes a load failure when Electron rejects the current navigation", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const loadURL = vi.fn(async () => {
+          throw new Error("ERR_NAME_NOT_RESOLVED (-105)");
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://instagram.com/",
+          getTitle: () => "Instagram",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          loadURL,
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_rejected_navigation");
+        yield* manager.registerWebview("tab_rejected_navigation", 42);
+        yield* manager.navigate("tab_rejected_navigation", "https://missing.example/");
+        yield* Effect.yieldNow;
+
+        expect(yield* manager.automationStatus("tab_rejected_navigation")).toMatchObject({
+          url: "https://missing.example/",
+          title: "Instagram",
+          loading: false,
+          loadFailure: {
+            code: -105,
+            description: "ERR_NAME_NOT_RESOLVED",
+          },
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("invalidates a background guest when its UI becomes visible again", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const invalidate = vi.fn();
+        const windowListeners = new Map<string, () => void>();
+        const hostWebContents = {
+          isDestroyed: () => false,
+          on: vi.fn(),
+          off: vi.fn(),
+        };
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          on: vi.fn((event: string, listener: () => void) => {
+            windowListeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          webContents: hostWebContents,
+        } as never);
+        fromId.mockReturnValue({
+          id: 42,
+          hostWebContents,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://www.youtube.com/",
+          getTitle: () => "YouTube",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          invalidate,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_reactivated");
+        yield* manager.setUiActivity("tab_reactivated", "visible-surface", true);
+        expect(invalidate).not.toHaveBeenCalled();
+        yield* manager.registerWebview("tab_reactivated", 42);
+        yield* manager.setUiActivity("tab_reactivated", "visible-surface", true);
+        expect(invalidate).toHaveBeenCalledOnce();
+
+        windowListeners.get("focus")?.();
+        yield* Effect.yieldNow;
+        expect(invalidate).toHaveBeenCalledTimes(2);
+
+        yield* manager.setUiActivity("tab_reactivated", "visible-surface", false);
+        yield* manager.setUiActivity("tab_reactivated", "visible-surface", true);
+        expect(invalidate).toHaveBeenCalledTimes(3);
+      }),
+    ),
+  );
+
   effectIt.effect("emits guest new-tab links without navigating the source tab", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -873,6 +1810,55 @@ describe("PreviewManager", () => {
           yield* TestClock.adjust(1);
           yield* TestClock.adjust(200);
           yield* Fiber.join(click);
+          expect(
+            sendCommand.mock.calls
+              .filter(([method]) => method === "Input.dispatchMouseEvent")
+              .map(([, params]) => (params as { readonly type?: string } | undefined)?.type),
+          ).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
+
+          sendCommand.mockClear();
+          const press: Electron.Input = {
+            type: "keyDown",
+            key: "d",
+            code: "KeyD",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+            location: 0,
+            modifiers: ["meta"],
+          };
+          const release: Electron.Input = {
+            type: "keyUp",
+            key: "Meta",
+            code: "MetaLeft",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 1,
+            modifiers: [],
+          };
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, press);
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, release);
+          // A second hold starts before the first release's async clock read
+          // resumes. That stale release must not clear the new generation.
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, press);
+          const rapidRepressClick = yield* manager
+            .automationClick("tab_dictation", { x: 120, y: 80 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(3_000);
+          expect(sendCommand).not.toHaveBeenCalled();
+
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, release);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(2_200);
+          yield* Fiber.join(rapidRepressClick);
           expect(
             sendCommand.mock.calls
               .filter(([method]) => method === "Input.dispatchMouseEvent")
@@ -1584,9 +2570,7 @@ describe("PreviewManager", () => {
       Effect.gen(function* () {
         const debuggerPng = Buffer.from("debugger-automation-snapshot").toString("base64");
         const stagedPng = Buffer.from("staged-automation-snapshot");
-        let nativeScreenshotAvailable = false;
         const capturePage = vi.fn(async () => {
-          if (!nativeScreenshotAvailable) throw new Error("UnknownVizError");
           return {
             getSize: () => ({ width: 800, height: 600 }),
             resize: () => {
@@ -1608,7 +2592,12 @@ describe("PreviewManager", () => {
             return stagedPng;
           },
         };
+        const staleImage = {
+          ...stagedImage,
+          toJPEG: () => Buffer.from("stale-pre-navigation-snapshot"),
+        };
         let presentedFrameAvailable = false;
+        let replayStaleFrameOnSubscription = false;
         let presentedFrame:
           | ((image: typeof stagedImage, dirtyRect: Electron.Rectangle) => void)
           | undefined;
@@ -1619,33 +2608,73 @@ describe("PreviewManager", () => {
           ) => {
             if (!presentedFrameAvailable) throw new Error("presentation unavailable");
             presentedFrame = callback;
+            if (replayStaleFrameOnSubscription) {
+              queueMicrotask(() => callback(staleImage, { x: 0, y: 0, width: 800, height: 600 }));
+            }
           },
         );
         const endFrameSubscription = vi.fn();
         let debuggerScreenshotAvailable = true;
         let debuggerScreencastAvailable = false;
+        const stablePage = {
+          url: "https://example.com",
+          title: "Example",
+          loading: false,
+          visibleText: "Example",
+          viewportWidth: 800,
+          viewportHeight: 600,
+          interactiveElements: [] as Array<{
+            tag: string;
+            role: string | null;
+            name: string;
+            selector: string;
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          }>,
+        };
+        const runtimePages: Array<typeof stablePage> = [];
+        const debuggerScreenshots: string[] = [];
+        const webContentsListeners = new Map<string, (...args: unknown[]) => void>();
+        let runtimeReadCount = 0;
+        let advanceNavigationGenerationAtRuntimeRead: number | null = null;
+        let inPageNavigationAtRuntimeRead: {
+          readonly read: number;
+          readonly isMainFrame: boolean;
+        } | null = null;
         const previewSession = {};
         const debuggerMessages = new Set<
           (event: unknown, method: string, params: Record<string, unknown>) => void
         >();
         const sendCommand = vi.fn(async (method: string) => {
           if (method === "Runtime.evaluate") {
+            runtimeReadCount += 1;
+            if (runtimeReadCount === advanceNavigationGenerationAtRuntimeRead) {
+              webContentsListeners.get("did-start-navigation")?.(
+                {},
+                "https://example.com",
+                false,
+                true,
+              );
+            }
+            if (runtimeReadCount === inPageNavigationAtRuntimeRead?.read) {
+              webContentsListeners.get("did-navigate-in-page")?.(
+                {},
+                "https://example.com/#updated",
+                inPageNavigationAtRuntimeRead.isMainFrame,
+              );
+            }
             return {
               result: {
-                value: {
-                  url: "https://example.com",
-                  title: "Example",
-                  loading: false,
-                  visibleText: "Example",
-                  viewportWidth: 800,
-                  viewportHeight: 600,
-                  interactiveElements: [],
-                },
+                value: runtimePages.shift() ?? stablePage,
               },
             };
           }
           if (method === "Page.captureScreenshot") {
-            return debuggerScreenshotAvailable ? { data: debuggerPng } : {};
+            return debuggerScreenshotAvailable
+              ? { data: debuggerScreenshots.shift() ?? debuggerPng }
+              : {};
           }
           if (method === "Page.startScreencast" && debuggerScreencastAvailable) {
             queueMicrotask(() => {
@@ -1663,7 +2692,9 @@ describe("PreviewManager", () => {
         });
         const invalidate = vi.fn(() => {
           if (!presentedFrameAvailable) return;
-          presentedFrame?.(stagedImage, { x: 0, y: 0, width: 800, height: 600 });
+          queueMicrotask(() =>
+            presentedFrame?.(stagedImage, { x: 0, y: 0, width: 800, height: 600 }),
+          );
         });
         fromId.mockReturnValue({
           id: 42,
@@ -1676,7 +2707,9 @@ describe("PreviewManager", () => {
           getZoomFactor: () => 1,
           setZoomFactor: vi.fn(),
           session: previewSession,
-          on: vi.fn(),
+          on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            webContentsListeners.set(event, listener);
+          }),
           off: vi.fn(),
           ipc: { on: vi.fn(), off: vi.fn() },
           send: webviewSend,
@@ -1712,6 +2745,21 @@ describe("PreviewManager", () => {
 
         yield* manager.createTab("tab_hidden_snapshot");
         yield* manager.registerWebview("tab_hidden_snapshot", 42);
+        const windowListeners = new Map<string, () => void>();
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          isFocused: () => true,
+          once: vi.fn(),
+          on: vi.fn((event: string, listener: () => void) => {
+            windowListeners.set(event, listener);
+          }),
+          off: vi.fn(),
+          webContents: {
+            isDestroyed: () => false,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
         const states: PreviewManager.PreviewTabState[] = [];
         yield* manager.subscribeStateChanges((tabId, state) =>
           Effect.gen(function* () {
@@ -1726,11 +2774,7 @@ describe("PreviewManager", () => {
         yield* manager.setUiActivity("tab_hidden_snapshot", "test", true);
         const snapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
 
-        expect(capturePage).toHaveBeenCalledOnce();
-        expect(capturePage).toHaveBeenLastCalledWith(undefined, {
-          stayHidden: true,
-          stayAwake: true,
-        });
+        expect(capturePage).not.toHaveBeenCalled();
         expect(snapshot.screenshot).toEqual({
           mimeType: "image/jpeg",
           data: debuggerPng,
@@ -1746,14 +2790,18 @@ describe("PreviewManager", () => {
           clip: { x: 0, y: 0, width: 800, height: 600, scale: 1 },
         });
 
-        yield* manager.setUiActivity("tab_hidden_snapshot", "test", false);
+        // React has not released its visible-surface lease yet, but native
+        // window blur is authoritative: the next snapshot must stage instead
+        // of trusting the now-occluded compositor frame.
+        windowListeners.get("blur")?.();
         debuggerScreenshotAvailable = false;
         presentedFrameAvailable = true;
+        replayStaleFrameOnSubscription = true;
         const stagedSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
-        // A synchronous presentation callback can win before capturePage is
-        // even started, avoiding the native promise that hangs on occluded macOS guests.
-        expect(capturePage).toHaveBeenCalledOnce();
-        expect(invalidate).toHaveBeenCalledOnce();
+        // A queued cached presentation can arrive after subscription returns.
+        // The first presentation is rejected and the post-invalidation frame wins.
+        expect(capturePage).not.toHaveBeenCalled();
+        expect(invalidate).toHaveBeenCalledTimes(2);
         expect(beginFrameSubscription).toHaveBeenCalledWith(false, expect.any(Function));
         expect(endFrameSubscription).toHaveBeenCalledOnce();
         expect(stagedSnapshot.screenshot).toEqual({
@@ -1765,7 +2813,6 @@ describe("PreviewManager", () => {
         expect(states.some((state) => state.snapshotStageId !== null)).toBe(true);
         expect(states.at(-1)?.snapshotStageId).toBeNull();
 
-        nativeScreenshotAvailable = false;
         presentedFrameAvailable = false;
         debuggerScreencastAvailable = true;
         const screencastSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
@@ -1785,116 +2832,260 @@ describe("PreviewManager", () => {
         expect(sendCommand).toHaveBeenCalledWith("Page.stopScreencast");
 
         debuggerScreencastAvailable = false;
-        const mirrorPng = Buffer.from("offscreen-mirror-snapshot");
-        const mirrorImage = {
-          getSize: () => ({ width: 800, height: 600 }),
-          resize: () => {
-            throw new Error("unexpected resize");
-          },
-          toJPEG: (quality: number) => {
-            expect(quality).toBe(78);
-            return mirrorPng;
-          },
-        };
-        let paintListener:
-          | ((event: unknown, dirtyRect: Electron.Rectangle, image: typeof mirrorImage) => void)
-          | undefined;
-        const mirrorWebContents = {
-          isDestroyed: vi.fn(() => false),
-          setAudioMuted: vi.fn(),
-          setWindowOpenHandler: vi.fn(),
-          setFrameRate: vi.fn(),
-          on: vi.fn(
-            (
-              event: string,
-              listener: (
-                event: unknown,
-                dirtyRect: Electron.Rectangle,
-                image: typeof mirrorImage,
-              ) => void,
-            ) => {
-              if (event === "paint") paintListener = listener;
-            },
-          ),
-          off: vi.fn(),
-          startPainting: vi.fn(),
-          stopPainting: vi.fn(),
-          loadURL: vi.fn(async () => undefined),
-          invalidate: vi.fn(() =>
-            paintListener?.({}, { x: 0, y: 0, width: 800, height: 600 }, mirrorImage),
-          ),
-        };
-        const mirrorWindow = {
-          webContents: mirrorWebContents,
-          isDestroyed: vi.fn(() => false),
-          destroy: vi.fn(),
-        };
-        browserWindowConstructor.mockImplementation(function () {
-          return mirrorWindow;
+        debuggerScreenshotAvailable = true;
+        const dynamicPng = Buffer.from("dynamic-live-feed").toString("base64");
+        const retryDynamicPng = Buffer.from("retry-dynamic-live-feed").toString("base64");
+        const dynamicControl = (name: string) => ({
+          tag: "button",
+          role: "button",
+          name,
+          selector: "#like",
+          x: 20,
+          y: 20,
+          width: 80,
+          height: 32,
         });
-        const mirrorSnapshotFiber = yield* manager
-          .automationSnapshot("tab_hidden_snapshot")
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust("3 seconds");
-        const mirrorSnapshot = yield* Fiber.join(mirrorSnapshotFiber);
-        expect(mirrorSnapshot.screenshot).toEqual({
-          mimeType: "image/jpeg",
-          data: mirrorPng.toString("base64"),
-          width: 800,
-          height: 600,
-        });
-        expect(browserWindowConstructor).toHaveBeenCalledWith({
-          width: 800,
-          height: 600,
-          show: false,
-          frame: false,
-          skipTaskbar: true,
-          paintWhenInitiallyHidden: true,
-          webPreferences: {
-            session: previewSession,
-            offscreen: true,
-            backgroundThrottling: false,
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
+        runtimePages.push(
+          {
+            ...stablePage,
+            title: "Live feed (3)",
+            visibleText: "Views 1,234 0:10",
+            interactiveElements: [dynamicControl("Like 12")],
           },
-        });
-        expect(mirrorWebContents.setAudioMuted).toHaveBeenCalledWith(true);
-        expect(mirrorWebContents.setAudioMuted.mock.invocationCallOrder[0]).toBeLessThan(
-          mirrorWebContents.loadURL.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+          {
+            ...stablePage,
+            title: "Live feed (4)",
+            visibleText: "Views 1,235 0:11",
+            interactiveElements: [{ ...dynamicControl("Like 13"), x: 21 }],
+          },
+          {
+            ...stablePage,
+            title: "Live feed (5)",
+            visibleText: "Views 1,236 0:12",
+            interactiveElements: [{ ...dynamicControl("Like 14"), x: 22 }],
+          },
+          {
+            ...stablePage,
+            title: "Live feed (6)",
+            visibleText: "Views 1,237 0:13",
+            interactiveElements: [{ ...dynamicControl("Like 15"), x: 23 }],
+          },
         );
-        expect(mirrorWebContents.setWindowOpenHandler).toHaveBeenCalledOnce();
-        expect(mirrorWebContents.startPainting).toHaveBeenCalledOnce();
-        expect(mirrorWebContents.loadURL).toHaveBeenCalledWith("https://example.com");
-        expect(mirrorWebContents.invalidate).toHaveBeenCalledOnce();
-        expect(mirrorWebContents.stopPainting).toHaveBeenCalledOnce();
-        expect(mirrorWindow.destroy).toHaveBeenCalledOnce();
+        debuggerScreenshots.push(dynamicPng, retryDynamicPng);
+        const screenshotsBeforeDynamicPage = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const dynamicSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(dynamicSnapshot.visibleText).toBe("Views 1,237 0:13");
+        expect(dynamicSnapshot.screenshot).toBeUndefined();
+        expect(dynamicSnapshot.screenshotError).toContain("live page changed");
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeDynamicPage + 2);
 
-        // Every capture strategy is now exhausted, ending at the offscreen
-        // mirror re-loading the page URL — which a dead server can never
-        // satisfy. The snapshot still has to come back: it carries the URL,
-        // text and accessibility tree that were gathered fine, and a caller
-        // handed a bare failure instead cannot tell a page that will never
-        // render from a tool that is momentarily broken, so it retries.
-        mirrorWebContents.loadURL.mockRejectedValue(
-          new Error("ERR_FAILED (-2) loading 'chrome-error://chromewebdata/'"),
+        const subframePng = Buffer.from("subframe-did-not-replace-main-page").toString("base64");
+        runtimePages.push(stablePage, stablePage);
+        debuggerScreenshots.push(subframePng);
+        inPageNavigationAtRuntimeRead = {
+          read: runtimeReadCount + 2,
+          isMainFrame: false,
+        };
+        const screenshotsBeforeSubframeNavigation = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const subframeSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(subframeSnapshot.screenshot?.data).toBe(subframePng);
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeSubframeNavigation + 1);
+        inPageNavigationAtRuntimeRead = null;
+
+        const staleGenerationPng = Buffer.from("stale-document-generation").toString("base64");
+        const currentGenerationPng = Buffer.from("current-document-generation").toString("base64");
+        runtimePages.push(stablePage, stablePage, stablePage, stablePage);
+        debuggerScreenshots.push(staleGenerationPng, currentGenerationPng);
+        advanceNavigationGenerationAtRuntimeRead = runtimeReadCount + 2;
+        const screenshotsBeforeGenerationChange = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const generationSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(generationSnapshot.screenshot?.data).toBe(currentGenerationPng);
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeGenerationChange + 2);
+        advanceNavigationGenerationAtRuntimeRead = null;
+
+        const staleOpeningReadPng = Buffer.from("stale-opening-read").toString("base64");
+        const currentOpeningReadPng = Buffer.from("current-opening-read").toString("base64");
+        const oldOpeningPage = {
+          ...stablePage,
+          visibleText: "Old document",
+          interactiveElements: [dynamicControl("Account")],
+        };
+        const currentOpeningPage = {
+          ...stablePage,
+          visibleText: "Current document",
+          interactiveElements: [dynamicControl("Account")],
+        };
+        runtimePages.push(
+          oldOpeningPage,
+          currentOpeningPage,
+          currentOpeningPage,
+          currentOpeningPage,
         );
+        debuggerScreenshots.push(staleOpeningReadPng, currentOpeningReadPng);
+        // The main-frame generation changes inside the opening Runtime.evaluate.
+        // Its returned DOM belongs to the old document, even though URL and
+        // structural controls are indistinguishable from the current one.
+        advanceNavigationGenerationAtRuntimeRead = runtimeReadCount + 1;
+        const screenshotsBeforeOpeningGenerationChange = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const openingGenerationSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(openingGenerationSnapshot.visibleText).toBe("Current document");
+        expect(openingGenerationSnapshot.screenshot?.data).toBe(currentOpeningReadPng);
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeOpeningGenerationChange + 2);
+        advanceNavigationGenerationAtRuntimeRead = null;
+
+        const staleMainFramePng = Buffer.from("stale-main-frame-history").toString("base64");
+        const currentMainFramePng = Buffer.from("current-main-frame-history").toString("base64");
+        runtimePages.push(stablePage, stablePage, stablePage, stablePage);
+        debuggerScreenshots.push(staleMainFramePng, currentMainFramePng);
+        inPageNavigationAtRuntimeRead = {
+          read: runtimeReadCount + 2,
+          isMainFrame: true,
+        };
+        const screenshotsBeforeMainFrameNavigation = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const mainFrameSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(mainFrameSnapshot.screenshot?.data).toBe(currentMainFramePng);
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeMainFrameNavigation + 2);
+        inPageNavigationAtRuntimeRead = null;
+
+        const skeletonPng = Buffer.from("logged-out-skeleton").toString("base64");
+        const signedInPng = Buffer.from("signed-in-feed").toString("base64");
+        const authControl = (name: string, selector: string) => ({
+          ...dynamicControl(name),
+          selector,
+        });
+        const signedInPage = {
+          ...stablePage,
+          title: "TikTok",
+          visibleText: "For You Following Profile",
+          interactiveElements: [authControl("Profile", "#profile")],
+        };
+        runtimePages.push(
+          {
+            ...stablePage,
+            title: "Log in | TikTok",
+            visibleText: "Sign up Log in",
+            interactiveElements: [authControl("Log in", "#login")],
+          },
+          signedInPage,
+          signedInPage,
+          signedInPage,
+        );
+        debuggerScreenshots.push(skeletonPng, signedInPng);
+        const screenshotsBeforeAuthTransition = sendCommand.mock.calls.filter(
+          ([method]) => method === "Page.captureScreenshot",
+        ).length;
+        const axBeforeAuthTransition = sendCommand.mock.calls.filter(
+          ([method]) => method === "Accessibility.getFullAXTree",
+        ).length;
+        const authSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(authSnapshot.visibleText).toBe("For You Following Profile");
+        expect(authSnapshot.screenshot).toEqual({
+          mimeType: "image/jpeg",
+          data: signedInPng,
+          width: 800,
+          height: 600,
+        });
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot").length,
+        ).toBe(screenshotsBeforeAuthTransition + 2);
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Accessibility.getFullAXTree")
+            .length,
+        ).toBe(axBeforeAuthTransition + 2);
+
+        const accountState = (visibleText: string, name: string) => ({
+          ...stablePage,
+          title: "TikTok",
+          visibleText,
+          interactiveElements: [authControl(name, "#account")],
+        });
+        runtimePages.push(
+          accountState("Sign up Log in", "Log in"),
+          accountState("For You Following Profile", "Profile"),
+          accountState("Session expired Log in", "Log in"),
+          accountState("For You Following Profile", "Profile"),
+        );
+        debuggerScreenshots.push(skeletonPng, signedInPng);
+        const sameSelectorAuthSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(sameSelectorAuthSnapshot.visibleText).toBe("For You Following Profile");
+        expect(sameSelectorAuthSnapshot.interactiveElements).toEqual([
+          expect.objectContaining({ selector: "#account", name: "Profile" }),
+        ]);
+        expect(sameSelectorAuthSnapshot.screenshot).toBeUndefined();
+        expect(sameSelectorAuthSnapshot.screenshotError).toContain("live page changed");
+
+        runtimePages.push(
+          {
+            ...stablePage,
+            visibleText: "Hydrating account",
+            interactiveElements: [authControl("Continue", "#hydrate")],
+          },
+          {
+            ...stablePage,
+            visibleText: "Loading profile",
+            interactiveElements: [authControl("Profile", "#profile")],
+          },
+          {
+            ...stablePage,
+            visibleText: "Loading feed",
+            interactiveElements: [authControl("Feed", "#feed-loading")],
+          },
+          {
+            ...stablePage,
+            visibleText: "Signed-in feed",
+            interactiveElements: [authControl("Feed", "#feed")],
+          },
+        );
+        debuggerScreenshots.push(skeletonPng, signedInPng);
+        const unstableSnapshot = yield* manager.automationSnapshot("tab_hidden_snapshot");
+        expect(unstableSnapshot.visibleText).toBe("Signed-in feed");
+        expect(unstableSnapshot.screenshot).toBeUndefined();
+        expect(unstableSnapshot.screenshotError).toContain("live page changed");
+        expect(unstableSnapshot.accessibilityTree).toEqual({ nodes: [] });
+
+        // Every live capture strategy can fail on an occluded compositor. The
+        // snapshot must still return its live DOM, but it must never re-load
+        // an authenticated URL in a second renderer to invent replacement
+        // pixels with unrelated in-memory auth state.
+        debuggerScreenshotAvailable = false;
         const degradedSnapshotFiber = yield* manager
           .automationSnapshot("tab_hidden_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
-        yield* TestClock.adjust("10 seconds");
+        yield* TestClock.adjust("5 seconds");
         const degradedSnapshot = yield* Fiber.await(degradedSnapshotFiber);
         expect(states.at(-1)?.snapshotStageId).toBeNull();
         expect(Exit.isSuccess(degradedSnapshot)).toBe(true);
         if (Exit.isSuccess(degradedSnapshot)) {
           expect(degradedSnapshot.value.screenshot).toBeUndefined();
-          expect(degradedSnapshot.value.screenshotError).toContain("did not load");
+          expect(degradedSnapshot.value.screenshotError).toContain(
+            "rest of this snapshot is complete",
+          );
           // The part the caller actually needs to decide what to do next.
           expect(degradedSnapshot.value.visibleText).toBe("Example");
           expect(degradedSnapshot.value.url).toBe("https://example.com");
         }
+        expect(browserWindowConstructor).not.toHaveBeenCalled();
       }),
     ),
   );
@@ -1904,6 +3095,8 @@ describe("PreviewManager", () => {
       Effect.gen(function* () {
         const debuggerPng = Buffer.from("debugger-timeout-snapshot").toString("base64");
         const capturePage = vi.fn(() => new Promise<never>(() => {}));
+        const beginFrameSubscription = vi.fn();
+        const endFrameSubscription = vi.fn();
         const sendCommand = vi.fn(async (method: string) => {
           if (method === "Runtime.evaluate") {
             return {
@@ -1948,6 +3141,9 @@ describe("PreviewManager", () => {
             on: vi.fn(),
             off: vi.fn(),
           },
+          invalidate: vi.fn(),
+          beginFrameSubscription,
+          endFrameSubscription,
           capturePage,
         } as never);
 
@@ -1955,9 +3151,16 @@ describe("PreviewManager", () => {
         yield* manager.registerWebview("tab_snapshot_timeout", 42);
         yield* manager.setUiActivity("tab_snapshot_timeout", "test", true);
 
-        const snapshot = yield* manager.automationSnapshot("tab_snapshot_timeout");
+        const snapshotFiber = yield* manager
+          .automationSnapshot("tab_snapshot_timeout")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        const snapshot = yield* Fiber.join(snapshotFiber);
 
-        expect(capturePage).toHaveBeenCalledOnce();
+        expect(beginFrameSubscription).toHaveBeenCalledOnce();
+        expect(endFrameSubscription).toHaveBeenCalledOnce();
+        expect(capturePage).not.toHaveBeenCalled();
         expect(snapshot.visibleText).toBe("Example");
         expect(snapshot.screenshot).toEqual({
           mimeType: "image/jpeg",
@@ -1973,6 +3176,7 @@ describe("PreviewManager", () => {
     withManager((manager) =>
       Effect.gen(function* () {
         const png = Buffer.from("snapshot-after-navigation");
+        const debuggerPng = png.toString("base64");
         const capturePage = vi.fn(async () => ({
           getSize: () => ({ width: 800, height: 600 }),
           toJPEG: (quality: number) => {
@@ -1994,11 +3198,14 @@ describe("PreviewManager", () => {
                   title: "Claims",
                   loading: false,
                   visibleText: "Claims",
+                  viewportWidth: 800,
+                  viewportHeight: 600,
                   interactiveElements: [],
                 },
               },
             };
           }
+          if (method === "Page.captureScreenshot") return { data: debuggerPng };
           if (method === "Accessibility.getFullAXTree") return { nodes: [] };
           return {};
         });
@@ -2039,8 +3246,10 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(50);
         const snapshot = yield* Fiber.join(fiber);
 
-        expect(evaluationAttempts).toBe(2);
-        expect(capturePage).toHaveBeenCalledOnce();
+        // The first context is destroyed. The retry brackets its live image
+        // with one opening and one closing DOM read.
+        expect(evaluationAttempts).toBe(3);
+        expect(capturePage).not.toHaveBeenCalled();
         expect(snapshot).toMatchObject({
           url: "https://example.com/claims",
           visibleText: "Claims",
@@ -3586,29 +4795,16 @@ describe("Preview automation diagnostics", () => {
 });
 
 describe("describeScreenshotFailure", () => {
-  it("names the page as the problem when the page never loaded", () => {
-    // The last-resort capture re-loads the page URL in an offscreen window,
-    // so a dead server surfaces here as a Chromium load error. An agent that
-    // reads "the page did not load" stops retrying; one handed a stack trace
-    // tries again, which is how a stuck tab burned thirteen minutes.
-    expect(
-      PreviewManager.describeScreenshotFailure(
-        new Error("ERR_FAILED (-2) loading 'chrome-error://chromewebdata/'"),
-      ),
-    ).toContain("did not load");
-  });
-
-  it("reassures that the rest of the snapshot survived any other capture fault", () => {
+  it("reassures that the live snapshot survived a capture fault", () => {
     const described = PreviewManager.describeScreenshotFailure(
-      new Error("offscreen surface was not available"),
+      new Error("live compositor surface was not available"),
     );
     expect(described).toContain("rest of this snapshot is complete");
-    expect(described).not.toContain("did not load");
   });
 
   it("describes a non-Error cause without throwing", () => {
-    expect(PreviewManager.describeScreenshotFailure("chrome-error://chromewebdata/")).toContain(
-      "did not load",
+    expect(PreviewManager.describeScreenshotFailure("capture unavailable")).toContain(
+      "rest of this snapshot is complete",
     );
   });
 });

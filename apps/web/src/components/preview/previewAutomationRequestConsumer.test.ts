@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  PREVIEW_AUTOMATION_OPERATIONS,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
@@ -11,6 +12,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   PreviewAutomationHumanVerificationHostError,
+  PreviewAutomationNavigationLoadFailedHostError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
@@ -25,6 +27,7 @@ const threadId = ThreadId.make("thread-1");
 const tabId = PreviewTabId.make("tab-1");
 const clientId = "client-1";
 const connectionId = "connection-1";
+const renewAutomationForeground = async (): Promise<void> => undefined;
 
 const request = (
   requestId: string,
@@ -55,6 +58,37 @@ const consumerState = (handleRequest: (request: PreviewAutomationRequest) => Pro
 });
 
 describe("previewAutomationRequestConsumer", () => {
+  it("foregrounds the guest fleet when an automation client connects", async () => {
+    const requestsAtom = Atom.make(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({
+        type: "connected",
+        connectionId,
+      }),
+    );
+    const renewForeground = vi.fn(async () => undefined);
+    const handleRequest = vi.fn(async () => undefined);
+    const respond = vi.fn(async () => undefined);
+    const state = consumerState(handleRequest);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground: renewForeground,
+      respond,
+      label: "test:preview-automation-connect-foreground",
+    });
+    const registry = AtomRegistry.make();
+
+    registry.mount(consumerAtom);
+
+    await vi.waitFor(() => expect(renewForeground).toHaveBeenCalledOnce());
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    registry.dispose();
+  });
+
   it("acknowledges a replacement stream before consuming requests from it", async () => {
     const requestsAtom = Atom.make(
       AsyncResult.success<PreviewAutomationStreamEvent, Error>({
@@ -71,6 +105,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond,
       label: "test:preview-automation-connected",
     });
@@ -101,6 +136,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond,
       label: "test:preview-automation-stale-generation",
     });
@@ -136,6 +172,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond,
       label: "test:preview-automation-consumer",
     });
@@ -154,11 +191,238 @@ describe("previewAutomationRequestConsumer", () => {
     registry.dispose();
   });
 
+  it("renews foreground before dispatching every automation operation", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const order: string[] = [];
+    const renewForeground = vi.fn(async () => {
+      order.push("renew");
+    });
+    const handleRequest = vi.fn(async (value: PreviewAutomationRequest) => {
+      order.push(`handle:${value.operation}`);
+    });
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handleRequest);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground: renewForeground,
+      respond,
+      label: "test:preview-automation-renew-foreground",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    for (const [index, operation] of PREVIEW_AUTOMATION_OPERATIONS.entries()) {
+      registry.set(
+        requestsAtom,
+        AsyncResult.success(
+          requestEvent(`request-${operation}`, {
+            operation,
+          }),
+        ),
+      );
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(index + 1));
+    }
+
+    expect(renewForeground).toHaveBeenCalledTimes(PREVIEW_AUTOMATION_OPERATIONS.length * 2);
+    expect(order).toEqual(
+      PREVIEW_AUTOMATION_OPERATIONS.flatMap((operation) => [
+        "renew",
+        `handle:${operation}`,
+        "renew",
+      ]),
+    );
+    registry.dispose();
+  });
+
+  it("keeps renewing foreground throughout an operation longer than the idle lease", async () => {
+    vi.useFakeTimers();
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    let finish: ((value: string) => void) | undefined;
+    const handleRequest = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const renewForeground = vi.fn(async () => undefined);
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handleRequest);
+    const registry = AtomRegistry.make();
+    try {
+      registry.mount(
+        createPreviewAutomationRequestConsumerAtom({
+          requestsAtom,
+          clientId,
+          connectionAtom: state.connectionAtom,
+          environmentId,
+          requestHandlerAtom: state.requestHandlerAtom,
+          renewAutomationForeground: renewForeground,
+          respond,
+          label: "test:preview-automation-long-foreground",
+        }),
+      );
+      registry.set(requestsAtom, AsyncResult.success(requestEvent("request-long")));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(handleRequest).toHaveBeenCalledOnce();
+      expect(renewForeground).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(renewForeground.mock.calls.length).toBeGreaterThanOrEqual(7);
+      expect(respond).not.toHaveBeenCalled();
+
+      finish?.("complete");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(renewForeground.mock.calls.length).toBeGreaterThanOrEqual(8);
+      expect(respond).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "request-long", ok: true, result: "complete" }),
+      );
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the idle countdown only after all concurrent operations finish", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const finishes = new Map<string, () => void>();
+    const handleRequest = vi.fn(
+      (value: PreviewAutomationRequest) =>
+        new Promise<void>((resolve) => {
+          finishes.set(value.requestId, resolve);
+        }),
+    );
+    const renewForeground = vi.fn(async () => undefined);
+    const respond = vi.fn(async (_response: PreviewAutomationResponse) => undefined);
+    const state = consumerState(handleRequest);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom: state.connectionAtom,
+        environmentId,
+        requestHandlerAtom: state.requestHandlerAtom,
+        renewAutomationForeground: renewForeground,
+        respond,
+        label: "test:preview-automation-concurrent-foreground",
+      }),
+    );
+
+    registry.set(requestsAtom, AsyncResult.success(requestEvent("request-one")));
+    registry.set(requestsAtom, AsyncResult.success(requestEvent("request-two")));
+    await vi.waitFor(() => expect(handleRequest).toHaveBeenCalledTimes(2));
+    expect(renewForeground).toHaveBeenCalledTimes(2);
+
+    finishes.get("request-one")?.();
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+    expect(renewForeground).toHaveBeenCalledTimes(2);
+
+    finishes.get("request-two")?.();
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(2));
+    expect(renewForeground).toHaveBeenCalledTimes(3);
+    registry.dispose();
+  });
+
+  it("stops foreground keepalives when the automation host unmounts", async () => {
+    vi.useFakeTimers();
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    let finish: (() => void) | undefined;
+    const handleRequest = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const renewForeground = vi.fn(async () => undefined);
+    const state = consumerState(handleRequest);
+    const registry = AtomRegistry.make();
+    try {
+      registry.mount(
+        createPreviewAutomationRequestConsumerAtom({
+          requestsAtom,
+          clientId,
+          connectionAtom: state.connectionAtom,
+          environmentId,
+          requestHandlerAtom: state.requestHandlerAtom,
+          renewAutomationForeground: renewForeground,
+          respond: async () => undefined,
+          label: "test:preview-automation-unmount-foreground",
+        }),
+      );
+      registry.set(requestsAtom, AsyncResult.success(requestEvent("request-unmounted")));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(renewForeground).toHaveBeenCalledOnce();
+
+      registry.dispose();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(renewForeground).toHaveBeenCalledOnce();
+      finish?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(renewForeground).toHaveBeenCalledOnce();
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not dispatch an operation when foreground renewal fails", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const renewForeground = vi.fn(async () => {
+      throw new Error("foreground lease unavailable");
+    });
+    const handleRequest = vi.fn(async () => undefined);
+    const responses: PreviewAutomationResponse[] = [];
+    const state = consumerState(handleRequest);
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom: state.connectionAtom,
+      environmentId,
+      requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground: renewForeground,
+      respond: async (response) => {
+        responses.push(response);
+      },
+      label: "test:preview-automation-renew-failure",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    registry.set(requestsAtom, AsyncResult.success(requestEvent("request-renew-failed")));
+
+    await vi.waitFor(() => expect(responses).toHaveLength(1));
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(responses[0]).toMatchObject({
+      requestId: "request-renew-failed",
+      ok: false,
+      error: {
+        _tag: "PreviewAutomationExecutionError",
+        detail: { operation: "status" },
+      },
+    });
+    registry.dispose();
+  });
+
   it("discards an expired queued request without executing its side effect", async () => {
     const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
       AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
     );
     const handleRequest = vi.fn(async () => undefined);
+    const renewForeground = vi.fn(async () => undefined);
     const respond = vi.fn(async () => undefined);
     const state = consumerState(handleRequest);
     const consumerAtom = createPreviewAutomationRequestConsumerAtom({
@@ -167,6 +431,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground: renewForeground,
       respond,
       label: "test:preview-automation-expired-request",
     });
@@ -180,6 +445,7 @@ describe("previewAutomationRequestConsumer", () => {
     await Promise.resolve();
 
     expect(handleRequest).not.toHaveBeenCalled();
+    expect(renewForeground).not.toHaveBeenCalled();
     expect(respond).not.toHaveBeenCalled();
     registry.dispose();
   });
@@ -198,6 +464,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond,
       label: "test:preview-automation-latest-handler",
     });
@@ -228,6 +495,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond,
       label: "test:preview-automation-initial-request",
     });
@@ -320,6 +588,41 @@ describe("previewAutomationRequestConsumer", () => {
     ).toMatchObject({
       _tag: "PreviewAutomationTimeoutError",
       detail: { tabId: "tab-1", timeoutMs: 2_500 },
+    });
+  });
+
+  it("serializes navigation load failures as actionable execution errors", () => {
+    const error = new PreviewAutomationNavigationLoadFailedHostError({
+      requestId: "request-navigate",
+      operation: "navigate",
+      environmentId,
+      threadId,
+      tabId,
+      code: -105,
+      description: "ERR_NAME_NOT_RESOLVED",
+    });
+
+    expect(
+      serializePreviewAutomationError(error, {
+        requestId: "request-navigate",
+        operation: "navigate",
+        environmentId,
+        threadId,
+        tabId,
+      }),
+    ).toEqual({
+      _tag: "PreviewAutomationExecutionError",
+      message:
+        "Preview navigation for navigate request request-navigate failed in tab tab-1: ERR_NAME_NOT_RESOLVED (-105). Correct the URL or underlying network/site error before retrying.",
+      detail: {
+        requestId: "request-navigate",
+        operation: "navigate",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        tabId: "tab-1",
+        code: -105,
+        description: "ERR_NAME_NOT_RESOLVED",
+      },
     });
   });
 
@@ -456,6 +759,7 @@ describe("previewAutomationRequestConsumer", () => {
       connectionAtom: state.connectionAtom,
       environmentId,
       requestHandlerAtom: state.requestHandlerAtom,
+      renewAutomationForeground,
       respond: async (response) => {
         responses.push(response);
       },

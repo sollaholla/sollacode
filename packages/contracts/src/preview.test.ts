@@ -403,6 +403,28 @@ describe("PreviewAutomationStatus", () => {
     ).toEqual({ width: 412, height: 915 });
   });
 
+  it("exposes navigation load failures while remaining compatible with old hosts", () => {
+    const base = {
+      available: true,
+      visible: false,
+      tabId: "preview-t",
+      url: "https://example.invalid",
+      title: "",
+      loading: false,
+    };
+
+    expect(decodeAutomationStatus(base)).toEqual(base);
+    expect(
+      decodeAutomationStatus({
+        ...base,
+        loadFailure: {
+          code: -105,
+          description: "ERR_NAME_NOT_RESOLVED",
+        },
+      }).loadFailure,
+    ).toEqual({ code: -105, description: "ERR_NAME_NOT_RESOLVED" });
+  });
+
   it("accepts a typed human-verification handoff while remaining compatible with old hosts", () => {
     const status = decodeAutomationStatus({
       available: true,

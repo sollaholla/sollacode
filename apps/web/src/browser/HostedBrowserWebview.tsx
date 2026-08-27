@@ -21,7 +21,10 @@ import {
   applyHostedBrowserWebviewAudio,
   type AudioMutableBrowserWebview,
 } from "./hostedBrowserWebviewAudio";
-import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
+import {
+  isHostedBrowserWebviewPresented,
+  resolveHostedBrowserWebviewWrapperStyle,
+} from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserViewportResize } from "./useBrowserViewportResize";
 import {
@@ -105,10 +108,14 @@ export function HostedBrowserWebview(props: {
   );
   const snapshotStageId = usePreviewBridge({ threadRef, tabId, runtimeTabId });
   const active = presentation.visible && presentation.rect !== null;
-  const snapshotStaged = snapshotStageId !== null && !active;
   const [documentVisible, setDocumentVisible] = useState(
     () => typeof document !== "undefined" && document.visibilityState !== "hidden",
   );
+  const [ownerWindowFocused, setOwnerWindowFocused] = useState(
+    () => typeof document !== "undefined" && document.hasFocus(),
+  );
+  const surfacePresented = isHostedBrowserWebviewPresented(active, ownerWindowFocused);
+  const snapshotStaged = snapshotStageId !== null && !surfacePresented;
   const audible = active && presentation.audible && documentVisible;
   const audibleRef = useRef(audible);
   audibleRef.current = audible;
@@ -146,6 +153,17 @@ export function HostedBrowserWebview(props: {
     const updateVisibility = () => setDocumentVisible(document.visibilityState !== "hidden");
     document.addEventListener("visibilitychange", updateVisibility);
     return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  useEffect(() => {
+    const markFocused = () => setOwnerWindowFocused(true);
+    const markBlurred = () => setOwnerWindowFocused(false);
+    window.addEventListener("focus", markFocused);
+    window.addEventListener("blur", markBlurred);
+    return () => {
+      window.removeEventListener("focus", markFocused);
+      window.removeEventListener("blur", markBlurred);
+    };
   }, []);
 
   useEffect(() => {
@@ -208,20 +226,20 @@ export function HostedBrowserWebview(props: {
     void tabLease.ready
       .then(async () => {
         if (disposed) return;
-        await bridge.setUiActivity(runtimeTabId, "visible-surface", active);
+        await bridge.setUiActivity(runtimeTabId, "visible-surface", surfacePresented);
       })
       .catch(() => undefined);
     return () => {
       disposed = true;
-      if (active) {
+      if (surfacePresented) {
         void bridge.setUiActivity(runtimeTabId, "visible-surface", false).catch(() => undefined);
       }
     };
-  }, [active, runtimeTabId]);
+  }, [runtimeTabId, surfacePresented]);
 
   useLayoutEffect(() => {
     const bridge = previewBridge;
-    if (!bridge || snapshotStageId === null || active) return;
+    if (!bridge || snapshotStageId === null || surfacePresented) return;
     const leaseId = `snapshot-stage:${snapshotStageId}`;
     // Layout effects run after React has placed the guest on-window. Force the
     // new geometry to resolve before acknowledging the main-process request.
@@ -233,7 +251,7 @@ export function HostedBrowserWebview(props: {
     return () => {
       void bridge.setUiActivity(runtimeTabId, leaseId, false).catch(() => undefined);
     };
-  }, [active, runtimeTabId, snapshotStageId]);
+  }, [runtimeTabId, snapshotStageId, surfacePresented]);
 
   const normalizedZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
   const viewportWidth = viewport._tag === "fill" ? null : viewport.width;
