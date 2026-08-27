@@ -225,7 +225,7 @@ import {
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { resolveBlockedSend } from "./ChatView.logic";
+import { resolveBlockedSend, resolveSendDisabledReason } from "./ChatView.logic";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -1503,6 +1503,11 @@ function ChatViewContent(props: ChatViewProps) {
         : props.threadSyncPhase
       : null;
   const threadDetailLoading = threadSyncPhase === "loading";
+  // Both catch-up phases hold a send rather than refuse it. Loading has no
+  // timeline yet and syncing is still fast-forwarding one, so neither is a
+  // safe moment to append a turn — but both end on their own, which makes
+  // this a wait, not a failure.
+  const threadCatchingUp = threadSyncPhase !== null;
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
   const { environments } = useEnvironments();
   // A thread on a host we cannot reach reports last-known state, not live
@@ -2018,6 +2023,7 @@ function ChatViewContent(props: ChatViewProps) {
    */
   const deferredSendOriginRef = useRef<{
     readonly origin: OrchestrationMessageInputOrigin | undefined;
+    readonly threadKey: string | null;
   } | null>(null);
   const draftThreadPersistedRef = useRef(false);
   const persistDraftThreadPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -6447,7 +6453,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeProviderAuthenticationPaused ||
       isSendBusy ||
       isConnecting ||
-      threadDetailLoading ||
+      threadCatchingUp ||
       (activeEnvironmentUnavailable && !canQueueLocalMessage) ||
       sendInFlightRef.current
     ) {
@@ -6460,7 +6466,7 @@ function ChatViewContent(props: ChatViewProps) {
         sendInFlight: isSendBusy || sendInFlightRef.current,
         providerAuthenticationPaused: activeProviderAuthenticationPaused,
         connecting: isConnecting,
-        threadDetailLoading,
+        threadCatchingUp,
         environmentUnavailable: activeEnvironmentUnavailable,
         canQueueLocalMessage,
         environmentLabel: activeEnvironmentUnavailableLabel,
@@ -6468,7 +6474,7 @@ function ChatViewContent(props: ChatViewProps) {
       if (blocked.kind === "queue") {
         // Keep what they typed exactly where it is; the flush effect resends
         // this very call once the wait ends.
-        deferredSendOriginRef.current = { origin: inputOrigin };
+        deferredSendOriginRef.current = { origin: inputOrigin, threadKey: activeThreadKey };
         toastManager.add(
           stackedThreadToast({
             type: "info",
@@ -6947,11 +6953,18 @@ function ChatViewContent(props: ChatViewProps) {
   // edited version, which is what someone who kept typing would expect.
   useEffect(() => {
     if (deferredSendOriginRef.current === null) return;
-    if (threadDetailLoading || isConnecting || isSendBusy || sendInFlightRef.current) return;
+    if (threadCatchingUp || isConnecting || isSendBusy || sendInFlightRef.current) return;
     const deferred = deferredSendOriginRef.current;
+    // Navigating away while the wait was still running means the text they
+    // queued belongs to a conversation they left. Drop it rather than post it
+    // into whatever thread happens to be open now.
+    if (deferred.threadKey !== activeThreadKey) {
+      deferredSendOriginRef.current = null;
+      return;
+    }
     deferredSendOriginRef.current = null;
     void onSendRef.current(undefined, deferred.origin);
-  }, [threadDetailLoading, isConnecting, isSendBusy]);
+  }, [activeThreadKey, threadCatchingUp, isConnecting, isSendBusy]);
 
   const sendAutomatedConversationTurn = useCallback(
     async (
@@ -8952,15 +8965,10 @@ function ChatViewContent(props: ChatViewProps) {
                             isInterruptible={isThreadInterruptible}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
-                            sendDisabledReason={
-                              activeProviderAuthenticationPaused
-                                ? "Sign in to continue"
-                                : threadSyncPhase === "loading"
-                                  ? "Messages loading"
-                                  : threadSyncPhase === "syncing" && !canQueueLocalMessage
-                                    ? "Messages syncing"
-                                    : null
-                            }
+                            sendDisabledReason={resolveSendDisabledReason({
+                              providerAuthenticationPaused: activeProviderAuthenticationPaused,
+                              threadCatchingUp,
+                            })}
                             isPreparingWorktree={isPreparingWorktree}
                             pushToTalkStatus={visiblePushToTalkStatus}
                             pushToTalkDisabled={
