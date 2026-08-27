@@ -19,7 +19,11 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
-import { resolveSidebarState, type ResponsiveSidebarState } from "./sidebarState";
+import {
+  resolveSidebarState,
+  shouldIgnoreSheetDismiss,
+  type ResponsiveSidebarState,
+} from "./sidebarState";
 import * as Schema from "effect/Schema";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
@@ -116,7 +120,34 @@ function SidebarProvider({
   onOpenChange?: (open: boolean) => void;
 }) {
   const isMobile = useIsMobile();
-  const [openMobile, setOpenMobile] = React.useState(false);
+  const [openMobile, setOpenMobileState] = React.useState(false);
+  // When the sheet last opened, so a dismissal belonging to the opening tap can
+  // be told apart from a real one. See `shouldIgnoreSheetDismiss`.
+  const mobileOpenedAtRef = React.useRef(0);
+  React.useEffect(() => {
+    if (openMobile) mobileOpenedAtRef.current = Date.now();
+  }, [openMobile]);
+  const setOpenMobile = React.useCallback((value: boolean | ((current: boolean) => boolean)) => {
+    setOpenMobileState((current) => {
+      const next = typeof value === "function" ? value(current) : value;
+      // The trigger is not a SheetTrigger, so Base UI counts a press on it as
+      // an outside press and dismisses. On touch the opening tap's trailing
+      // event lands after the dialog mounts and closes it on the spot, which
+      // reads as the sidebar animating and then not opening until a second
+      // tap.
+      if (
+        current &&
+        !next &&
+        shouldIgnoreSheetDismiss({
+          openedAtMs: mobileOpenedAtRef.current,
+          nowMs: Date.now(),
+        })
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, []);
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
