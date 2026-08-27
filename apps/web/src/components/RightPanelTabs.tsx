@@ -46,6 +46,9 @@ import {
 
 import { isElectron } from "~/env";
 import type { RightPanelSurface } from "~/rightPanelStore";
+import type { DesktopPreviewOverlay } from "~/previewStateStore";
+import { AgentCursorGlyph } from "~/components/preview/AgentCursorGlyph";
+import { resolvePreviewTabAgentIndicator } from "~/components/preview/previewTabAgentIndicator";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
@@ -96,6 +99,10 @@ interface RightPanelTabsProps {
   activeSurfaceId: string | null;
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  /** Per preview tab, who is driving it — badges the tab an agent is working in. */
+  previewControllerByTabId?:
+    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | undefined;
   floatingPreviewTabIds: ReadonlySet<string> | undefined;
   terminalLabelsById: ReadonlyMap<string, string>;
   terminalStatusById?: ReadonlyMap<string, TerminalTabStatus>;
@@ -579,6 +586,7 @@ function SurfaceIcon({
   sideChatStatus,
   terminalStatus = null,
   theme,
+  previewControllerByTabId,
 }: {
   surface: RightPanelSurface;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
@@ -586,9 +594,42 @@ function SurfaceIcon({
   sideChatStatus: SideChatTabStatus | null;
   terminalStatus?: TerminalTabStatus | null;
   theme: "light" | "dark";
+  previewControllerByTabId?:
+    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | undefined;
 }) {
   switch (surface.kind) {
     case "preview": {
+      // Which tab is an agent actually in? The cursor only exists inside the
+      // page it moves in, so with several tabs open the strip could not say.
+      const agentIndicator = resolvePreviewTabAgentIndicator(
+        surface.resourceId ? previewControllerByTabId?.[surface.resourceId] : undefined,
+      );
+      if (agentIndicator !== null) {
+        return (
+          <span
+            className={cn(
+              "flex size-3.5 shrink-0 items-center justify-center",
+              agentIndicator === "agent"
+                ? "text-[#3b82f6] [filter:drop-shadow(0_0_3px_#3b82f6)]"
+                : "text-[#3b82f6]/55",
+            )}
+            aria-label={
+              agentIndicator === "agent"
+                ? "An agent is working in this tab"
+                : "An agent is waiting for you in this tab"
+            }
+            title={
+              agentIndicator === "agent"
+                ? "An agent is working in this tab"
+                : "An agent is waiting for you in this tab"
+            }
+            data-preview-tab-agent={agentIndicator}
+          >
+            <AgentCursorGlyph className="size-3" />
+          </span>
+        );
+      }
       if (floatingPreview) {
         return (
           <Cast
@@ -683,6 +724,9 @@ function SortableTab(props: {
   title: string;
   sideChatStatus: SideChatTabStatus | null;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  previewControllerByTabId?:
+    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | undefined;
   floatingPreviewTabIds: ReadonlySet<string> | undefined;
   theme: "light" | "dark";
   /** Set while a drag is settling so the trailing click cannot activate a tab. */
@@ -739,6 +783,7 @@ function SortableTab(props: {
           <SurfaceIcon
             surface={props.surface}
             sessions={props.sessions}
+            previewControllerByTabId={props.previewControllerByTabId}
             floatingPreview={floatingPreview}
             sideChatStatus={props.sideChatStatus}
             theme={props.theme}
@@ -770,6 +815,7 @@ function SortableTab(props: {
                 <SurfaceIcon
                   surface={props.surface}
                   sessions={props.sessions}
+                  previewControllerByTabId={props.previewControllerByTabId}
                   floatingPreview={floatingPreview}
                   sideChatStatus={props.sideChatStatus}
                   theme={props.theme}
@@ -1002,6 +1048,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                         : null
                     }
                     sessions={props.previewSessions}
+                    previewControllerByTabId={props.previewControllerByTabId}
                     floatingPreviewTabIds={props.floatingPreviewTabIds}
                     theme={resolvedTheme}
                     dragSuppressedRef={dragSuppressedRef}
