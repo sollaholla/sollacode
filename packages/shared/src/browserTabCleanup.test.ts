@@ -62,6 +62,18 @@ describe("browser tab cleanup", () => {
     ).toEqual({ _tag: "RecordCurrent" });
   });
 
+  it("stays silent when the turn left no tabs open at all", () => {
+    // Closing the last tab changes the set, but a cleanup pass over an empty
+    // browser has nothing to act on.
+    expect(
+      decideBrowserTabCleanup({
+        baseline: { tabIds: ["tab-a", "tab-b"] },
+        currentTabIds: [],
+        sourceMessageId: null,
+      }),
+    ).toEqual({ _tag: "RecordCurrent" });
+  });
+
   it("reports only the count in the prompt, never raw tab IDs", () => {
     const prompt = browserTabCleanupPrompt(2);
     expect(prompt).toContain("2 tabs are open");

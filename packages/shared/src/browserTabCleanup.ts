@@ -64,6 +64,12 @@ export const decideBrowserTabCleanup = (input: {
 
   const baselineTabIds = normalizeBrowserTabSet(input.baseline.tabIds);
   const currentTabIds = normalizeBrowserTabSet(input.currentTabIds);
+  // Nothing open is nothing to clean up. A turn that closed the last tab still
+  // changes the set, so without this the reminder fired on an empty browser and
+  // asked for a cleanup pass that had no possible subject.
+  if (currentTabIds.length === 0) {
+    return { _tag: "RecordCurrent" };
+  }
   if (
     baselineTabIds.length === currentTabIds.length &&
     baselineTabIds.every((tabId, index) => tabId === currentTabIds[index])
