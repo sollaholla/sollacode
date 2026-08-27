@@ -24,6 +24,37 @@ describe("resolveUserInputDeferral", () => {
     expect(resolveUserInputDeferral({ lastUserInputAtMs: nowMs - 100, nowMs })).toBe("wait");
   });
 
+  it("never takes focus while push-to-talk is physically held", () => {
+    for (const heldForMs of [2_000, 10_000, 120_000]) {
+      expect(
+        resolveUserInputDeferral({
+          lastUserInputAtMs: nowMs,
+          nowMs: nowMs + heldForMs,
+          pushToTalkActive: true,
+          waitingSinceMs: nowMs,
+        }),
+      ).toBe("wait");
+    }
+  });
+
+  it("waits the full cooldown after a long push-to-talk hold is released", () => {
+    const releasedAtMs = nowMs + 120_000;
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: releasedAtMs,
+        nowMs: releasedAtMs + 1_999,
+        waitingSinceMs: releasedAtMs,
+      }),
+    ).toBe("wait");
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: releasedAtMs,
+        nowMs: releasedAtMs + 2_000,
+        waitingSinceMs: releasedAtMs,
+      }),
+    ).toBe("proceed");
+  });
+
   it("delivers the action late rather than losing it when typing never stops", () => {
     // The MCP preview tools give up at 15s, so an unbounded wait did not queue
     // the action, it discarded it — the reported "dead click". Ten seconds of

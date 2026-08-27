@@ -196,9 +196,12 @@ const AUTOMATION_FOCUS_SETTLE_MS = 120;
 export function resolveUserInputDeferral(input: {
   readonly lastUserInputAtMs: number;
   readonly nowMs: number;
+  /** A held dictation chord owns the focus until its physical release. */
+  readonly pushToTalkActive?: boolean;
   /** When this action began waiting; omit for a first, un-waited check. */
   readonly waitingSinceMs?: number;
 }): "proceed" | "wait" {
+  if (input.pushToTalkActive) return "wait";
   if (input.lastUserInputAtMs === 0) return "proceed";
   if (input.nowMs - input.lastUserInputAtMs >= USER_INPUT_DEFERRAL_MS) return "proceed";
   // Held long enough that the caller is about to give up on us. Going ahead
@@ -708,6 +711,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const snapshotStageSequenceRef = yield* Ref.make(0);
   const activityLeases = new PreviewActivityLeases();
   let forwardedPushToTalkActive = false;
+  // Kept separate from shortcut forwarding so a forwarded key-up cannot open
+  // the automation gate before the main window records its release timestamp.
+  let pushToTalkInputActive = false;
+  let pushToTalkInputGeneration = 0;
   /** Epoch millis of the last key the user pressed in the app's own window. */
   let lastUserInputAtMs = 0;
   const recordActivityLeaseMetrics = Effect.fn("PreviewManager.recordActivityLeaseMetrics")(
@@ -1773,8 +1780,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     !input.alt &&
     (hostPlatform === "darwin" ? input.meta && !input.control : input.control && !input.meta);
 
-  const isPushToTalkRelease = (input: Electron.Input): boolean => {
-    if (input.type !== "keyUp" || !forwardedPushToTalkActive) return false;
+  const isPushToTalkRelease = (
+    input: Electron.Input,
+    active = forwardedPushToTalkActive,
+  ): boolean => {
+    if (input.type !== "keyUp" || !active) return false;
     const key = input.key.toLowerCase();
     return (
       isPushToTalkKey(input) ||
@@ -1784,13 +1794,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   };
 
+  const beginPushToTalkInput = (): void => {
+    if (!pushToTalkInputActive) pushToTalkInputGeneration += 1;
+    pushToTalkInputActive = true;
+    forwardedPushToTalkActive = true;
+  };
+
+  /** Records the release before reopening the automation gate. */
+  const finishPushToTalkInput = (): void => {
+    forwardedPushToTalkActive = false;
+    if (!pushToTalkInputActive) return;
+    const generation = pushToTalkInputGeneration;
+    runFork(
+      Effect.gen(function* () {
+        lastUserInputAtMs = yield* currentMillis;
+        // A rapid new press owns a new generation. Its hold must not be cleared
+        // by an older release whose clock read happened to resume afterwards.
+        if (pushToTalkInputGeneration === generation) pushToTalkInputActive = false;
+      }),
+    );
+  };
+
   const shouldForwardAppShortcut = (input: Electron.Input): boolean => {
     if (isPushToTalkPress(input)) {
-      forwardedPushToTalkActive = true;
+      beginPushToTalkInput();
       return true;
     }
     if (isPushToTalkRelease(input)) {
-      forwardedPushToTalkActive = false;
+      finishPushToTalkInput();
       return true;
     }
     return isAppShortcutPress(input);
@@ -2139,21 +2170,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     // press and release; remembering the press here lets that guest forward
     // the release instead of leaving dictation latched on.
     const observePushToTalk = (_event: Electron.Event, input: Electron.Input): void => {
+      const pushToTalkPressed = isPushToTalkPress(input);
+      const pushToTalkReleased = isPushToTalkRelease(input, pushToTalkInputActive);
+      if (pushToTalkPressed) beginPushToTalkInput();
       // Any key the user presses in the app's own window marks them as active,
       // which holds automation off the focus for a moment. Key-ups included: a
       // held push-to-talk chord is exactly when losing focus hurts most.
-      runFork(
-        Effect.gen(function* () {
-          lastUserInputAtMs = yield* currentMillis;
-        }),
-      );
-      if (isPushToTalkPress(input)) {
-        forwardedPushToTalkActive = true;
-      } else if (isPushToTalkRelease(input)) {
-        forwardedPushToTalkActive = false;
-      }
+      if (pushToTalkReleased) finishPushToTalkInput();
+      else
+        runFork(
+          Effect.gen(function* () {
+            lastUserInputAtMs = yield* currentMillis;
+          }),
+        );
     };
     mainWebContents.on("before-input-event", observePushToTalk);
+    const stopPushToTalkForWindowDeparture = (): void => {
+      if (!pushToTalkInputActive && !forwardedPushToTalkActive) return;
+      finishPushToTalkInput();
+    };
+    window.on("blur", stopPushToTalkForWindowDeparture);
     // `before-input-event` is keyboard-only, so a click into the composer left
     // no trace and automation was free to take the caret from someone who had
     // just placed it. `input-event` carries the pointer too.
@@ -2177,7 +2213,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         mainWebContents.off("before-input-event", observePushToTalk);
         mainWebContents.off("input-event", observeUserPointer);
       }
+      window.off("blur", stopPushToTalkForWindowDeparture);
       forwardedPushToTalkActive = false;
+      pushToTalkInputActive = false;
+      pushToTalkInputGeneration += 1;
       runFork(closeAllPictureInPicture());
     });
   });
@@ -4095,12 +4134,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
   ) {
     const startedAt = yield* currentMillis;
+    // Time spent holding push-to-talk does not consume the ordinary 10-second
+    // delivery budget. The budget restarts on release, after which the normal
+    // idle cooldown still has to elapse in full.
+    let maxWaitStartedAt = startedAt;
     let deferred = false;
     while (true) {
       const now = yield* currentMillis;
+      if (pushToTalkInputActive) maxWaitStartedAt = now;
       if (
-        resolveUserInputDeferral({ lastUserInputAtMs, nowMs: now, waitingSinceMs: startedAt }) ===
-        "proceed"
+        resolveUserInputDeferral({
+          lastUserInputAtMs,
+          nowMs: now,
+          pushToTalkActive: pushToTalkInputActive,
+          waitingSinceMs: maxWaitStartedAt,
+        }) === "proceed"
       ) {
         break;
       }

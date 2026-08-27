@@ -641,6 +641,8 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
           webContents: mainWebContents,
         } as never);
 
@@ -771,6 +773,115 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect(
+    "defers preview input through a long push-to-talk hold and release cooldown",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const mainWindowListeners = new Map<
+            string,
+            (event: Electron.Event, input: Electron.Input) => void
+          >();
+          const mainWebContents = {
+            isDestroyed: () => false,
+            on: vi.fn(
+              (event: string, listener: (event: Electron.Event, input: Electron.Input) => void) => {
+                mainWindowListeners.set(event, listener);
+              },
+            ),
+            off: vi.fn(),
+          };
+          yield* manager.setMainWindow({
+            isDestroyed: () => false,
+            once: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            webContents: mainWebContents,
+          } as never);
+
+          const sendCommand = vi.fn(async (method: string, _params?: Record<string, unknown>) =>
+            method === "Runtime.evaluate"
+              ? { result: { value: { width: 800, height: 600 } } }
+              : undefined,
+          );
+          fromId.mockReturnValue({
+            id: 42,
+            hostWebContents: mainWebContents,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+          yield* manager.createTab("tab_dictation");
+          yield* manager.registerWebview("tab_dictation", 42);
+
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, {
+            type: "keyDown",
+            key: "d",
+            code: "KeyD",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+            location: 0,
+            modifiers: ["meta"],
+          });
+          yield* Effect.yieldNow;
+
+          const click = yield* manager
+            .automationClick("tab_dictation", { x: 120, y: 80 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(12_000);
+          expect(sendCommand).not.toHaveBeenCalled();
+
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, {
+            type: "keyUp",
+            key: "Meta",
+            code: "MetaLeft",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 1,
+            modifiers: [],
+          });
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(1_999);
+          expect(sendCommand).not.toHaveBeenCalled();
+
+          yield* TestClock.adjust(1);
+          yield* TestClock.adjust(200);
+          yield* Fiber.join(click);
+          expect(
+            sendCommand.mock.calls
+              .filter(([method]) => method === "Input.dispatchMouseEvent")
+              .map(([, params]) => (params as { readonly type?: string } | undefined)?.type),
+          ).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
+        }),
+      ),
+  );
+
   effectIt.effect("does not dereference the main WebContents after its window closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -783,6 +894,8 @@ describe("PreviewManager", () => {
         };
         const window = {
           isDestroyed: () => closed,
+          on: vi.fn(),
+          off: vi.fn(),
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") onClosed = listener;
           }),

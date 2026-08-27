@@ -26,6 +26,7 @@ import {
   PreviewAutomationSnapshot,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as NodeURL from "node:url";
 
@@ -353,13 +354,62 @@ export const automationSnapshot = DesktopIpc.makeIpcMethod({
   }),
 });
 
+/**
+ * Interrupts focus-taking input when its server caller has already stopped
+ * waiting. Without carrying the deadline across IPC, a request parked behind
+ * push-to-talk could time out remotely and still click or type after release.
+ */
+const runAutomationInputBeforeExpiry = <A, E, R>(input: {
+  readonly operation: "click" | "type" | "press";
+  readonly tabId: string;
+  readonly expiresAt: number | undefined;
+  readonly effect: Effect.Effect<A, E, R>;
+}): Effect.Effect<A, E | PreviewManager.PreviewOperationError, R> => {
+  const expiresAt = input.expiresAt;
+  if (expiresAt === undefined) return input.effect;
+  return Effect.gen(function* () {
+    const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+    const remainingMs = expiresAt - now;
+    if (remainingMs <= 0) {
+      return yield* new PreviewManager.PreviewOperationError({
+        operation: `automation.${input.operation}.requestExpired`,
+        tabId: input.tabId,
+        cause: new Error("Preview automation request expired before input could be dispatched."),
+      });
+    }
+    const result = yield* input.effect.pipe(Effect.timeoutOption(remainingMs));
+    return yield* Option.match(result, {
+      onNone: () =>
+        Effect.fail(
+          new PreviewManager.PreviewOperationError({
+            operation: `automation.${input.operation}.requestExpired`,
+            tabId: input.tabId,
+            cause: new Error(
+              "Preview automation request expired before input could be dispatched.",
+            ),
+          }),
+        ),
+      onSome: Effect.succeed,
+    });
+  });
+};
+
 export const automationClick = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL,
   payload: DesktopPreviewAutomationClickInputSchema,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({ tabId, input }) {
+  handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({
+    tabId,
+    input,
+    expiresAt,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationClick(tabId, input);
+    yield* runAutomationInputBeforeExpiry({
+      operation: "click",
+      tabId,
+      expiresAt,
+      effect: manager.automationClick(tabId, input),
+    });
   }),
 });
 
@@ -367,9 +417,14 @@ export const automationType = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL,
   payload: DesktopPreviewAutomationTypeInputSchema,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({ tabId, input }) {
+  handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({ tabId, input, expiresAt }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationType(tabId, input);
+    yield* runAutomationInputBeforeExpiry({
+      operation: "type",
+      tabId,
+      expiresAt,
+      effect: manager.automationType(tabId, input),
+    });
   }),
 });
 
@@ -390,9 +445,18 @@ export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({ tabId, input }) {
+  handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({
+    tabId,
+    input,
+    expiresAt,
+  }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationPress(tabId, input);
+    yield* runAutomationInputBeforeExpiry({
+      operation: "press",
+      tabId,
+      expiresAt,
+      effect: manager.automationPress(tabId, input),
+    });
   }),
 });
 

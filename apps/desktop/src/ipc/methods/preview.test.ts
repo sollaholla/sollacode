@@ -2,8 +2,10 @@ import { it as effectIt } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { TestClock } from "effect/testing";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as PreviewManager from "../../preview/Manager.ts";
@@ -81,4 +83,45 @@ describe("preview IPC methods", () => {
       },
     );
   });
+
+  effectIt.effect("interrupts focus-taking automation at its caller deadline", () =>
+    Effect.gen(function* () {
+      let interrupted = false;
+      const manager = PreviewManager.PreviewManager.of({
+        automationClick: () =>
+          Effect.never.pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                interrupted = true;
+              }),
+            ),
+          ),
+      } as never);
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const request = yield* PreviewIpc.automationClick
+        .handler({
+          tabId: "tab-1",
+          input: { x: 10, y: 20 },
+          expiresAt: now + 100,
+        })
+        .pipe(
+          Effect.provideService(PreviewManager.PreviewManager, manager),
+          Effect.forkChild({ startImmediately: true }),
+        );
+
+      yield* TestClock.adjust(99);
+      expect(interrupted).toBe(false);
+      yield* TestClock.adjust(1);
+
+      const exit = yield* Fiber.await(request);
+      expect(interrupted).toBe(true);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isSuccess(exit)) return;
+      expect(Option.getOrThrow(Cause.findErrorOption(exit.cause))).toMatchObject({
+        _tag: "PreviewOperationError",
+        operation: "automation.click.requestExpired",
+        tabId: "tab-1",
+      });
+    }),
+  );
 });

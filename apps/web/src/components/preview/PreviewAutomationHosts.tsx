@@ -882,6 +882,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const result = await ready.bridge.automation.click(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.click>[1],
+              request.expiresAt,
             );
             await inspectAfterAction(ready);
             return result;
@@ -891,6 +892,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const result = await ready.bridge.automation.type(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.type>[1],
+              request.expiresAt,
             );
             await inspectAfterAction(ready);
             return result;
@@ -909,6 +911,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const result = await ready.bridge.automation.press(
               ready.runtimeTabId,
               request.input as Parameters<typeof ready.bridge.automation.press>[1],
+              request.expiresAt,
             );
             await inspectAfterAction(ready);
             return result;
