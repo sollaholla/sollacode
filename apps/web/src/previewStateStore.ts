@@ -9,6 +9,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   type DesktopPreviewColorScheme,
+  type PreviewDownload,
   type PreviewEvent,
   type PreviewListResult,
   type PreviewSessionSnapshot,
@@ -30,6 +31,8 @@ export interface DesktopPreviewOverlay {
   controller: "human" | "agent" | "none" | "waiting-for-user";
   /** Sticky between an agent's individual actions, unlike `controller`. */
   agentActive: boolean;
+  /** Finished downloads for this tab, newest first. */
+  downloads: ReadonlyArray<PreviewDownload>;
 }
 
 export interface ThreadPreviewState {

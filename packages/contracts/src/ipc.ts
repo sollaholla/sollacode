@@ -82,6 +82,7 @@ import {
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
+import { PreviewDownload } from "./previewAutomation.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -564,6 +565,14 @@ export interface DesktopPreviewTabState {
    * which is what answers "which tab is it in?" while a turn runs.
    */
   agentActive: boolean;
+  /**
+   * Downloads this tab finished, newest first.
+   *
+   * Carried on the tab so the notice appears on the tab that fetched the file,
+   * and so it survives a reload of the panel: a download that completed while
+   * the user was elsewhere is still there when they come back.
+   */
+  downloads: ReadonlyArray<PreviewDownload>;
   updatedAt: string;
 }
 
@@ -648,6 +657,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   colorScheme: DesktopPreviewColorSchemeSchema,
   controller: Schema.Literals(["human", "agent", "none", "waiting-for-user"]),
   agentActive: Schema.Boolean,
+  downloads: Schema.Array(PreviewDownload),
   updatedAt: Schema.String,
 });
 
@@ -1427,6 +1437,8 @@ export interface DesktopPreviewBridge {
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;
   revealArtifact: (path: string) => Promise<void>;
+  /** Show a finished download in Finder / File Explorer. */
+  revealPreviewDownload: (path: string) => Promise<void>;
   copyArtifactToClipboard: (path: string) => Promise<void>;
   /** Fires when a guest link targets a new browser tab. */
   onNewTabRequested: (listener: (request: DesktopPreviewNewTabRequest) => void) => () => void;

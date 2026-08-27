@@ -16,6 +16,7 @@ import type {
   DesktopPreviewRecordingFrame,
   DesktopPreviewScreenshotArtifact,
   DesktopPreviewAutomationStatus,
+  PreviewDownload,
   PreviewAutomationClickInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
@@ -94,6 +95,8 @@ export interface PreviewTabState {
   controller: "human" | "agent" | "none" | "waiting-for-user";
   /** Sticky between an agent's actions — see `markAgentWorkingTab`. */
   agentActive: boolean;
+  /** Finished downloads this tab started, newest first. */
+  downloads: ReadonlyArray<PreviewDownload>;
   updatedAt: string;
 }
 
@@ -131,6 +134,17 @@ const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const USER_INPUT_DEFERRAL_MS = 2_000;
 /** Re-check cadence while deferring. */
 const USER_INPUT_DEFERRAL_POLL_MS = 200;
+/**
+ * Longest an action waits for the user before going ahead anyway.
+ *
+ * Not a failure — the action still runs. This exists because the *caller* is
+ * not infinitely patient: the MCP preview tools give up at 15s, so a wait with
+ * no ceiling did not queue the action, it lost it. An agent click issued while
+ * someone was typing a message simply never happened, which is the "dead
+ * click" that was reported. Ten seconds keeps the user winning for any normal
+ * burst of typing while leaving room for the action to still be delivered.
+ */
+const USER_INPUT_DEFERRAL_MAX_WAIT_MS = 10_000;
 
 /** Time for a synthetic press's focus change to reach the guest's widget. */
 const AUTOMATION_FOCUS_SETTLE_MS = 120;
@@ -145,9 +159,20 @@ const AUTOMATION_FOCUS_SETTLE_MS = 120;
 export function resolveUserInputDeferral(input: {
   readonly lastUserInputAtMs: number;
   readonly nowMs: number;
+  /** When this action began waiting; omit for a first, un-waited check. */
+  readonly waitingSinceMs?: number;
 }): "proceed" | "wait" {
   if (input.lastUserInputAtMs === 0) return "proceed";
-  return input.nowMs - input.lastUserInputAtMs >= USER_INPUT_DEFERRAL_MS ? "proceed" : "wait";
+  if (input.nowMs - input.lastUserInputAtMs >= USER_INPUT_DEFERRAL_MS) return "proceed";
+  // Held long enough that the caller is about to give up on us. Going ahead
+  // delivers the action late; waiting on would discard it entirely.
+  if (
+    input.waitingSinceMs !== undefined &&
+    input.nowMs - input.waitingSinceMs >= USER_INPUT_DEFERRAL_MAX_WAIT_MS
+  ) {
+    return "proceed";
+  }
+  return "wait";
 }
 
 /**
@@ -892,6 +917,24 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* update(otherTabId, { agentActive: false });
       }
     }
+  });
+
+  /** Newest-first, and short: this is a notice, not a download history. */
+  const TAB_DOWNLOAD_LIMIT = 5;
+  browserSession.onDownload((webContentsId, download) => {
+    runFork(
+      Effect.gen(function* () {
+        const tabs = yield* SynchronizedRef.get(tabsRef);
+        // The guest that started it owns the notice, so it appears on the tab
+        // that fetched the file rather than wherever the user happens to be.
+        const entry = [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
+        if (!entry) return;
+        const [tabId, tab] = entry;
+        yield* update(tabId, {
+          downloads: [download, ...tab.downloads].slice(0, TAB_DOWNLOAD_LIMIT),
+        });
+      }),
+    );
   });
 
   const requireWebContents = Effect.fn("PreviewManager.requireWebContents")(function* (
@@ -2096,6 +2139,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           colorScheme: "system",
           controller: "none",
           agentActive: false,
+          downloads: [],
           updatedAt,
         };
         return [
@@ -2172,6 +2216,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       colorScheme: "system",
       controller: "none",
       agentActive: false,
+      downloads: [],
       updatedAt,
     };
     yield* emit(tabId, closed);
@@ -2401,6 +2446,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         colorScheme: current?.colorScheme ?? "system",
         controller: current?.controller ?? "none",
         agentActive: current?.agentActive ?? false,
+        downloads: current?.downloads ?? [],
         updatedAt,
       };
       return [
@@ -3954,7 +4000,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     let deferred = false;
     while (true) {
       const now = yield* currentMillis;
-      if (resolveUserInputDeferral({ lastUserInputAtMs, nowMs: now }) === "proceed") break;
+      if (
+        resolveUserInputDeferral({ lastUserInputAtMs, nowMs: now, waitingSinceMs: startedAt }) ===
+        "proceed"
+      ) {
+        break;
+      }
       if (!deferred) {
         // Say why nothing is happening: waiting silently looks identical to the
         // agent being stuck.
@@ -4727,6 +4778,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Reveals a finished download in the OS file manager.
+   *
+   * Separate from `revealArtifact`, which sandboxes to the artifacts folder:
+   * downloads now land in the thread's own workspace, so that check would
+   * refuse them. Rather than widen it to a directory prefix, only paths this
+   * manager actually recorded as completed downloads are accepted — an
+   * allow-list of known files rather than a writable region.
+   */
+  const revealDownload = Effect.fn("PreviewManager.revealDownload")(function* (
+    downloadPath: string,
+  ) {
+    const known = browserSession.recentDownloads().some((entry) => entry.path === downloadPath);
+    if (!known) {
+      return yield* new PreviewOperationError({
+        operation: "revealDownload.unknownPath",
+        cause: downloadPath,
+      });
+    }
+    yield* attempt({ operation: "revealDownload", artifactPath: downloadPath }, () =>
+      shell.showItemInFolder(downloadPath),
+    );
+  });
+
   const copyArtifactToClipboard = Effect.fn("PreviewManager.copyArtifactToClipboard")(function* (
     artifactPath: string,
   ) {
@@ -4801,6 +4876,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     setUiActivity,
     resetZoom: (tabId: string) => applyZoom(tabId, () => DEFAULT_ZOOM_FACTOR),
     revealArtifact,
+    revealDownload,
     saveRecording,
     setAnnotationTheme,
     setColorScheme,
@@ -5115,6 +5191,7 @@ export class PreviewManager extends Context.Service<
       scope: string,
       directory: string,
     ) => Effect.Effect<void, PreviewOperationError>;
+    readonly revealDownload: (downloadPath: string) => Effect.Effect<void, PreviewManagerError>;
     readonly setAnnotationTheme: (
       theme: DesktopPreviewAnnotationTheme,
     ) => Effect.Effect<void, PreviewManagerError>;
@@ -5258,6 +5335,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     cancelPickElement: operations.cancelPickElement,
     captureScreenshot: operations.captureScreenshot,
     revealArtifact: operations.revealArtifact,
+    revealDownload: operations.revealDownload,
     copyArtifactToClipboard: operations.copyArtifactToClipboard,
     openPictureInPicture: operations.openPictureInPicture,
     closePictureInPicture: operations.closePictureInPicture,
