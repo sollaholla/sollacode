@@ -27,6 +27,30 @@ describe("ComposerPendingApprovalPanel", () => {
     expect(markup).not.toContain("line-clamp");
   });
 
+  it("scrolls a long command instead of hiding it or pushing the buttons away", () => {
+    // Reported twice: a long command could not be read before approving it,
+    // and on a phone the approve buttons sat below an unscrollable block.
+    const markup = renderToStaticMarkup(
+      <ComposerPendingApprovalPanel
+        approval={{
+          requestId: ApprovalRequestId.make("approval-1"),
+          requestKind: "command",
+          createdAt: "2026-07-18T00:00:00.000Z",
+          detail: Array.from({ length: 60 }, (_, index) => `echo line-${index}`).join("\n"),
+        }}
+        pendingCount={1}
+      />,
+    );
+
+    // Bounded height, so the actions below it stay on screen...
+    expect(markup).toContain("max-h-40");
+    // ...a real scroll viewport rather than a bare overflow...
+    expect(markup).toContain('data-slot="scroll-area-viewport"');
+    // ...and a finger drag that belongs to this box and stops here.
+    expect(markup).toContain("touch-pan-y");
+    expect(markup).toContain("overscroll-contain");
+  });
+
   it("keeps every approval action visible in a two-column phone layout", () => {
     const markup = renderToStaticMarkup(
       <ComposerPendingApprovalActions

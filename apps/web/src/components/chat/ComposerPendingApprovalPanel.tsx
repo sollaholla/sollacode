@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { type PendingApproval } from "../../session-logic";
+import { ScrollArea } from "../ui/scroll-area";
 
 interface ComposerPendingApprovalPanelProps {
   approval: PendingApproval;
@@ -35,13 +36,23 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
       {approval.detail ? (
         <div className="mt-3 rounded-lg border border-border/65 bg-background/70 p-3">
           <p className="text-xs font-medium text-muted-foreground">{detailLabel}</p>
-          <pre
-            aria-label={detailLabel}
-            className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground"
-            data-approval-detail="complete"
-          >
-            {approval.detail}
-          </pre>
+          {/* A bare `overflow-auto` here scrolled on a desktop wheel and
+              nowhere else: no visible scrollbar to say it could, and on a
+              touch screen the drag was claimed before it reached this box.
+              Someone approving a long command could not read what they were
+              approving, and on a phone could not get down to the buttons.
+              ScrollArea is what the plan panel uses — real scrollbar,
+              `overscroll-contain` so the gesture stops here, and `touch-pan-y`
+              so a finger drag is unambiguously this element's to handle. */}
+          <ScrollArea className="mt-2 max-h-40 touch-pan-y">
+            <pre
+              aria-label={detailLabel}
+              className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground"
+              data-approval-detail="complete"
+            >
+              {approval.detail}
+            </pre>
+          </ScrollArea>
         </div>
       ) : null}
     </div>
