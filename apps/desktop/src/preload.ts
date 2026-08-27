@@ -271,6 +271,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       },
     },
     automation: {
+      renewForeground: () =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_RENEW_FOREGROUND_CHANNEL),
       status: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL, { tabId }),
       snapshot: (tabId) =>

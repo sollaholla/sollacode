@@ -467,6 +467,13 @@ describe("DesktopWindow", () => {
         // window is minimized, which is when someone is driving this machine
         // from another device.
         assert.isFalse(createdWindowOptions[0]?.webPreferences?.backgroundThrottling);
+        const attachPreview = fakeWindow.webContentsListeners.get("will-attach-webview");
+        assert.isFunction(attachPreview);
+        const guestPreferences: Electron.WebPreferences = { backgroundThrottling: true };
+        attachPreview?.({ preventDefault: vi.fn() }, guestPreferences, {
+          partition: "persist:t3code-preview-test",
+        });
+        assert.isFalse(guestPreferences.backgroundThrottling);
         assert.deepEqual(fakeWindow.setAutoHideCursor.mock.calls, [[false]]);
         assert.deepEqual(fakeWindow.loadURL.mock.calls[0], ["t3code-dev://app/"]);
         assert.equal(fakeWindow.openDevTools.mock.calls.length, 1);

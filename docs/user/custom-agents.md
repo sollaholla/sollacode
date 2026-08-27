@@ -49,6 +49,16 @@ that value: even removing an embedded-app token changes the browser integrity si
 production verification. It does not invent a Chrome version, spoof a device fingerprint, hide
 automation from a site, or bypass CAPTCHA and anti-abuse decisions.
 
+Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
+background, so timer- and animation-frame-based authentication can finish without the user focusing
+each surface. When preview automation connects or begins an MCP operation, Solla Code makes every
+registered preview tab foreground-equivalent before running that operation and renews the fleet-wide
+lease throughout long-running operations. The lease is released one minute after the last operation
+finishes; the next connection or operation reactivates every tab before continuing. Automation
+snapshots capture only that live guest. They never reload an authenticated URL in a second renderer;
+if the page changes while its pixels and semantic state are being read, Solla Code retries the live
+capture once and otherwise returns the latest text and controls without a misleading stale image.
+
 Custom agents and their delegated workers use this built-in collaborative browser as their browser-
 control surface. Computer control, Chrome or browser-extension control, and standalone browser
 automation are not fallbacks for a closed preview, a failed tool call, or a login/profile mismatch.

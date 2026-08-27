@@ -2,8 +2,17 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   HIDDEN_BROWSER_WEBVIEW_OFFSET,
+  isHostedBrowserWebviewPresented,
   resolveHostedBrowserWebviewWrapperStyle,
 } from "./hostedBrowserWebviewStyle";
+
+describe("isHostedBrowserWebviewPresented", () => {
+  it("releases a still-selected surface while the owning app window is blurred", () => {
+    expect(isHostedBrowserWebviewPresented(true, true)).toBe(true);
+    expect(isHostedBrowserWebviewPresented(true, false)).toBe(false);
+    expect(isHostedBrowserWebviewPresented(false, true)).toBe(false);
+  });
+});
 
 describe("resolveHostedBrowserWebviewWrapperStyle", () => {
   it("places an active webview on its presented surface", () => {

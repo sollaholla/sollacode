@@ -57,6 +57,28 @@ export class PreviewAutomationNavigationTimeoutError extends Schema.TaggedErrorC
   }
 }
 
+export class PreviewAutomationNavigationLoadFailedHostError extends Schema.TaggedErrorClass<PreviewAutomationNavigationLoadFailedHostError>()(
+  "PreviewAutomationNavigationLoadFailedHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: PreviewTabId,
+    code: Schema.Number,
+    description: Schema.String,
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationExecutionError" as const;
+  }
+
+  override get message(): string {
+    const reason = this.description.trim() || `network error ${this.code}`;
+    return `Preview navigation for ${this.operation} request ${this.requestId} failed in tab ${this.tabId}: ${reason} (${this.code}). Correct the URL or underlying network/site error before retrying.`;
+  }
+}
+
 export class PreviewAutomationViewportTimeoutError extends Schema.TaggedErrorClass<PreviewAutomationViewportTimeoutError>()(
   "PreviewAutomationViewportTimeoutError",
   {
@@ -229,6 +251,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
 export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationNavigationTimeoutError,
+  PreviewAutomationNavigationLoadFailedHostError,
   PreviewAutomationViewportTimeoutError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,

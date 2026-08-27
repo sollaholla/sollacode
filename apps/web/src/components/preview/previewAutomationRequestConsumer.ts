@@ -14,6 +14,8 @@ import {
 
 type AutomationStreamResult<E> = AsyncResult.AsyncResult<PreviewAutomationStreamEvent, E>;
 
+const PREVIEW_AUTOMATION_FOREGROUND_KEEPALIVE_MS = 20_000;
+
 export function serializePreviewAutomationError(
   error: unknown,
   context: PreviewAutomationOperationContext,
@@ -31,6 +33,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
   readonly requestHandlerAtom: Atom.Atom<{
     readonly handle: (request: PreviewAutomationRequest) => Promise<unknown>;
   }>;
+  readonly renewAutomationForeground: () => Promise<unknown>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
   readonly label: string;
 }): Atom.Atom<void> {
@@ -42,6 +45,67 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     let connectionExplicitlyAnnounced = false;
     let reportedConnectionId: PreviewAutomationStreamEvent["connectionId"] | null = null;
     let requestsVersion = 0;
+    let foregroundOperationsInFlight = 0;
+    let foregroundKeepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+    let foregroundKeepaliveError: unknown;
+
+    const clearForegroundKeepalive = () => {
+      if (foregroundKeepaliveTimer === undefined) return;
+      clearTimeout(foregroundKeepaliveTimer);
+      foregroundKeepaliveTimer = undefined;
+    };
+    const scheduleForegroundKeepalive = () => {
+      if (
+        disposed ||
+        foregroundOperationsInFlight === 0 ||
+        foregroundKeepaliveTimer !== undefined
+      ) {
+        return;
+      }
+      foregroundKeepaliveTimer = setTimeout(() => {
+        foregroundKeepaliveTimer = undefined;
+        void Promise.resolve()
+          .then(() => options.renewAutomationForeground())
+          .catch((error) => {
+            foregroundKeepaliveError ??= error;
+          })
+          .finally(scheduleForegroundKeepalive);
+      }, PREVIEW_AUTOMATION_FOREGROUND_KEEPALIVE_MS);
+    };
+    const withAutomationForeground = async <A>(operation: () => Promise<A>): Promise<A> => {
+      await options.renewAutomationForeground();
+      if (foregroundOperationsInFlight === 0) foregroundKeepaliveError = undefined;
+      foregroundOperationsInFlight += 1;
+      scheduleForegroundKeepalive();
+
+      let value: A | undefined;
+      let operationError: unknown;
+      try {
+        value = await operation();
+      } catch (error) {
+        operationError = error;
+      }
+
+      foregroundOperationsInFlight -= 1;
+      let finalRenewalError: unknown;
+      if (foregroundOperationsInFlight === 0) {
+        clearForegroundKeepalive();
+        if (!disposed) {
+          try {
+            // This is the renewal that starts the 60-second idle countdown. It
+            // happens only after the last concurrent MCP operation has settled.
+            await options.renewAutomationForeground();
+          } catch (error) {
+            finalRenewalError = error;
+          }
+        }
+      }
+
+      if (operationError !== undefined) throw operationError;
+      if (foregroundKeepaliveError !== undefined) throw foregroundKeepaliveError;
+      if (finalRenewalError !== undefined) throw finalRenewalError;
+      return value as A;
+    };
 
     const consume = (result: AutomationStreamResult<E>) => {
       if (!AsyncResult.isSuccess(result)) return;
@@ -60,6 +124,12 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
         get.set(options.connectionAtom, event.connectionId);
       }
       if (event.type === "connected") {
+        // Wake the full desktop guest fleet as soon as an agent attaches, not
+        // only when its first snapshot arrives. Auth SDKs can then finish
+        // foreground-only session hydration before that first observation.
+        void Promise.resolve()
+          .then(() => options.renewAutomationForeground())
+          .catch(() => undefined);
         return;
       }
       if (Date.now() >= event.request.expiresAt) {
@@ -69,9 +139,9 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
         ...event.request,
         timeoutMs: Math.max(1, event.request.expiresAt - Date.now()),
       };
-      void get
-        .once(options.requestHandlerAtom)
-        .handle(request)
+      const handleRequest = get.once(options.requestHandlerAtom).handle;
+      void Promise.resolve()
+        .then(() => withAutomationForeground(() => handleRequest(request)))
         .then(
           (value) =>
             options.respond({
@@ -100,6 +170,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
 
     get.addFinalizer(() => {
       disposed = true;
+      clearForegroundKeepalive();
     });
     const initialRequest = get.once(options.requestsAtom);
     if (AsyncResult.isSuccess(initialRequest)) {

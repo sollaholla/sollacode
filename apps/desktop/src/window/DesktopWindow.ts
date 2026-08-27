@@ -468,6 +468,11 @@ export const make = Effect.gen(function* () {
       webPreferences.nodeIntegration = false;
       webPreferences.nodeIntegrationInSubFrames = false;
       webPreferences.contextIsolation = false;
+      // This must be applied to the guest itself. Disabling throttling on the
+      // host BrowserWindow keeps its renderer alive, but a background webview
+      // otherwise still suspends auth hydration and reports a hidden page
+      // until the user focuses the window, owning thread, and preview tab.
+      webPreferences.backgroundThrottling = false;
     });
 
     window.webContents.on("context-menu", (event, params) => {

@@ -88,6 +88,8 @@ export const PREVIEW_COPY_ARTIFACT_CHANNEL = "desktop:preview-copy-artifact";
 export const PREVIEW_PICTURE_IN_PICTURE_OPEN_CHANNEL = "desktop:preview-pip-open";
 export const PREVIEW_PICTURE_IN_PICTURE_CLOSE_CHANNEL = "desktop:preview-pip-close";
 export const PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL = "desktop:preview-pip-frame";
+export const PREVIEW_AUTOMATION_RENEW_FOREGROUND_CHANNEL =
+  "desktop:preview-automation-renew-foreground";
 export const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop:preview-automation-status";
 export const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:preview-automation-snapshot";
 export const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop:preview-automation-click";

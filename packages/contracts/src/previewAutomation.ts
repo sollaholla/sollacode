@@ -183,6 +183,12 @@ export const PreviewAutomationWaitForDownloadResult = Schema.Struct({
 export type PreviewAutomationWaitForDownloadResult =
   typeof PreviewAutomationWaitForDownloadResult.Type;
 
+export const PreviewAutomationLoadFailure = Schema.Struct({
+  code: Schema.Number,
+  description: Schema.String,
+});
+export type PreviewAutomationLoadFailure = typeof PreviewAutomationLoadFailure.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,
@@ -196,6 +202,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewport: Schema.optional(PreviewRenderedViewportSize),
   /** Optional for compatibility with hosts predating challenge handoff. */
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
+  /** Optional for compatibility with hosts predating navigation failure details. */
+  loadFailure: Schema.optional(PreviewAutomationLoadFailure),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 

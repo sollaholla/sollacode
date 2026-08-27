@@ -21,6 +21,11 @@
  *   the preload's `import { ipcRenderer }` line, but no Node globals leak.
  * - `nodeIntegration=false`: pinned for clarity (the page itself never gets
  *   Node access).
+ * - `backgroundThrottling=false`: preview tabs remain live browser sessions
+ *   even while their owning thread, tab, or window is in the background.
+ *   Auth SDKs commonly finish hydration in timers or animation frames; the
+ *   default throttling can otherwise leave a guest on its logged-out shell
+ *   until the user visibly focuses every owning surface.
  *
  * Format notes (locked down by `WebviewPreferences.test.ts`):
  * - Whitespace-free. Electron's webpreferences parser splits on `,` and
@@ -39,4 +44,4 @@
  * security-critical flags can't regress on preview tabs.
  */
 export const PREVIEW_WEBVIEW_PREFERENCES =
-  "contextIsolation=false,sandbox=true,nodeIntegration=false";
+  "contextIsolation=false,sandbox=true,nodeIntegration=false,backgroundThrottling=false";

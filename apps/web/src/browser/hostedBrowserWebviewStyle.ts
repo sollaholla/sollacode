@@ -19,6 +19,19 @@ export interface HostedBrowserWebviewWrapperStyle {
 
 export const HIDDEN_BROWSER_WEBVIEW_OFFSET = -100_000;
 
+/**
+ * A panel rect alone does not mean Chromium can present it: the owning app
+ * window may be backgrounded. Releasing the presentation lease in that state
+ * lets snapshots stage a fresh frame, and reacquiring it on return makes the
+ * desktop host invalidate the guest compositor.
+ */
+export function isHostedBrowserWebviewPresented(
+  surfaceActive: boolean,
+  ownerWindowFocused: boolean,
+): boolean {
+  return surfaceActive && ownerWindowFocused;
+}
+
 export function resolveHostedBrowserWebviewWrapperStyle(input: {
   readonly active: boolean;
   readonly snapshotStaged?: boolean;

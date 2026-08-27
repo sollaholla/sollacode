@@ -334,6 +334,16 @@ export const copyArtifactToClipboard = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationRenewForeground = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_RENEW_FOREGROUND_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.automationRenewForeground")(function* () {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.renewAutomationForeground();
+  }),
+});
+
 export const automationStatus = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL,
   payload: DesktopPreviewTabInputSchema,
@@ -539,6 +549,7 @@ export const methods = [
   copyArtifactToClipboard,
   openPictureInPicture,
   closePictureInPicture,
+  automationRenewForeground,
   automationStatus,
   automationSnapshot,
   automationClick,
