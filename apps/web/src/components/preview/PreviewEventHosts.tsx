@@ -1,9 +1,10 @@
 "use client";
 
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type PreviewEvent, ThreadId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { useEffect, useRef } from "react";
 
 import { isElectron } from "~/env";
 import { applyPreviewServerEvent, reconcilePreviewEnvironmentSessions } from "~/previewStateStore";
@@ -26,19 +27,12 @@ export function applyPreviewListForEnvironment(
 
 const previewEventHostAtom = Atom.family((environmentId: EnvironmentId) => {
   const eventsAtom = previewEnvironment.events({ environmentId, input: {} });
-  const sessionsAtom = previewEnvironment.list({ environmentId, input: {} });
   return Atom.make((get) => {
     let disposed = false;
     let eventsVersion = 0;
-    let catchupRequested = false;
     const applyEvent = (result: Atom.Type<typeof eventsAtom>) => {
       if (AsyncResult.isSuccess(result)) {
         applyPreviewEventForEnvironment(environmentId, result.value);
-      }
-    };
-    const reconcileSessions = (result: Atom.Type<typeof sessionsAtom>) => {
-      if (catchupRequested && AsyncResult.isSuccess(result) && !result.waiting) {
-        applyPreviewListForEnvironment(environmentId, result.value);
       }
     };
 
@@ -47,15 +41,9 @@ const previewEventHostAtom = Atom.family((environmentId: EnvironmentId) => {
       eventsVersion += 1;
       applyEvent(result);
     });
-    get.subscribe(sessionsAtom, reconcileSessions);
     queueMicrotask(() => {
       if (disposed) return;
       if (eventsVersion === 0) applyEvent(initialEvent);
-      // Never adopt the cached SWR value: it may predate a remote close or
-      // background open. This fresh query also reruns automatically for every
-      // connection generation.
-      catchupRequested = true;
-      get.refresh(sessionsAtom);
     });
     get.addFinalizer(() => {
       disposed = true;
@@ -64,6 +52,29 @@ const previewEventHostAtom = Atom.family((environmentId: EnvironmentId) => {
 });
 
 function PreviewEventHost({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const sessionsAtom = previewEnvironment.list({ environmentId, input: {} });
+  const sessionsResult = useAtomValue(sessionsAtom);
+  const refreshSessions = useAtomRefresh(sessionsAtom);
+  const catchupRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (!catchupRequestedRef.current) {
+      // Mount the list query directly in React. A derived atom that only
+      // subscribes to it can remain dormant during connection bootstrap,
+      // which otherwise leaves restored background guests unloaded until the
+      // user focuses one of their threads.
+      catchupRequestedRef.current = true;
+      void refreshSessions();
+      return;
+    }
+    // Never adopt the cached or waiting SWR value: it may predate a remote
+    // close or background open. The query reruns for every connection
+    // generation, and only its settled result is an authoritative catch-up.
+    if (AsyncResult.isSuccess(sessionsResult) && !sessionsResult.waiting) {
+      applyPreviewListForEnvironment(environmentId, sessionsResult.value);
+    }
+  }, [environmentId, refreshSessions, sessionsResult]);
+
   useAtomValue(previewEventHostAtom(environmentId));
   return null;
 }
