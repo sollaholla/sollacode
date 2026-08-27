@@ -119,8 +119,35 @@ export function sanitizeCorrectedVoiceTranscript(generated: string, original: st
       // The corrected transcript can legitimately contain JSON-like prose.
     }
   }
-  if (corrected.length === 0 || corrected.length > 8_000) return original;
-  return corrected;
+  const fallback = normalizeHighConfidenceVoiceTranscriptRecognitionArtifacts(original);
+  if (corrected.length === 0 || corrected.length > 8_000) return fallback;
+  return normalizeHighConfidenceVoiceTranscriptRecognitionArtifacts(corrected, original);
+}
+
+/**
+ * Repair a recognition artifact only when the transcript itself makes the UI
+ * meaning unambiguous. "Lip" is valid ordinary speech, so it must remain
+ * untouched unless nearby truncation and hover/expansion language identifies
+ * the phonetically similar UI term "ellipsis".
+ */
+function normalizeHighConfidenceVoiceTranscriptRecognitionArtifacts(
+  transcript: string,
+  original = transcript,
+): string {
+  const hasEllipsisContext = (value: string) =>
+    /\b(?:content|description|label|message|notification|preview|text|title|transcript(?:ion)?)\b[^.!?\n]{0,180}\b(?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))\b[^.!?\n]{0,80}\bwith\s+(?:a\s+)?lip\b[^.!?\n]{0,140}\b(?:expand(?:s|ed|ing)?|hover(?:s|ed|ing)?)\b/i.test(
+      value,
+    );
+  if (!hasEllipsisContext(original) && !hasEllipsisContext(transcript)) return transcript;
+
+  return transcript
+    .replace(
+      /\b((?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))[^.!?\n]{0,48}\bwith)\s+(?:a\s+)?lip\b/gi,
+      "$1 an ellipsis",
+    )
+    .replace(/\ban ellipsis\s*,?\s+but then\b/gi, "an ellipsis, but then")
+    .replace(/\bwhen\s+hover\s+over\b/gi, "when you hover over")
+    .replace(/\bwhen you hover over it\s*,?\s+(expands?\b)/gi, "when you hover over it, it $1");
 }
 
 const PLAN_REFRESH_MAX_STEPS = 40;

@@ -68,4 +68,32 @@ describe("sanitizeCorrectedVoiceTranscript", () => {
       ),
     ).toBe('{"transcript":"literal user data"}');
   });
+
+  it("repairs lip as ellipsis only in an unambiguous text truncation context", () => {
+    const raw =
+      "Show the transcription in a short form with lip but then when hover over it expands fully";
+    expect(sanitizeCorrectedVoiceTranscript(raw, raw)).toBe(
+      "Show the transcription in a short form with an ellipsis, but then when you hover over it, it expands fully",
+    );
+    expect(sanitizeCorrectedVoiceTranscript("", raw)).toBe(
+      "Show the transcription in a short form with an ellipsis, but then when you hover over it, it expands fully",
+    );
+  });
+
+  it("preserves literal lip references and ambiguous short phrases", () => {
+    expect(
+      sanitizeCorrectedVoiceTranscript(
+        "Use a cup with a lip so it does not spill.",
+        "Use a cup with a lip so it does not spill.",
+      ),
+    ).toBe("Use a cup with a lip so it does not spill.");
+    expect(sanitizeCorrectedVoiceTranscript("Keep the short form with lip.", "same")).toBe(
+      "Keep the short form with lip.",
+    );
+    const separateLiteralReference =
+      "The notification text is short and expands on hover. Use a cup with a lip.";
+    expect(
+      sanitizeCorrectedVoiceTranscript(separateLiteralReference, separateLiteralReference),
+    ).toBe(separateLiteralReference);
+  });
 });
