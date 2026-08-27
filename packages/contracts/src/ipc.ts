@@ -80,6 +80,8 @@ import {
   PreviewAutomationTypeInput,
   PreviewAutomationUploadInput,
   PreviewAutomationUploadResult,
+  PreviewAutomationWaitForDownloadInput,
+  PreviewAutomationWaitForDownloadResult,
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import { PreviewDownload, PreviewDownloadApproval } from "./previewAutomation.ts";
@@ -1102,6 +1104,11 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   input: PreviewAutomationWaitForInput,
 });
 
+export const DesktopPreviewAutomationWaitForDownloadInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationWaitForDownloadInput,
+});
+
 export const DesktopRemoteControlCaptureInputSchema = Schema.Struct({
   maxWidth: Schema.Int.check(Schema.isBetween({ minimum: 640, maximum: 1_920 })),
   jpegQuality: Schema.Int.check(Schema.isBetween({ minimum: 20, maximum: 90 })),
@@ -1481,6 +1488,11 @@ export interface DesktopPreviewBridge {
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
     waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;
+    /** Resolves once a download this tab started finishes, or its hold is answered. */
+    waitForDownload: (
+      tabId: string,
+      input: PreviewAutomationWaitForDownloadInput,
+    ) => Promise<PreviewAutomationWaitForDownloadResult>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;

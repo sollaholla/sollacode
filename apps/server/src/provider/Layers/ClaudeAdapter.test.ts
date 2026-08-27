@@ -2496,6 +2496,18 @@ describe("ClaudeAdapterLive", () => {
           uuid: "roster",
         },
         {
+          // A commit, push or branch switch the agent just made. The work log
+          // already shows the command that did it, so this notice only ever
+          // added a red row to a push that went fine.
+          type: "system",
+          subtype: "vcs_state_changed",
+          kind: "push",
+          branch: "main",
+          cwd: "/repo",
+          session_id: "session",
+          uuid: "vcs",
+        },
+        {
           type: "system",
           subtype: "task_updated",
           task_id: "t1",

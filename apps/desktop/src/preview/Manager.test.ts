@@ -1,5 +1,5 @@
 import { it as effectIt } from "@effect/vitest";
-import type { DesktopPreviewRecordingFrame } from "@t3tools/contracts";
+import type { DesktopPreviewRecordingFrame, PreviewDownload } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -78,6 +78,9 @@ vi.mock("electron", () => ({
   },
 }));
 
+/** Captured so a test can land a file the way a real download would. */
+let downloadListener: ((webContentsId: number, download: PreviewDownload) => void) | null = null;
+
 /** Captured so a test can raise a hold the way a real download would. */
 let downloadApprovalListener:
   | ((webContentsId: number, event: BrowserSession.DownloadApprovalEvent) => void)
@@ -89,7 +92,9 @@ const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession.of({
     setDownloadDirectory: () => Effect.void,
     recentDownloads: () => [],
-    onDownload: () => undefined,
+    onDownload: (listener) => {
+      downloadListener = listener;
+    },
     onDownloadApproval: (listener) => {
       downloadApprovalListener = listener;
     },
@@ -224,6 +229,81 @@ describe("PreviewManager", () => {
     webviewSend.mockClear();
     answeredDownloadApprovals.length = 0;
   });
+
+  effectIt.effect("waits out a held download and reports the file the user allowed", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // A held download is indistinguishable from a slow one in a snapshot,
+        // so without this an agent polls and cannot tell it is waiting on a
+        // person rather than a server.
+        const webContents = makeTestPreviewWebContents(() =>
+          Promise.reject(new Error("no capture in this test")),
+        );
+        fromId.mockImplementation((id) => (id === 42 ? webContents : null));
+        yield* manager.createTab("tab_wait");
+        yield* manager.registerWebview("tab_wait", 42);
+        downloadApprovalListener?.(42, {
+          kind: "pending",
+          approval: { id: "download-approval-1", domain: "grok.com", fileName: "clip.mp4" },
+        });
+
+        const waiting = yield* manager
+          .automationWaitForDownload("tab_wait", { timeoutMs: 10_000 })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        // One poll with the hold still open, so the wait is genuinely parked
+        // rather than returning before the question was ever asked.
+        yield* TestClock.adjust("300 millis");
+
+        // Answering "allow" lands the file and clears the hold.
+        downloadListener?.(42, {
+          fileName: "clip.mp4",
+          path: "/workspace/downloads/clip.mp4",
+          completedAt: "2026-08-27T00:00:00.000Z",
+          succeeded: true,
+        });
+        downloadApprovalListener?.(42, { kind: "settled", id: "download-approval-1" });
+        yield* TestClock.adjust("300 millis");
+
+        const result = yield* Fiber.join(waiting);
+        expect(result.settled).toBe(true);
+        expect(result.downloads.map((download) => download.path)).toEqual([
+          "/workspace/downloads/clip.mp4",
+        ]);
+      }),
+    ),
+  );
+
+  effectIt.effect("stops waiting when a held download is refused, with no file", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const webContents = makeTestPreviewWebContents(() =>
+          Promise.reject(new Error("no capture in this test")),
+        );
+        fromId.mockImplementation((id) => (id === 42 ? webContents : null));
+        yield* manager.createTab("tab_wait_deny");
+        yield* manager.registerWebview("tab_wait_deny", 42);
+        downloadApprovalListener?.(42, {
+          kind: "pending",
+          approval: { id: "download-approval-2", domain: "evil.test", fileName: "payload.bin" },
+        });
+
+        const waiting = yield* manager
+          .automationWaitForDownload("tab_wait_deny", { timeoutMs: 10_000 })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust("300 millis");
+
+        // A refusal settles the hold without producing a file. The wait has to
+        // end on that too, or the agent hangs until its timeout on a decision
+        // that has already been made.
+        downloadApprovalListener?.(42, { kind: "settled", id: "download-approval-2" });
+        yield* TestClock.adjust("300 millis");
+
+        const result = yield* Fiber.join(waiting);
+        expect(result.settled).toBe(true);
+        expect(result.downloads).toEqual([]);
+      }),
+    ),
+  );
 
   effectIt.effect("refuses a held download when the tab asking about it closes", () =>
     withManager((manager) =>

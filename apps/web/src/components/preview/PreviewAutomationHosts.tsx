@@ -940,6 +940,16 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             await inspectAfterAction(ready);
             return result;
           }
+          case "waitForDownload": {
+            const ready = await requireAutomatableTab();
+            // No inspectAfterAction: this wait can sit for minutes on a person
+            // answering the download card, and re-inspecting the page after it
+            // tells the caller nothing it asked for.
+            return await ready.bridge.automation.waitForDownload(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.waitForDownload>[1],
+            );
+          }
           case "recordingStart": {
             const ready = await requireReadyTab();
             const startedAt = await startBrowserRecording(

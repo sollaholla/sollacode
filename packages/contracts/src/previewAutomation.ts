@@ -48,6 +48,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
   "upload",
   "close",
+  "waitForDownload",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -153,6 +154,34 @@ export const PreviewDownloadApproval = Schema.Struct({
   fileName: Schema.String,
 });
 export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
+
+/**
+ * Waiting on a person, not a server, so this gets its own bound rather than
+ * the 60s cap the page-condition waits use. Someone has to notice the card and
+ * decide.
+ */
+export const PreviewAutomationWaitForDownloadInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(600_000)).annotate({
+      description: "Maximum wait in milliseconds. Defaults to 120000; maximum 600000.",
+    }),
+  ).annotate({ description: "Maximum wait in milliseconds. Defaults to 120000; maximum 600000." }),
+});
+export type PreviewAutomationWaitForDownloadInput =
+  typeof PreviewAutomationWaitForDownloadInput.Type;
+
+export const PreviewAutomationWaitForDownloadResult = Schema.Struct({
+  tabId: PreviewTabId,
+  /** False when the wait ran out with the question still on screen. */
+  settled: Schema.Boolean,
+  /** Files that finished on this tab while waiting, newest first. */
+  downloads: Schema.Array(PreviewDownload),
+  /** Still held, so the user has not answered yet. */
+  pendingDownloadApprovals: Schema.Array(PreviewDownloadApproval),
+});
+export type PreviewAutomationWaitForDownloadResult =
+  typeof PreviewAutomationWaitForDownloadResult.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,

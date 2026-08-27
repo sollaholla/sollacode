@@ -8,6 +8,7 @@ import {
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
   DesktopPreviewAutomationUploadInputSchema,
+  DesktopPreviewAutomationWaitForDownloadInputSchema,
   DesktopPreviewAutomationWaitForInputSchema,
   DesktopPreviewConfigInputSchema,
   DesktopPreviewNavigateInputSchema,
@@ -21,6 +22,7 @@ import {
   DesktopPreviewUiActivityInputSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationPayloadSchema,
+  PreviewAutomationWaitForDownloadResult,
   PreviewAutomationSnapshot,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -424,6 +426,16 @@ export const automationWaitFor = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationWaitForDownload = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_DOWNLOAD_CHANNEL,
+  payload: DesktopPreviewAutomationWaitForDownloadInputSchema,
+  result: PreviewAutomationWaitForDownloadResult,
+  handler: Effect.fn("desktop.ipc.preview.automationWaitForDownload")(function* ({ tabId, input }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.automationWaitForDownload(tabId, input);
+  }),
+});
+
 export const saveRecording = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_RECORDING_SAVE_CHANNEL,
   payload: DesktopPreviewRecordingSaveInputSchema,
@@ -472,6 +484,7 @@ export const methods = [
   automationScroll,
   automationEvaluate,
   automationWaitFor,
+  automationWaitForDownload,
   startRecording,
   stopRecording,
   saveRecording,
