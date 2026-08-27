@@ -136,16 +136,6 @@ function notificationItem(value: VmAgentNotification): InlineAgentAttention["ite
 let container: HTMLDivElement;
 let root: Root;
 
-function buttonNamed(name: string): HTMLButtonElement {
-  const button = Array.from(container.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent?.trim() === name,
-  );
-  if (!(button instanceof HTMLButtonElement)) {
-    throw new Error(`Could not find button named ${name}.`);
-  }
-  return button;
-}
-
 function buttonLabelled(label: string): HTMLButtonElement {
   const button = container.querySelector(`button[aria-label="${label}"]`);
   if (!(button instanceof HTMLButtonElement)) {
@@ -227,7 +217,7 @@ describe("AgentAttentionStack", () => {
     const request = blocker("blocker-1");
     await renderAttention({ items: [blockerItem(request)], hiddenCount: 0 });
 
-    act(() => buttonNamed("Follow up").click());
+    act(() => buttonLabelled("Follow up").click());
     expect(mocks.revealChat).toHaveBeenCalledTimes(1);
     expect(mocks.composer.insertTextAtEnd).toHaveBeenCalledWith(
       expect.stringContaining(request.title),
@@ -235,7 +225,7 @@ describe("AgentAttentionStack", () => {
     );
     expect(mocks.composer.focusAtEnd).toHaveBeenCalledTimes(1);
 
-    await flushAction(() => buttonNamed("Open").click());
+    await flushAction(() => buttonLabelled("Open").click());
     expect(mocks.revealChat).toHaveBeenCalledTimes(2);
     expect(mocks.openUrlInThreadPreview).toHaveBeenCalledWith({
       threadRef,
@@ -244,7 +234,7 @@ describe("AgentAttentionStack", () => {
       openExternally: expect.any(Function),
     });
 
-    await flushAction(() => buttonNamed("Mark resolved").click());
+    await flushAction(() => buttonLabelled("Mark resolved").click());
     expect(mocks.resolveBlocker).toHaveBeenNthCalledWith(1, {
       environmentId,
       input: {
@@ -253,7 +243,7 @@ describe("AgentAttentionStack", () => {
       },
     });
 
-    await flushAction(() => buttonLabelled("Dismiss waiting-on-you request").click());
+    await flushAction(() => buttonLabelled("Dismiss without marking it done").click());
     expect(mocks.resolveBlocker).toHaveBeenNthCalledWith(2, {
       environmentId,
       input: {

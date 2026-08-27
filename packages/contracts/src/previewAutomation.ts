@@ -140,6 +140,22 @@ export type PreviewDownload = typeof PreviewDownload.Type;
 
 const PreviewDownloadList = Schema.Array(PreviewDownload);
 
+/**
+ * A download held until the user says whether that site may write a file.
+ *
+ * Downloads no longer raise the system save panel, so without this a page — or
+ * an agent driving one — writes into the user's workspace with no prompt and
+ * no click at all.
+ */
+export const PreviewDownloadApproval = Schema.Struct({
+  id: Schema.String,
+  domain: Schema.String,
+  fileName: Schema.String,
+});
+export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
+
+const PreviewDownloadApprovalList = Schema.Array(PreviewDownloadApproval);
+
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,

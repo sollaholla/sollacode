@@ -17,6 +17,7 @@ import {
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
   resolveBlockedSend,
+  resolveSendDisabledReason,
   buildThreadTurnInterruptInput,
   canQueueLocalMessageDuringReconnect,
   createLocalDispatchSnapshot,
@@ -1083,22 +1084,39 @@ describe("shouldRestoreComposerFocus", () => {
   });
 });
 
+describe("resolveSendDisabledReason", () => {
+  it("leaves send pressable while the conversation catches up", () => {
+    // The dead button: "Messages syncing" disabled send for the whole
+    // ten-second fast-forward, so the press never reached the code that
+    // would have queued it.
+    expect(
+      resolveSendDisabledReason({ providerAuthenticationPaused: false, threadCatchingUp: true }),
+    ).toBeNull();
+  });
+
+  it("still disables send when the provider needs a sign-in", () => {
+    expect(
+      resolveSendDisabledReason({ providerAuthenticationPaused: true, threadCatchingUp: false }),
+    ).toBe("Sign in to continue");
+  });
+});
+
 describe("resolveBlockedSend", () => {
   const base = {
     hasThread: true,
     sendInFlight: false,
     providerAuthenticationPaused: false,
     connecting: false,
-    threadDetailLoading: false,
+    threadCatchingUp: false,
     environmentUnavailable: false,
     canQueueLocalMessage: false,
     environmentLabel: "Soloman's MacBook Pro",
   };
 
-  it("queues rather than refuses while the conversation is still loading", () => {
+  it("queues rather than refuses while the conversation is still catching up", () => {
     // Catching up can take ten seconds; making someone wait to type is the
     // thing being fixed.
-    const outcome = resolveBlockedSend({ ...base, threadDetailLoading: true });
+    const outcome = resolveBlockedSend({ ...base, threadCatchingUp: true });
     expect(outcome.kind).toBe("queue");
     expect(outcome.kind === "queue" && outcome.message).toContain("will send itself");
   });

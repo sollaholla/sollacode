@@ -771,12 +771,29 @@ export type BlockedSendOutcome =
   | { readonly kind: "queue"; readonly message: string }
   | { readonly kind: "explain"; readonly message: string };
 
+/**
+ * Why the send button itself is disabled, or `null` to leave it pressable.
+ *
+ * Catching up is deliberately not a reason. A disabled button swallows the
+ * press outright, so gating on catch-up meant tapping send during a ten-second
+ * fast-forward did nothing and said nothing. Left pressable, the press reaches
+ * the send path, which queues it via {@link resolveBlockedSend} and replays it
+ * the moment the thread is live. Only a blocker the user must clear themselves
+ * belongs here.
+ */
+export function resolveSendDisabledReason(input: {
+  readonly providerAuthenticationPaused: boolean;
+  readonly threadCatchingUp: boolean;
+}): string | null {
+  return input.providerAuthenticationPaused ? "Sign in to continue" : null;
+}
+
 export function resolveBlockedSend(input: {
   readonly hasThread: boolean;
   readonly sendInFlight: boolean;
   readonly providerAuthenticationPaused: boolean;
   readonly connecting: boolean;
-  readonly threadDetailLoading: boolean;
+  readonly threadCatchingUp: boolean;
   readonly environmentUnavailable: boolean;
   readonly canQueueLocalMessage: boolean;
   readonly environmentLabel: string | null;
@@ -799,10 +816,10 @@ export function resolveBlockedSend(input: {
     const where = input.environmentLabel === null ? "the host" : input.environmentLabel;
     return { kind: "queue", message: `Waiting to reconnect to ${where} — this will send itself.` };
   }
-  if (input.threadDetailLoading) {
+  if (input.threadCatchingUp) {
     return {
       kind: "queue",
-      message: "Waiting for this conversation to finish loading — this will send itself.",
+      message: "Waiting for this conversation to finish catching up — this will send itself.",
     };
   }
   if (!input.hasThread) {

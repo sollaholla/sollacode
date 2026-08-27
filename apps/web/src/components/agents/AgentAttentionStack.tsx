@@ -1,7 +1,14 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { BellIcon, ExternalLinkIcon, HandIcon, MessageSquareReplyIcon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  BellIcon,
+  CheckIcon,
+  ExternalLinkIcon,
+  HandIcon,
+  MessageSquareReplyIcon,
+  XIcon,
+} from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { useComposerHandleContext } from "~/composerHandleContext";
 import { openUrlInThreadPreview } from "~/components/preview/openUrlInThreadPreview";
@@ -10,6 +17,7 @@ import {
   type ComposerBannerStackItem,
 } from "~/components/chat/ComposerBannerStack";
 import { Button } from "~/components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -217,48 +225,39 @@ export function AgentAttentionStack(props: {
         </span>
       ),
       description: <AttentionDescription text={item.blocker.detail} error={error || null} />,
+      // Icon-only: the card already carries a title and a detail paragraph, and
+      // three labelled buttons crowded them out. The label survives as the
+      // tooltip and as the accessible name, so nothing is lost to a screen
+      // reader or to anyone who hovers.
       actions: (
         <>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
+          <AttentionAction
+            label="Follow up"
+            icon={<MessageSquareReplyIcon />}
             disabled={busy !== null}
             onClick={() => followUpOnBlocker(item.blocker.title)}
-          >
-            <MessageSquareReplyIcon /> Follow up
-          </Button>
+          />
           {item.blocker.url ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="outline"
+            <AttentionAction
+              label="Open"
+              icon={<ExternalLinkIcon />}
               disabled={busy !== null}
               onClick={() => openBlockerUrl(item.blocker.url!)}
-            >
-              <ExternalLinkIcon /> Open
-            </Button>
+            />
           ) : null}
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
+          <AttentionAction
+            label={blockerBusy === "resolve" ? "Resolving…" : "Mark resolved"}
+            icon={<CheckIcon />}
             disabled={busy !== null}
             onClick={() => void mutateBlocker(item, "resolve")}
-          >
-            {blockerBusy === "resolve" ? "Resolving…" : "Mark resolved"}
-          </Button>
-          <Button
-            type="button"
-            size="icon-xs"
+          />
+          <AttentionAction
+            label="Dismiss without marking it done"
+            icon={<XIcon />}
             variant="ghost"
             disabled={busy !== null}
-            aria-label="Dismiss waiting-on-you request"
-            title="Dismiss without marking it done"
             onClick={() => void mutateBlocker(item, "dismiss")}
-          >
-            <XIcon />
-          </Button>
+          />
         </>
       ),
     };
@@ -268,6 +267,41 @@ export function AgentAttentionStack(props: {
     <div data-agent-attention-stack="true">
       <ComposerBannerStack className="mx-1 my-3" items={cards} onExpandedChange={setExpanded} />
     </div>
+  );
+}
+
+/**
+ * One icon-only action on a waiting-on-you card.
+ *
+ * The visible label is gone, so the text has to survive in two places that are
+ * easy to forget: the tooltip for a pointer, and `aria-label` for anyone who
+ * never sees one.
+ */
+function AttentionAction(props: {
+  readonly label: string;
+  readonly icon: ReactNode;
+  readonly disabled: boolean;
+  readonly onClick: () => void;
+  readonly variant?: "outline" | "ghost";
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="icon-xs"
+            variant={props.variant ?? "outline"}
+            disabled={props.disabled}
+            aria-label={props.label}
+            onClick={props.onClick}
+          />
+        }
+      >
+        {props.icon}
+      </TooltipTrigger>
+      <TooltipPopup>{props.label}</TooltipPopup>
+    </Tooltip>
   );
 }
 

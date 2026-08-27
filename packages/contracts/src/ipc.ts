@@ -82,7 +82,7 @@ import {
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
-import { PreviewDownload } from "./previewAutomation.ts";
+import { PreviewDownload, PreviewDownloadApproval } from "./previewAutomation.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -573,6 +573,8 @@ export interface DesktopPreviewTabState {
    * the user was elsewhere is still there when they come back.
    */
   downloads: ReadonlyArray<PreviewDownload>;
+  /** Downloads paused until the user allows or denies the site. */
+  pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
   updatedAt: string;
 }
 
@@ -658,6 +660,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   controller: Schema.Literals(["human", "agent", "none", "waiting-for-user"]),
   agentActive: Schema.Boolean,
   downloads: Schema.Array(PreviewDownload),
+  pendingDownloadApprovals: Schema.Array(PreviewDownloadApproval),
   updatedAt: Schema.String,
 });
 
@@ -1439,6 +1442,11 @@ export interface DesktopPreviewBridge {
   revealArtifact: (path: string) => Promise<void>;
   /** Show a finished download in Finder / File Explorer. */
   revealPreviewDownload: (path: string) => Promise<void>;
+  /** Answer a held download: allow this site from now on, allow one file, or deny. */
+  answerPreviewDownloadApproval: (
+    id: string,
+    decision: "allow-domain" | "allow-once" | "deny",
+  ) => Promise<void>;
   copyArtifactToClipboard: (path: string) => Promise<void>;
   /** Fires when a guest link targets a new browser tab. */
   onNewTabRequested: (listener: (request: DesktopPreviewNewTabRequest) => void) => () => void;
