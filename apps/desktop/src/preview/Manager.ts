@@ -92,6 +92,8 @@ export interface PreviewTabState {
   pictureInPicture: boolean;
   colorScheme: DesktopPreviewColorScheme;
   controller: "human" | "agent" | "none" | "waiting-for-user";
+  /** Sticky between an agent's actions — see `markAgentWorkingTab`. */
+  agentActive: boolean;
   updatedAt: string;
 }
 
@@ -868,6 +870,29 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (Option.isSome(next)) yield* emit(tabId, next.value);
   });
 
+  /**
+   * Moves the "an agent is working here" mark onto one tab and off every other.
+   *
+   * Kept separate from `controller`, which is only "agent" while a single CDP
+   * command is in flight and is back to "none" between them — a tab strip
+   * watching it saw a flicker and nothing else. This mark survives between an
+   * agent's actions and is only handed to another tab, so at most one tab ever
+   * claims to be the one an agent is in.
+   */
+  const markAgentWorkingTab = Effect.fn("PreviewManager.markAgentWorkingTab")(function* (
+    tabId: string,
+  ) {
+    const tabs = yield* SynchronizedRef.get(tabsRef);
+    if (tabs.get(tabId)?.agentActive !== true) {
+      yield* update(tabId, { agentActive: true });
+    }
+    for (const [otherTabId, tab] of tabs) {
+      if (otherTabId !== tabId && tab.agentActive) {
+        yield* update(otherTabId, { agentActive: false });
+      }
+    }
+  });
+
   const requireWebContents = Effect.fn("PreviewManager.requireWebContents")(function* (
     tabId: string,
   ) {
@@ -1373,6 +1398,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const control = yield* whileWebContentsAvailable(tabId, wc, ensureControlSession(tabId, wc));
       const execute = Effect.fn("PreviewManager.executeControlAction")(function* () {
         yield* update(tabId, { controller: "agent" });
+        // `controller` drops back to "none" the moment this command finishes,
+        // so on its own it only ever flickers. Keep a sticky mark on the tab an
+        // agent is working in, and take it off whichever tab held it before, so
+        // exactly one tab ever answers "it is in here".
+        yield* markAgentWorkingTab(tabId);
         const send: SendCommand = Effect.fn("PreviewManager.sendCommand")(
           function* (method, commandParams) {
             const before = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
@@ -2064,6 +2094,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           pictureInPicture: false,
           colorScheme: "system",
           controller: "none",
+          agentActive: false,
           updatedAt,
         };
         return [
@@ -2139,6 +2170,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       pictureInPicture: false,
       colorScheme: "system",
       controller: "none",
+      agentActive: false,
       updatedAt,
     };
     yield* emit(tabId, closed);
@@ -2367,6 +2399,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         pictureInPicture: current?.pictureInPicture ?? false,
         colorScheme: current?.colorScheme ?? "system",
         controller: current?.controller ?? "none",
+        agentActive: current?.agentActive ?? false,
         updatedAt,
       };
       return [

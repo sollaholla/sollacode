@@ -2374,9 +2374,9 @@ function ChatViewContent(props: ChatViewProps) {
   // a controller change alone, not on every navigation or zoom the overlay
   // also carries.
   const previewControllerByTabId = useMemo(() => {
-    const entries: Record<string, DesktopPreviewOverlay["controller"]> = {};
+    const entries: Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">> = {};
     for (const [tabId, overlay] of Object.entries(activePreviewState.desktopByTabId)) {
-      entries[tabId] = overlay.controller;
+      entries[tabId] = { controller: overlay.controller, agentActive: overlay.agentActive };
     }
     return entries;
   }, [activePreviewState.desktopByTabId]);

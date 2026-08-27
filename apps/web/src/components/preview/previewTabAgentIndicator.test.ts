@@ -3,19 +3,34 @@ import { describe, expect, it } from "vite-plus/test";
 import { resolvePreviewTabAgentIndicator } from "./previewTabAgentIndicator.ts";
 
 describe("resolvePreviewTabAgentIndicator", () => {
-  it("badges the tab an agent is driving", () => {
-    expect(resolvePreviewTabAgentIndicator("agent")).toBe("agent");
+  it("badges the tab an agent is mid-command in", () => {
+    expect(resolvePreviewTabAgentIndicator({ controller: "agent", agentActive: true })).toBe(
+      "agent",
+    );
+  });
+
+  it("keeps the badge between an agent's actions, not just during one", () => {
+    // The first version watched `controller` alone, which is only "agent"
+    // while a CDP command is in flight — the badge showed for a fraction of a
+    // second per tool call and was invisible in between. Reported as: "it does
+    // but only for a second".
+    expect(resolvePreviewTabAgentIndicator({ controller: "none", agentActive: true })).toBe(
+      "agent",
+    );
   });
 
   it("keeps badging a tab where an agent is queued behind the user", () => {
-    // Showing nothing here would read as "no agent in this tab" precisely when
-    // the user is deciding whether to click into it.
-    expect(resolvePreviewTabAgentIndicator("waiting-for-user")).toBe("waiting");
+    expect(
+      resolvePreviewTabAgentIndicator({ controller: "waiting-for-user", agentActive: false }),
+    ).toBe("waiting");
   });
 
-  it("shows nothing for a tab the human is driving, or an idle one", () => {
-    expect(resolvePreviewTabAgentIndicator("human")).toBeNull();
-    expect(resolvePreviewTabAgentIndicator("none")).toBeNull();
+  it("drops the badge on a tab the human has taken over", () => {
+    expect(resolvePreviewTabAgentIndicator({ controller: "human", agentActive: true })).toBeNull();
+  });
+
+  it("shows nothing for an idle tab no agent has touched", () => {
+    expect(resolvePreviewTabAgentIndicator({ controller: "none", agentActive: false })).toBeNull();
     expect(resolvePreviewTabAgentIndicator(undefined)).toBeNull();
   });
 });

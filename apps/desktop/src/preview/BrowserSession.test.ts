@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - The download test needs a real
+// temporary directory, because the handler under test writes to disk
+// synchronously inside Electron's will-download callback.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Crypto from "effect/Crypto";
@@ -14,6 +17,7 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
       readonly clearCache: ReturnType<typeof vi.fn>;
       readonly clearStorageData: ReturnType<typeof vi.fn>;
       readonly getUserAgent: ReturnType<typeof vi.fn>;
+      readonly on: ReturnType<typeof vi.fn>;
       readonly setPermissionRequestHandler: ReturnType<typeof vi.fn>;
       readonly setPermissionCheckHandler: ReturnType<typeof vi.fn>;
       readonly setUserAgent: ReturnType<typeof vi.fn>;
@@ -27,9 +31,31 @@ vi.mock("electron", () => ({
   },
 }));
 
-import * as BrowserSession from "./BrowserSession.ts";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
-const layer = BrowserSession.layer.pipe(Layer.provide(NodeServices.layer));
+import * as BrowserSession from "./BrowserSession.ts";
+import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+
+const testHome = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-browser-session-"));
+
+const environmentLayer = DesktopEnvironment.layer({
+  dirname: "/repo/apps/desktop/src",
+  homeDirectory: testHome,
+  platform: "darwin",
+  processArch: "arm64",
+  appVersion: "1.2.3",
+  appPath: "/repo",
+  isPackaged: true,
+  resourcesPath: "/missing/resources",
+  runningUnderArm64Translation: false,
+}).pipe(Layer.provide(NodeServices.layer));
+
+const layer = BrowserSession.layer.pipe(
+  Layer.provide(environmentLayer),
+  Layer.provide(NodeServices.layer),
+);
 
 describe("BrowserSession", () => {
   beforeEach(() => {
@@ -40,6 +66,7 @@ describe("BrowserSession", () => {
         clearCache: vi.fn(() => Promise.resolve()),
         clearStorageData: vi.fn(() => Promise.resolve()),
         getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/0.0.27"),
+        on: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
         setUserAgent: vi.fn(),
@@ -124,6 +151,35 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("gives a download a path so the system save panel never appears", () =>
+    Effect.gen(function* () {
+      // A save panel means a download only completes if a human is sitting
+      // there to click Save, so a background agent simply hung on it.
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const partition = yield* browserSessions.getPartition("scope-a");
+      yield* browserSessions.getSession("scope-a");
+
+      const browserSession = sessions.get(partition);
+      assert.isDefined(browserSession);
+      if (!browserSession) throw new Error("Expected a session for the derived partition");
+      const registration = browserSession.on.mock.calls.find(
+        ([event]: ReadonlyArray<unknown>) => event === "will-download",
+      );
+      if (!registration) throw new Error("Expected a will-download registration");
+
+      const setSavePath = vi.fn();
+      (registration[1] as (event: unknown, item: unknown) => void)(
+        {},
+        { getFilename: () => "moose-render.mp4", setSavePath },
+      );
+
+      assert.strictEqual(setSavePath.mock.calls.length, 1);
+      const savedTo = String(setSavePath.mock.calls[0]?.[0]);
+      assert.isTrue(savedTo.endsWith(NodePath.join("downloads", "moose-render.mp4")), savedTo);
+      assert.isTrue(NodeFS.existsSync(NodePath.dirname(savedTo)));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("preserves partition scope and the platform failure chain", () => {
     const nativeCause = new Error("native digest failed");
     const platformCause = PlatformError.systemError({
@@ -155,7 +211,14 @@ describe("BrowserSession", () => {
         "Failed to derive a desktop preview browser partition for scope environment-a.",
       );
       assert.notInclude(error.message, nativeCause.message);
-    }).pipe(Effect.provide(BrowserSession.layer.pipe(Layer.provide(failingCryptoLayer))));
+    }).pipe(
+      Effect.provide(
+        BrowserSession.layer.pipe(
+          Layer.provide(failingCryptoLayer),
+          Layer.provide(environmentLayer),
+        ),
+      ),
+    );
   });
 
   it.effect("preserves session scope, partition, and the Electron failure", () =>

@@ -1,5 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off - Electron raises the system save
+// panel the moment the will-download handler returns without a path, so the
+// directory and collision checks there have to be synchronous.
 import type { Session } from "electron";
 import { session } from "electron";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -8,6 +13,9 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+
+import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 
@@ -105,6 +113,17 @@ export class BrowserSession extends Context.Service<
 
 export const make = Effect.gen(function* BrowserSessionMake() {
   const crypto = yield* Crypto.Crypto;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  /**
+   * Where a preview download lands.
+   *
+   * Downloads used to raise the system save panel, which meant an agent could
+   * fetch a file only if a human was there to click Save — a background agent
+   * just hung on it. Giving the item a path up front is what suppresses that
+   * panel, so this sits beside the other browser artifacts, where the app
+   * already keeps things it produced on the user's behalf.
+   */
+  const downloadsDir = NodePath.join(environment.browserArtifactsDir, "downloads");
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
 
   const getPartition = Effect.fn("BrowserSession.getPartition")(function* (scope = "shared") {
@@ -128,6 +147,23 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
+          browserSession.on("will-download", (_downloadEvent, item) => {
+            // Must be synchronous: Electron raises the save panel as soon as
+            // this handler returns without a path set.
+            try {
+              NodeFS.mkdirSync(downloadsDir, { recursive: true });
+              const savePath = resolveUniqueDownloadPath({
+                directory: downloadsDir,
+                fileName: resolveDownloadFileName(item.getFilename()),
+                join: NodePath.join,
+                exists: NodeFS.existsSync,
+              });
+              item.setSavePath(savePath);
+            } catch {
+              // Falling through to the save panel is the graceful failure here:
+              // the user is asked where to put it rather than losing the file.
+            }
+          });
           browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
             callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
           });

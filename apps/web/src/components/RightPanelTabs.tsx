@@ -101,7 +101,7 @@ interface RightPanelTabsProps {
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   /** Per preview tab, who is driving it — badges the tab an agent is working in. */
   previewControllerByTabId?:
-    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | Readonly<Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">>>
     | undefined;
   floatingPreviewTabIds: ReadonlySet<string> | undefined;
   terminalLabelsById: ReadonlyMap<string, string>;
@@ -595,7 +595,7 @@ function SurfaceIcon({
   terminalStatus?: TerminalTabStatus | null;
   theme: "light" | "dark";
   previewControllerByTabId?:
-    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | Readonly<Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">>>
     | undefined;
 }) {
   switch (surface.kind) {
@@ -725,7 +725,7 @@ function SortableTab(props: {
   sideChatStatus: SideChatTabStatus | null;
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   previewControllerByTabId?:
-    | Readonly<Record<string, DesktopPreviewOverlay["controller"]>>
+    | Readonly<Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">>>
     | undefined;
   floatingPreviewTabIds: ReadonlySet<string> | undefined;
   theme: "light" | "dark";
