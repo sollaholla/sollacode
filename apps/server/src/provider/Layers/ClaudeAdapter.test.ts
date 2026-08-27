@@ -15,11 +15,13 @@ import {
   ApprovalRequestId,
   ClaudeSettings,
   EnvironmentId,
+  MessageId,
   ProviderDriverKind,
   ProviderItemId,
   ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
+  TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import {
@@ -301,10 +303,14 @@ async function readFirstPromptText(
   if (next.done) {
     return undefined;
   }
-  if (typeof next.value.message.content === "string") {
-    return next.value.message.content;
+  return promptMessageText(next.value);
+}
+
+function promptMessageText(message: SDKUserMessage): string | undefined {
+  if (typeof message.message.content === "string") {
+    return message.message.content;
   }
-  const content = next.value.message.content[0];
+  const content = message.message.content[0];
   if (!content || content.type !== "text") {
     return undefined;
   }
@@ -1422,20 +1428,36 @@ describe("ClaudeAdapterLive", () => {
         provider: ProviderDriverKind.make("claudeAgent"),
         runtimeMode: "full-access",
       });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
 
       const turn = yield* adapter.sendTurn({
         threadId: session.threadId,
         input: "run 5 commands",
         attachments: [],
       });
+      yield* Effect.promise(() => promptIterator.next());
 
       // Steer: a second sendTurn while the turn is still running continues
       // the same turn — the message is queued into the live agent loop.
-      const steeredTurn = yield* adapter.sendTurn({
-        threadId: session.threadId,
-        input: "actually run 15",
-        attachments: [],
-      });
+      const steeredTurnFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "actually run 15",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            activeTurnId: turn.turnId,
+          },
+        })
+        .pipe(Effect.forkChild);
+      const consumedSteer = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumedSteer.done, false);
+      if (!consumedSteer.done) {
+        assert.equal(promptMessageText(consumedSteer.value), "actually run 15");
+      }
+      const steeredTurn = yield* Fiber.join(steeredTurnFiber);
       assert.equal(String(steeredTurn.turnId), String(turn.turnId));
 
       harness.query.emit({
@@ -1468,6 +1490,180 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(String(turnStartedEvents[0]?.turnId), String(turn.turnId));
       assert.equal(turnCompletedEvents.length, 1);
       assert.equal(String(turnCompletedEvents[0]?.turnId), String(turn.turnId));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails an explicit live steer when its exact Claude turn is stale", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run the long task",
+        attachments: [],
+      });
+      const exit = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "must not reach a different turn",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            activeTurnId: TurnId.make("turn-no-longer-active"),
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(exit._tag, "Failure");
+      const sessions = yield* adapter.listSessions();
+      assert.equal(sessions[0]?.status, "running");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("drops a queued live steer when a successor owns the turn before SDK pull", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
+
+      const predecessor = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "predecessor prompt",
+        attachments: [],
+      });
+      const consumedPredecessor = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumedPredecessor.done, false);
+      if (!consumedPredecessor.done) {
+        assert.equal(promptMessageText(consumedPredecessor.value), "predecessor prompt");
+      }
+
+      const staleSteerFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          input: "stale queued steer",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            activeTurnId: predecessor.turnId,
+          },
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+
+      const predecessorCompleted = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "turn.completed" && event.turnId === predecessor.turnId,
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-queue-race",
+        uuid: "result-queue-race-predecessor",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(predecessorCompleted);
+
+      const successor = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "successor prompt",
+        attachments: [],
+      });
+      assert.notEqual(String(successor.turnId), String(predecessor.turnId));
+      const nextNativePrompt = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(nextNativePrompt.done, false);
+      if (!nextNativePrompt.done) {
+        assert.equal(promptMessageText(nextNativePrompt.value), "successor prompt");
+      }
+      const staleSteerExit = yield* Fiber.join(staleSteerFiber);
+      assert.equal(staleSteerExit._tag, "Failure");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails a queued live steer when Claude stops before SDK pull", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
+
+      const predecessor = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "predecessor prompt",
+        attachments: [],
+      });
+      const consumedPredecessor = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumedPredecessor.done, false);
+
+      const steerMessageId = MessageId.make("claude-stop-before-live-steer-pull");
+      const queuedSteerFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          messageId: steerMessageId,
+          input: "must not be reported delivered",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            activeTurnId: predecessor.turnId,
+          },
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      // All work before the acceptance wait is synchronous or queue-backed;
+      // yielding lets the child reach its pending SDK-pull Deferred.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isUndefined(queuedSteerFiber.pollUnsafe());
+
+      yield* adapter.stopSession(session.threadId);
+      const queuedSteerExit = yield* Fiber.join(queuedSteerFiber).pipe(Effect.timeout("2 seconds"));
+      assert.equal(queuedSteerExit._tag, "Failure");
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isFalse(
+        runtimeEvents.some(
+          (event) =>
+            event.type === "message.delivered" && event.payload.messageId === steerMessageId,
+        ),
+      );
+      yield* Fiber.interrupt(runtimeEventsFiber);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

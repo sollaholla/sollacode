@@ -1747,6 +1747,447 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("does not serialize an explicit Codex steer behind slow recovery delivery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-codex-steer-during-recovery");
+      const session = yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-codex-steer-during-recovery",
+        resumeCursor: null,
+        runtimeMode: "full-access",
+      });
+      const pendingContextRecovery = session.pendingContextRecovery;
+      assert.notEqual(pendingContextRecovery, undefined);
+      if (!pendingContextRecovery) return;
+
+      const recoveryEnteredAdapter = yield* Deferred.make<void>();
+      const releaseRecovery = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(recoveryEnteredAdapter, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseRecovery)),
+          Effect.as({
+            threadId: input.threadId,
+            turnId: asTurnId("turn-codex-slow-recovery"),
+          }),
+        ),
+      );
+
+      const recoveryFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-codex-slow-recovery"),
+          input: "bounded recovery handoff",
+          attachments: [],
+          contextRecovery: pendingContextRecovery,
+        }),
+      );
+      yield* Deferred.await(recoveryEnteredAdapter);
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: asTurnId("turn-codex-slow-recovery"),
+      }));
+
+      const markerlessExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: asMessageId("message-codex-unproven-steer"),
+          input: "this raw input must not bypass recovery",
+          attachments: [],
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(markerlessExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      const steerFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-codex-priority-steer"),
+          input: "steer the live turn immediately",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: codexInstanceId,
+            activeTurnId: asTurnId("turn-codex-slow-recovery"),
+          },
+        }),
+      );
+      yield* Effect.yieldNow;
+
+      // Context recovery alone owns its serialization lock. A proven live
+      // steer must reach the adapter while that recovery send is unresolved.
+      assert.deepEqual(
+        routing.codex.sendTurn.mock.calls.map(
+          (call) => (call[0] as ProviderSendTurnInput).messageId,
+        ),
+        [asMessageId("message-codex-slow-recovery"), asMessageId("message-codex-priority-steer")],
+      );
+
+      yield* Deferred.succeed(releaseRecovery, undefined);
+      const [recoveryExit, steerExit] = yield* Effect.all([
+        Fiber.await(recoveryFiber),
+        Fiber.await(steerFiber),
+      ]);
+      assert.equal(Exit.isSuccess(recoveryExit), true);
+      assert.equal(Exit.isSuccess(steerExit), true);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("serializes explicit live steers without joining the recovery lock", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-serialized-live-steers");
+      const activeTurnId = asTurnId("turn-serialized-live-steers");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-serialized-live-steers",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId,
+      }));
+
+      const firstEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(firstEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseFirst)),
+          Effect.as({ threadId: input.threadId, turnId: activeTurnId }),
+        ),
+      );
+      const liveSteerTarget = { providerInstanceId: codexInstanceId, activeTurnId };
+      const firstMessageId = asMessageId("message-serialized-live-steer-first");
+      const secondMessageId = asMessageId("message-serialized-live-steer-second");
+
+      const firstFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: firstMessageId,
+          input: "first steer",
+          attachments: [],
+          liveSteerTarget,
+        }),
+      );
+      yield* Deferred.await(firstEntered);
+      const secondFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: secondMessageId,
+          input: "second steer",
+          attachments: [],
+          liveSteerTarget,
+        }),
+      );
+      yield* Effect.yieldNow;
+      assert.deepEqual(
+        routing.codex.sendTurn.mock.calls.map(
+          (call) => (call[0] as ProviderSendTurnInput).messageId,
+        ),
+        [firstMessageId],
+      );
+
+      yield* Deferred.succeed(releaseFirst, undefined);
+      const [firstExit, secondExit] = yield* Effect.all([
+        Fiber.await(firstFiber),
+        Fiber.await(secondFiber),
+      ]);
+      assert.equal(Exit.isSuccess(firstExit), true);
+      assert.equal(Exit.isSuccess(secondExit), true);
+      assert.deepEqual(
+        routing.codex.sendTurn.mock.calls.map(
+          (call) => (call[0] as ProviderSendTurnInput).messageId,
+        ),
+        [firstMessageId, secondMessageId],
+      );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("fails a live steer closed when its exact turn is no longer active", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-stale-live-steer");
+      routing.codex.startSession.mockClear();
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-stale-live-steer",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: asTurnId("turn-newer-than-steer"),
+      }));
+      routing.codex.sendTurn.mockClear();
+
+      const exit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: asMessageId("message-stale-live-steer"),
+          input: "must not reach the newer turn",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: codexInstanceId,
+            activeTurnId: asTurnId("turn-stale-steer-target"),
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+
+      yield* routing.codex.stopAll();
+      const missingSessionExit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: asMessageId("message-live-steer-after-teardown"),
+          input: "must not recover a replacement session",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: codexInstanceId,
+            activeTurnId: asTurnId("turn-newer-than-steer"),
+          },
+        })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isFailure(missingSessionExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("does not persist a live steer rejected at native acceptance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-live-steer-native-rejection");
+      const activeTurnId = asTurnId("turn-live-steer-native-rejection");
+      routing.codex.startSession.mockClear();
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-live-steer-native-rejection",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId,
+      }));
+      const bindingBefore = yield* directory.getBinding(threadId);
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "turn/steer",
+            detail: "native prompt iterator rejected the stale target",
+          }),
+        ),
+      );
+
+      const exit = yield* provider
+        .sendTurn({
+          threadId,
+          messageId: asMessageId("message-live-steer-native-rejection"),
+          input: "must remain parked",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: codexInstanceId,
+            activeTurnId,
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      assert.deepEqual(yield* directory.getBinding(threadId), bindingBefore);
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      routing.codex.sendTurn.mockClear();
+    }),
+  );
+
+  it.effect(
+    "does not start duplicate recovery while an explicit session restart is in flight",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId("thread-restart-recovery-serialization");
+        routing.codex.startSession.mockClear();
+        const startInput = {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-restart-recovery-serialization",
+          runtimeMode: "full-access" as const,
+        };
+        yield* provider.startSession(threadId, startInput);
+
+        const restartEntered = yield* Deferred.make<void>();
+        const releaseRestart = yield* Deferred.make<void>();
+        const defaultStartSession = routing.codex.startSession.getMockImplementation();
+        assert.notEqual(defaultStartSession, undefined);
+        if (!defaultStartSession) return;
+        routing.codex.startSession.mockImplementationOnce((input) =>
+          routing.codex
+            .stopAll()
+            .pipe(
+              Effect.andThen(Deferred.succeed(restartEntered, undefined)),
+              Effect.andThen(Deferred.await(releaseRestart)),
+              Effect.andThen(defaultStartSession(input)),
+            ),
+        );
+
+        const restartFiber = yield* Effect.forkScoped(provider.startSession(threadId, startInput));
+        yield* Deferred.await(restartEntered);
+        const queuedSendFiber = yield* Effect.forkScoped(
+          provider.sendTurn({
+            threadId,
+            messageId: asMessageId("message-during-explicit-restart"),
+            input: "deliver after the one restart finishes",
+            attachments: [],
+          }),
+        );
+        yield* Effect.yieldNow;
+        assert.equal(routing.codex.startSession.mock.calls.length, 2);
+        assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+
+        yield* Deferred.succeed(releaseRestart, undefined);
+        const [restartExit, sendExit] = yield* Effect.all([
+          Fiber.await(restartFiber),
+          Fiber.await(queuedSendFiber),
+        ]);
+        assert.equal(Exit.isSuccess(restartExit), true);
+        assert.equal(Exit.isSuccess(sendExit), true);
+        assert.equal(routing.codex.startSession.mock.calls.length, 2);
+        assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+        yield* provider.stopSession({ threadId });
+      }),
+  );
+
+  it.effect("adopts a matching lifecycle winner with its fresh cursor and recovery marker", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-coalesced-lifecycle-winner");
+      routing.codex.startSession.mockClear();
+      const startInput = {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-coalesced-lifecycle-winner",
+        runtimeMode: "full-access" as const,
+      };
+      yield* provider.startSession(threadId, startInput);
+
+      const restartEntered = yield* Deferred.make<void>();
+      const releaseRestart = yield* Deferred.make<void>();
+      const defaultStartSession = routing.codex.startSession.getMockImplementation();
+      assert.notEqual(defaultStartSession, undefined);
+      if (!defaultStartSession) return;
+      routing.codex.startSession.mockImplementationOnce((input) =>
+        routing.codex
+          .stopAll()
+          .pipe(
+            Effect.andThen(Deferred.succeed(restartEntered, undefined)),
+            Effect.andThen(Deferred.await(releaseRestart)),
+            Effect.andThen(defaultStartSession(input)),
+          ),
+      );
+
+      const restartFiber = yield* Effect.forkScoped(
+        provider.startSession(threadId, { ...startInput, resumeCursor: null }),
+      );
+      yield* Deferred.await(restartEntered);
+      const coalescedFiber = yield* Effect.forkScoped(
+        provider.startSession(threadId, startInput, { reuseMatchingSession: true }),
+      );
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.startSession.mock.calls.length, 2);
+
+      yield* Deferred.succeed(releaseRestart, undefined);
+      const [restarted, coalesced] = yield* Effect.all([
+        Fiber.join(restartFiber),
+        Fiber.join(coalescedFiber),
+      ]);
+      assert.equal(routing.codex.startSession.mock.calls.length, 2);
+      assert.deepEqual(coalesced.resumeCursor, restarted.resumeCursor);
+      assert.deepEqual(coalesced.pendingContextRecovery, restarted.pendingContextRecovery);
+      assert.equal(coalesced.pendingContextRecovery?.kind, "native-resume-timeout");
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("never coalesces an explicit fresh-session sentinel", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-explicit-fresh-not-coalesced");
+      routing.codex.startSession.mockClear();
+      const startInput = {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-explicit-fresh-not-coalesced",
+        runtimeMode: "full-access" as const,
+      };
+      const initial = yield* provider.startSession(threadId, startInput);
+      const fresh = yield* provider.startSession(
+        threadId,
+        { ...startInput, resumeCursor: null },
+        { reuseMatchingSession: true },
+      );
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 2);
+      assert.notEqual(initial.resumeCursor, undefined);
+      assert.equal(
+        Object.hasOwn(routing.codex.startSession.mock.calls[1]?.[0] ?? {}, "resumeCursor"),
+        false,
+      );
+      assert.equal(fresh.pendingContextRecovery?.kind, "native-resume-timeout");
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("does not restart a matching lifecycle winner that already began a turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-running-lifecycle-winner");
+      routing.codex.startSession.mockClear();
+      const startInput = {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-running-lifecycle-winner",
+        runtimeMode: "full-access" as const,
+      };
+      yield* provider.startSession(threadId, startInput);
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: asTurnId("turn-running-lifecycle-winner"),
+      }));
+
+      const exit = yield* provider
+        .startSession(threadId, startInput, { reuseMatchingSession: true })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
   it.effect("does not serialize ordinary Cursor sends behind a long-running turn", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

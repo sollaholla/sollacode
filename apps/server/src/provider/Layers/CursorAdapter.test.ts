@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -23,12 +24,14 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
   ProviderInstanceId,
+  TurnId,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
-import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { cursorPromptFinalizerOwnsActiveTurn, makeCursorAdapter } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -148,6 +151,28 @@ const makeResolveCursorSettings = Effect.gen(function* () {
   );
 });
 
+it("does not let a stale Cursor prompt finalizer clear a successor turn", () => {
+  const staleTurnId = TurnId.make("cursor-stale-finalizer-turn");
+  const successorTurnId = TurnId.make("cursor-successor-turn");
+
+  assert.isFalse(
+    cursorPromptFinalizerOwnsActiveTurn({
+      remainingPrompts: 0,
+      liveActiveTurnId: successorTurnId,
+      liveSessionActiveTurnId: successorTurnId,
+      promptTurnId: staleTurnId,
+    }),
+  );
+  assert.isTrue(
+    cursorPromptFinalizerOwnsActiveTurn({
+      remainingPrompts: 0,
+      liveActiveTurnId: staleTurnId,
+      liveSessionActiveTurnId: staleTurnId,
+      promptTurnId: staleTurnId,
+    }),
+  );
+});
+
 const cursorAdapterTestLayer = it.layer(
   Layer.effect(
     CursorAdapter,
@@ -257,8 +282,15 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const threadId = ThreadId.make("cursor-steer-thread");
 
       // Keep the first prompt in flight long enough for the steer to land.
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-steer-overlap-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.jsonl");
+      const argvLogPath = NodePath.join(tempDir, "argv.log");
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "1500" }),
+        makeProbeWrapper(requestLogPath, argvLogPath, {
+          T3_ACP_PROMPT_DELAY_MS: "1500",
+        }),
       );
       yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
 
@@ -289,12 +321,12 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       // turn id before prompting. The mock agent runs on the real clock, so
       // each TestClock.adjust just provides the scheduler hops for its stdio
       // responses to land.
-      yield* Effect.gen(function* () {
+      const activeTurnId = yield* Effect.gen(function* () {
         for (let attempt = 0; attempt < 200; attempt += 1) {
           const sessions = yield* adapter.listSessions();
           const session = sessions.find((entry) => entry.threadId === threadId);
-          if (session?.activeTurnId !== undefined) {
-            return;
+          if (session?.status === "running" && session.activeTurnId !== undefined) {
+            return session.activeTurnId;
           }
           yield* TestClock.adjust("10 millis");
         }
@@ -303,12 +335,33 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       // Steer: a second sendTurn while the first prompt is still in flight
       // continues the same turn.
-      const steeredTurn = yield* adapter.sendTurn({
-        threadId,
-        input: "actually run 15",
-        attachments: [],
-      });
+      const steeredTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "actually run 15",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("cursor"),
+            activeTurnId,
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* waitForJsonLogMatch(
+        requestLogPath,
+        (entry) =>
+          entry.method === "session/prompt" && JSON.stringify(entry).includes("actually run 15"),
+      );
+
+      // The predecessor prompt finishes first. Its finalizer must leave the
+      // overlapping steer running instead of clearing the shared active turn.
       const firstTurn = yield* Fiber.join(firstTurnFiber);
+      assert.isUndefined(steeredTurnFiber.pollUnsafe());
+      const overlappingSessions = yield* adapter.listSessions();
+      const overlappingSession = overlappingSessions.find((entry) => entry.threadId === threadId);
+      assert.equal(overlappingSession?.status, "running");
+      assert.equal(overlappingSession?.activeTurnId, activeTurnId);
+
+      const steeredTurn = yield* Fiber.join(steeredTurnFiber);
       assert.equal(String(steeredTurn.turnId), String(firstTurn.turnId));
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
@@ -322,8 +375,201 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       assert.equal(turnCompletedEvents.length, 1);
       assert.equal(String(turnCompletedEvents[0]?.turnId), String(firstTurn.turnId));
 
+      const settledSessions = yield* adapter.listSessions();
+      const settledSession = settledSessions.find((entry) => entry.threadId === threadId);
+      assert.equal(settledSession?.status, "ready");
+      assert.isUndefined(settledSession?.activeTurnId);
+
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect("fails an explicit live steer instead of prompting a successor Cursor turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-stale-live-steer-successor");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-stale-live-steer-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.jsonl");
+      const argvLogPath = NodePath.join(tempDir, "argv.log");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath, {
+          T3_ACP_PROMPT_DELAY_MS: "300",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const originalTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "finish the original turn",
+        attachments: [],
+      });
+      const successorFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "run the successor turn",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const successorTurnId = yield* Effect.gen(function* () {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const sessions = yield* adapter.listSessions();
+          const session = sessions.find((entry) => entry.threadId === threadId);
+          if (
+            session?.status === "running" &&
+            session.activeTurnId !== undefined &&
+            session.activeTurnId !== originalTurn.turnId
+          ) {
+            return session.activeTurnId;
+          }
+          yield* TestClock.adjust("10 millis");
+        }
+        throw new Error("Timed out waiting for the Cursor successor turn.");
+      });
+      yield* waitForJsonLogMatch(
+        requestLogPath,
+        (entry) =>
+          entry.method === "session/prompt" &&
+          JSON.stringify(entry).includes("run the successor turn"),
+      );
+
+      const exit = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not reach the successor",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("cursor"),
+            activeTurnId: originalTurn.turnId,
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(exit._tag, "Failure");
+      const successorTurn = yield* Fiber.join(successorFiber);
+      assert.equal(successorTurn.turnId, successorTurnId);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.equal(requests.filter((entry) => entry.method === "session/prompt").length, 2);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("fails a Cursor live steer stopped during preparation before native prompt", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("cursor-live-steer-stop-race");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-live-steer-stop-race-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.jsonl");
+      const argvLogPath = NodePath.join(tempDir, "argv.log");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath, {
+          T3_ACP_PROMPT_DELAY_MS: "3000",
+        }),
+      );
+      const baseFileSystem = yield* FileSystem.FileSystem;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachmentReadStarted = yield* Deferred.make<void>();
+      const releaseAttachmentRead = yield* Deferred.make<void>();
+      const attachment = {
+        type: "image" as const,
+        id: "cursor-live-steer-stop-12345678-1234-1234-1234-123456789abc",
+        name: "steer.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true });
+        await NodeFSP.writeFile(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+      });
+      const gatedFileSystem = FileSystem.FileSystem.of({
+        ...baseFileSystem,
+        readFile: (path) =>
+          path === attachmentPath
+            ? Deferred.succeed(attachmentReadStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseAttachmentRead)),
+                Effect.andThen(baseFileSystem.readFile(path)),
+              )
+            : baseFileSystem.readFile(path),
+      });
+      const adapter = yield* makeCursorAdapter(
+        decodeCursorSettings({ binaryPath: wrapperPath }),
+      ).pipe(Effect.provideService(FileSystem.FileSystem, gatedFileSystem));
+      const turnStarted = yield* Deferred.make<TurnId>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "turn.started" && event.turnId !== undefined
+          ? Deferred.succeed(turnStarted, event.turnId).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const firstTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "keep the original Cursor turn running",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      const activeTurnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
+      yield* waitForJsonLogMatch(
+        requestLogPath,
+        (entry) =>
+          entry.method === "session/prompt" &&
+          JSON.stringify(entry).includes("keep the original Cursor turn running"),
+      );
+      const racedSteerExitFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not enter the stopped Cursor session",
+          attachments: [attachment],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("cursor"),
+            activeTurnId,
+          },
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(attachmentReadStarted).pipe(Effect.timeout("2 seconds"));
+
+      const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+      yield* Effect.gen(function* () {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (!(yield* adapter.hasSession(threadId))) return;
+          yield* Effect.yieldNow;
+        }
+        return yield* Effect.die("Timed out waiting for the Cursor session to begin stopping.");
+      });
+      yield* Deferred.succeed(releaseAttachmentRead, undefined);
+
+      const racedSteerExit = yield* Fiber.join(racedSteerExitFiber).pipe(
+        Effect.timeout("2 seconds"),
+      );
+      assert.equal(racedSteerExit._tag, "Failure");
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.equal(requests.filter((entry) => entry.method === "session/prompt").length, 1);
+      assert.notInclude(JSON.stringify(requests), "must not enter the stopped Cursor session");
+
+      yield* Fiber.join(stopFiber).pipe(Effect.timeout("5 seconds"));
+      yield* Fiber.interrupt(firstTurnFiber);
+      yield* Fiber.interrupt(eventsFiber);
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("closes the ACP child process when a session stops", () =>

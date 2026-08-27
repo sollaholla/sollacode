@@ -1463,10 +1463,32 @@ export function makeOpenCodeAdapter(
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = yield* ensureSessionContext(sessions, input.threadId);
+      const exactLiveSteerError = () => {
+        const target = input.liveSteerTarget;
+        if (
+          target === undefined ||
+          (target.providerInstanceId === boundInstanceId &&
+            sessions.get(input.threadId) === context &&
+            !Ref.getUnsafe(context.stopped) &&
+            context.session.status === "running" &&
+            context.activeTurnId === target.activeTurnId)
+        ) {
+          return undefined;
+        }
+        return new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/steer",
+          detail: `Live steer target '${target.activeTurnId}' is no longer the active OpenCode turn for thread '${input.threadId}'.`,
+        });
+      };
+      const initialLiveSteerError = exactLiveSteerError();
+      if (initialLiveSteerError !== undefined) {
+        return yield* initialLiveSteerError;
+      }
       // A sendTurn while a turn is active is a steer: OpenCode queues the
       // prompt into the busy session and the work continues as one turn, so
       // the active turn id is reused instead of opening a new turn.
-      const steeringTurnId = context.activeTurnId;
+      const steeringTurnId = input.liveSteerTarget?.activeTurnId ?? context.activeTurnId;
       const turnId = steeringTurnId ?? TurnId.make(`opencode-turn-${yield* randomUUIDv4}`);
       const modelSelection =
         input.modelSelection ??
@@ -1509,20 +1531,19 @@ export function makeOpenCodeAdapter(
       const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
-      context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
-      context.activeVariant = variant;
-      yield* updateProviderSession(
-        context,
-        {
-          status: "running",
-          activeTurnId: turnId,
-          model: modelSelection?.model ?? context.session.model,
-        },
-        { clearLastError: true },
-      );
-
       if (steeringTurnId === undefined) {
+        context.activeTurnId = turnId;
+        context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+        context.activeVariant = variant;
+        yield* updateProviderSession(
+          context,
+          {
+            status: "running",
+            activeTurnId: turnId,
+            model: modelSelection?.model ?? context.session.model,
+          },
+          { clearLastError: true },
+        );
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId, turnId })),
           type: "turn.started",
@@ -1534,13 +1555,21 @@ export function makeOpenCodeAdapter(
       }
 
       yield* runOpenCodeSdk("session.promptAsync", () =>
-        context.client.session.promptAsync({
-          sessionID: context.openCodeSessionId,
-          model: parsedModel,
-          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
-          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
-        }),
+        (() => {
+          // Check in the same synchronous callback that starts the SDK request.
+          // No completed turn or successor may inherit a steer targeted at its
+          // predecessor, even if provider events advanced during validation.
+          const finalLiveSteerError = exactLiveSteerError();
+          if (finalLiveSteerError !== undefined) throw finalLiveSteerError;
+          const selectedAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+          return context.client.session.promptAsync({
+            sessionID: context.openCodeSessionId,
+            model: parsedModel,
+            ...(selectedAgent ? { agent: selectedAgent } : {}),
+            ...(variant ? { variant } : {}),
+            parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+          });
+        })(),
       ).pipe(
         Effect.mapError(toRequestError),
         // On failure of a fresh turn: clear active-turn state, flip the

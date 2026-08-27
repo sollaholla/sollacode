@@ -10,6 +10,7 @@ import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -29,6 +30,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   grokPromptSettlementBelongsToContext,
@@ -341,6 +343,231 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect("delivers an exact live steer while keeping the overlapping Grok turn running", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-exact-live-steer");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-exact-live-steer-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const closeLogPath = NodePath.join(tempDir, "close.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_CLOSE_SESSION_LOG_PATH: closeLogPath,
+          T3_ACP_CLOSE_SESSION_DELAY_MS: "1000",
+        }),
+      );
+      const baseFileSystem = yield* FileSystem.FileSystem;
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachmentReadStarted = yield* Deferred.make<void>();
+      const releaseAttachmentRead = yield* Deferred.make<void>();
+      const attachment = {
+        type: "image" as const,
+        id: "grok-exact-live-steer-12345678-1234-1234-1234-123456789abc",
+        name: "steer.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      };
+      const attachmentPath = NodePath.join(attachmentsDir, attachmentRelativePath(attachment));
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true });
+        await NodeFSP.writeFile(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+      });
+      const gatedFileSystem = FileSystem.FileSystem.of({
+        ...baseFileSystem,
+        readFile: (path) =>
+          path === attachmentPath
+            ? Deferred.succeed(attachmentReadStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseAttachmentRead)),
+                Effect.andThen(baseFileSystem.readFile(path)),
+              )
+            : baseFileSystem.readFile(path),
+      });
+      const adapter = yield* makeTestAdapter(wrapperPath).pipe(
+        Effect.provideService(FileSystem.FileSystem, gatedFileSystem),
+      );
+      const turnStarted = yield* Deferred.make<TurnId>();
+      const eventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "turn.started" && event.turnId !== undefined
+          ? Deferred.succeed(turnStarted, event.turnId).pipe(Effect.ignore)
+          : Effect.void,
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const firstMessageId = MessageId.make("grok-exact-live-running");
+      const firstTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          messageId: firstMessageId,
+          input: "keep the original Grok turn running",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      const activeTurnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
+      yield* waitForFileContent(requestLogPath, 80, `"messageId":"${firstMessageId}"`);
+
+      const steeredTurn = yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("grok-exact-live-steer"),
+        input: "apply this correction immediately",
+        attachments: [],
+        liveSteerTarget: {
+          providerInstanceId: ProviderInstanceId.make("grok"),
+          activeTurnId,
+        },
+      });
+
+      assert.equal(steeredTurn.turnId, activeTurnId);
+      const sessions = yield* adapter.listSessions();
+      const runningSession = sessions.find((session) => session.threadId === threadId);
+      assert.equal(runningSession?.status, "running");
+      assert.equal(runningSession?.activeTurnId, activeTurnId);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.equal(requests.filter((entry) => entry.method === "session/prompt").length, 2);
+
+      // Pass the early target check and reserve a prompt slot, then stop the
+      // session while attachment preparation is deliberately gated. Releasing
+      // it crosses the final pre-prompt check in the stopping context.
+      const racedMessageId = MessageId.make("grok-stop-race-live-steer");
+      const racedSteerExitFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          messageId: racedMessageId,
+          input: "must not enter the stopping Grok session",
+          attachments: [attachment],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            activeTurnId,
+          },
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(attachmentReadStarted).pipe(Effect.timeout("2 seconds"));
+
+      const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+      yield* waitForFileContent(closeLogPath, 80, "session/close");
+      assert.isFalse(yield* adapter.hasSession(threadId));
+      const stoppingSessions = yield* adapter.listSessions();
+      const stoppingSession = stoppingSessions.find((session) => session.threadId === threadId);
+      assert.equal(stoppingSession?.status, "running");
+      assert.equal(stoppingSession?.activeTurnId, activeTurnId);
+
+      yield* Deferred.succeed(releaseAttachmentRead, undefined);
+      const racedSteerExit = yield* Fiber.join(racedSteerExitFiber).pipe(
+        Effect.timeout("2 seconds"),
+      );
+      assert.equal(racedSteerExit._tag, "Failure");
+      const requestsAfterStopRace = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptMessageIds = requestsAfterStopRace
+        .filter((entry) => entry.method === "session/prompt")
+        .map((entry) => {
+          const params = entry.params as { readonly messageId?: unknown } | undefined;
+          return params?.messageId;
+        });
+      assert.deepEqual(promptMessageIds, [firstMessageId, "grok-exact-live-steer"]);
+      assert.notInclude(promptMessageIds, racedMessageId);
+
+      yield* Fiber.join(stopFiber).pipe(Effect.timeout("3 seconds"));
+      yield* Fiber.interrupt(firstTurnFiber);
+      yield* Fiber.interrupt(eventsFiber);
+    }).pipe(TestClock.withLive),
+  );
+
+  it.effect("fails an explicit live steer instead of prompting a successor Grok turn", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-stale-live-steer-successor");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-stale-live-steer-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_PROMPT_DELAY_MS: "300",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const originalTurn = yield* adapter.sendTurn({
+        threadId,
+        messageId: MessageId.make("grok-original-turn"),
+        input: "finish the original Grok turn",
+        attachments: [],
+      });
+      const successorMessageId = MessageId.make("grok-successor-turn");
+      const successorFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          messageId: successorMessageId,
+          input: "run the successor Grok turn",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const successorTurnId = yield* Effect.gen(function* () {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const sessions = yield* adapter.listSessions();
+          const session = sessions.find((entry) => entry.threadId === threadId);
+          if (
+            session?.status === "running" &&
+            session.activeTurnId !== undefined &&
+            session.activeTurnId !== originalTurn.turnId
+          ) {
+            return session.activeTurnId;
+          }
+          yield* Effect.sleep("10 millis");
+        }
+        return yield* Effect.die("Timed out waiting for the Grok successor turn.");
+      });
+      yield* waitForFileContent(requestLogPath, 80, `"messageId":"${successorMessageId}"`);
+
+      const staleMessageId = MessageId.make("grok-stale-live-steer");
+      const exit = yield* adapter
+        .sendTurn({
+          threadId,
+          messageId: staleMessageId,
+          input: "must not reach the Grok successor",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("grok"),
+            activeTurnId: originalTurn.turnId,
+          },
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(exit._tag, "Failure");
+      const successorTurn = yield* Fiber.join(successorFiber);
+      assert.equal(successorTurn.turnId, successorTurnId);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const promptMessageIds = requests
+        .filter((entry) => entry.method === "session/prompt")
+        .map((entry) => {
+          const params = entry.params as { readonly messageId?: unknown } | undefined;
+          return params?.messageId;
+        });
+      assert.deepEqual(promptMessageIds, ["grok-original-turn", "grok-successor-turn"]);
+      assert.notInclude(promptMessageIds, staleMessageId);
+
+      const settledSessions = yield* adapter.listSessions();
+      const settledSession = settledSessions.find((session) => session.threadId === threadId);
+      assert.equal(settledSession?.status, "ready");
+      assert.isUndefined(settledSession?.activeTurnId);
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
   );
 
   it.effect("restores ready without completing an unstarted turn when preparation fails", () =>

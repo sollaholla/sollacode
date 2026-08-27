@@ -66,9 +66,12 @@ const runtimeMock = {
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
+    abortGate: undefined as Promise<void> | undefined,
+    onAbort: undefined as (() => void) | undefined,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
     subscribedEvents: [] as unknown[],
+    subscribedEventsGate: undefined as Promise<void> | undefined,
     sessionGetIds: [] as string[],
     missingSessionIds: new Set<string>(),
     transientErrorSessionIds: new Set<string>(),
@@ -86,9 +89,12 @@ const runtimeMock = {
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
+    this.state.abortGate = undefined;
+    this.state.onAbort = undefined;
     this.state.closeError = null;
     this.state.messages = [];
     this.state.subscribedEvents = [];
+    this.state.subscribedEventsGate = undefined;
     this.state.sessionGetIds.length = 0;
     this.state.missingSessionIds.clear();
     this.state.transientErrorSessionIds.clear();
@@ -177,6 +183,8 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
+          runtimeMock.state.onAbort?.();
+          await runtimeMock.state.abortGate;
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
@@ -207,6 +215,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       event: {
         subscribe: async () => ({
           stream: (async function* () {
+            await runtimeMock.state.subscribedEventsGate;
             for (const event of runtimeMock.state.subscribedEvents) {
               yield event;
             }
@@ -780,6 +789,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const steeredTurn = yield* adapter.sendTurn({
         threadId,
         input: "actually run 15",
+        liveSteerTarget: {
+          providerInstanceId: ProviderInstanceId.make("opencode"),
+          activeTurnId: turn.turnId,
+        },
         modelSelection: {
           instanceId: ProviderInstanceId.make("opencode"),
           model: "openai/gpt-5",
@@ -792,6 +805,124 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(session?.status, "running");
       NodeAssert.equal(String(session?.activeTurnId), String(turn.turnId));
       NodeAssert.equal(runtimeMock.state.promptCalls.length, 2);
+    }),
+  );
+
+  it.effect("rejects a live steer targeted at a predecessor after a successor starts", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-stale-live-steer");
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "openai/gpt-5",
+      };
+      let releaseIdleEvent!: () => void;
+      runtimeMock.state.subscribedEventsGate = new Promise<void>((resolve) => {
+        releaseIdleEvent = resolve;
+      });
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "session.status",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            status: { type: "idle" },
+          },
+        },
+      ];
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const predecessor = yield* adapter.sendTurn({
+        threadId,
+        input: "first turn",
+        modelSelection,
+      });
+      const predecessorCompleted = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "turn.completed" && event.turnId === predecessor.turnId,
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      releaseIdleEvent();
+      yield* Fiber.join(predecessorCompleted);
+      const successor = yield* adapter.sendTurn({
+        threadId,
+        input: "successor turn",
+        modelSelection,
+      });
+      NodeAssert.notEqual(String(successor.turnId), String(predecessor.turnId));
+      const promptCountBeforeStaleSteer = runtimeMock.state.promptCalls.length;
+
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not reach the successor",
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            activeTurnId: predecessor.turnId,
+          },
+          modelSelection,
+        })
+        .pipe(Effect.flip);
+
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, promptCountBeforeStaleSteer);
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((candidate) => candidate.threadId === threadId);
+      NodeAssert.equal(String(session?.activeTurnId), String(successor.turnId));
+    }),
+  );
+
+  it.effect("rejects a live steer while its OpenCode context is stopping", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-stopping-live-steer");
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("opencode"),
+        model: "openai/gpt-5",
+      };
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runningTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "long task",
+        modelSelection,
+      });
+      let releaseAbort!: () => void;
+      runtimeMock.state.abortGate = new Promise<void>((resolve) => {
+        releaseAbort = resolve;
+      });
+      let markAbortStarted!: () => void;
+      const abortStarted = new Promise<void>((resolve) => {
+        markAbortStarted = resolve;
+      });
+      runtimeMock.state.onAbort = markAbortStarted;
+
+      const stopFiber = yield* adapter.stopSession(threadId).pipe(Effect.forkChild);
+      yield* Effect.promise(() => abortStarted);
+      const promptCountBeforeStaleSteer = runtimeMock.state.promptCalls.length;
+      const exit = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "must not enter a stopping SDK context",
+          liveSteerTarget: {
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            activeTurnId: runningTurn.turnId,
+          },
+          modelSelection,
+        })
+        .pipe(Effect.exit);
+
+      NodeAssert.equal(exit._tag, "Failure");
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, promptCountBeforeStaleSteer);
+      releaseAbort();
+      yield* Fiber.join(stopFiber);
     }),
   );
 

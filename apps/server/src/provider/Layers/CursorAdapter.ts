@@ -142,6 +142,19 @@ interface CursorSessionContext {
   reasoningAnnounced: boolean;
 }
 
+export function cursorPromptFinalizerOwnsActiveTurn(input: {
+  readonly remainingPrompts: number;
+  readonly liveActiveTurnId: TurnId | undefined;
+  readonly liveSessionActiveTurnId: TurnId | undefined;
+  readonly promptTurnId: TurnId;
+}): boolean {
+  return (
+    input.remainingPrompts === 0 &&
+    input.liveActiveTurnId === input.promptTurnId &&
+    input.liveSessionActiveTurnId === input.promptTurnId
+  );
+}
+
 function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
 ): Effect.Effect<void> {
@@ -936,10 +949,37 @@ export function makeCursorAdapter(
     const sendTurn: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        const requireExactLiveSteerTarget = () => {
+          const target = input.liveSteerTarget;
+          if (target === undefined) return Effect.void;
+          if (
+            target.providerInstanceId !== boundInstanceId ||
+            sessions.get(input.threadId) !== ctx ||
+            ctx.stopped ||
+            ctx.session.status !== "running" ||
+            ctx.activeTurnId !== target.activeTurnId ||
+            ctx.session.activeTurnId !== target.activeTurnId
+          ) {
+            return Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail: `Live steer target '${target.activeTurnId}' is no longer the active Cursor turn for thread '${input.threadId}'.`,
+              }),
+            );
+          }
+          return Effect.void;
+        };
+
+        // An explicit steer must never manufacture a new turn if its target
+        // has already completed or been replaced.
+        yield* requireExactLiveSteerTarget();
         // A sendTurn while a prompt is in flight is a steer: the agent folds
         // the new prompt into the ongoing work, so the active turn id is
         // reused instead of opening a new turn.
-        const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
+        const steeringTurnId =
+          input.liveSteerTarget?.activeTurnId ??
+          (ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined);
         const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
         // Count this prompt immediately so a superseded in-flight prompt
         // resolving from here on does not settle the turn; the matching
@@ -965,28 +1005,6 @@ export function makeCursorAdapter(
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
           });
-          ctx.activeTurnId = turnId;
-          if (steeringTurnId === undefined) {
-            ctx.lastPlanFingerprint = undefined;
-            ctx.reasoningAnnounced = false;
-          }
-          ctx.session = {
-            ...ctx.session,
-            activeTurnId: turnId,
-            updatedAt: yield* nowIso,
-          };
-
-          if (steeringTurnId === undefined) {
-            yield* offerRuntimeEvent({
-              type: "turn.started",
-              ...(yield* makeEventStamp()),
-              provider: PROVIDER,
-              threadId: input.threadId,
-              turnId,
-              payload: { model: resolvedModel },
-            });
-          }
-
           const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
           if (input.input?.trim()) {
             promptParts.push({ type: "text", text: input.input.trim() });
@@ -1030,6 +1048,38 @@ export function makeCursorAdapter(
               issue: "Turn requires non-empty text or attachments.",
             });
           }
+
+          // Configuration and attachment reads above can yield. Re-check
+          // before mutating turn state so a successor cannot be overwritten
+          // by a steer aimed at its predecessor.
+          yield* requireExactLiveSteerTarget();
+          ctx.activeTurnId = turnId;
+          if (steeringTurnId === undefined) {
+            ctx.lastPlanFingerprint = undefined;
+            ctx.reasoningAnnounced = false;
+          }
+          ctx.session = {
+            ...ctx.session,
+            status: "running",
+            activeTurnId: turnId,
+            updatedAt: yield* nowIso,
+          };
+
+          if (steeringTurnId === undefined) {
+            yield* offerRuntimeEvent({
+              type: "turn.started",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId,
+              payload: { model: resolvedModel },
+            });
+          }
+
+          // turn.started publication is cooperative. The native prompt is the
+          // acceptance boundary, so enforce the exact target once more at the
+          // last possible point before crossing it.
+          yield* requireExactLiveSteerTarget();
 
           const result = yield* ctx.acp
             .prompt({
@@ -1078,8 +1128,25 @@ export function makeCursorAdapter(
           };
         }).pipe(
           Effect.ensuring(
-            Effect.sync(() => {
-              ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
+            Effect.gen(function* () {
+              const remainingPrompts = Math.max(0, ctx.promptsInFlight - 1);
+              ctx.promptsInFlight = remainingPrompts;
+              if (
+                cursorPromptFinalizerOwnsActiveTurn({
+                  remainingPrompts,
+                  liveActiveTurnId: ctx.activeTurnId,
+                  liveSessionActiveTurnId: ctx.session.activeTurnId,
+                  promptTurnId: turnId,
+                })
+              ) {
+                const { activeTurnId: _activeTurnId, ...readySession } = ctx.session;
+                ctx.activeTurnId = undefined;
+                ctx.session = {
+                  ...readySession,
+                  status: "ready",
+                  updatedAt: yield* nowIso,
+                };
+              }
             }),
           ),
         );

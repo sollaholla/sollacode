@@ -17,6 +17,7 @@ const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
 const pidLogPath = process.env.T3_ACP_PID_LOG_PATH;
 const detachedChildPidLogPath = process.env.T3_ACP_DETACHED_CHILD_PID_LOG_PATH;
 const closeSessionLogPath = process.env.T3_ACP_CLOSE_SESSION_LOG_PATH;
+const closeSessionDelayMs = Number(process.env.T3_ACP_CLOSE_SESSION_DELAY_MS ?? "0");
 const disableCloseCapability = process.env.T3_ACP_DISABLE_CLOSE_CAPABILITY === "1";
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
@@ -421,9 +422,12 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleCloseSession(() =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       if (closeSessionLogPath) {
         NodeFS.appendFileSync(closeSessionLogPath, "session/close\n", "utf8");
+      }
+      if (Number.isFinite(closeSessionDelayMs) && closeSessionDelayMs > 0) {
+        yield* Effect.sleep(`${closeSessionDelayMs} millis`);
       }
       if (detachedChildPid !== undefined) {
         try {

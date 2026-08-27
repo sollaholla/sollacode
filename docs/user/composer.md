@@ -79,6 +79,17 @@ widths keep every control directly available as an icon-only button with its acc
 tooltip. Only extremely narrow composers move secondary controls into the three-dot menu. The
 provider/model icon remains directly available in both compact layouts.
 
+## Correct a running turn immediately
+
+Sending a new message while the selected provider is already working routes that message directly
+to the exact live turn. Human input uses a priority lane, so it does not wait behind session resume,
+reconfiguration, or ordinary queued work. If that native turn ends before the provider accepts the
+message, Solla Code keeps the message queued for the next turn instead of sending it to a successor
+under a false live-turn identity.
+
+Provider switches and settings changes remain explicit turn replacements. Automated continuation
+prompts do not use the human steering lane.
+
 ## Send queued Grok messages now
 
 Pressing Enter while Grok is already working adds the message to Grok's native prompt queue without

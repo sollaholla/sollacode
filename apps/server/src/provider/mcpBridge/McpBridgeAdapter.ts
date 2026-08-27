@@ -10,7 +10,6 @@ import {
   type ProviderApprovalDecision,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
-  type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderUserInputAnswers,
@@ -19,6 +18,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeTimersPromises from "node:timers/promises";
 
@@ -38,6 +38,7 @@ import {
 } from "./McpBridgeProtocol.ts";
 
 export const MCP_BRIDGE_DRIVER_KIND = ProviderDriverKind.make("mcpBridge");
+const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const MAX_DEDUP_EVENT_IDS = 4_096;
 const MAX_TERMINAL_TURN_IDS = 1_024;
 /**
@@ -864,6 +865,28 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
     | ProviderAdapterSessionNotFoundError
   >["sendTurn"] = Effect.fn("McpBridgeAdapter.sendTurn")(function* (turnInput) {
     const context = requireSession(turnInput.threadId);
+    const exactLiveSteerError = () => {
+      const target = turnInput.liveSteerTarget;
+      if (
+        target === undefined ||
+        (target.providerInstanceId === input.instanceId &&
+          sessions.get(turnInput.threadId) === context &&
+          context.active &&
+          context.session.status === "running" &&
+          context.activeTurnId === target.activeTurnId)
+      ) {
+        return undefined;
+      }
+      return new ProviderAdapterRequestError({
+        provider: MCP_BRIDGE_DRIVER_KIND,
+        method: "provider_bridge.turn_steer",
+        detail: `Live steer target '${target.activeTurnId}' is no longer the active external bridge turn for thread '${turnInput.threadId}'.`,
+      });
+    };
+    const initialLiveSteerError = exactLiveSteerError();
+    if (initialLiveSteerError !== undefined) {
+      return yield* initialLiveSteerError;
+    }
     const requestedModel = turnInput.modelSelection?.model;
     const modelSwitchRequiresNewThread =
       input.connection.descriptor?.capabilities.modelSwitchRequiresNewThread ?? true;
@@ -903,8 +926,13 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
         });
       }
       const response = yield* Effect.tryPromise({
-        try: () =>
-          input.connection.call(
+        try: () => {
+          // Re-check in the same synchronous callback that enters the bridge.
+          // This closes the service-to-adapter turn-boundary race without
+          // allowing a successor to inherit its predecessor's follow-up.
+          const finalLiveSteerError = exactLiveSteerError();
+          if (finalLiveSteerError !== undefined) throw finalLiveSteerError;
+          return input.connection.call(
             "provider_bridge.turn_steer",
             {
               protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
@@ -922,8 +950,12 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
               attachments,
             },
             30_000,
-          ),
-        catch: (cause) => adapterError("provider_bridge.turn_steer", cause),
+          );
+        },
+        catch: (cause) =>
+          isProviderAdapterRequestError(cause)
+            ? cause
+            : adapterError("provider_bridge.turn_steer", cause),
       });
       try {
         assertSessionResponse(response, turnInput.threadId, "provider_bridge.turn_steer");

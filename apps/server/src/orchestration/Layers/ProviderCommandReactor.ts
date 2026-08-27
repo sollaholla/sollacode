@@ -12,6 +12,7 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderPendingContextRecovery,
+  type ProviderLiveSteerTarget,
   type ProviderSession,
   type ServerProvider,
   type RuntimeMode,
@@ -132,6 +133,10 @@ type ProviderIntentEvent = Extract<
 >;
 
 type AssistantMessageSentEvent = Extract<ProviderIntentEvent, { type: "thread.message-sent" }>;
+type TurnStartRequestedEvent = Extract<
+  ProviderIntentEvent,
+  { type: "thread.turn-start-requested" }
+>;
 type TurnStartRequestedPayload = Extract<
   OrchestrationEvent,
   { type: "thread.turn-start-requested" }
@@ -409,6 +414,23 @@ export const classifyTurnStartRecovery = (input: {
   if (isAgentAutoResumeMessageId(input.messageId)) return "superseded";
   return "proceed";
 };
+
+export const isDirectUserSteerCandidate = (input: {
+  readonly threadId: ThreadId;
+  readonly message:
+    | {
+        readonly id: MessageId;
+        readonly role: string;
+        readonly inputOrigin?: string | null | undefined;
+      }
+    | undefined;
+}): boolean =>
+  input.message?.role === "user" &&
+  input.message.inputOrigin !== "agent-loop" &&
+  startupResumeSourceTurnId({
+    threadId: input.threadId,
+    messageId: input.message.id,
+  }) === null;
 
 /**
  * Consecutive synthetic continuations since the last message carrying real
@@ -781,17 +803,26 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         readonly resumeCursor?: unknown;
         readonly provider?: ProviderDriverKind;
       }) =>
-        providerService.startSession(threadId, {
+        providerService.startSession(
           threadId,
-          ...(preferredProvider ? { provider: preferredProvider } : {}),
-          providerInstanceId: desiredInstanceId,
-          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-          modelSelection: desiredModelSelection,
-          ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-          autoCompactionThresholdPercentage,
-          tokenOptimizerEnabled: claudeTokenOptimizerEnabled,
-          runtimeMode: desiredRuntimeMode,
-        });
+          {
+            threadId,
+            ...(preferredProvider ? { provider: preferredProvider } : {}),
+            providerInstanceId: desiredInstanceId,
+            ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+            modelSelection: desiredModelSelection,
+            ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+            autoCompactionThresholdPercentage,
+            tokenOptimizerEnabled: claudeTokenOptimizerEnabled,
+            runtimeMode: desiredRuntimeMode,
+          },
+          {
+            // ensureSessionForThread already inspected the current session. If a
+            // matching replacement appears while ProviderService waits for the
+            // lifecycle lane, another restart won the race and must be adopted.
+            reuseMatchingSession: input?.resumeCursor !== null,
+          },
+        );
 
       const startProviderSessionWithResumeFallback = Effect.fnUntraced(function* (input?: {
         readonly resumeCursor?: unknown;
@@ -951,6 +982,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly attachments?: ReadonlyArray<ChatAttachment>;
       readonly modelSelection?: ModelSelection;
       readonly interactionMode?: "default" | "plan";
+      /** Exact provider-native turn this input must join, or fail closed. */
+      readonly liveSteerTarget?: ProviderLiveSteerTarget;
       /** Projected synthetic prompt to omit from a bounded recovery digest. */
       readonly historyMessageId?: MessageId;
       readonly createdAt: string;
@@ -1075,14 +1108,23 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           providerInput = voiceInput;
         }
       }
-      const ensuredSession = yield* ensureSessionForThread(input.threadId, input.createdAt, {
-        ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-        pendingTurnStart: true,
-        recoverResumeTimeout: true,
-      });
+      // The running session is the steer target. Re-entering session setup here
+      // can queue this input behind the very thread/resume it is meant to
+      // preempt (or start a duplicate resume in parallel). ProviderService
+      // performs the final live-session check at the adapter boundary.
+      const ensuredSession = input.liveSteerTarget
+        ? {
+            threadId: input.threadId,
+            pendingContextRecovery: activeSessionBeforeStart?.pendingContextRecovery,
+          }
+        : yield* ensureSessionForThread(input.threadId, input.createdAt, {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            pendingTurnStart: true,
+            recoverResumeTimeout: true,
+          });
       const pendingContextRecovery: ProviderPendingContextRecovery | undefined =
         ensuredSession.pendingContextRecovery;
-      if (pendingContextRecovery !== undefined) {
+      if (pendingContextRecovery !== undefined && input.liveSteerTarget === undefined) {
         const effectiveModelSelection = input.modelSelection ?? thread.modelSelection;
         const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId);
         const desiredInfo = yield* providerService.getInstanceInfo(
@@ -1121,11 +1163,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       }
       const normalizedInput = toNonEmptyProviderInput(providerInput);
       const normalizedAttachments = input.attachments ?? [];
-      const activeSession = yield* providerService
-        .listSessions()
-        .pipe(
-          Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
-        );
+      const activeSession = input.liveSteerTarget
+        ? activeSessionBeforeStart
+        : yield* providerService
+            .listSessions()
+            .pipe(
+              Effect.map((sessions) =>
+                sessions.find((session) => session.threadId === input.threadId),
+              ),
+            );
       const sessionModelSwitch =
         activeSession === undefined
           ? "in-session"
@@ -1158,7 +1204,8 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
         ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(pendingContextRecovery !== undefined
+        ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
+        ...(pendingContextRecovery !== undefined && input.liveSteerTarget === undefined
           ? { contextRecovery: pendingContextRecovery }
           : {}),
         ...(thread.isSideChat === true ? { isSideChat: true } : {}),
@@ -1548,6 +1595,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
       }
 
+      const liveProviderSession = (yield* providerService.listSessions()).find(
+        (session) => session.threadId === event.payload.threadId,
+      );
+      const projectedActiveTurnId =
+        thread.session?.status === "running" ? thread.session.activeTurnId : null;
+      const liveActiveTurnId =
+        liveProviderSession?.status === "running" ? liveProviderSession.activeTurnId : undefined;
+      const activeTurnId = liveActiveTurnId ?? projectedActiveTurnId ?? undefined;
       // A message sent while this thread's turn is running is a steer. Try to
       // inject it into the live turn immediately (Claude queues it in its prompt
       // stream; Codex accepts it via turn/steer). On success the durable
@@ -1556,7 +1611,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // turn ends — the pre-steer behavior. Forked so a slow provider can never
       // stall event processing.
       const currentProviderInstanceId =
-        thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+        liveProviderSession?.providerInstanceId ??
+        thread.session?.providerInstanceId ??
+        thread.modelSelection.instanceId;
       const requestedProviderInstanceId = event.payload.modelSelection?.instanceId;
       const switchesProviderInstance =
         requestedProviderInstanceId !== undefined &&
@@ -1571,12 +1628,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // undelivered for the whole turn with nothing in any log to say which
       // gate ate it. One line per mid-turn send is cheap; a silent steer path
       // has already cost a diagnosis.
-      if (thread.session?.status === "running" && thread.session.activeTurnId !== null) {
+      if (activeTurnId !== undefined) {
         yield* Effect.logInfo("provider.steer.decision", {
           threadId: event.payload.threadId,
           messageId: event.payload.messageId,
-          sessionStatus: thread.session.status,
-          activeTurnId: thread.session.activeTurnId,
+          sessionStatus: liveProviderSession?.status ?? thread.session?.status ?? null,
+          activeTurnId,
           requestedProviderInstanceId: requestedProviderInstanceId ?? null,
           currentProviderInstanceId: currentProviderInstanceId ?? null,
           steerTargetsLiveSession,
@@ -1591,11 +1648,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // replace. Keeping the obligation pending also guarantees the target
       // provider receives the message exactly once after the source settles.
       if (
-        thread.session?.status === "running" &&
-        thread.session.activeTurnId !== null &&
+        activeTurnId !== undefined &&
         (switchesProviderInstance || message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX))
       ) {
-        const interruptedTurnId = thread.session.activeTurnId;
+        const interruptedTurnId = activeTurnId;
         yield* providerService
           .interruptTurn({
             threadId: event.payload.threadId,
@@ -1617,6 +1673,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           );
         yield* threadWorkScheduler.wake(
           event.payload.modelSelection?.instanceId ??
+            liveProviderSession?.providerInstanceId ??
             thread.session?.providerInstanceId ??
             thread.modelSelection.instanceId,
         );
@@ -1624,8 +1681,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       }
 
       if (
-        thread.session?.status === "running" &&
-        thread.session.activeTurnId &&
+        activeTurnId !== undefined &&
         // A send that requests a different provider is a handoff, not a steer —
         // it must go through the parked path so the switch machinery runs.
         steerTargetsLiveSession
@@ -1680,13 +1736,17 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             messageText: message.text,
             ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
             interactionMode: providerInteractionMode(event.payload.interactionMode),
+            liveSteerTarget: {
+              providerInstanceId: currentProviderInstanceId,
+              activeTurnId,
+            },
             createdAt: event.payload.createdAt,
           }).pipe(
             Effect.flatMap(providerService.sendTurn),
-            // Claude's send resolves when its prompt is queued, so wait for the
-            // prompt iterator's durable receipt. Every other adapter resolves
-            // at or after its own acceptance boundary and can finalize here;
-            // any later receipt is an idempotent second proof.
+            // Claude now resolves only after its prompt iterator validates and
+            // accepts the exact target, emitting the delivery receipt. Wait for
+            // that receipt to reach the durable projection before finalizing;
+            // other adapters resolve at their own native acceptance boundary.
             Effect.tap(() =>
               waitForClaudeMessageDelivery({
                 threadId: event.payload.threadId,
@@ -4014,6 +4074,49 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
 
     const worker = yield* makeDrainableWorker(processDomainEventSafely);
+    // A human steering a live turn is a priority path. In particular, do not
+    // queue it behind runtime-mode/session work that may itself be blocked in a
+    // native thread/resume request. Initial turns and synthetic Agent/startup
+    // turns stay on the ordinary FIFO worker; only input that can target an
+    // already-running provider turn uses this lane.
+    const steerWorkers = new Map<string, DrainableWorker<TurnStartRequestedEvent>>();
+    const steerWorkerForThread = Effect.fn("steerWorkerForThread")(function* (threadId: ThreadId) {
+      const key = String(threadId);
+      const existing = steerWorkers.get(key);
+      if (existing) return existing;
+      const created = yield* makeDrainableWorker(processDomainEventSafely);
+      steerWorkers.set(key, created);
+      return created;
+    });
+    const steerDispatcher = yield* makeDrainableWorker(
+      Effect.fn("dispatchSteerEvent")(function* (event: TurnStartRequestedEvent) {
+        const steerWorker = yield* steerWorkerForThread(event.payload.threadId);
+        yield* steerWorker.enqueue(event);
+      }),
+    );
+    const isLiveUserSteer = Effect.fn("isLiveUserSteer")(function* (
+      event: TurnStartRequestedEvent,
+    ) {
+      const thread = yield* resolveThread(event.payload.threadId);
+      const message = thread?.messages.find((entry) => entry.id === event.payload.messageId);
+      if (
+        !isDirectUserSteerCandidate({
+          threadId: event.payload.threadId,
+          message,
+        })
+      ) {
+        return false;
+      }
+
+      const liveSession = (yield* providerService.listSessions()).find(
+        (session) => session.threadId === event.payload.threadId,
+      );
+      const projectedSession = thread?.session;
+      return (
+        (liveSession?.status === "running" && liveSession.activeTurnId !== undefined) ||
+        (projectedSession?.status === "running" && projectedSession.activeTurnId !== null)
+      );
+    });
     // Cancellation is a control plane. It must not sit behind ordinary work,
     // and one provider/thread that ignores Stop must not block every other
     // thread's interrupt. A small serial lane per thread preserves local event
@@ -4061,6 +4164,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         ) {
           return yield* controlDispatcher.enqueue(event);
         }
+        if (event.type === "thread.turn-start-requested" && (yield* isLiveUserSteer(event))) {
+          return yield* steerDispatcher.enqueue(event);
+        }
         if (
           event.type === "thread.runtime-mode-set" ||
           event.type === "thread.meta-updated" ||
@@ -4096,12 +4202,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     return {
       start,
       drain: Effect.gen(function* () {
-        yield* Effect.all([worker.drain, controlDispatcher.drain], {
+        yield* Effect.all([worker.drain, controlDispatcher.drain, steerDispatcher.drain], {
           concurrency: "unbounded",
         });
         yield* Effect.forEach(
-          Array.from(controlWorkers.values()),
-          (controlWorker) => controlWorker.drain,
+          [...controlWorkers.values(), ...steerWorkers.values()],
+          (threadWorker) => threadWorker.drain,
           { concurrency: "unbounded", discard: true },
         );
       }),
