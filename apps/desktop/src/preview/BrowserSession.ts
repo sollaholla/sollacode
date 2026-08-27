@@ -268,6 +268,35 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    * transfer — so the two orders the user can produce (answer first, or let it
    * land first) converge here.
    */
+  /**
+   * Removes staged files no live hold is waiting on.
+   *
+   * A crash or a force quit while a card was on screen leaves bytes the user
+   * never allowed sitting under their workspace — the exact thing the hold
+   * exists to prevent. Runs when a workspace is nominated, which is often
+   * enough and never mid-question, because anything still being decided is
+   * still in `heldDownloads`.
+   */
+  const sweepAbandonedHolds = (directory: string) => {
+    const stagingDirectory = NodePath.join(directory, ".pending-approval");
+    let staged: ReadonlyArray<string>;
+    try {
+      staged = NodeFS.readdirSync(stagingDirectory);
+    } catch {
+      return;
+    }
+    const awaited = new Set([...heldDownloads.values()].map((held) => held.stagingPath));
+    for (const entry of staged) {
+      const stagedPath = NodePath.join(stagingDirectory, entry);
+      if (awaited.has(stagedPath)) continue;
+      try {
+        NodeFS.rmSync(stagedPath, { force: true, recursive: true });
+      } catch {
+        // A file we cannot remove is not worth failing the workspace change.
+      }
+    }
+  };
+
   const settleHeldDownload = (id: string, held: HeldDownload) => {
     const decision = held.decision;
     if (decision === null || !held.landed) return;
@@ -449,6 +478,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   ) {
     const partition = yield* getPartition(scope);
     downloadDirectories.set(partition, directory);
+    yield* Effect.sync(() => sweepAbandonedHolds(directory));
   });
 
   return BrowserSession.of({
