@@ -259,6 +259,33 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("clears files a crash left staged, but not one still being decided", () =>
+    Effect.gen(function* () {
+      // Bytes staged for a question nobody ever answered are bytes the user
+      // never allowed. A force quit must not leave them in the workspace.
+      const browserSessions = yield* BrowserSession.BrowserSession;
+      const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sweep-"));
+      const staging = NodePath.join(workspace, ".pending-approval");
+      NodeFS.mkdirSync(staging, { recursive: true });
+      const orphan = NodePath.join(staging, "left-behind.bin");
+      NodeFS.writeFileSync(orphan, "bytes");
+
+      yield* browserSessions.setDownloadDirectory("scope-sweep", workspace);
+      assert.isFalse(NodeFS.existsSync(orphan));
+
+      // A hold that is still on screen owns its staged file, so nominating the
+      // same workspace again must leave it alone.
+      const willDownload = yield* registerWillDownload(browserSessions, "scope-sweep");
+      const held = makeDownloadItem("in-flight.bin", "https://grok.com/in-flight.bin");
+      willDownload(held);
+      const stagedTo = held.savedTo();
+      NodeFS.writeFileSync(stagedTo, "bytes");
+
+      yield* browserSessions.setDownloadDirectory("scope-sweep", workspace);
+      assert.isTrue(NodeFS.existsSync(stagedTo));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("keeps nothing on disk when the user denies a download", () =>
     Effect.gen(function* () {
       const browserSessions = yield* BrowserSession.BrowserSession;

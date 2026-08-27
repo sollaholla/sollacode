@@ -776,6 +776,14 @@ export const PreviewAutomationSnapshot = Schema.Struct({
    * compatibility with hosts predating automatic downloads.
    */
   downloads: Schema.optional(PreviewDownloadList),
+  /**
+   * Downloads this browser is holding for the user's approval.
+   *
+   * Without this a held download is indistinguishable from a failed one, and
+   * an agent that cannot tell the difference just fetches again — the same
+   * mistake the `downloads` field above exists to prevent.
+   */
+  pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
   screenshot: Schema.Struct({
     mimeType: Schema.Literal("image/jpeg"),
     data: Schema.String,

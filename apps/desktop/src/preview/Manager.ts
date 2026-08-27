@@ -3845,6 +3845,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         Ref.get(diagnosticsRef),
         Ref.get(actionTimelineRef),
       ]);
+      const snapshotTabs = yield* SynchronizedRef.get(tabsRef);
       const browserDiagnostics = diagnostics.get(wc.id);
       const {
         viewportWidth: _viewportWidth,
@@ -3862,6 +3863,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         // where. Without this, a silent success is indistinguishable from a
         // failure, and the agent simply asks again.
         downloads: browserSession.recentDownloads(),
+        // A held download looks exactly like a failed one from inside the
+        // page, so say it is waiting on a person rather than letting the
+        // agent conclude nothing happened and fetch it again.
+        pendingDownloadApprovals: [...(snapshotTabs.get(tabId)?.pendingDownloadApprovals ?? [])],
         screenshot,
       };
     },
