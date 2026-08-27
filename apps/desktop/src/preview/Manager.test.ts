@@ -1758,20 +1758,29 @@ describe("PreviewManager", () => {
         expect(mirrorWebContents.stopPainting).toHaveBeenCalledOnce();
         expect(mirrorWindow.destroy).toHaveBeenCalledOnce();
 
-        mirrorWebContents.loadURL.mockRejectedValue(new Error("mirror load failed"));
-        const failedSnapshotFiber = yield* manager
+        // Every capture strategy is now exhausted, ending at the offscreen
+        // mirror re-loading the page URL — which a dead server can never
+        // satisfy. The snapshot still has to come back: it carries the URL,
+        // text and accessibility tree that were gathered fine, and a caller
+        // handed a bare failure instead cannot tell a page that will never
+        // render from a tool that is momentarily broken, so it retries.
+        mirrorWebContents.loadURL.mockRejectedValue(
+          new Error("ERR_FAILED (-2) loading 'chrome-error://chromewebdata/'"),
+        );
+        const degradedSnapshotFiber = yield* manager
           .automationSnapshot("tab_hidden_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
         yield* TestClock.adjust("10 seconds");
-        const failedSnapshot = yield* Fiber.await(failedSnapshotFiber);
-        expect(Exit.isFailure(failedSnapshot)).toBe(true);
+        const degradedSnapshot = yield* Fiber.await(degradedSnapshotFiber);
         expect(states.at(-1)?.snapshotStageId).toBeNull();
-        if (Exit.isFailure(failedSnapshot)) {
-          expect(Option.getOrThrow(Cause.findErrorOption(failedSnapshot.cause))).toMatchObject({
-            _tag: "PreviewOperationError",
-            operation: "automationSnapshot.offscreenMirror.loadURL",
-          });
+        expect(Exit.isSuccess(degradedSnapshot)).toBe(true);
+        if (Exit.isSuccess(degradedSnapshot)) {
+          expect(degradedSnapshot.value.screenshot).toBeUndefined();
+          expect(degradedSnapshot.value.screenshotError).toContain("did not load");
+          // The part the caller actually needs to decide what to do next.
+          expect(degradedSnapshot.value.visibleText).toBe("Example");
+          expect(degradedSnapshot.value.url).toBe("https://example.com");
         }
       }),
     ),
@@ -3460,5 +3469,33 @@ describe("Preview automation diagnostics", () => {
     expect(error.message).not.toContain(selector);
     expect(JSON.stringify(error)).not.toContain(selector);
     expect("locator" in error).toBe(false);
+  });
+});
+
+describe("describeScreenshotFailure", () => {
+  it("names the page as the problem when the page never loaded", () => {
+    // The last-resort capture re-loads the page URL in an offscreen window,
+    // so a dead server surfaces here as a Chromium load error. An agent that
+    // reads "the page did not load" stops retrying; one handed a stack trace
+    // tries again, which is how a stuck tab burned thirteen minutes.
+    expect(
+      PreviewManager.describeScreenshotFailure(
+        new Error("ERR_FAILED (-2) loading 'chrome-error://chromewebdata/'"),
+      ),
+    ).toContain("did not load");
+  });
+
+  it("reassures that the rest of the snapshot survived any other capture fault", () => {
+    const described = PreviewManager.describeScreenshotFailure(
+      new Error("offscreen surface was not available"),
+    );
+    expect(described).toContain("rest of this snapshot is complete");
+    expect(described).not.toContain("did not load");
+  });
+
+  it("describes a non-Error cause without throwing", () => {
+    expect(PreviewManager.describeScreenshotFailure("chrome-error://chromewebdata/")).toContain(
+      "did not load",
+    );
   });
 });

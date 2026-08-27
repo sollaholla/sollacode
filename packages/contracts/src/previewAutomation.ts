@@ -813,12 +813,24 @@ export const PreviewAutomationSnapshot = Schema.Struct({
    * mistake the `downloads` field above exists to prevent.
    */
   pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/jpeg"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
+  /**
+   * Absent when every capture strategy failed.
+   *
+   * A picture is one field of a snapshot, and losing it must not cost the
+   * caller the URL, text, accessibility tree and everything else that was
+   * gathered fine — an agent handed a bare failure cannot tell a broken page
+   * from a broken tool, so it retries forever.
+   */
+  screenshot: Schema.optional(
+    Schema.Struct({
+      mimeType: Schema.Literal("image/jpeg"),
+      data: Schema.String,
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
+  /** Why there is no screenshot, when there is none. */
+  screenshotError: Schema.optional(Schema.String),
   /** Optional for compatibility with hosts predating challenge handoff. */
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
@@ -1149,6 +1161,28 @@ export class PreviewAutomationMalformedResponseError extends Schema.TaggedErrorC
   }
 }
 
+/**
+ * A snapshot was produced but carries no picture.
+ *
+ * Only the mobile frame feed treats this as a failure — it exists to show the
+ * tab, so a frame with no image is nothing to show, and the phone keeps its
+ * last good frame rather than going blank. Agents get the snapshot itself,
+ * with `screenshotError` explaining the gap.
+ */
+export class PreviewAutomationScreenshotUnavailableError extends Schema.TaggedErrorClass<PreviewAutomationScreenshotUnavailableError>()(
+  "PreviewAutomationScreenshotUnavailableError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: PreviewTabId,
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The desktop browser could not render a frame for this tab. ${this.reason}`;
+  }
+}
+
 export const PreviewAutomationError = Schema.Union([
   PreviewAutomationUnavailableError,
   PreviewAutomationNoAvailableHostError,
@@ -1165,6 +1199,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRequestQueueClosedError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
+  PreviewAutomationScreenshotUnavailableError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
 
