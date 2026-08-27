@@ -452,6 +452,92 @@ export function dropSupersededToolUpdates<
   });
 }
 
+/**
+ * Characters of `rawOutput` text kept in a snapshot.
+ *
+ * The client reduces this field to one line of at most 84 characters
+ * (`summarizeToolRawOutput` → `summarizeToolTextOutput` → `truncateInlinePreview`
+ * in `apps/web/src/session-logic.ts`), skipping blank lines and a leading code
+ * fence to find it. 2 KB is far more than enough to land on the same line
+ * while discarding the megabytes behind it.
+ */
+const SNAPSHOT_RAW_OUTPUT_MAX_CHARS = 2_048;
+
+/**
+ * Trims long text anywhere inside a tool's `rawOutput` for snapshot readers.
+ *
+ * After {@link dropSupersededToolUpdates}, `rawOutput` is still 2879 KB of a
+ * 4263 KB snapshot on the thread this was measured against — and no client
+ * renders it. The web timeline derives a single 84-character line from
+ * `rawOutput.content`/`.stdout`; the mobile and shared clients never read the
+ * field at all.
+ *
+ * The walk is recursive rather than keyed on those two fields because the
+ * shape varies per tool: a `ReadFile` result carries the whole file under
+ * `rawOutput.FileContent.content`, and capping only the top level missed 2.4 MB
+ * of exactly that. Since no client reads the nested strings, capping every one
+ * of them is both safer and immune to the next tool shape.
+ *
+ * Only the client-facing snapshot is trimmed. `getThreadDetailById` without
+ * this option is what server-side consumers read, so nothing that rebuilds
+ * provider context loses output.
+ */
+export function trimSnapshotToolRawOutput<A extends { readonly payload: unknown }>(
+  activities: ReadonlyArray<A>,
+): ReadonlyArray<A> {
+  // Deep enough for the nesting real tool results use, bounded so a cyclic or
+  // pathological payload cannot walk forever.
+  const MAX_DEPTH = 8;
+
+  const trim = (value: unknown, depth: number): { value: unknown; changed: boolean } => {
+    if (typeof value === "string") {
+      return value.length > SNAPSHOT_RAW_OUTPUT_MAX_CHARS
+        ? { value: value.slice(0, SNAPSHOT_RAW_OUTPUT_MAX_CHARS), changed: true }
+        : { value, changed: false };
+    }
+    if (depth >= MAX_DEPTH || value === null || typeof value !== "object") {
+      return { value, changed: false };
+    }
+    if (Array.isArray(value)) {
+      let changed = false;
+      const next = value.map((entry) => {
+        const result = trim(entry, depth + 1);
+        if (result.changed) changed = true;
+        return result.value;
+      });
+      return changed ? { value: next, changed: true } : { value, changed: false };
+    }
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const result = trim(entry, depth + 1);
+      if (result.changed) changed = true;
+      next[key] = result.value;
+    }
+    return changed ? { value: next, changed: true } : { value, changed: false };
+  };
+
+  return activities.map((activity) => {
+    const payload = activity.payload;
+    if (payload === null || typeof payload !== "object") return activity;
+    const data = (payload as { readonly data?: unknown }).data;
+    if (data === null || typeof data !== "object") return activity;
+    const rawOutput = (data as { readonly rawOutput?: unknown }).rawOutput;
+    if (rawOutput === null || typeof rawOutput !== "object") return activity;
+
+    const trimmed = trim(rawOutput, 0);
+    if (!trimmed.changed) return activity;
+
+    return {
+      ...activity,
+      payload: {
+        ...(payload as Record<string, unknown>),
+        data: { ...(data as Record<string, unknown>), rawOutput: trimmed.value },
+      },
+    };
+  });
+}
+
 function taskTitleFromRow(
   row: Schema.Schema.Type<typeof ProjectionTaskTitleRowSchema>,
 ): string | null {
@@ -2879,7 +2965,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
         activities:
           options?.dropSupersededToolUpdates === true
-            ? dropSupersededToolUpdates(activityRows.map(mapActivityRow))
+            ? trimSnapshotToolRawOutput(dropSupersededToolUpdates(activityRows.map(mapActivityRow)))
             : activityRows.map(mapActivityRow),
         checkpoints: checkpointRows.map((row) => ({
           turnId: row.turnId,
