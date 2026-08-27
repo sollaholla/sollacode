@@ -481,6 +481,12 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     yield* Effect.sync(() => sweepAbandonedHolds(directory));
   });
 
+  // Nothing ever nominates the fallback directory, so a hold staged there —
+  // a download in a tab with no workspace of its own — would outlive the run
+  // that created it with no later sweep to catch it. Startup is that sweep:
+  // no hold can be live yet, so anything still staged is abandoned.
+  yield* Effect.sync(() => sweepAbandonedHolds(fallbackDownloadsDir));
+
   return BrowserSession.of({
     getPartition,
     setDownloadDirectory,

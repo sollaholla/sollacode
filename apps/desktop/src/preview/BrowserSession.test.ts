@@ -259,6 +259,33 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("clears the fallback directory's abandoned holds on start-up", () =>
+    Effect.gen(function* () {
+      // A tab with no workspace of its own stages into the app's own downloads
+      // folder, which nothing ever nominates — so without a start-up sweep
+      // those bytes outlive the run that fetched them with nothing to catch
+      // them later.
+      const environment = yield* DesktopEnvironment.DesktopEnvironment;
+      const fallbackStaging = NodePath.join(
+        environment.browserArtifactsDir,
+        "downloads",
+        ".pending-approval",
+      );
+      NodeFS.mkdirSync(fallbackStaging, { recursive: true });
+      const abandoned = NodePath.join(fallbackStaging, "left-by-a-crash.bin");
+      NodeFS.writeFileSync(abandoned, "bytes");
+
+      // Building the service is what runs the sweep, so it has to be built
+      // after the abandoned file exists.
+      yield* Effect.provide(BrowserSession.BrowserSession, layer);
+
+      assert.isFalse(NodeFS.existsSync(abandoned));
+      // Only the environment is provided from outside: the service under test
+      // has to be built after the abandoned file exists, or the sweep runs
+      // before there is anything to sweep.
+    }).pipe(Effect.provide(environmentLayer)),
+  );
+
   it.effect("clears files a crash left staged, but not one still being decided", () =>
     Effect.gen(function* () {
       // Bytes staged for a question nobody ever answered are bytes the user
