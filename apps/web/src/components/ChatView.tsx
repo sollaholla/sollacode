@@ -6961,7 +6961,11 @@ function ChatViewContent(props: ChatViewProps) {
         detachWaitingOnYou(activeThreadKey);
         void resolveAgentBlocker({
           environmentId,
-          input: { vmAgentId: answered.vmAgentId, blockerId: answered.blockerId },
+          input: {
+            vmAgentId: answered.vmAgentId,
+            blockerId: answered.blockerId,
+            answeredInChat: true,
+          },
         });
       }
     }

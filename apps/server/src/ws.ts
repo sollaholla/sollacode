@@ -3109,6 +3109,10 @@ const makeWsRpcLayer = (
               // blocker (a double click, two clients racing) must not start a
               // second turn saying the same thing.
               if (Option.isNone(resolved)) return;
+              // Nor when the user already answered in the chat: their message
+              // is the hand-off, and a canned turn after it says the same
+              // thing twice, less well.
+              if (input.answeredInChat === true) return;
               const agent = yield* vmAgentStore
                 .getById(input.vmAgentId)
                 .pipe(Effect.orElseSucceed(() => Option.none()));

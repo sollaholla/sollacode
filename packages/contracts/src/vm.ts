@@ -946,6 +946,13 @@ export const VmAgentBlockerResolveInput = Schema.Struct({
    * resolvedBy "dismissed" rather than a completed hand-off.
    */
   dismissed: Schema.optional(Schema.Boolean),
+  /**
+   * The user answered this request in the chat itself, so the agent is already
+   * reading their reply. Suppresses the canned "the user resolved it" turn,
+   * which would otherwise make one action cost two turns and restate — worse —
+   * what the user just said in their own words.
+   */
+  answeredInChat: Schema.optional(Schema.Boolean),
 });
 export type VmAgentBlockerResolveInput = Schema.Codec.Encoded<typeof VmAgentBlockerResolveInput>;
 
