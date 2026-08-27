@@ -64,13 +64,20 @@ function correctedTranscriptIsPlausible(original: string, corrected: string): bo
 }
 
 /**
- * Repair `.2` only when it occupies a grammatical verb slot and is followed by
- * an object, making spoken "point to" near-unambiguous. Standalone/list-label
- * `.2` is deliberately left to the contextual model: it can just as plausibly
- * be a real decimal, and fallback must not rewrite technical dictation.
+ * Repair `.2` as spoken "point two" at sentence/list boundaries and as "point
+ * to" only in near-unambiguous grammatical verb slots. Keep decimal evidence
+ * such as units, series, versions, and in-sentence numeric values unchanged.
  */
 export function normalizeVoiceTranscriptSpeechArtifacts(transcript: string): string {
-  return transcript
+  const normalized = transcript
+    .replace(
+      /(^|[.!?]\s+)((?:and|also|then)\s+)?\.2(?=\s*(?:$|[.!?]))/gi,
+      (_match, boundary: string, lead: string | undefined) => `${boundary}${lead ?? ""}point two`,
+    )
+    .replace(
+      /(^|[.!?]\s+)((?:and|also|then)\s+)?\.2(?=\s+(?!(?:seconds?|secs?|milliseconds?|minutes?|hours?|percent|percentage|pixels?|px|em|rem|volts?|amps?|meters?|metres?|inches?|degrees?|kb|mb|gb|hz|fps)\b)[a-z])/gi,
+      (_match, boundary: string, lead: string | undefined) => `${boundary}${lead ?? ""}point two,`,
+    )
     .replace(
       /\b((?:can|could|would|will|should|must)\s+you|please)\s+\.2(?=\s+(?:the|this|that|these|those|it|them|him|her|me|us|my|your|our|their|its|his)\b)/gi,
       "$1 point to",
@@ -79,6 +86,21 @@ export function normalizeVoiceTranscriptSpeechArtifacts(transcript: string): str
       /\b((?:need|want)\s+you)\s+\.2(?=\s+(?:the|this|that|these|those|it|them|him|her|me|us|my|your|our|their|its|his)\b)/gi,
       "$1 to point to",
     );
+
+  const hasEllipsisContext = (value: string) =>
+    /\b(?:content|description|label|message|notification|preview|text|title|transcript(?:ion)?)\b[^.!?\n]{0,180}\b(?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))\b[^.!?\n]{0,80}\bwith\s+(?:a\s+)?lip\b[^.!?\n]{0,140}\b(?:expand(?:s|ed|ing)?|hover(?:s|ed|ing)?)\b/i.test(
+      value,
+    );
+  if (!hasEllipsisContext(transcript) && !hasEllipsisContext(normalized)) return normalized;
+
+  return normalized
+    .replace(
+      /\b((?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))[^.!?\n]{0,48}\bwith)\s+(?:a\s+)?lip\b/gi,
+      "$1 an ellipsis",
+    )
+    .replace(/\ban ellipsis\s*,?\s+but then\b/gi, "an ellipsis, but then")
+    .replace(/\bwhen\s+hover\s+over\b/gi, "when you hover over")
+    .replace(/\bwhen you hover over it\s*,?\s+(expands?\b)/gi, "when you hover over it, it $1");
 }
 
 function createVoiceTranscriptCorrectionCancellationError(): Error {
@@ -116,11 +138,12 @@ export async function correctVoiceTranscriptWithFallback(input: {
   readonly onRefining?: () => void;
   readonly timeoutMs?: number;
 }): Promise<string> {
-  if (!input.enabled || input.transcript.trim().length === 0) {
-    return input.transcript;
-  }
-
   const localFallback = normalizeVoiceTranscriptSpeechArtifacts(input.transcript);
+  if (input.transcript.trim().length === 0) return input.transcript;
+  // The switch controls the contextual AI pass. Narrow, grammar-safe repairs
+  // for recognition artifacts remain part of local transcription itself so a
+  // disabled or unavailable provider cannot leak known-bad output.
+  if (!input.enabled) return localFallback;
   if (input.cwd.trim().length === 0) return localFallback;
 
   activeVoiceTranscriptCorrectionController?.abort(

@@ -134,13 +134,24 @@ function normalizeHighConfidenceVoiceTranscriptRecognitionArtifacts(
   transcript: string,
   original = transcript,
 ): string {
+  const withSpokenListMarkers = transcript
+    .replace(
+      /(^|[.!?]\s+)((?:and|also|then)\s+)?\.2(?=\s*(?:$|[.!?]))/gi,
+      (_match, boundary: string, lead: string | undefined) => `${boundary}${lead ?? ""}point two`,
+    )
+    .replace(
+      /(^|[.!?]\s+)((?:and|also|then)\s+)?\.2(?=\s+(?!(?:seconds?|secs?|milliseconds?|minutes?|hours?|percent|percentage|pixels?|px|em|rem|volts?|amps?|meters?|metres?|inches?|degrees?|kb|mb|gb|hz|fps)\b)[a-z])/gi,
+      (_match, boundary: string, lead: string | undefined) => `${boundary}${lead ?? ""}point two,`,
+    );
   const hasEllipsisContext = (value: string) =>
     /\b(?:content|description|label|message|notification|preview|text|title|transcript(?:ion)?)\b[^.!?\n]{0,180}\b(?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))\b[^.!?\n]{0,80}\bwith\s+(?:a\s+)?lip\b[^.!?\n]{0,140}\b(?:expand(?:s|ed|ing)?|hover(?:s|ed|ing)?)\b/i.test(
       value,
     );
-  if (!hasEllipsisContext(original) && !hasEllipsisContext(transcript)) return transcript;
+  if (!hasEllipsisContext(original) && !hasEllipsisContext(withSpokenListMarkers)) {
+    return withSpokenListMarkers;
+  }
 
-  return transcript
+  return withSpokenListMarkers
     .replace(
       /\b((?:short(?:ened)?(?:\s+(?:form|preview|version))?|truncat(?:e|ed|es|ing|ion))[^.!?\n]{0,48}\bwith)\s+(?:a\s+)?lip\b/gi,
       "$1 an ellipsis",

@@ -80,6 +80,25 @@ describe("sanitizeCorrectedVoiceTranscript", () => {
     );
   });
 
+  it("repairs a contextual point-two list marker even when generation leaves it unchanged", () => {
+    expect(
+      sanitizeCorrectedVoiceTranscript(
+        "And .2 if it is a Codex thread keep its preview mounted.",
+        "And .2 if it is a Codex thread keep its preview mounted.",
+      ),
+    ).toBe("And point two, if it is a Codex thread keep its preview mounted.");
+    expect(sanitizeCorrectedVoiceTranscript(".2", ".2")).toBe("point two");
+    expect(
+      sanitizeCorrectedVoiceTranscript(
+        ".2 I also want it expandable.",
+        ".2 I also want it expandable.",
+      ),
+    ).toBe("point two, I also want it expandable.");
+    expect(sanitizeCorrectedVoiceTranscript("Set opacity to .2.", "Set opacity to .2.")).toBe(
+      "Set opacity to .2.",
+    );
+  });
+
   it("preserves literal lip references and ambiguous short phrases", () => {
     expect(
       sanitizeCorrectedVoiceTranscript(

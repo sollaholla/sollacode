@@ -50,12 +50,12 @@ dismisses the chip. With automatic sending on, the completed transcript is sent 
 microphone button beside the composer provides the same behavior. Sent voice messages show a
 **Transcribed** badge at the bottom-left of the user bubble.
 
-The first transcription downloads about 45 MB of quantized Whisper model and tokenizer files.
-The files come from the pinned `onnx-community/whisper-tiny.en` revision
-`2575352d61be1bf7225cf8f8b268a4678025fc58` and are retained in the browser or Electron cache;
-later transcriptions reuse the cached model. Model inference stays on the client device and does
-not use the selected coding provider. The first use therefore requires internet access, while
-subsequent use can work from the cache.
+On current macOS releases, Solla Code first uses Apple's on-device SpeechAnalyzer. Other clients,
+and Macs where that API is unavailable, download the quantized `onnx-community/distil-small.en`
+model at pinned revision `69be759f982d1d4c5b8a987d4140752742619bd0` and retain it in the
+browser or Electron cache. Local model inference does not use the selected coding provider. The
+fallback model's first use therefore requires internet access, while subsequent use can work from
+the cache.
 
 Microphone permission is requested on first use. Losing window focus stops the recording, as does
 releasing the key. Recordings are capped at two minutes. If microphone recording, audio decoding,

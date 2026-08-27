@@ -88,6 +88,24 @@ describe("correctVoiceTranscriptWithFallback", () => {
     expect(onRefining).not.toHaveBeenCalled();
   });
 
+  it("still repairs high-confidence recognition artifacts when AI correction is disabled", async () => {
+    const request = vi.fn(async () => "changed");
+    await expect(
+      correctVoiceTranscriptWithFallback({
+        enabled: false,
+        transcript:
+          "And .2 show the transcription in a short form with lip but then when hover over it expands fully.",
+        cwd: "/workspace",
+        conversationContext: "",
+        modelSelection,
+        request,
+      }),
+    ).resolves.toBe(
+      "And point two, show the transcription in a short form with an ellipsis, but then when you hover over it, it expands fully.",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("falls back to the raw transcript on errors, timeout, or implausible expansion", async () => {
     await expect(
       correctVoiceTranscriptWithFallback({
@@ -147,11 +165,11 @@ describe("correctVoiceTranscriptWithFallback", () => {
     vi.useRealTimers();
   });
 
-  it("preserves an ambiguous leading decimal when model correction fails", async () => {
+  it("repairs a spoken point-two list marker when model correction fails", async () => {
     await expect(
       correctVoiceTranscriptWithFallback({
         enabled: true,
-        transcript: ".2",
+        transcript: "And .2 if it is a Codex thread keep its preview mounted.",
         cwd: "/workspace",
         conversationContext: "",
         modelSelection,
@@ -159,7 +177,20 @@ describe("correctVoiceTranscriptWithFallback", () => {
           throw new Error("offline");
         },
       }),
-    ).resolves.toBe(".2");
+    ).resolves.toBe("And point two, if it is a Codex thread keep its preview mounted.");
+  });
+
+  it("repairs point two when the correction model returns the artifact unchanged", async () => {
+    await expect(
+      correctVoiceTranscriptWithFallback({
+        enabled: true,
+        transcript: "Then .2 make the notification expandable.",
+        cwd: "/workspace",
+        conversationContext: "",
+        modelSelection,
+        request: async ({ transcript }) => transcript,
+      }),
+    ).resolves.toBe("Then point two, make the notification expandable.");
   });
 
   it("lets the visible cancel action interrupt the correction wait", async () => {
@@ -192,15 +223,42 @@ describe("normalizeVoiceTranscriptSpeechArtifacts", () => {
     );
   });
 
+  it("restores point two when .2 is clearly a spoken list marker", () => {
+    expect(
+      normalizeVoiceTranscriptSpeechArtifacts(
+        "And .2 if it is a particular Codex thread keep its preview mounted.",
+      ),
+    ).toBe("And point two, if it is a particular Codex thread keep its preview mounted.");
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2 make the result expandable.")).toBe(
+      "point two, make the result expandable.",
+    );
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2 I also want the full result.")).toBe(
+      "point two, I also want the full result.",
+    );
+    expect(normalizeVoiceTranscriptSpeechArtifacts(".2")).toBe("point two");
+  });
+
   it("preserves ambiguous decimals and technical notation", () => {
     const technical =
       "Set opacity to .2, run render(.2), keep v0.2.1 at /api/v0.2.1, and open https://example.test/v0.2.1.";
     expect(normalizeVoiceTranscriptSpeechArtifacts(technical)).toBe(technical);
-    expect(normalizeVoiceTranscriptSpeechArtifacts(".2")).toBe(".2");
     expect(normalizeVoiceTranscriptSpeechArtifacts(".2 seconds")).toBe(".2 seconds");
     expect(normalizeVoiceTranscriptSpeechArtifacts(".2, .4, and .6")).toBe(".2, .4, and .6");
     expect(normalizeVoiceTranscriptSpeechArtifacts("For .2, use cubic easing.")).toBe(
       "For .2, use cubic easing.",
     );
+  });
+
+  it("repairs lip as ellipsis only in an unambiguous truncation context", () => {
+    expect(
+      normalizeVoiceTranscriptSpeechArtifacts(
+        "Show the transcription in a short form with lip but then when hover over it expands fully.",
+      ),
+    ).toBe(
+      "Show the transcription in a short form with an ellipsis, but then when you hover over it, it expands fully.",
+    );
+    expect(
+      normalizeVoiceTranscriptSpeechArtifacts("Use a cup with a lip so it does not spill."),
+    ).toBe("Use a cup with a lip so it does not spill.");
   });
 });
