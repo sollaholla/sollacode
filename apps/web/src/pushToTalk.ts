@@ -176,9 +176,9 @@ export interface TranscriptionProgress {
 }
 
 export function resolveVisiblePushToTalkStatus(
-  localStatus: "recording" | "loading" | "transcribing" | null,
-  backgroundStatus: "loading" | "transcribing" | null,
-): "recording" | "loading" | "transcribing" | null {
+  localStatus: "recording" | "loading" | "transcribing" | "refining" | null,
+  backgroundStatus: "loading" | "transcribing" | "refining" | null,
+): "recording" | "loading" | "transcribing" | "refining" | null {
   // A background task can only exist after recording has stopped. Prefer it
   // over a stale route-local recording value so the UI cannot remain latched
   // on "Release to transcribe" after the microphone has already closed.

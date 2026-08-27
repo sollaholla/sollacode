@@ -84,6 +84,8 @@ import {
   shouldTranscribeStoppedRecording,
 } from "../pushToTalkTranscription";
 import {
+  completeVoiceTranscriptionBackgroundTask,
+  dismissVoiceTranscriptionResult,
   finishVoiceTranscriptionBackgroundTask,
   isBackgroundTaskActive,
   startVoiceTranscriptionBackgroundTask,
@@ -317,6 +319,7 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ComposerStatusRail } from "./chat/ComposerStatusRail";
+import { VoiceTranscriptionResultChip } from "./chat/VoiceTranscriptionResultChip";
 import { useTerminalLayoutSync } from "../hooks/useTerminalLayoutSync";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
@@ -484,7 +487,7 @@ function VoiceTranscriptionStatusChip({
   status,
   label,
 }: {
-  readonly status: "recording" | "loading" | "transcribing";
+  readonly status: "recording" | "loading" | "transcribing" | "refining";
   readonly label: string | null;
 }) {
   return (
@@ -517,10 +520,18 @@ function VoiceTranscriptionStatusChip({
           ? "Listening…"
           : status === "loading"
             ? "Loading…"
-            : "Transcribing…"}
+            : status === "transcribing"
+              ? "Transcribing…"
+              : "Refining…"}
       </span>
       <span aria-hidden className="chat-composer-status-label-minimal">
-        {status === "recording" ? "Live" : status === "loading" ? "Loading" : "Text"}
+        {status === "recording"
+          ? "Live"
+          : status === "loading"
+            ? "Loading"
+            : status === "transcribing"
+              ? "Text"
+              : "Refine"}
       </span>
       {status === "recording" ? null : (
         <span aria-hidden className="text-base leading-none text-foreground/75">
@@ -1923,7 +1934,7 @@ function ChatViewContent(props: ChatViewProps) {
   const [hostRepairStartingErrorKey, setHostRepairStartingErrorKey] = useState<string | null>(null);
   const [hostRepairStartedErrorKey, setHostRepairStartedErrorKey] = useState<string | null>(null);
   const [pushToTalkStatus, setPushToTalkStatus] = useState<
-    "recording" | "loading" | "transcribing" | null
+    "recording" | "loading" | "transcribing" | "refining" | null
   >(null);
   // Every transcription phase must read as busy, not just the two the worker
   // reports progress for. The composer gates submission on this value, so a
@@ -1931,11 +1942,26 @@ function ChatViewContent(props: ChatViewProps) {
   const backgroundPushToTalkStatus = useBackgroundTaskStore((store) => {
     const task = store.tasks.find(
       (candidate) =>
-        candidate.kind === "voice-transcription" && candidate.ownerKey === transcriptionOwnerKey,
+        candidate.kind === "voice-transcription" &&
+        candidate.ownerKey === transcriptionOwnerKey &&
+        isBackgroundTaskActive(candidate.status),
     );
-    if (!task || !isBackgroundTaskActive(task.status)) return null;
-    return task.status === "loading" ? "loading" : "transcribing";
+    return task?.status === "loading" ||
+      task?.status === "transcribing" ||
+      task?.status === "refining"
+      ? task.status
+      : null;
   });
+  const readyVoiceTranscriptionTask = useBackgroundTaskStore(
+    (store) =>
+      store.tasks.find(
+        (candidate) =>
+          candidate.kind === "voice-transcription" &&
+          candidate.ownerKey === transcriptionOwnerKey &&
+          candidate.status === "ready" &&
+          candidate.transcript !== null,
+      ) ?? null,
+  );
   const anyBackgroundVoiceTranscriptionActive = useBackgroundTaskStore((store) =>
     store.tasks.some(
       (candidate) =>
@@ -1955,7 +1981,9 @@ function ChatViewContent(props: ChatViewProps) {
         ? "Loading local transcription model…"
         : visiblePushToTalkStatus === "transcribing"
           ? "Transcribing…"
-          : null;
+          : visiblePushToTalkStatus === "refining"
+            ? "Refining transcription…"
+            : null;
   const pushToTalkStatusRef = useRef(pushToTalkStatus);
   pushToTalkStatusRef.current = pushToTalkStatus;
   const pushToTalkEnabledRef = useRef(false);
@@ -6514,6 +6542,9 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     if (activePendingProgress) {
+      if (readyVoiceTranscriptionTask) {
+        dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
+      }
       onAdvanceActivePendingUserInput();
       return;
     }
@@ -6528,6 +6559,9 @@ function ChatViewContent(props: ChatViewProps) {
         }),
       );
       return;
+    }
+    if (readyVoiceTranscriptionTask) {
+      dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
     }
     const composerIsEmpty =
       promptRef.current.trim().length === 0 &&
@@ -6991,6 +7025,13 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
+  const dismissReadyVoiceTranscription = useCallback(() => {
+    if (!readyVoiceTranscriptionTask) return;
+    dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
+  }, [readyVoiceTranscriptionTask]);
+  const sendReadyVoiceTranscription = useCallback(() => {
+    void onSendRef.current(undefined, "transcription");
+  }, []);
 
   // Flushes a send the user made while the conversation was still catching up.
   // Their text never left the composer, so replaying the call sends exactly
@@ -7431,6 +7472,7 @@ function ChatViewContent(props: ChatViewProps) {
               );
               return;
             }
+            let retainCompletedResult = false;
             void transcribeRecordedAudio(audio, (progress) => {
               useBackgroundTaskStore.getState().updateTask(transcriptionTaskId, {
                 status: progress.status,
@@ -7445,6 +7487,12 @@ function ChatViewContent(props: ChatViewProps) {
                 return correctVoiceTranscriptWithFallback({
                   ...correction,
                   transcript,
+                  onRefining: () => {
+                    useBackgroundTaskStore.getState().updateTask(transcriptionTaskId, {
+                      status: "refining",
+                      progress: 90,
+                    });
+                  },
                   request: async (input) => {
                     const result = await correctVoiceTranscript({ environmentId, input });
                     if (result._tag === "Failure") throw squashAtomCommandFailure(result);
@@ -7495,7 +7543,13 @@ function ChatViewContent(props: ChatViewProps) {
                   } else {
                     submitTranscription();
                   }
-                } else if (!disposed) {
+                } else {
+                  retainCompletedResult = completeVoiceTranscriptionBackgroundTask(
+                    transcriptionTaskId,
+                    transcript,
+                  );
+                }
+                if (!settings.autoSendVoiceTranscription && !disposed) {
                   // Let the active input render reach the editor before
                   // focusing it. Focusing the old value synchronously can emit
                   // a stale empty change and erase the transcript.
@@ -7519,11 +7573,11 @@ function ChatViewContent(props: ChatViewProps) {
                     });
                     composerRef.current?.focusAtEnd();
                   });
-                } else {
+                } else if (disposed) {
                   toastManager.add({
                     type: "success",
-                    title: "Transcription added to your draft",
-                    description: "Return to the conversation when you are ready to send it.",
+                    title: "Transcription ready in your draft",
+                    description: "Return to the conversation to review or send it.",
                   });
                 }
               })
@@ -7537,7 +7591,9 @@ function ChatViewContent(props: ChatViewProps) {
                 );
               })
               .finally(() => {
-                finishVoiceTranscriptionBackgroundTask(transcriptionTaskId);
+                if (!retainCompletedResult) {
+                  finishVoiceTranscriptionBackgroundTask(transcriptionTaskId);
+                }
               });
           },
           { once: true },
@@ -8866,6 +8922,12 @@ function ChatViewContent(props: ChatViewProps) {
                       <VoiceTranscriptionStatusChip
                         status={visiblePushToTalkStatus}
                         label={visiblePushToTalkLabel}
+                      />
+                    ) : readyVoiceTranscriptionTask?.transcript ? (
+                      <VoiceTranscriptionResultChip
+                        transcript={readyVoiceTranscriptionTask.transcript}
+                        onDismiss={dismissReadyVoiceTranscription}
+                        onSend={sendReadyVoiceTranscription}
                       />
                     ) : null
                   }

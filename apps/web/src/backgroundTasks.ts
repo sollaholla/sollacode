@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type BackgroundTaskStatus = "loading" | "transcribing";
+export type BackgroundTaskStatus = "loading" | "transcribing" | "refining" | "ready";
 
 export interface VoiceTranscriptionBackgroundTask {
   readonly id: string;
@@ -10,6 +10,7 @@ export interface VoiceTranscriptionBackgroundTask {
   readonly title: string;
   readonly status: BackgroundTaskStatus;
   readonly progress: number;
+  readonly transcript: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -21,13 +22,14 @@ interface BackgroundTaskStore {
     id: string,
     update: Partial<Pick<VoiceTranscriptionBackgroundTask, "status" | "progress">>,
   ) => void;
+  completeVoiceTranscription: (id: string, transcript: string) => boolean;
   removeTask: (id: string) => void;
 }
 
 let nextTaskId = 1;
 
 export function isBackgroundTaskActive(status: BackgroundTaskStatus): boolean {
-  return status === "loading" || status === "transcribing";
+  return status === "loading" || status === "transcribing" || status === "refining";
 }
 
 export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
@@ -53,6 +55,7 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
             title: "Voice transcription",
             status: "loading",
             progress: 5,
+            transcript: null,
             createdAt: now,
             updatedAt: now,
           },
@@ -75,6 +78,41 @@ export const useBackgroundTaskStore = create<BackgroundTaskStore>((set) => ({
       ),
     }));
   },
+  completeVoiceTranscription: (id, transcript) => {
+    const normalizedTranscript = transcript.trim();
+    if (normalizedTranscript.length === 0) return false;
+
+    let completed = false;
+    set((state) => {
+      const task = state.tasks.find((candidate) => candidate.id === id);
+      if (!task || !isBackgroundTaskActive(task.status)) return state;
+      completed = true;
+      return {
+        tasks: state.tasks
+          // A composer only needs its newest ready result. Keep active work
+          // from other surfaces untouched while replacing an older result for
+          // this owner.
+          .filter(
+            (candidate) =>
+              candidate.id === id ||
+              candidate.ownerKey !== task.ownerKey ||
+              candidate.status !== "ready",
+          )
+          .map((candidate) =>
+            candidate.id === id
+              ? {
+                  ...candidate,
+                  status: "ready" as const,
+                  progress: 100,
+                  transcript: normalizedTranscript,
+                  updatedAt: new Date().toISOString(),
+                }
+              : candidate,
+          ),
+      };
+    });
+    return completed;
+  },
   removeTask: (id) => {
     set((state) => ({ tasks: state.tasks.filter((task) => task.id !== id) }));
   },
@@ -85,6 +123,16 @@ export function startVoiceTranscriptionBackgroundTask(ownerKey: string): string 
 }
 
 export function finishVoiceTranscriptionBackgroundTask(id: string): void {
+  useBackgroundTaskStore.getState().removeTask(id);
+}
+
+export function completeVoiceTranscriptionBackgroundTask(id: string, transcript: string): boolean {
+  return useBackgroundTaskStore.getState().completeVoiceTranscription(id, transcript);
+}
+
+export function dismissVoiceTranscriptionResult(id: string): void {
+  const task = useBackgroundTaskStore.getState().tasks.find((candidate) => candidate.id === id);
+  if (task?.status !== "ready") return;
   useBackgroundTaskStore.getState().removeTask(id);
 }
 

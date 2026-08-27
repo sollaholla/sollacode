@@ -42,10 +42,13 @@ For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/key
 ## Push to talk
 
 Hold **Cmd+D** on macOS or **Ctrl+D** on Windows and Linux while a send-capable chat composer is
-open. Solla Code records until the key is released, transcribes the recording locally, and sends
-the resulting text as the next user message. The microphone button beside the composer provides
-the same behavior. Sent voice messages show a **Transcribed** badge at the bottom-left of the user
-bubble.
+open. Solla Code records for the full time the shortcut is physically held and begins its input
+cooldown only after the key is released. It then transcribes the recording locally. With automatic
+voice sending off, the text is inserted into the draft and a one-line result chip appears above the
+composer; hover or focus expands the full transcript, **Send** submits it, and the close button
+dismisses the chip. With automatic sending on, the completed transcript is sent immediately. The
+microphone button beside the composer provides the same behavior. Sent voice messages show a
+**Transcribed** badge at the bottom-left of the user bubble.
 
 The first transcription downloads about 45 MB of quantized Whisper model and tokenizer files.
 The files come from the pinned `onnx-community/whisper-tiny.en` revision
@@ -65,11 +68,12 @@ recording and is released on either half of the shortcut chord, a real window bl
 timeout, cancellation, or teardown. A composer re-render or an arriving message does not end the
 recording or steal its insertion target; focus returns to the original input when recording ends.
 
-**Settings → General → Contextual voice correction** can pass a completed local transcript through
-a fast Utility AI model before insertion. Correction receives only a bounded recent-conversation
-snapshot, has an eight-second deadline, and falls back to the untouched local transcript on any
-timeout, provider failure, or implausible rewrite. A dedicated model can be selected there; when
-the override is off, correction uses the global **Utility AI model**.
+**Settings → General → Contextual transcription correction** can pass a completed local transcript
+through a fast Utility AI model before insertion. The status changes from **Transcribing…** to
+**Refining…** while that pass runs. Correction receives only a bounded recent-conversation snapshot,
+has a twenty-second deadline, and falls back to the local transcript on any timeout, provider
+failure, or implausible rewrite. A dedicated model can be selected there; when the override is off,
+correction uses the global **Utility AI model**.
 
 **Cmd+D** and **Ctrl+D** are reserved exclusively for voice transcription and cannot be assigned
 to configurable commands. Existing command rules using `mod+d` are removed during startup.

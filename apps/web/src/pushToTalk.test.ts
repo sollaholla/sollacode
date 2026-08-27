@@ -170,6 +170,7 @@ describe("resolveVisiblePushToTalkStatus", () => {
   it("drops a stale route-local transcription state after the background task settles", () => {
     expect(resolveVisiblePushToTalkStatus("transcribing", null)).toBeNull();
     expect(resolveVisiblePushToTalkStatus("loading", null)).toBeNull();
+    expect(resolveVisiblePushToTalkStatus("refining", null)).toBeNull();
   });
 
   it("lets the background task replace a stale local recording state after the recorder stops", () => {
@@ -177,6 +178,7 @@ describe("resolveVisiblePushToTalkStatus", () => {
     expect(resolveVisiblePushToTalkStatus("recording", "loading")).toBe("loading");
     expect(resolveVisiblePushToTalkStatus(null, "loading")).toBe("loading");
     expect(resolveVisiblePushToTalkStatus(null, "transcribing")).toBe("transcribing");
+    expect(resolveVisiblePushToTalkStatus(null, "refining")).toBe("refining");
   });
 });
 

@@ -38,7 +38,7 @@ export function isEnabledComposerSubmitButton(
 export function isComposerSubmitBlocked(input: {
   noProviderAvailable: boolean;
   isSendDisabled: boolean;
-  pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
+  pushToTalkStatus: "recording" | "loading" | "transcribing" | "refining" | null;
 }): boolean {
   return input.noProviderAvailable || input.isSendDisabled || input.pushToTalkStatus !== null;
 }
