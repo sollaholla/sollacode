@@ -262,7 +262,7 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
             onFailure: previewSnapshotFailure,
             onSuccess: ({ encodedResult }) => {
               const snapshot = encodedResult as {
-                readonly screenshot: {
+                readonly screenshot?: {
                   readonly mimeType: "image/jpeg";
                   readonly data: string;
                   readonly width: number;
@@ -271,26 +271,36 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                 readonly [key: string]: unknown;
               };
               const { screenshot, ...page } = snapshot;
-              const metadata = {
-                ...page,
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
-              };
+              // A page that will never render still has a URL, visible text
+              // and an accessibility tree, and those are what the caller needs
+              // to decide what to do instead of asking again. Send them, and
+              // say plainly that the picture is missing.
+              const metadata =
+                screenshot === undefined
+                  ? page
+                  : {
+                      ...page,
+                      screenshot: {
+                        mimeType: screenshot.mimeType,
+                        width: screenshot.width,
+                        height: screenshot.height,
+                      },
+                    };
               return Effect.succeed(
                 new McpSchema.CallToolResult({
                   isError: false,
                   structuredContent: metadata,
-                  content: [
-                    { type: "text", text: JSON.stringify(metadata) },
-                    {
-                      type: "image",
-                      data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                      mimeType: screenshot.mimeType,
-                    },
-                  ],
+                  content:
+                    screenshot === undefined
+                      ? [{ type: "text", text: JSON.stringify(metadata) }]
+                      : [
+                          { type: "text", text: JSON.stringify(metadata) },
+                          {
+                            type: "image",
+                            data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+                            mimeType: screenshot.mimeType,
+                          },
+                        ],
                 }),
               );
             },
