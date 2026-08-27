@@ -40,7 +40,7 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
-  pushToTalkStatus?: "recording" | "loading" | "transcribing" | null;
+  pushToTalkStatus?: "recording" | "loading" | "transcribing" | "refining" | null;
   pushToTalkDisabled?: boolean;
   pushToTalkDisabledReason?: string | null;
   pushToTalkAutoSend?: boolean;
@@ -81,7 +81,7 @@ export const formatPendingPrimaryActionLabel = (input: {
 };
 
 export const formatPushToTalkActionLabel = (
-  status: "recording" | "loading" | "transcribing" | null,
+  status: "recording" | "loading" | "transcribing" | "refining" | null,
   platform: string | undefined,
   disabledReason?: string | null,
   autoSend = false,
@@ -96,6 +96,8 @@ export const formatPushToTalkActionLabel = (
       return `Loading local transcription model (${shortcut})`;
     case "transcribing":
       return `Transcribing voice message (${shortcut})`;
+    case "refining":
+      return `Refining voice transcription (${shortcut})`;
     default:
       if (disabledReason) {
         return `${disabledReason} (${shortcut})`;
@@ -240,7 +242,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           />
         }
       >
-        {pushToTalkStatus === "loading" || pushToTalkStatus === "transcribing" ? (
+        {pushToTalkStatus === "loading" ||
+        pushToTalkStatus === "transcribing" ||
+        pushToTalkStatus === "refining" ? (
           <Spinner className="size-3.5" aria-hidden="true" />
         ) : (
           <MicIcon

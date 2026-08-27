@@ -523,7 +523,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
   hasSendableContent: boolean;
-  pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
+  pushToTalkStatus: "recording" | "loading" | "transcribing" | "refining" | null;
   pushToTalkDisabled: boolean;
   pushToTalkDisabledReason: string | null;
   pushToTalkAutoSend: boolean;
@@ -674,7 +674,7 @@ export interface ChatComposerProps {
   isSendBusy: boolean;
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
-  pushToTalkStatus: "recording" | "loading" | "transcribing" | null;
+  pushToTalkStatus: "recording" | "loading" | "transcribing" | "refining" | null;
   pushToTalkDisabled: boolean;
   pushToTalkDisabledReason: string | null;
   isApplyingSettings: boolean;

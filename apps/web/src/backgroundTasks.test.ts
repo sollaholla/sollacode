@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  completeVoiceTranscriptionBackgroundTask,
+  dismissVoiceTranscriptionResult,
   finishVoiceTranscriptionBackgroundTask,
+  isBackgroundTaskActive,
   resetBackgroundTasksForTests,
   startVoiceTranscriptionBackgroundTask,
   useBackgroundTaskStore,
@@ -34,5 +37,40 @@ describe("voice transcription task store", () => {
     expect(useBackgroundTaskStore.getState().tasks[0]).toMatchObject({
       ownerKey: "thread:side-chat",
     });
+  });
+
+  it("retains one ready result per composer without blocking the next recording", () => {
+    resetBackgroundTasksForTests();
+    const first = startVoiceTranscriptionBackgroundTask("thread:main");
+    expect(first).not.toBeNull();
+    expect(completeVoiceTranscriptionBackgroundTask(first!, "  First transcript.  ")).toBe(true);
+    expect(useBackgroundTaskStore.getState().tasks[0]).toMatchObject({
+      id: first,
+      ownerKey: "thread:main",
+      status: "ready",
+      progress: 100,
+      transcript: "First transcript.",
+    });
+    expect(isBackgroundTaskActive("ready")).toBe(false);
+
+    const second = startVoiceTranscriptionBackgroundTask("thread:main");
+    expect(second).not.toBeNull();
+    expect(completeVoiceTranscriptionBackgroundTask(second!, "Second transcript.")).toBe(true);
+    expect(useBackgroundTaskStore.getState().tasks).toEqual([
+      expect.objectContaining({ id: second, transcript: "Second transcript.", status: "ready" }),
+    ]);
+
+    dismissVoiceTranscriptionResult(second!);
+    expect(useBackgroundTaskStore.getState().tasks).toEqual([]);
+  });
+
+  it("does not turn an empty or already-finished task into a ready result", () => {
+    resetBackgroundTasksForTests();
+    const taskId = startVoiceTranscriptionBackgroundTask("thread:main");
+    expect(taskId).not.toBeNull();
+    expect(completeVoiceTranscriptionBackgroundTask(taskId!, "   ")).toBe(false);
+    finishVoiceTranscriptionBackgroundTask(taskId!);
+    expect(completeVoiceTranscriptionBackgroundTask(taskId!, "too late")).toBe(false);
+    expect(useBackgroundTaskStore.getState().tasks).toEqual([]);
   });
 });

@@ -49,6 +49,7 @@ describe("buildVoiceTranscriptConversationContext", () => {
 describe("correctVoiceTranscriptWithFallback", () => {
   it("inserts a valid correction from the configured model", async () => {
     const request = vi.fn(async () => "Open the Acme Medical project.");
+    const onRefining = vi.fn();
     await expect(
       correctVoiceTranscriptWithFallback({
         enabled: true,
@@ -57,6 +58,7 @@ describe("correctVoiceTranscriptWithFallback", () => {
         conversationContext: "User: Acme Medical",
         modelSelection,
         request,
+        onRefining,
       }),
     ).resolves.toBe("Open the Acme Medical project.");
     expect(request).toHaveBeenCalledWith({
@@ -65,10 +67,12 @@ describe("correctVoiceTranscriptWithFallback", () => {
       conversationContext: "User: Acme Medical",
       modelSelection,
     });
+    expect(onRefining).toHaveBeenCalledOnce();
   });
 
   it("does not request correction when disabled", async () => {
     const request = vi.fn(async () => "changed");
+    const onRefining = vi.fn();
     await expect(
       correctVoiceTranscriptWithFallback({
         enabled: false,
@@ -77,9 +81,11 @@ describe("correctVoiceTranscriptWithFallback", () => {
         conversationContext: "",
         modelSelection,
         request,
+        onRefining,
       }),
     ).resolves.toBe("leave this alone");
     expect(request).not.toHaveBeenCalled();
+    expect(onRefining).not.toHaveBeenCalled();
   });
 
   it("falls back to the raw transcript on errors, timeout, or implausible expansion", async () => {

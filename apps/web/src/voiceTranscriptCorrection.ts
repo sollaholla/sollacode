@@ -113,6 +113,7 @@ export async function correctVoiceTranscriptWithFallback(input: {
     readonly conversationContext: string;
     readonly modelSelection: ModelSelection;
   }) => Promise<string>;
+  readonly onRefining?: () => void;
   readonly timeoutMs?: number;
 }): Promise<string> {
   if (!input.enabled || input.transcript.trim().length === 0) {
@@ -131,6 +132,7 @@ export async function correctVoiceTranscriptWithFallback(input: {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let removeCancellationListener: () => void = () => undefined;
   try {
+    input.onRefining?.();
     const cancelled = new Promise<never>((_resolve, reject) => {
       const onAbort = () =>
         reject(

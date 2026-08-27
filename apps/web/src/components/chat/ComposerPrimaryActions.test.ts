@@ -2,8 +2,17 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   formatPendingPrimaryActionLabel,
+  formatPushToTalkActionLabel,
   showSettingsUpdateContextMenu,
 } from "./ComposerPrimaryActions";
+
+describe("formatPushToTalkActionLabel", () => {
+  it("names the model correction pass as refining", () => {
+    expect(formatPushToTalkActionLabel("refining", "MacIntel")).toBe(
+      "Refining voice transcription (Cmd+D)",
+    );
+  });
+});
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {

@@ -1,4 +1,9 @@
-export type MobileComposerVoiceStatus = "recording" | "loading" | "transcribing" | null;
+export type MobileComposerVoiceStatus =
+  | "recording"
+  | "loading"
+  | "transcribing"
+  | "refining"
+  | null;
 
 export function shouldSendComposerWhileProcessing(input: {
   readonly isProcessing: boolean;
