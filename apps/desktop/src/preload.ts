@@ -221,6 +221,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ...(threadId ? { threadId } : {}),
         ...(browserProfileThreadId ? { browserProfileThreadId } : {}),
       }),
+    setPreviewDownloadDirectory: (directory, environmentId, threadId, browserProfileThreadId) =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_SET_DOWNLOAD_DIRECTORY_CHANNEL, {
+        environmentId,
+        directory,
+        ...(threadId ? { threadId } : {}),
+        ...(browserProfileThreadId ? { browserProfileThreadId } : {}),
+      }),
     setAnnotationTheme: (theme) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL, { theme }),
     pickElement: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_PICK_ELEMENT_CHANNEL, { tabId }),

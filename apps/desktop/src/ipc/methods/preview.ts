@@ -16,6 +16,7 @@ import {
   DesktopPreviewRegisterWebviewInputSchema,
   DesktopPreviewScreenshotArtifactSchema,
   DesktopPreviewSetColorSchemeInputSchema,
+  DesktopPreviewSetDownloadDirectoryInputSchema,
   DesktopPreviewTabInputSchema,
   DesktopPreviewUiActivityInputSchema,
   DesktopPreviewWebviewConfigSchema,
@@ -238,6 +239,25 @@ export const getPreviewConfig = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const setPreviewDownloadDirectory = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_SET_DOWNLOAD_DIRECTORY_CHANNEL,
+  payload: DesktopPreviewSetDownloadDirectoryInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setDownloadDirectory")(function* ({
+    environmentId,
+    threadId,
+    browserProfileThreadId,
+    directory,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    // The same scope `getConfig` derives, so the directory lands on the very
+    // partition the thread's tabs actually download through.
+    const profileThreadId = browserProfileThreadId ?? threadId;
+    const scope = profileThreadId ? `${environmentId}:thread:${profileThreadId}` : environmentId;
+    yield* manager.setDownloadDirectory(scope, directory);
+  }),
+});
+
 export const setAnnotationTheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL,
   payload: DesktopPreviewAnnotationThemeInputSchema,
@@ -409,6 +429,7 @@ export const methods = [
   clearCookies,
   clearCache,
   getPreviewConfig,
+  setPreviewDownloadDirectory,
   setAnnotationTheme,
   pickElement,
   cancelPickElement,

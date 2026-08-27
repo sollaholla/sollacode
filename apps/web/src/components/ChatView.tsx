@@ -189,6 +189,7 @@ import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInva
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { SidebarAutoCollapseOnEmptyPanel } from "./SidebarAutoCollapseOnEmptyPanel";
+import { PreviewDownloadDirectorySync } from "./preview/PreviewDownloadDirectorySync";
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { PreviewSessionHydrator } from "./preview/PreviewSessionHydrator";
@@ -9320,6 +9321,14 @@ function ChatViewContent(props: ChatViewProps) {
     >
       {activeThreadRef && isPreviewSupportedInRuntime() ? (
         <PreviewSessionHydrator threadRef={activeThreadRef} />
+      ) : null}
+      {activeThreadRef ? (
+        <PreviewDownloadDirectorySync
+          environmentId={activeThreadRef.environmentId}
+          threadId={activeThreadRef.threadId}
+          browserProfileThreadId={activeThread?.browserProfileThreadId ?? undefined}
+          cwd={gitStatusCwd}
+        />
       ) : null}
       {/* Keyed by thread so arriving at a thread with no tabs from one with
           tabs does not read as a close. Browser-only chats are exempt: they

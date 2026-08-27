@@ -106,6 +106,17 @@ export class BrowserSession extends Context.Service<
     ) => Effect.Effect<string, BrowserSessionPartitionDerivationError>;
     readonly isPartition: (partition: string) => boolean;
     readonly getSession: (scope?: string) => Effect.Effect<Session, BrowserSessionGetSessionError>;
+    /**
+     * Where downloads made in this scope's tabs are written.
+     *
+     * The renderer owns this: only it knows which workspace a thread is
+     * working in. Unset scopes fall back to the app's own artifacts folder, so
+     * a download never has nowhere to go.
+     */
+    readonly setDownloadDirectory: (
+      scope: string,
+      directory: string,
+    ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
     readonly clearCookies: () => Effect.Effect<void, BrowserSessionStorageClearError>;
     readonly clearCache: () => Effect.Effect<void, BrowserSessionCacheClearError>;
   }
@@ -114,6 +125,9 @@ export class BrowserSession extends Context.Service<
 export const make = Effect.gen(function* BrowserSessionMake() {
   const crypto = yield* Crypto.Crypto;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  // Permission handlers are synchronous Electron callbacks, so logging from
+  // them has to be forked into the app's logger rather than awaited.
+  const runFork = Effect.runForkWith(yield* Effect.context<never>());
   /**
    * Where a preview download lands.
    *
@@ -123,7 +137,27 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    * panel, so this sits beside the other browser artifacts, where the app
    * already keeps things it produced on the user's behalf.
    */
-  const downloadsDir = NodePath.join(environment.browserArtifactsDir, "downloads");
+  const fallbackDownloadsDir = NodePath.join(environment.browserArtifactsDir, "downloads");
+  /** Partition -> the workspace directory the renderer nominated for it. */
+  const downloadDirectories = new Map<string, string>();
+  /**
+   * Permissions already reported as denied, so one stubborn page cannot fill
+   * the log with the same line.
+   *
+   * Agents have hit refusals here that are invisible from inside the page —
+   * most recently a repeated "multi-download block" whose actual permission
+   * name nobody could name. Electron's typed permission union has no entry for
+   * automatic downloads, so rather than allow a guessed string, record what is
+   * genuinely being asked for and refused.
+   */
+  const reportedDeniedPermissions = new Set<string>();
+  const denyPermission = (permission: string): boolean => {
+    if (!reportedDeniedPermissions.has(permission)) {
+      reportedDeniedPermissions.add(permission);
+      runFork(Effect.logWarning("Denied a guest preview permission request.", { permission }));
+    }
+    return false;
+  };
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
 
   const getPartition = Effect.fn("BrowserSession.getPartition")(function* (scope = "shared") {
@@ -151,9 +185,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.
             try {
-              NodeFS.mkdirSync(downloadsDir, { recursive: true });
+              const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
+              NodeFS.mkdirSync(directory, { recursive: true });
               const savePath = resolveUniqueDownloadPath({
-                directory: downloadsDir,
+                directory,
                 fileName: resolveDownloadFileName(item.getFilename()),
                 join: NodePath.join,
                 exists: NodeFS.existsSync,
@@ -165,10 +200,11 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             }
           });
           browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
+            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission));
           });
-          browserSession.setPermissionCheckHandler((_webContents, permission) =>
-            ALLOWED_PREVIEW_PERMISSIONS.has(permission),
+          browserSession.setPermissionCheckHandler(
+            (_webContents, permission) =>
+              ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission),
           );
           const next = new Map(sessions);
           next.set(partition, browserSession);
@@ -184,8 +220,17 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     });
   });
 
+  const setDownloadDirectory = Effect.fn("BrowserSession.setDownloadDirectory")(function* (
+    scope: string,
+    directory: string,
+  ) {
+    const partition = yield* getPartition(scope);
+    downloadDirectories.set(partition, directory);
+  });
+
   return BrowserSession.of({
     getPartition,
+    setDownloadDirectory,
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
     getSession,
     clearCookies: Effect.fn("BrowserSession.clearCookies")(function* () {
