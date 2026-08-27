@@ -78,14 +78,24 @@ vi.mock("electron", () => ({
   },
 }));
 
+/** Captured so a test can raise a hold the way a real download would. */
+let downloadApprovalListener:
+  | ((webContentsId: number, event: BrowserSession.DownloadApprovalEvent) => void)
+  | null = null;
+const answeredDownloadApprovals: Array<{ readonly id: string; readonly decision: string }> = [];
+
 const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession,
   BrowserSession.BrowserSession.of({
     setDownloadDirectory: () => Effect.void,
     recentDownloads: () => [],
     onDownload: () => undefined,
-    onDownloadApproval: () => undefined,
-    answerDownloadApproval: () => undefined,
+    onDownloadApproval: (listener) => {
+      downloadApprovalListener = listener;
+    },
+    answerDownloadApproval: (id, decision) => {
+      answeredDownloadApprovals.push({ id, decision });
+    },
     getPartition: () => Effect.succeed("persist:t3code-preview-test"),
     isPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
     getSession: () => Effect.die("unexpected getSession"),
@@ -212,7 +222,35 @@ describe("PreviewManager", () => {
     writeImage.mockClear();
     createFromPath.mockClear();
     webviewSend.mockClear();
+    answeredDownloadApprovals.length = 0;
   });
+
+  effectIt.effect("refuses a held download when the tab asking about it closes", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // The card asking the question lives on the tab. Closing it without
+        // this leaves a question nobody can answer and staged bytes nothing
+        // will ever move or remove.
+        const webContents = makeTestPreviewWebContents(() =>
+          Promise.reject(new Error("no capture in this test")),
+        );
+        fromId.mockImplementation((id) => (id === 42 ? webContents : null));
+
+        yield* manager.createTab("tab_hold");
+        yield* manager.registerWebview("tab_hold", 42);
+        downloadApprovalListener?.(42, {
+          kind: "pending",
+          approval: { id: "download-approval-1", domain: "grok.com", fileName: "clip.mp4" },
+        });
+
+        yield* manager.closeTab("tab_hold");
+
+        expect(answeredDownloadApprovals).toEqual([
+          { id: "download-approval-1", decision: "deny" },
+        ]);
+      }),
+    ),
+  );
 
   effectIt.effect("reports an unregistered webview as temporarily unavailable", () =>
     withManager((manager) =>

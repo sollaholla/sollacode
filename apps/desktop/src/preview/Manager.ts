@@ -2198,6 +2198,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const closeTabUnlocked = Effect.fn("PreviewManager.closeTabUnlocked")(function* (tabId: string) {
     const initial = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
     if (!initial) return;
+    // The card asking about a held download lives on this tab, so closing it
+    // would leave a question nobody can answer and staged bytes nothing will
+    // ever move or remove. Closing the tab is a refusal.
+    for (const held of initial.pendingDownloadApprovals) {
+      yield* Effect.sync(() => browserSession.answerDownloadApproval(held.id, "deny"));
+    }
     invalidatePlaywrightExecutionContext(tabId, initial.webContentsId ?? undefined);
     if (initial.webContentsId != null) {
       yield* markWebContentsUnavailable(initial.webContentsId);
