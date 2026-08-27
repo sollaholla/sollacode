@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -164,6 +165,64 @@ it.effect("returns bounded structural preview snapshot failures", () =>
           failureCount: 1,
         },
       });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("returns pictureless preview snapshots without an image block", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const metadata = {
+        url: "http://unreachable.test/",
+        title: "Unreachable",
+        loading: false,
+        visibleText: "This site can't be reached",
+        interactiveElements: [],
+        accessibilityTree: {},
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: [],
+        screenshotError:
+          "The page itself did not load, so there was nothing to capture. Check the URL and whether its server is reachable, then navigate again.",
+      };
+      const events = yield* broker.connect({
+        clientId: "mcp-pictureless-client",
+        environmentId,
+      });
+      yield* Stream.runForEach(events, (event) =>
+        event.type === "connected"
+          ? Effect.void
+          : broker.respond({
+              clientId: "mcp-pictureless-client",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ok: true,
+              result: metadata,
+            }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const snapshot = yield* server
+        .callTool({ name: "preview_snapshot", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+      expect(snapshot.isError).toBe(false);
+      expect(snapshot.structuredContent).toEqual(metadata);
+      expect(snapshot.structuredContent).not.toHaveProperty("screenshot");
+      expect(snapshot.content).toHaveLength(1);
+      expect(snapshot.content[0]?.type).toBe("text");
+      if (snapshot.content[0]?.type === "text") {
+        const decodedSnapshot = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(
+          snapshot.content[0].text,
+        );
+        expect(decodedSnapshot).toEqual(metadata);
+      }
+      expect(snapshot.content.some((content) => content.type === "image")).toBe(false);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
