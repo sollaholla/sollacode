@@ -16,6 +16,7 @@ import {
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
+  resolveBlockedSend,
   buildThreadTurnInterruptInput,
   canQueueLocalMessageDuringReconnect,
   createLocalDispatchSnapshot,
@@ -1079,5 +1080,69 @@ describe("shouldRestoreComposerFocus", () => {
     expect(shouldRestoreComposerFocus({ previewFocused: true, usesOnScreenKeyboard: false })).toBe(
       false,
     );
+  });
+});
+
+describe("resolveBlockedSend", () => {
+  const base = {
+    hasThread: true,
+    sendInFlight: false,
+    providerAuthenticationPaused: false,
+    connecting: false,
+    threadDetailLoading: false,
+    environmentUnavailable: false,
+    canQueueLocalMessage: false,
+    environmentLabel: "Soloman's MacBook Pro",
+  };
+
+  it("queues rather than refuses while the conversation is still loading", () => {
+    // Catching up can take ten seconds; making someone wait to type is the
+    // thing being fixed.
+    const outcome = resolveBlockedSend({ ...base, threadDetailLoading: true });
+    expect(outcome.kind).toBe("queue");
+    expect(outcome.kind === "queue" && outcome.message).toContain("will send itself");
+  });
+
+  it("queues while reconnecting, naming the host", () => {
+    const outcome = resolveBlockedSend({ ...base, connecting: true });
+    expect(outcome.kind).toBe("queue");
+    expect(outcome.kind === "queue" && outcome.message).toContain("Soloman's MacBook Pro");
+  });
+
+  it("explains an unreachable host that cannot even queue", () => {
+    const outcome = resolveBlockedSend({ ...base, environmentUnavailable: true });
+    expect(outcome.kind).toBe("explain");
+    expect(outcome.kind === "explain" && outcome.message).toContain("unreachable");
+  });
+
+  it("prefers queueing when an unreachable host can still take a queued message", () => {
+    const outcome = resolveBlockedSend({
+      ...base,
+      environmentUnavailable: true,
+      canQueueLocalMessage: true,
+      connecting: true,
+    });
+    expect(outcome.kind).toBe("queue");
+  });
+
+  it("explains a paused provider sign-in, which waiting will not fix", () => {
+    const outcome = resolveBlockedSend({ ...base, providerAuthenticationPaused: true });
+    expect(outcome.kind).toBe("explain");
+    expect(outcome.kind === "explain" && outcome.message).toContain("sign in");
+  });
+
+  it("stays quiet while a send is genuinely in flight", () => {
+    expect(resolveBlockedSend({ ...base, sendInFlight: true, connecting: true }).kind).toBe(
+      "silent",
+    );
+  });
+
+  it("falls back to a host-agnostic phrasing with no label", () => {
+    const outcome = resolveBlockedSend({ ...base, connecting: true, environmentLabel: null });
+    expect(outcome.kind === "queue" && outcome.message).toContain("the host");
+  });
+
+  it("stays quiet when nothing is blocking the send", () => {
+    expect(resolveBlockedSend(base).kind).toBe("silent");
   });
 });

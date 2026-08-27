@@ -83,6 +83,28 @@ describe("composer push-to-talk action", () => {
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
   });
 
+  it("keeps Send pressable while reconnecting, so the press can be answered", () => {
+    // A disabled button swallows the click, which is exactly how pressing send
+    // on a dropped socket did nothing at all. Enabled, onSend explains itself.
+    const markup = renderActions({ isConnecting: true });
+
+    expect(markup).toContain('aria-label="Connecting"');
+    expect(markup).not.toContain('disabled="" aria-label="Connecting"');
+  });
+
+  it("keeps Send pressable while the host is unreachable", () => {
+    const markup = renderActions({ isEnvironmentUnavailable: true });
+
+    expect(markup).toContain('aria-label="Environment disconnected"');
+    expect(markup).not.toContain('disabled="" aria-label="Environment disconnected"');
+  });
+
+  it("still disables Send with nothing to send", () => {
+    const markup = renderActions({ hasSendableContent: false, promptHasText: false });
+
+    expect(markup).toContain('disabled="" aria-label="Send message"');
+  });
+
   it("keeps the microphone enabled beside Stop while the agent is working", () => {
     const markup = renderActions({
       isRunning: true,

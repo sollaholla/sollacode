@@ -148,6 +148,65 @@ export function resolveUserInputDeferral(input: {
   return input.nowMs - input.lastUserInputAtMs >= USER_INPUT_DEFERRAL_MS ? "proceed" : "wait";
 }
 
+/**
+ * Whether a raw main-window input event means the user is actively working.
+ *
+ * Deliberately not "any input event": the pointer merely crossing or resting
+ * over the window emits a stream of `mouseMove`/`pointerMove`, and counting
+ * those would mark the user permanently active and starve every agent. Only
+ * events that carry intent — a press, a scroll, a touch — reset the cooldown.
+ *
+ * This is the other half of the keyboard gate. Clicking into the composer and
+ * pausing to think used to leave automation free to take the caret, because
+ * `before-input-event` never sees a mouse.
+ */
+export function isDeliberateUserInputEvent(type: string | undefined): boolean {
+  switch (type) {
+    case "mouseDown":
+    case "mouseUp":
+    case "mouseWheel":
+    case "contextMenu":
+    case "touchStart":
+    case "touchEnd":
+    case "pointerDown":
+    case "pointerUp":
+    case "gestureTap":
+    case "gestureScrollBegin":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Modifier keys alone say nothing about where someone means to type. */
+const BARE_MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
+
+/**
+ * Whether a keystroke that landed in a guest should be handed back to the app.
+ *
+ * The situation this exists for: an agent click moved the caret into a web
+ * page, the user — who last put their focus in the composer — starts typing,
+ * and their words go to the site instead. The last *deliberate* click decides
+ * who owns the keyboard, so someone who clicked into the page themselves keeps
+ * typing there and is never yanked back.
+ *
+ * `automationInFlight` is the safety interlock. Every agent keystroke happens
+ * while that agent holds the automation turn, so a guest key arriving during
+ * one is the agent's own and must never be redirected into the user's chat —
+ * the exact failure this whole area was built to stop.
+ */
+export function shouldReclaimGuestKeyForApp(input: {
+  readonly focusIntent: "app" | "guest";
+  readonly automationInFlight: boolean;
+  readonly inputType: string;
+  readonly key: string;
+}): boolean {
+  if (input.focusIntent !== "app") return false;
+  if (input.automationInFlight) return false;
+  if (input.inputType !== "keyDown") return false;
+  return !BARE_MODIFIER_KEYS.has(input.key);
+}
+
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
@@ -552,6 +611,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ReadonlyMap<number, BrowserControlSession>
   >(new Map());
   const diagnosticsRef = yield* Ref.make<ReadonlyMap<number, BrowserDiagnostics>>(new Map());
+  /**
+   * Where the user last deliberately put their keyboard: the app's own window,
+   * or a guest page they clicked into. Only their own clicks move this — an
+   * agent's do not, so automation cannot quietly reassign the keyboard.
+   */
+  let userFocusIntent: "app" | "guest" = "app";
+  /** Non-zero while an agent holds the automation turn. See {@link shouldReclaimGuestKeyForApp}. */
+  let automationTurnsInFlight = 0;
   const expectedAgentInputsRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<ExpectedAgentInput>>
   >(new Map());
@@ -1726,6 +1793,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // click has moved their focus into the page, every further keystroke of
       // theirs is invisible and the next automation call steals focus again.
       lastUserInputAtMs = yield* currentMillis;
+      // Only their own clicks hand the keyboard to a page. Typing does not:
+      // a keystroke that arrives because an agent moved the caret here is the
+      // thing being corrected, not a choice to work in this tab.
+      if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "pointer") {
+        userFocusIntent = "guest";
+      }
       yield* Ref.update(controlEpochRef, (epochs) =>
         replaceMap(epochs, (copy) => {
           copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
@@ -1759,10 +1832,69 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ],
       });
     });
+    /**
+     * Hands a keystroke back to the app window and types it there.
+     *
+     * The guest never sees the character — it is prevented before delivery —
+     * so nothing leaks into the page the user was not choosing to type in.
+     * `char` is what actually inserts text; the surrounding keyDown/keyUp keep
+     * the composer's own key handling (Enter to send, shortcuts) intact.
+     */
+    const reclaimKeyForApp = Effect.fn("PreviewManager.reclaimKeyForApp")(function* (
+      input: Electron.Input,
+    ) {
+      const mainWindow = yield* Ref.get(mainWindowRef);
+      if (Option.isNone(mainWindow) || mainWindow.value.isDestroyed()) return;
+      const target = mainWindow.value.webContents;
+      yield* attempt(
+        { operation: "reclaimKeyForApp.focus", tabId, webContentsId: target.id },
+        () => {
+          mainWindow.value.focus();
+          target.focus();
+        },
+      ).pipe(Effect.ignore);
+      const modifiers = [
+        ...(input.meta ? (["meta"] as const) : []),
+        ...(input.shift ? (["shift"] as const) : []),
+        ...(input.control ? (["control"] as const) : []),
+        ...(input.alt ? (["alt"] as const) : []),
+      ];
+      yield* attempt(
+        { operation: "reclaimKeyForApp.send", tabId, webContentsId: target.id },
+        () => {
+          target.sendInputEvent({ type: "keyDown", keyCode: input.key, modifiers });
+          // Only a lone printable character should insert; a chord is a command.
+          if (input.key.length === 1 && !input.meta && !input.control && !input.alt) {
+            target.sendInputEvent({ type: "char", keyCode: input.key, modifiers });
+          }
+          target.sendInputEvent({ type: "keyUp", keyCode: input.key, modifiers });
+        },
+      ).pipe(Effect.ignore);
+      yield* Effect.logInfo("Returned a keystroke to the app window.", {
+        tabId,
+        key: input.key.length === 1 ? "<character>" : input.key,
+      });
+    });
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
-      if (!shouldForwardAppShortcut(input)) return;
-      event.preventDefault();
-      runFork(forwardShortcut(input));
+      if (shouldForwardAppShortcut(input)) {
+        event.preventDefault();
+        runFork(forwardShortcut(input));
+        return;
+      }
+      if (
+        shouldReclaimGuestKeyForApp({
+          focusIntent: userFocusIntent,
+          automationInFlight: automationTurnsInFlight > 0,
+          inputType: input.type,
+          key: input.key,
+        })
+      ) {
+        event.preventDefault();
+        runFork(reclaimKeyForApp(input));
+        return;
+      }
+      // The page keeps the key-up of a chord it already received the key-down
+      // for; only the reclaimed key-down is suppressed above.
     };
     const destroyed = (): void => {
       runFork(handleWebContentsDestroyed(tabId, webContentsId));
@@ -1879,12 +2011,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
     };
     mainWebContents.on("before-input-event", observePushToTalk);
+    // `before-input-event` is keyboard-only, so a click into the composer left
+    // no trace and automation was free to take the caret from someone who had
+    // just placed it. `input-event` carries the pointer too.
+    const observeUserPointer = (_event: Electron.Event, input: Electron.InputEvent): void => {
+      if (!isDeliberateUserInputEvent(input.type)) return;
+      // A click in the app's own window is the user claiming the keyboard back
+      // from whatever a preview tab was holding.
+      userFocusIntent = "app";
+      runFork(
+        Effect.gen(function* () {
+          lastUserInputAtMs = yield* currentMillis;
+        }),
+      );
+    };
+    mainWebContents.on("input-event", observeUserPointer);
     window.once("closed", () => {
       // BrowserWindow.webContents can itself throw after the native window has
       // closed. Keep the captured wrapper and only detach while it is alive;
       // Chromium releases all listeners with a destroyed WebContents anyway.
       if (!mainWebContents.isDestroyed()) {
         mainWebContents.off("before-input-event", observePushToTalk);
+        mainWebContents.off("input-event", observeUserPointer);
       }
       forwardedPushToTalkActive = false;
       runFork(closeAllPictureInPicture());
@@ -3800,7 +3948,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationInputMutex.withPermits(1)(
       Effect.gen(function* () {
         yield* deferToUserInput(operation, tabId);
-        return yield* action;
+        automationTurnsInFlight += 1;
+        return yield* action.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              automationTurnsInFlight -= 1;
+            }),
+          ),
+        );
       }).pipe(
         // Also runs when the wait is interrupted, so the badge can never
         // outlive the thing it describes.
