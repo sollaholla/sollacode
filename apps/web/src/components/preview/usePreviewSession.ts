@@ -5,7 +5,7 @@ import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/e
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import {
   applyPreviewServerEvent,
@@ -86,12 +86,30 @@ export function usePreviewSession(threadRef: ScopedThreadRef): void {
     input: { threadId: threadRef.threadId },
   });
   const sessionsResult = useAtomValue(sessionsAtom);
+  const mountedListStateRef = useRef<{
+    threadKey: string;
+    result: typeof sessionsResult;
+    deferred: boolean;
+  } | null>(null);
 
   // Mount the list query directly in React. A derived atom that only subscribes
   // to the query can remain dormant during connection bootstrap, which leaves
   // restored tabs invisible until an automation request lists them explicitly.
   useEffect(() => {
+    const mountedListState =
+      mountedListStateRef.current?.threadKey === threadKey
+        ? mountedListStateRef.current
+        : { threadKey, result: sessionsResult, deferred: false };
+    mountedListStateRef.current = mountedListState;
     if (!AsyncResult.isSuccess(sessionsResult)) return;
+    const current = readThreadPreviewState(threadRef);
+    if (sessionsResult === mountedListState.result && Object.keys(current.sessions).length > 0) {
+      // A mounted SWR value can predate a tab created by background automation.
+      // Keep that newer local tab until the forced refresh below completes.
+      mountedListState.deferred = true;
+      return;
+    }
+    if (mountedListState.deferred && sessionsResult.waiting) return;
     reconcilePreviewServerSessions(threadRef, sessionsResult.value);
   }, [sessionsResult, threadKey, threadRef]);
 
