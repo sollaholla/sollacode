@@ -258,6 +258,16 @@ export const setPreviewDownloadDirectory = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const revealPreviewDownload = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_REVEAL_DOWNLOAD_CHANNEL,
+  payload: Schema.Struct({ path: Schema.String }),
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.revealDownload")(function* ({ path }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.revealDownload(path);
+  }),
+});
+
 export const setAnnotationTheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL,
   payload: DesktopPreviewAnnotationThemeInputSchema,
@@ -430,6 +440,7 @@ export const methods = [
   clearCache,
   getPreviewConfig,
   setPreviewDownloadDirectory,
+  revealPreviewDownload,
   setAnnotationTheme,
   pickElement,
   cancelPickElement,

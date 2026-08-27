@@ -90,6 +90,7 @@ function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverl
     colorScheme: state.colorScheme,
     controller: state.controller,
     agentActive: state.agentActive,
+    downloads: state.downloads,
   };
 }
 

@@ -24,6 +24,27 @@ describe("resolveUserInputDeferral", () => {
     expect(resolveUserInputDeferral({ lastUserInputAtMs: nowMs - 100, nowMs })).toBe("wait");
   });
 
+  it("delivers the action late rather than losing it when typing never stops", () => {
+    // The MCP preview tools give up at 15s, so an unbounded wait did not queue
+    // the action, it discarded it — the reported "dead click". Ten seconds of
+    // continuous typing yields, and the action still runs.
+    const waitingSinceMs = nowMs;
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: nowMs + 9_000,
+        nowMs: nowMs + 9_000,
+        waitingSinceMs,
+      }),
+    ).toBe("wait");
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: nowMs + 10_000,
+        nowMs: nowMs + 10_000,
+        waitingSinceMs,
+      }),
+    ).toBe("proceed");
+  });
+
   it("keeps waiting for as long as the user keeps typing", () => {
     // Someone leaning on a key holds the caret indefinitely, and that is the
     // point: the user wins outright rather than being pre-empted by a timeout.

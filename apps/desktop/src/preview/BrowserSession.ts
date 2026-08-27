@@ -123,6 +123,13 @@ export class BrowserSession extends Context.Service<
     ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
     /** Recently finished downloads, newest first. */
     readonly recentDownloads: () => ReadonlyArray<PreviewDownload>;
+    /**
+     * Called as each download finishes, with the guest that started it, so the
+     * manager can put the notice on that specific tab.
+     */
+    readonly onDownload: (
+      listener: (webContentsId: number, download: PreviewDownload) => void,
+    ) => void;
     readonly clearCookies: () => Effect.Effect<void, BrowserSessionStorageClearError>;
     readonly clearCache: () => Effect.Effect<void, BrowserSessionCacheClearError>;
   }
@@ -167,6 +174,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    */
   const recentDownloads: Array<PreviewDownload> = [];
   const RECENT_DOWNLOAD_LIMIT = 20;
+  const downloadListeners = new Set<(webContentsId: number, download: PreviewDownload) => void>();
   const denyPermission = (permission: string): boolean => {
     if (!reportedDeniedPermissions.has(permission)) {
       reportedDeniedPermissions.add(permission);
@@ -197,7 +205,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
-          browserSession.on("will-download", (_downloadEvent, item) => {
+          browserSession.on("will-download", (_downloadEvent, item, guest) => {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.
             try {
@@ -212,13 +220,21 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               item.setSavePath(savePath);
               item.once("done", (_doneEvent, state) => {
                 const fileName = NodePath.basename(savePath);
-                recentDownloads.unshift({
+                const download: PreviewDownload = {
                   fileName,
                   path: savePath,
                   completedAt: new Date().toISOString(),
                   succeeded: state === "completed",
-                });
+                };
+                recentDownloads.unshift(download);
                 recentDownloads.length = Math.min(recentDownloads.length, RECENT_DOWNLOAD_LIMIT);
+                for (const listener of downloadListeners) {
+                  try {
+                    listener(guest?.id ?? -1, download);
+                  } catch {
+                    // One bad listener must not stop the notice reaching the rest.
+                  }
+                }
                 if (state !== "completed" || !Notification.isSupported()) return;
                 // The panel used to be the confirmation. Without it a file
                 // arriving is invisible, so say so where the user is looking.
@@ -265,6 +281,9 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     getPartition,
     setDownloadDirectory,
     recentDownloads: () => [...recentDownloads],
+    onDownload: (listener) => {
+      downloadListeners.add(listener);
+    },
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
     getSession,
     clearCookies: Effect.fn("BrowserSession.clearCookies")(function* () {
