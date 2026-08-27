@@ -91,6 +91,7 @@ function projectDesktopState(state: DesktopPreviewTabState): DesktopPreviewOverl
     controller: state.controller,
     agentActive: state.agentActive,
     downloads: state.downloads,
+    pendingDownloadApprovals: state.pendingDownloadApprovals,
   };
 }
 

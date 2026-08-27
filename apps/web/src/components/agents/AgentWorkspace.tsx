@@ -28,6 +28,7 @@ import { AgentRulesPanel } from "./AgentRulesPanel";
 import { AgentAttentionStack } from "./AgentAttentionStack";
 import { resolveInlineAgentAttention, resolveInlineAgentNotification } from "./agentNotifications";
 import { hasAgentDashboard } from "./agentWorkspaceNavigation";
+import { pruneWaitingOnYouAttachment } from "./waitingOnYouAttachment";
 import { AgentArtifactPanel, AgentTasksPanel } from "./AgentWorkspacePanels";
 
 export type AgentWorkspaceView = "chat" | "activity" | "tasks" | "dashboard" | "rules";
@@ -118,6 +119,21 @@ function AgentWorkspaceResolved(props: {
     () => (agentThreadId ? { environmentId, threadId: agentThreadId } : null),
     [agentThreadId, environmentId],
   );
+
+  // A request can close without the composer ever knowing: resolved from
+  // another window, dismissed, or answered by the agent itself. A tag
+  // promising to close a request that is already gone has to come off.
+  useEffect(() => {
+    if (!agentThreadRef || !workspace) return;
+    pruneWaitingOnYouAttachment(
+      scopedThreadKey(agentThreadRef),
+      new Set(
+        workspace.blockers
+          .filter((blocker) => blocker.resolvedAt === null)
+          .map((blocker) => blocker.blockerId),
+      ),
+    );
+  }, [agentThreadRef, workspace]);
   const previewState = useThreadPreviewState(agentThreadRef);
   const browserPanelOpen = useRightPanelStore((state) =>
     agentThreadId

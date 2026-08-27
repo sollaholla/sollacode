@@ -154,8 +154,6 @@ export const PreviewDownloadApproval = Schema.Struct({
 });
 export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
 
-const PreviewDownloadApprovalList = Schema.Array(PreviewDownloadApproval);
-
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
   visible: Schema.Boolean,

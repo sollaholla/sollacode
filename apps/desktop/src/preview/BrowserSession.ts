@@ -16,9 +16,14 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-import type { PreviewDownload } from "@t3tools/contracts";
+import type { PreviewDownload, PreviewDownloadApproval } from "@t3tools/contracts";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import {
+  downloadDomain,
+  resolveDownloadApproval,
+  resolveDownloadApprovalEffects,
+} from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
@@ -102,6 +107,16 @@ export const BrowserSessionError = Schema.Union([
 export type BrowserSessionError = typeof BrowserSessionError.Type;
 export const isBrowserSessionError = Schema.is(BrowserSessionError);
 
+/**
+ * A download held for the user's answer, or the end of that hold.
+ *
+ * `settled` carries no verdict because the card only needs to know it can go;
+ * an allowed file arrives through the ordinary download notice instead.
+ */
+export type DownloadApprovalEvent =
+  | { readonly kind: "pending"; readonly approval: PreviewDownloadApproval }
+  | { readonly kind: "settled"; readonly id: string };
+
 export class BrowserSession extends Context.Service<
   BrowserSession,
   {
@@ -129,6 +144,19 @@ export class BrowserSession extends Context.Service<
      */
     readonly onDownload: (
       listener: (webContentsId: number, download: PreviewDownload) => void,
+    ) => void;
+    /**
+     * Called when a download from an unapproved site starts, and again when
+     * that hold is settled, so the manager can raise and clear the card on the
+     * tab that asked for the file.
+     */
+    readonly onDownloadApproval: (
+      listener: (webContentsId: number, event: DownloadApprovalEvent) => void,
+    ) => void;
+    /** Answer a held download. Unknown ids are ignored: the hold is gone. */
+    readonly answerDownloadApproval: (
+      id: string,
+      decision: "allow-domain" | "allow-once" | "deny",
     ) => void;
     readonly clearCookies: () => Effect.Effect<void, BrowserSessionStorageClearError>;
     readonly clearCache: () => Effect.Effect<void, BrowserSessionCacheClearError>;
@@ -175,6 +203,111 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   const recentDownloads: Array<PreviewDownload> = [];
   const RECENT_DOWNLOAD_LIMIT = 20;
   const downloadListeners = new Set<(webContentsId: number, download: PreviewDownload) => void>();
+  /**
+   * Sites the user has said may write into the workspace, for this run of the
+   * app only. See `downloadApproval.ts` for why this is not persisted.
+   */
+  const allowedDownloadDomains = new Set<string>();
+  const approvalListeners = new Set<
+    (webContentsId: number, event: DownloadApprovalEvent) => void
+  >();
+  /**
+   * A download whose bytes are landing in staging while the user decides.
+   *
+   * Holding the *file* rather than the *transfer* is deliberate: pausing a
+   * DownloadItem only resumes if the server honours range requests, so a
+   * "Allow" on a plain static host could strand the file forever. Letting it
+   * finish into a staging directory beside the real one costs a rename on
+   * approval and an unlink on refusal, and never depends on the server.
+   */
+  interface HeldDownload {
+    readonly webContentsId: number;
+    readonly domain: string;
+    readonly fileName: string;
+    readonly stagingPath: string;
+    readonly directory: string;
+    readonly item: Electron.DownloadItem;
+    /** Set once the transfer finishes; until then there is nothing to move. */
+    landed: boolean;
+    /** Set if the user answered before the bytes arrived. */
+    decision: "allow-domain" | "allow-once" | "deny" | null;
+  }
+  const heldDownloads = new Map<string, HeldDownload>();
+  let heldDownloadSeq = 0;
+  const notifyApproval = (webContentsId: number, event: DownloadApprovalEvent) => {
+    for (const listener of approvalListeners) {
+      try {
+        listener(webContentsId, event);
+      } catch {
+        // One bad listener must not stop the notice reaching the rest.
+      }
+    }
+  };
+  const publishDownload = (webContentsId: number, download: PreviewDownload) => {
+    recentDownloads.unshift(download);
+    recentDownloads.length = Math.min(recentDownloads.length, RECENT_DOWNLOAD_LIMIT);
+    for (const listener of downloadListeners) {
+      try {
+        listener(webContentsId, download);
+      } catch {
+        // One bad listener must not stop the notice reaching the rest.
+      }
+    }
+    if (!download.succeeded || !Notification.isSupported()) return;
+    // The panel used to be the confirmation. Without it a file arriving is
+    // invisible, so say so where the user is looking.
+    new Notification({
+      title: "Download finished",
+      body: `${download.fileName} — saved to ${NodePath.dirname(download.path)}`,
+    }).show();
+  };
+  /**
+   * Applies an answer to a download whose bytes are already in staging.
+   *
+   * Only ever called with both halves present — an answer and a finished
+   * transfer — so the two orders the user can produce (answer first, or let it
+   * land first) converge here.
+   */
+  const settleHeldDownload = (id: string, held: HeldDownload) => {
+    const decision = held.decision;
+    if (decision === null || !held.landed) return;
+    heldDownloads.delete(id);
+    const { keepFile, rememberDomain } = resolveDownloadApprovalEffects(decision);
+    if (rememberDomain && held.domain.length > 0) allowedDownloadDomains.add(held.domain);
+    notifyApproval(held.webContentsId, { kind: "settled", id });
+    if (!keepFile) {
+      try {
+        NodeFS.rmSync(held.stagingPath, { force: true });
+      } catch {
+        // A staged file we cannot remove is not worth failing the answer over.
+      }
+      return;
+    }
+    try {
+      const finalPath = resolveUniqueDownloadPath({
+        directory: held.directory,
+        fileName: held.fileName,
+        join: NodePath.join,
+        exists: NodeFS.existsSync,
+      });
+      NodeFS.renameSync(held.stagingPath, finalPath);
+      publishDownload(held.webContentsId, {
+        fileName: NodePath.basename(finalPath),
+        path: finalPath,
+        completedAt: new Date().toISOString(),
+        succeeded: true,
+      });
+    } catch {
+      // The bytes are there but could not be moved into place. Report it as a
+      // failed download rather than claiming a file the user cannot find.
+      publishDownload(held.webContentsId, {
+        fileName: held.fileName,
+        path: held.stagingPath,
+        completedAt: new Date().toISOString(),
+        succeeded: false,
+      });
+    }
+  };
   const denyPermission = (permission: string): boolean => {
     if (!reportedDeniedPermissions.has(permission)) {
       reportedDeniedPermissions.add(permission);
@@ -209,39 +342,80 @@ export const make = Effect.gen(function* BrowserSessionMake() {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.
             try {
+              const webContentsId = guest?.id ?? -1;
               const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
               NodeFS.mkdirSync(directory, { recursive: true });
-              const savePath = resolveUniqueDownloadPath({
-                directory,
-                fileName: resolveDownloadFileName(item.getFilename()),
+              const fileName = resolveDownloadFileName(item.getFilename());
+              const domain = downloadDomain(item.getURL());
+              const approval = resolveDownloadApproval({
+                domain,
+                allowedDomains: allowedDownloadDomains,
+              });
+
+              if (approval === "allowed") {
+                const savePath = resolveUniqueDownloadPath({
+                  directory,
+                  fileName,
+                  join: NodePath.join,
+                  exists: NodeFS.existsSync,
+                });
+                item.setSavePath(savePath);
+                item.once("done", (_doneEvent, state) => {
+                  publishDownload(webContentsId, {
+                    fileName: NodePath.basename(savePath),
+                    path: savePath,
+                    completedAt: new Date().toISOString(),
+                    succeeded: state === "completed",
+                  });
+                });
+                return;
+              }
+
+              // Unapproved: the transfer runs, but into a staging directory
+              // beside the real one, so the file only enters the workspace if
+              // the user says so. Same filesystem, so approving is a rename.
+              heldDownloadSeq += 1;
+              const id = `download-approval-${heldDownloadSeq}`;
+              const stagingDirectory = NodePath.join(directory, ".pending-approval");
+              NodeFS.mkdirSync(stagingDirectory, { recursive: true });
+              const stagingPath = resolveUniqueDownloadPath({
+                directory: stagingDirectory,
+                fileName,
                 join: NodePath.join,
                 exists: NodeFS.existsSync,
               });
-              item.setSavePath(savePath);
+              item.setSavePath(stagingPath);
+              const held: HeldDownload = {
+                webContentsId,
+                domain,
+                fileName,
+                stagingPath,
+                directory,
+                item,
+                landed: false,
+                decision: null,
+              };
+              heldDownloads.set(id, held);
+              notifyApproval(webContentsId, {
+                kind: "pending",
+                approval: { id, domain, fileName },
+              });
               item.once("done", (_doneEvent, state) => {
-                const fileName = NodePath.basename(savePath);
-                const download: PreviewDownload = {
-                  fileName,
-                  path: savePath,
-                  completedAt: new Date().toISOString(),
-                  succeeded: state === "completed",
-                };
-                recentDownloads.unshift(download);
-                recentDownloads.length = Math.min(recentDownloads.length, RECENT_DOWNLOAD_LIMIT);
-                for (const listener of downloadListeners) {
+                if (!heldDownloads.has(id)) return;
+                if (state !== "completed") {
+                  // Cancelled or interrupted before any answer. There is
+                  // nothing to approve, so drop the card and the staged bytes.
+                  heldDownloads.delete(id);
+                  notifyApproval(webContentsId, { kind: "settled", id });
                   try {
-                    listener(guest?.id ?? -1, download);
+                    NodeFS.rmSync(stagingPath, { force: true });
                   } catch {
-                    // One bad listener must not stop the notice reaching the rest.
+                    // Nothing worth failing a cancelled download over.
                   }
+                  return;
                 }
-                if (state !== "completed" || !Notification.isSupported()) return;
-                // The panel used to be the confirmation. Without it a file
-                // arriving is invisible, so say so where the user is looking.
-                new Notification({
-                  title: "Download finished",
-                  body: `${fileName} — saved to ${NodePath.dirname(savePath)}`,
-                }).show();
+                held.landed = true;
+                settleHeldDownload(id, held);
               });
             } catch {
               // Falling through to the save panel is the graceful failure here:
@@ -283,6 +457,33 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     recentDownloads: () => [...recentDownloads],
     onDownload: (listener) => {
       downloadListeners.add(listener);
+    },
+    onDownloadApproval: (listener) => {
+      approvalListeners.add(listener);
+    },
+    answerDownloadApproval: (id, decision) => {
+      const held = heldDownloads.get(id);
+      if (!held) return;
+      held.decision = decision;
+      // Denying while bytes are still arriving stops the transfer too; the
+      // `done` handler then finds the hold already gone and leaves it alone.
+      if (decision === "deny" && !held.landed) {
+        heldDownloads.delete(id);
+        notifyApproval(held.webContentsId, { kind: "settled", id });
+        try {
+          held.item.cancel();
+        } catch {
+          // An item that already finished cannot be cancelled; the staged
+          // file below is removed either way.
+        }
+        try {
+          NodeFS.rmSync(held.stagingPath, { force: true });
+        } catch {
+          // A staged file we cannot remove is not worth failing the answer over.
+        }
+        return;
+      }
+      settleHeldDownload(id, held);
     },
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
     getSession,

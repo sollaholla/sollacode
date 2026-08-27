@@ -17,6 +17,7 @@ import type {
   DesktopPreviewScreenshotArtifact,
   DesktopPreviewAutomationStatus,
   PreviewDownload,
+  PreviewDownloadApproval,
   PreviewAutomationClickInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
@@ -97,6 +98,8 @@ export interface PreviewTabState {
   agentActive: boolean;
   /** Finished downloads this tab started, newest first. */
   downloads: ReadonlyArray<PreviewDownload>;
+  /** Downloads held on this tab until the user allows or denies the site. */
+  pendingDownloadApprovals: ReadonlyArray<PreviewDownloadApproval>;
   updatedAt: string;
 }
 
@@ -933,6 +936,36 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* update(tabId, {
           downloads: [download, ...tab.downloads].slice(0, TAB_DOWNLOAD_LIMIT),
         });
+      }),
+    );
+  });
+
+  browserSession.onDownloadApproval((webContentsId, event) => {
+    runFork(
+      Effect.gen(function* () {
+        const tabs = yield* SynchronizedRef.get(tabsRef);
+        if (event.kind === "pending") {
+          // The guest that asked for the file owns the question, so the card
+          // appears on that tab rather than wherever the user happens to be.
+          const entry = [...tabs.entries()].find(([, tab]) => tab.webContentsId === webContentsId);
+          if (!entry) return;
+          const [tabId, tab] = entry;
+          yield* update(tabId, {
+            pendingDownloadApprovals: [...tab.pendingDownloadApprovals, event.approval],
+          });
+          return;
+        }
+        // Settling searches every tab: the guest may already be gone by the
+        // time an answer lands, and a card that outlives its download would
+        // never clear.
+        for (const [tabId, tab] of tabs) {
+          if (!tab.pendingDownloadApprovals.some((held) => held.id === event.id)) continue;
+          yield* update(tabId, {
+            pendingDownloadApprovals: tab.pendingDownloadApprovals.filter(
+              (held) => held.id !== event.id,
+            ),
+          });
+        }
       }),
     );
   });
@@ -2140,6 +2173,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           controller: "none",
           agentActive: false,
           downloads: [],
+          pendingDownloadApprovals: [],
           updatedAt,
         };
         return [
@@ -2217,6 +2251,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       controller: "none",
       agentActive: false,
       downloads: [],
+      pendingDownloadApprovals: [],
       updatedAt,
     };
     yield* emit(tabId, closed);
@@ -2447,6 +2482,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         controller: current?.controller ?? "none",
         agentActive: current?.agentActive ?? false,
         downloads: current?.downloads ?? [],
+        pendingDownloadApprovals: current?.pendingDownloadApprovals ?? [],
         updatedAt,
       };
       return [
@@ -4802,6 +4838,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Answers a download held for the user's approval.
+   *
+   * The tab card is cleared by the session's settled event rather than here,
+   * so an answer arriving from anywhere — a second window, a reload — clears
+   * every copy of the card rather than only the one that was clicked.
+   */
+  const answerDownloadApproval = Effect.fn("PreviewManager.answerDownloadApproval")(function* (
+    id: string,
+    decision: "allow-domain" | "allow-once" | "deny",
+  ) {
+    yield* Effect.sync(() => browserSession.answerDownloadApproval(id, decision));
+  });
+
   const copyArtifactToClipboard = Effect.fn("PreviewManager.copyArtifactToClipboard")(function* (
     artifactPath: string,
   ) {
@@ -4877,6 +4927,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     resetZoom: (tabId: string) => applyZoom(tabId, () => DEFAULT_ZOOM_FACTOR),
     revealArtifact,
     revealDownload,
+    answerDownloadApproval,
     saveRecording,
     setAnnotationTheme,
     setColorScheme,
@@ -5192,6 +5243,10 @@ export class PreviewManager extends Context.Service<
       directory: string,
     ) => Effect.Effect<void, PreviewOperationError>;
     readonly revealDownload: (downloadPath: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly answerDownloadApproval: (
+      id: string,
+      decision: "allow-domain" | "allow-once" | "deny",
+    ) => Effect.Effect<void>;
     readonly setAnnotationTheme: (
       theme: DesktopPreviewAnnotationTheme,
     ) => Effect.Effect<void, PreviewManagerError>;
@@ -5336,6 +5391,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     captureScreenshot: operations.captureScreenshot,
     revealArtifact: operations.revealArtifact,
     revealDownload: operations.revealDownload,
+    answerDownloadApproval: operations.answerDownloadApproval,
     copyArtifactToClipboard: operations.copyArtifactToClipboard,
     openPictureInPicture: operations.openPictureInPicture,
     closePictureInPicture: operations.closePictureInPicture,

@@ -268,6 +268,19 @@ export const revealPreviewDownload = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const answerPreviewDownloadApproval = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_ANSWER_DOWNLOAD_APPROVAL_CHANNEL,
+  payload: Schema.Struct({
+    id: Schema.String,
+    decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
+  }),
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.answerDownloadApproval")(function* ({ id, decision }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.answerDownloadApproval(id, decision);
+  }),
+});
+
 export const setAnnotationTheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL,
   payload: DesktopPreviewAnnotationThemeInputSchema,
@@ -441,6 +454,7 @@ export const methods = [
   getPreviewConfig,
   setPreviewDownloadDirectory,
   revealPreviewDownload,
+  answerPreviewDownloadApproval,
   setAnnotationTheme,
   pickElement,
   cancelPickElement,

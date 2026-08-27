@@ -7,18 +7,6 @@ export interface AgentAttentionComposer {
   readonly focusAtEnd: () => void;
 }
 
-/**
- * Start a correction in the existing agent composer without touching blocker
- * state or replacing text the user has already drafted.
- */
-export function beginWaitingOnYouFollowUp(composer: AgentAttentionComposer, title: string): void {
-  const leadIn = waitingOnYouFollowUpLeadIn(title);
-  if (!composer.readSnapshot().value.includes(leadIn.trim())) {
-    composer.insertTextAtEnd(leadIn, { ensureLeadingBoundary: true });
-  }
-  composer.focusAtEnd();
-}
-
 export interface WaitingOnYouFollowUpScheduler {
   readonly schedule: (callback: () => void) => number;
   readonly cancel: (handle: number) => void;
@@ -30,13 +18,17 @@ const browserFrameScheduler: WaitingOnYouFollowUpScheduler = {
 };
 
 /**
+ * Puts the caret in the composer once it exists.
+ *
  * Chat navigation can replace the mobile composer before its imperative handle
- * is mounted. Keep the follow-up intent alive across that short handoff rather
- * than silently dropping the click after one animation frame.
+ * is mounted. Keep the intent alive across that short handoff rather than
+ * silently dropping the click after one animation frame.
+ *
+ * Only focus: what the follow-up is *about* is carried by the tag attached to
+ * the composer, not by text typed on the user's behalf.
  */
-export function beginWaitingOnYouFollowUpWhenReady(
+export function focusComposerWhenReady(
   readComposer: () => AgentAttentionComposer | null,
-  title: string,
   options: {
     readonly maxAttempts?: number;
     readonly scheduler?: WaitingOnYouFollowUpScheduler;
@@ -48,24 +40,23 @@ export function beginWaitingOnYouFollowUpWhenReady(
   let cancelled = false;
   let scheduledHandle: number | null = null;
 
-  const tryBegin = () => {
+  const tryFocus = () => {
     scheduledHandle = null;
     if (cancelled) return;
     const composer = readComposer();
     if (composer !== null) {
-      beginWaitingOnYouFollowUp(composer, title);
+      composer.focusAtEnd();
       return;
     }
     attempt += 1;
     if (attempt < maxAttempts) {
-      scheduledHandle = scheduler.schedule(tryBegin);
+      scheduledHandle = scheduler.schedule(tryFocus);
     }
   };
 
-  tryBegin();
+  tryFocus();
   return () => {
     cancelled = true;
     if (scheduledHandle !== null) scheduler.cancel(scheduledHandle);
   };
 }
-import { waitingOnYouFollowUpLeadIn } from "@t3tools/shared/agentAttentionFollowUp";

@@ -225,7 +225,14 @@ import {
 import { cn, randomHex } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { vmAgentEnvironment } from "~/state/vmAgents";
 import { resolveBlockedSend, resolveSendDisabledReason } from "./ChatView.logic";
+import { WaitingOnYouComposerTag } from "./agents/WaitingOnYouComposerTag";
+import {
+  detachWaitingOnYou,
+  getWaitingOnYouAttachment,
+  useWaitingOnYouAttachment,
+} from "./agents/waitingOnYouAttachment";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -1519,6 +1526,9 @@ function ChatViewContent(props: ChatViewProps) {
   }, [environments, environmentId]);
   const primaryEnvironment = usePrimaryEnvironment();
   const updateProject = useAtomCommand(projectEnvironment.update, { reportFailure: false });
+  const resolveAgentBlocker = useAtomCommand(vmAgentEnvironment.resolveBlocker, {
+    reportFailure: false,
+  });
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -2364,6 +2374,11 @@ function ChatViewContent(props: ChatViewProps) {
     startupResumePendingByThreadKey,
   ]);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  /**
+   * A waiting-on-you request the user tagged onto this message. Sending the
+   * message is what closes it out, so it is read here rather than in the card.
+   */
+  const waitingOnYouAttachment = useWaitingOnYouAttachment(activeThreadKey);
   const activeRightPanelKind = useRightPanelStore((state) =>
     selectActiveRightPanel(state.byThreadKey, activeThreadRef),
   );
@@ -6935,6 +6950,21 @@ function ChatViewContent(props: ChatViewProps) {
         );
       }
     }
+    if (turnStartSucceeded && activeThreadKey !== null) {
+      // Read at settle time, not at press time: the user may have taken the
+      // tag off while the send was in flight, and a detached request must stay
+      // open. Resolving is best-effort — the message is already sent, and a
+      // failed close-out leaves the card there to try again rather than
+      // reporting an error over a message that went through.
+      const answered = getWaitingOnYouAttachment(activeThreadKey);
+      if (answered !== null) {
+        detachWaitingOnYou(activeThreadKey);
+        void resolveAgentBlocker({
+          environmentId,
+          input: { vmAgentId: answered.vmAgentId, blockerId: answered.blockerId },
+        });
+      }
+    }
     sendInFlightRef.current = false;
     if (!turnStartSucceeded) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>
@@ -8927,6 +8957,12 @@ function ChatViewContent(props: ChatViewProps) {
                     <ProjectFolderMissingBanner
                       environmentId={activeProject.environmentId}
                       project={activeProject}
+                    />
+                  ) : null}
+                  {waitingOnYouAttachment && activeThreadKey ? (
+                    <WaitingOnYouComposerTag
+                      attachment={waitingOnYouAttachment}
+                      onDetach={() => detachWaitingOnYou(activeThreadKey)}
                     />
                   ) : null}
                   <div

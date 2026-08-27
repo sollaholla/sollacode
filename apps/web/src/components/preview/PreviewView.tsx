@@ -49,6 +49,7 @@ import { useLoadingProgress } from "./useLoadingProgress";
 import { usePreviewSession } from "./usePreviewSession";
 import { ZoomIndicator } from "./ZoomIndicator";
 import { AgentBrowserCursor } from "./AgentBrowserCursor";
+import { PreviewDownloadApprovalPrompt } from "./PreviewDownloadApprovalPrompt";
 import { PreviewDownloadNotice } from "./PreviewDownloadNotice";
 import { cn } from "~/lib/utils";
 import {
@@ -748,6 +749,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         ) : null}
         {desktopOverlay && !showEmptyState && !isUnreachable ? (
           <PreviewDownloadNotice downloads={desktopOverlay.downloads} />
+        ) : null}
+        {desktopOverlay && !showEmptyState && !isUnreachable ? (
+          <PreviewDownloadApprovalPrompt approvals={desktopOverlay.pendingDownloadApprovals} />
         ) : null}
         {runtimeTabId && desktopOverlay && !showEmptyState && !isUnreachable ? (
           <AgentBrowserCursor
