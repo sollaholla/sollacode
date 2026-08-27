@@ -175,7 +175,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         className={cn(
           "text-sm text-foreground/90",
           isActionApproval &&
-            "max-h-64 overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap rounded-lg border border-border/55 bg-background/55 p-3 font-mono text-xs leading-relaxed",
+            "max-h-64 touch-pan-y overscroll-contain overflow-y-auto overflow-x-hidden break-words [overflow-wrap:anywhere] whitespace-pre-wrap rounded-lg border border-border/55 bg-background/55 p-3 font-mono text-xs leading-relaxed",
         )}
       >
         {activeQuestion.question}
