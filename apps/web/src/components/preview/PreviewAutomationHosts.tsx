@@ -72,6 +72,7 @@ import {
   previewAutomationOpenNeedsOverlay,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
+import { presentPreviewAutomationTab } from "./presentPreviewAutomationTab";
 import {
   assertPreviewRuntimeCurrent,
   waitForNavigationReadiness,
@@ -512,7 +513,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 : undefined;
               if (
                 resolvedInputUrl &&
-                target.tabId === undefined &&
+                request.tabId === undefined &&
                 (input.reuseExistingTab ?? true)
               ) {
                 const listTarget = {
@@ -577,6 +578,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 target.tabId,
                 input.reuseExistingTab ?? true,
                 tabId ?? undefined,
+                presentedHostedTabId,
               );
               let activeSnapshot = activeTabId
                 ? (state.sessions[activeTabId] ??
@@ -608,7 +610,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               );
               const shouldPresentPreview = shouldOpenPreviewMiniPlayer(input);
               if (shouldPresentPreview) {
-                usePreviewMiniPlayerStore.getState().open(threadRef, activeTabId);
+                presentPreviewAutomationTab(threadRef, activeTabId);
               }
               if (activeSnapshot && previewAutomationOpenNeedsOverlay(input, activeSnapshot)) {
                 await waitForDesktopOverlay(

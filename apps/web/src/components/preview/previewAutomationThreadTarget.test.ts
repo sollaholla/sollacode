@@ -109,7 +109,7 @@ describe("resolvePreviewAutomationThreadTarget", () => {
       }),
     ).toEqual({
       threadRef: visibleThreadRef,
-      tabId: undefined,
+      tabId: PreviewTabId.make("tab-visible"),
     });
   });
 
@@ -132,7 +132,7 @@ describe("resolvePreviewAutomationThreadTarget", () => {
       }),
     ).toEqual({
       threadRef: visibleThreadRef,
-      tabId: undefined,
+      tabId: PreviewTabId.make("tab-visible"),
     });
   });
 
@@ -158,7 +158,7 @@ describe("resolvePreviewAutomationThreadTarget", () => {
       }),
     ).toEqual({
       threadRef: visibleThreadRef,
-      tabId: undefined,
+      tabId: PreviewTabId.make("tab-panel"),
     });
   });
 

@@ -118,6 +118,29 @@ describe("preview automation target selection", () => {
     expect(resolvePreviewAutomationOpenTab(state, agentTab.tabId, true)).toBe(agentTab.tabId);
     expect(resolvePreviewAutomationOpenTab(state, undefined, true)).toBe(uiActive.tabId);
     expect(resolvePreviewAutomationOpenTab(state, agentTab.tabId, false)).toBeNull();
+    expect(resolvePreviewAutomationOpenTab(state, undefined, true, undefined, uiActive.tabId)).toBe(
+      uiActive.tabId,
+    );
+  });
+
+  it("prefers the visible panel tab over a hidden agent snapshot tab", () => {
+    const uiActive = snapshot("tab-youtube-studio");
+    const hiddenAgentTab = snapshot("tab-instagram-login");
+    const state = {
+      snapshot: hiddenAgentTab,
+      sessions: {
+        [uiActive.tabId]: uiActive,
+        [hiddenAgentTab.tabId]: hiddenAgentTab,
+      },
+      hostedSessions: {
+        [uiActive.tabId]: uiActive,
+        [hiddenAgentTab.tabId]: hiddenAgentTab,
+      },
+    };
+
+    expect(
+      resolvePreviewAutomationOpenTab(state, undefined, true, hiddenAgentTab.tabId, uiActive.tabId),
+    ).toBe(uiActive.tabId);
   });
 
   it("reuses a retained hosted tab instead of creating a duplicate during reconnect", () => {

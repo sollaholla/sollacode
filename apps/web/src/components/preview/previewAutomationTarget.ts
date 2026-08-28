@@ -110,12 +110,20 @@ export function resolvePreviewAutomationOpenTab(
   requestedTabId: string | undefined,
   reuseExistingTab: boolean,
   retainedTabId?: string | undefined,
+  visibleTabId?: string | undefined,
 ): string | null {
   if (!reuseExistingTab) return null;
   if (requestedTabId !== undefined) {
     return (
       state.sessions[requestedTabId]?.tabId ?? state.hostedSessions?.[requestedTabId]?.tabId ?? null
     );
+  }
+  if (
+    visibleTabId !== undefined &&
+    (state.sessions[visibleTabId] !== undefined ||
+      state.hostedSessions?.[visibleTabId] !== undefined)
+  ) {
+    return visibleTabId;
   }
   return (
     state.snapshot?.tabId ??
