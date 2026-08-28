@@ -603,7 +603,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
    * once, here, creates the key while nothing has opened a session yet.
    */
   yield* Effect.sync(() => {
-    if (!safeStorage.isEncryptionAvailable()) return;
+    // Not guarded on `isEncryptionAvailable()`: before a key exists that
+    // reports false, so guarding on it skips the one call that would create
+    // the key and the store stays unencrypted forever. Encrypting is what
+    // makes the key, so just do it and let a genuine failure throw.
     safeStorage.encryptString("preview-cookie-store");
   }).pipe(
     // An OS that will not hand over a key still browses fine, just without
