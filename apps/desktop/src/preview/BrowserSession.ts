@@ -4,7 +4,7 @@
 // panel the moment the will-download handler returns without a path, so the
 // directory and collision checks there have to be synchronous.
 import type { Session } from "electron";
-import { app, Notification, session } from "electron";
+import { app, Notification, safeStorage, session } from "electron";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
@@ -589,6 +589,29 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   // that created it with no later sweep to catch it. Startup is that sweep:
   // no hold can be live yet, so anything still staged is abandoned.
   yield* Effect.sync(() => sweepAbandonedHolds(fallbackDownloadsDir));
+
+  /**
+   * Make sure the cookie store has an encryption key before any guest opens.
+   *
+   * Chromium keys cookies on an OS secret — on macOS a Keychain item named
+   * `<product> Safe Storage` — and only creates it the first time something
+   * encrypts. The one caller here is the connection catalog, which is written
+   * rarely, so an ordinary run never touched it: the network service came up
+   * with no key, wrote every cookie in plaintext, and discarded the stored
+   * ones on load. Sites then read as signed out in every tab and every agent,
+   * and a sign-in lasted only until the app restarted. Touching safe storage
+   * once, here, creates the key while nothing has opened a session yet.
+   */
+  yield* Effect.sync(() => {
+    if (!safeStorage.isEncryptionAvailable()) return;
+    safeStorage.encryptString("preview-cookie-store");
+  }).pipe(
+    // An OS that will not hand over a key still browses fine, just without
+    // durable logins; that is not a reason to fail preview outright.
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Could not initialize preview cookie encryption.", { cause }),
+    ),
+  );
 
   return BrowserSession.of({
     getPartition,
