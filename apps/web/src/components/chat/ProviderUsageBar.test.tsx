@@ -25,6 +25,7 @@ import {
   resolveUsageWindowPaceDeltaMs,
   formatUsageWindowPaceDelta,
   usageThreshold,
+  providerUsageBadgeTriggerOpen,
 } from "./ProviderUsageBar";
 import {
   dismissProviderUsageResetCredit,
@@ -1354,6 +1355,12 @@ describe("provider usage summaries", () => {
     expect(markup).not.toContain(">Credits<");
     expect(markup).not.toContain(">79%<");
     expect(markup).not.toContain("% left");
+  });
+
+  it("does not force the desktop usage popup open on focus after click-away", () => {
+    expect(providerUsageBadgeTriggerOpen(true)).toEqual({ openOnHover: true });
+    expect(providerUsageBadgeTriggerOpen(false)).toEqual({ openOnHover: false });
+    expect(providerUsageBadgeTriggerOpen(true)).not.toHaveProperty("onFocus");
   });
 
   it("uses the highest reported compact usage limit and ignores unreported limits", () => {

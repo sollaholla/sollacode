@@ -1290,6 +1290,17 @@ export function ProviderUsageBadgeDetails(props: {
   );
 }
 
+/**
+ * Desktop may open the usage popup on hover. It must not open on focus:
+ * dismissing it returns focus to the chip, which would immediately reopen
+ * the popup until the chip is clicked again. Coarse pointers stay tap-to-toggle.
+ */
+export function providerUsageBadgeTriggerOpen(hoverCapable: boolean): {
+  readonly openOnHover: boolean;
+} {
+  return { openOnHover: hoverCapable };
+}
+
 function ProviderUsageBadge({
   summary,
   compactMetric,
@@ -1313,12 +1324,8 @@ function ProviderUsageBadge({
 }) {
   const nowMs = useMinuteTick();
   const [open, setOpen] = useState(false);
-  // Hover- and focus-to-open are mouse affordances, and on touch they strand the
-  // popup open. A tap synthesizes an enter with no matching leave, so `closeDelay`
-  // never fires; the same tap also focuses the trigger, so `onFocus` re-opens it
-  // on every tap and again on re-render after switching threads. Only a blur
-  // elsewhere closed it. On coarse pointers, leave it a plain tap-to-toggle.
   const hoverCapable = useMediaQuery("(hover: hover) and (pointer: fine)");
+  const triggerOpen = providerUsageBadgeTriggerOpen(hoverCapable);
   const { provider } = summary;
   const name = providerUsageName(provider);
   const usageDetailsLabel =
@@ -1353,13 +1360,12 @@ function ProviderUsageBadge({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        openOnHover={hoverCapable}
+        openOnHover={triggerOpen.openOnHover}
         delay={150}
         closeDelay={150}
         aria-label={`Show ${usageDetailsLabel}; ${compactUsageLabel}: ${compactStatusWithPace}`}
         data-provider-usage-compact-driver={provider.driver}
         className="flex min-h-6 shrink-0 items-center gap-1.5 rounded-full px-1 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
-        {...(hoverCapable ? { onFocus: () => setOpen(true) } : {})}
       >
         <ProviderInstanceIcon
           driverKind={provider.driver}
