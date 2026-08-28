@@ -4,7 +4,7 @@
 // panel the moment the will-download handler returns without a path, so the
 // directory and collision checks there have to be synchronous.
 import type { Session } from "electron";
-import { Notification, session } from "electron";
+import { app, Notification, session } from "electron";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Context from "effect/Context";
@@ -25,8 +25,11 @@ import {
   resolveDownloadApprovalEffects,
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
+import { selectLegacyBrowserProfile } from "./browserProfileScope.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
+// Electron strips the `persist:` marker when it names the on-disk folder.
+const PARTITION_DIRECTORY_PREFIX = PREVIEW_PARTITION_PREFIX.slice("persist:".length);
 
 // Permissions granted to preview web content. `clipboard-sanitized-write` is the
 // Electron permission behind `navigator.clipboard.writeText()` — note it is NOT
@@ -124,6 +127,13 @@ export class BrowserSession extends Context.Service<
       scope?: string,
     ) => Effect.Effect<string, BrowserSessionPartitionDerivationError>;
     readonly isPartition: (partition: string) => boolean;
+    /**
+     * One-time move of the busiest legacy per-thread profile onto `scope`, so
+     * sharing one profile does not read as being signed out of every site.
+     */
+    readonly adoptLegacyProfile: (
+      scope: string,
+    ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
     readonly getSession: (scope?: string) => Effect.Effect<Session, BrowserSessionGetSessionError>;
     /**
      * Where downloads made in this scope's tabs are written.
@@ -345,6 +355,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     return false;
   };
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
+  let adoptedSharedProfile = false;
 
   const getPartition = Effect.fn("BrowserSession.getPartition")(function* (scope = "shared") {
     const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(scope)).pipe(
@@ -357,6 +368,53 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       ),
     );
     return `${PREVIEW_PARTITION_PREFIX}${Encoding.encodeHex(digest).slice(0, 20)}`;
+  });
+
+  /**
+   * Move the richest legacy per-thread profile onto the shared partition.
+   *
+   * Browser profiles used to be keyed per thread, so every conversation and
+   * every agent got an empty cookie jar and saw each site logged out while the
+   * user was signed in one thread over. Pointing them all at one partition
+   * fixes that going forward, but the signed-in cookies still live in the jar
+   * whichever thread happened to log in. Without this the switch would read as
+   * "the update signed me out of everything", so the busiest existing jar is
+   * adopted as the shared one. Cookie count is the signal for "where the
+   * logins are"; the file only grows with stored cookies.
+   *
+   * Runs before any session is opened, so no Chromium process holds the
+   * directory. It is a rename, so nothing is copied and nothing is lost.
+   */
+  const adoptLegacyProfile = Effect.fn("BrowserSession.adoptLegacyProfile")(function* (
+    scope: string,
+  ) {
+    if (adoptedSharedProfile) return;
+    adoptedSharedProfile = true;
+    const partition = yield* getPartition(scope);
+    yield* Effect.sync(() => {
+      const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
+      const target = NodePath.join(partitionsDir, partition.slice("persist:".length));
+      if (NodeFS.existsSync(target)) return;
+      const profiles = NodeFS.readdirSync(partitionsDir, { withFileTypes: true }).flatMap(
+        (entry) => {
+          if (!entry.isDirectory() || !entry.name.startsWith(PARTITION_DIRECTORY_PREFIX)) return [];
+          const cookieBytes =
+            NodeFS.statSync(NodePath.join(partitionsDir, entry.name, "Cookies"), {
+              throwIfNoEntry: false,
+            })?.size ?? 0;
+          return [{ directory: entry.name, cookieBytes }];
+        },
+      );
+      const adopted = selectLegacyBrowserProfile(profiles);
+      if (adopted === null) return;
+      NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
+    }).pipe(
+      // A profile that cannot be adopted is not worth failing preview over:
+      // the user signs in once more and the shared jar fills from there.
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Could not adopt an existing browser profile.", { cause }),
+      ),
+    );
   });
 
   const getSession = Effect.fn("BrowserSession.getSession")(function* (scope = "shared") {
@@ -537,6 +595,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       settleHeldDownload(id, held);
     },
     isPartition: (partition) => partition.startsWith(PREVIEW_PARTITION_PREFIX),
+    adoptLegacyProfile,
     getSession,
     clearCookies: Effect.fn("BrowserSession.clearCookies")(function* () {
       const sessions = yield* SynchronizedRef.get(sessionsRef);

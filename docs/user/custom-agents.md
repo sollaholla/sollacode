@@ -1,6 +1,6 @@
 # Custom agents
 
-Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation whose collaborative browser keeps its own persistent logins. They are separate from ordinary coding threads and from the orchestrator.
+Custom agents are the named agents in the **Agents** section. Each one owns one dedicated conversation. They are separate from ordinary coding threads and from the orchestrator.
 
 Each newly created agent also receives its own durable working directory below the environment's
 agents folder. Its files and local instructions, including an agent-specific `AGENTS.md`, no longer
@@ -8,7 +8,9 @@ land in the directory shared by every other agent. On upgrade, an existing agent
 deterministic dedicated directory and its shared-root `AGENTS.md` is copied only when the new
 directory has no rules file. Other ambiguous legacy files stay untouched at the old shared root.
 
-When an agent consults a project by opening a new thread, that thread is marked with an agent icon. Its browser keeps separate tabs but intentionally reuses the creating agent's cookies, storage, and HTTP cache so authenticated work can continue without another sign-in. A shared-browser indicator appears on both the thread and browser toolbar; ordinary user-created threads remain isolated.
+When an agent consults a project by opening a new thread, that thread is marked with an agent icon. A shared-browser indicator appears on both the thread and browser toolbar.
+
+Every thread and agent in an environment shares one browser profile: the same cookies, logins, storage, and HTTP cache. Signing into a site once — in any thread, or in the agent's own panel — signs in everywhere in that environment, which is what lets an agent act on the sites you are already signed into. Profiles used to be per thread, so each conversation opened an empty cookie jar and an agent read a site as signed out while you were signed in one thread over. Separate environments still keep separate profiles: a remote machine's browser is that machine's browser.
 
 ## Workspace views
 
@@ -68,7 +70,7 @@ capture once and otherwise returns the latest text and controls without a mislea
 
 Before an agent has selected a tab, its preview tools bind to the visible interactive Browser
 surface in the same environment when that surface belongs to the same browser profile or to an
-ordinary user thread. They do not reuse another custom agent's dedicated browser. An explicit `tabId` from another
+ordinary user thread. They do not take over another custom agent's tab. An explicit `tabId` from another
 agent is rejected with an error telling the caller to use this agent's own tabs and not reuse
 other agents' tab IDs. Opening a new tab from a valid visible user surface keeps it in that
 browser's profile, so the user's authenticated session does not silently become an empty
@@ -77,7 +79,7 @@ thread's Browser panel so the user and the agent are looking at the same guest, 
 login; it does not leave the agent's tab in a hidden mini-player while the panel stays on a
 different page. An explicitly selected tab stays pinned only when it belongs to this
 agent's profile. When no reusable browser surface is visible, automation falls back to the
-requesting thread's isolated browser profile.
+requesting thread's own tab, which is on the same shared profile.
 
 Custom agents and their delegated workers use this built-in collaborative browser as their browser-
 control surface. Computer control, Chrome or browser-extension control, and standalone browser
