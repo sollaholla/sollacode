@@ -1569,6 +1569,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  const isAutomationDebuggerOwnershipConflict = (
+    cause: Cause.Cause<PreviewManagerError>,
+  ): boolean => {
+    const error = Option.getOrNull(Cause.findErrorOption(cause));
+    return (
+      error?._tag === "PreviewAutomationDevToolsOpenError" ||
+      error?._tag === "PreviewAutomationDebuggerAttachedError"
+    );
+  };
+
   const pushAction = (tabId: string, event: PreviewAutomationActionEvent) =>
     Ref.update(actionTimelineRef, (timelines) =>
       replaceMap(timelines, (copy) => {
@@ -2750,7 +2760,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
         wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
       );
-      yield* activateAutomationForegroundIfActiveForTab(tabId, wc);
+      const activation = yield* Effect.exit(activateAutomationForegroundIfActiveForTab(tabId, wc));
+      if (Exit.isFailure(activation) && !isAutomationDebuggerOwnershipConflict(activation.cause)) {
+        return yield* Effect.failCause(activation.cause);
+      }
       return;
     }
     const replacedWebContentsId =
@@ -2918,10 +2931,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         );
       }
     }
-    if (Exit.isFailure(activation)) {
+    if (Exit.isFailure(activation) && !isAutomationDebuggerOwnershipConflict(activation.cause)) {
       // Registration is already coherently published (and pending navigation
-      // has been dispatched), but the caller must still fail closed so an MCP
-      // operation cannot continue with a partially foregrounded fleet.
+      // has been dispatched), but genuine activation failures must still fail
+      // closed so an MCP operation cannot continue with a partially
+      // foregrounded fleet. Debugger ownership only makes this tab unavailable.
       return yield* Effect.failCause(activation.cause);
     }
   });
@@ -3417,7 +3431,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         cause: failure.exit.cause,
       });
     }
-    const firstFailure = results.find((result) => result !== null && Exit.isFailure(result.exit));
+    const firstFailure = results.find((result) => {
+      if (result === null || Exit.isSuccess(result.exit)) return false;
+      return !isAutomationDebuggerOwnershipConflict(result.exit.cause);
+    });
     if (firstFailure != null && Exit.isFailure(firstFailure.exit)) {
       return yield* Effect.failCause(firstFailure.exit.cause);
     }
@@ -3480,9 +3497,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           automationForegroundActive = true;
           // One bad guest must not prevent the other tabs from being woken,
           // and it must not strand the successfully activated subset forever.
-          // Arm expiry even when the fleet reports a failure, then fail the
-          // request closed so its preview operation cannot run on a partial
-          // foreground fleet.
+          // DevTools or an external debugger are expected per-tab ownership
+          // conflicts, so those guests stay unavailable without rejecting an
+          // unrelated request. Other activation failures still fail closed.
+          // Arm expiry either way so every acquired fleet lease is released.
           const activation = yield* Effect.exit(activateAutomationForegroundFleet());
           automationForegroundExpiryFiber = yield* Effect.forkIn(
             Effect.sleep(AUTOMATION_FOREGROUND_IDLE_MS).pipe(

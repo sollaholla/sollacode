@@ -740,6 +740,115 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect(
+    "isolates DevTools and external-debugger conflicts from the foreground fleet",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const guests = new Map<
+            number,
+            {
+              readonly invalidate: ReturnType<typeof vi.fn>;
+              readonly sendCommand: ReturnType<typeof vi.fn>;
+              readonly webContents: Electron.WebContents;
+            }
+          >();
+          const makeGuest = (id: number, debuggerOwner: "none" | "devtools" | "external") => {
+            const invalidate = vi.fn();
+            const sendCommand = vi.fn(async (): Promise<unknown> => undefined);
+            const webContents = {
+              id,
+              isDestroyed: () => false,
+              getType: () => "webview",
+              getURL: () => `https://example-${id}.com/`,
+              getTitle: () => `Example ${id}`,
+              isLoading: () => false,
+              isDevToolsOpened: () => debuggerOwner === "devtools",
+              getZoomFactor: () => 1,
+              setZoomFactor: vi.fn(),
+              setBackgroundThrottling: vi.fn(),
+              invalidate,
+              on: vi.fn(),
+              off: vi.fn(),
+              ipc: { on: vi.fn(), off: vi.fn() },
+              send: webviewSend,
+              navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+              setWindowOpenHandler: vi.fn(),
+              debugger: {
+                isAttached: () => debuggerOwner === "external",
+                attach: vi.fn(),
+                detach: vi.fn(),
+                sendCommand,
+                on: vi.fn(),
+                off: vi.fn(),
+              },
+            } as unknown as Electron.WebContents;
+            const guest = { invalidate, sendCommand, webContents };
+            guests.set(id, guest);
+            return guest;
+          };
+          makeGuest(41, "devtools");
+          makeGuest(42, "external");
+          const healthy = makeGuest(43, "none");
+          fromId.mockImplementation((id) =>
+            id === undefined ? null : (guests.get(id)?.webContents ?? null),
+          );
+
+          yield* manager.createTab("tab_devtools");
+          yield* manager.registerWebview("tab_devtools", 41);
+          yield* manager.createTab("tab_external_debugger");
+          yield* manager.registerWebview("tab_external_debugger", 42);
+          yield* manager.createTab("tab_healthy");
+          yield* manager.registerWebview("tab_healthy", 43);
+
+          const renewal = yield* Effect.exit(manager.renewAutomationForeground());
+          expect(Exit.isSuccess(renewal)).toBe(true);
+          expect(yield* manager.automationStatus("tab_devtools")).toMatchObject({
+            available: false,
+          });
+          expect(yield* manager.automationStatus("tab_external_debugger")).toMatchObject({
+            available: false,
+          });
+          expect(yield* manager.automationStatus("tab_healthy")).toMatchObject({
+            available: true,
+          });
+          expect(healthy.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: true,
+          });
+          expect(healthy.invalidate).toHaveBeenCalledOnce();
+
+          const repeatedDevToolsRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_devtools", 41),
+          );
+          expect(Exit.isSuccess(repeatedDevToolsRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_devtools")).toMatchObject({
+            available: false,
+          });
+
+          makeGuest(44, "external");
+          const replacementRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_healthy", 44),
+          );
+          expect(Exit.isSuccess(replacementRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_healthy")).toMatchObject({
+            available: false,
+          });
+
+          const lateHealthy = makeGuest(45, "none");
+          yield* manager.createTab("tab_late_healthy");
+          const registration = yield* Effect.exit(manager.registerWebview("tab_late_healthy", 45));
+          expect(Exit.isSuccess(registration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_late_healthy")).toMatchObject({
+            available: true,
+          });
+          expect(lateHealthy.sendCommand).toHaveBeenCalledWith(
+            "Emulation.setFocusEmulationEnabled",
+            { enabled: true },
+          );
+        }),
+      ),
+  );
+
   effectIt.effect("releases a partially foregrounded fleet after activation fails", () =>
     withManager((manager) =>
       Effect.gen(function* () {
