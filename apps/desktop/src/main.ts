@@ -65,10 +65,26 @@ import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
 // This must happen synchronously during module initialization. Windows shell
 // environment discovery is asynchronous and can otherwise cross Electron's
 // ready boundary before the capture backend override is registered.
+// Must match CFBundleName in the packaged Info.plist; Chromium builds the
+// cookie-encryption Keychain service name from it.
+const DESKTOP_PRODUCT_NAME = "Solla Code";
+
 const disabledCaptureFeatureList = disabledCaptureFeatures(Effect.runSync(HostProcessPlatform));
 if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
+
+// Align `app.getName()` with the macOS bundle name, before ready.
+//
+// Chromium keys its cookie store on a Keychain item named after the bundle
+// (`Solla Code Safe Storage`), but Electron's `safeStorage` derives its name
+// from `app.getName()`, which comes from the packaged `package.json` — here
+// `solla-code`. The two disagreed, so anything that encrypted minted
+// `solla-code Safe Storage` while the cookie store went on looking for a key
+// that was never created. It then wrote every cookie in plaintext and
+// discarded the stored ones on load, which read as the browser being signed
+// out of every site in every tab and every agent.
+Electron.app.setName(DESKTOP_PRODUCT_NAME);
 
 // Custom schemes must be registered before Electron becomes ready. Marking
 // them standard and CORS-capable gives renderer assets a real same-origin
