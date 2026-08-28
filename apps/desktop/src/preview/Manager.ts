@@ -645,6 +645,7 @@ interface BrowserControlSession {
   readonly webContentsId: number;
   readonly semaphore: Semaphore.Semaphore;
   readonly scope: Scope.Closeable;
+  debuggerAttachedByManager: boolean;
   detachRequested: boolean;
   readonly onMessage: (
     event: Electron.Event,
@@ -1389,13 +1390,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           return Effect.fail(new PreviewWebContentsNotFoundError({ tabId, webContentsId: wc.id }));
         }
         const existing = sessions.get(wc.id);
-        if (existing) return Effect.succeed([existing, sessions] as const);
         if (wc.isDevToolsOpened()) {
           return Effect.fail(
             new PreviewAutomationDevToolsOpenError({
               webContentsId: wc.id,
             }),
           );
+        }
+        if (existing?.debuggerAttachedByManager) {
+          return Effect.succeed([existing, sessions] as const);
         }
         if (wc.debugger.isAttached()) {
           return Effect.fail(
@@ -1405,6 +1408,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           );
         }
         const createControlSession = Effect.fn("PreviewManager.createControlSession")(function* () {
+          if (existing) {
+            yield* Scope.close(existing.scope, Exit.void).pipe(Effect.ignore);
+          }
           const semaphore = yield* Semaphore.make(1);
           const scope = yield* Scope.fork(parentScope, "sequential");
           const handleDebuggerMessage = Effect.fnUntraced(function* (
@@ -1467,6 +1473,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             runFork(handleDebuggerMessage(method, params));
           };
           const onDetach: BrowserControlSession["onDetach"] = (_event, reason) => {
+            control.debuggerAttachedByManager = false;
             if (control.detachRequested) return;
             // Close the availability gap synchronously. Until a replacement
             // control session is attached and focus emulation succeeds, MCP
@@ -1490,9 +1497,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                         ] as const;
                       },
                     );
-                    if (!removed) return;
                     control.detachRequested = true;
                     yield* Scope.close(control.scope, Exit.void).pipe(Effect.ignore);
+                    if (!removed) return;
                     if (!automationForegroundActive || wc.isDestroyed()) return;
                     yield* activateAutomationForegroundForTab(tabId, wc);
                     yield* recordActivityLeaseMetrics();
@@ -1512,6 +1519,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
             semaphore,
             scope,
+            debuggerAttachedByManager: false,
             detachRequested: false,
             onMessage,
             onDetach,
@@ -1523,7 +1531,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               if (wc.isDestroyed()) return;
               wc.debugger.off("message", onMessage);
               wc.debugger.off("detach", onDetach);
-              if (wc.debugger.isAttached()) wc.debugger.detach();
+              if (control.debuggerAttachedByManager && wc.debugger.isAttached()) {
+                wc.debugger.detach();
+              }
             }).pipe(Effect.ignore),
           );
           const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
@@ -1538,21 +1548,59 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 }
               }),
             );
-            yield* attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
-              wc.debugger.on("message", onMessage);
-              wc.debugger.on("detach", onDetach);
-              wc.debugger.attach("1.3");
-            });
-            yield* Effect.all(
-              ["Runtime.enable", "Accessibility.enable", "Network.enable", "Log.enable"].map(
-                (method) =>
-                  attemptPromise(
-                    { operation: `initializeDebugger.${method}`, webContentsId: wc.id },
-                    () => wc.debugger.sendCommand(method),
-                  ),
-              ),
-              { concurrency: "unbounded", discard: true },
+            const attached = yield* Effect.exit(
+              attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
+                wc.debugger.on("message", onMessage);
+                wc.debugger.on("detach", onDetach);
+                wc.debugger.attach("1.3");
+                control.debuggerAttachedByManager = true;
+              }),
             );
+            if (Exit.isFailure(attached)) {
+              if (wc.isDevToolsOpened()) {
+                return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+              }
+              if (wc.debugger.isAttached()) {
+                return yield* new PreviewAutomationDebuggerAttachedError({
+                  webContentsId: wc.id,
+                });
+              }
+              return yield* Effect.failCause(attached.cause);
+            }
+            const initialized = yield* Effect.exit(
+              Effect.all(
+                ["Runtime.enable", "Accessibility.enable", "Network.enable", "Log.enable"].map(
+                  (method) =>
+                    attemptPromise(
+                      { operation: `initializeDebugger.${method}`, webContentsId: wc.id },
+                      () => wc.debugger.sendCommand(method),
+                    ),
+                ),
+                { concurrency: "unbounded", discard: true },
+              ),
+            );
+            if (Exit.isFailure(initialized)) {
+              if (wc.isDevToolsOpened()) {
+                return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+              }
+              if (!control.debuggerAttachedByManager) {
+                return yield* new PreviewAutomationDebuggerAttachedError({
+                  webContentsId: wc.id,
+                });
+              }
+              return yield* Effect.failCause(initialized.cause);
+            }
+            // CDP may emit detach while resolving an initialization command.
+            // Do not publish a control that already lost debugger ownership;
+            // the queued detach cleanup can run after this synchronized block.
+            if (wc.isDevToolsOpened()) {
+              return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+            }
+            if (!control.debuggerAttachedByManager) {
+              return yield* new PreviewAutomationDebuggerAttachedError({
+                webContentsId: wc.id,
+              });
+            }
             return [
               control,
               replaceMap(sessions, (copy) => {
@@ -3349,34 +3397,45 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
 
     const control = yield* ensureControlSession(tabId, wc);
-    yield* control.semaphore
-      .withPermit(
-        attemptPromiseWithin(
-          {
-            operation: "automationForeground.enableFocusEmulation",
-            tabId,
-            webContentsId: wc.id,
-          },
-          () =>
-            wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
-              enabled: true,
-            }),
-          AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
-        ),
-      )
-      .pipe(
-        Effect.timeout(AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS),
-        Effect.mapError((cause) =>
-          isPreviewOperationError(cause)
-            ? cause
-            : new PreviewOperationError({
-                operation: "automationForeground.waitForControlSession",
-                tabId,
-                webContentsId: wc.id,
-                cause,
+    const focused = yield* Effect.exit(
+      control.semaphore
+        .withPermit(
+          attemptPromiseWithin(
+            {
+              operation: "automationForeground.enableFocusEmulation",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () =>
+              wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
+                enabled: true,
               }),
+            AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
+          ),
+        )
+        .pipe(
+          Effect.timeout(AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS),
+          Effect.mapError((cause) =>
+            isPreviewOperationError(cause)
+              ? cause
+              : new PreviewOperationError({
+                  operation: "automationForeground.waitForControlSession",
+                  tabId,
+                  webContentsId: wc.id,
+                  cause,
+                }),
+          ),
         ),
-      );
+    );
+    if (Exit.isFailure(focused)) {
+      if (wc.isDevToolsOpened()) {
+        return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+      }
+      if (!control.debuggerAttachedByManager) {
+        return yield* new PreviewAutomationDebuggerAttachedError({ webContentsId: wc.id });
+      }
+      return yield* Effect.failCause(focused.cause);
+    }
     yield* attempt(
       {
         operation: "automationForeground.invalidateGuest",
@@ -3385,6 +3444,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       },
       () => wc.invalidate(),
     );
+    // Detach can fire during focus emulation or invalidate even when the
+    // Chromium command itself resolves. Check after the last callback-capable
+    // operation and publish readiness in the same JavaScript turn. A later
+    // detach synchronously removes the id again in onDetach.
+    if (wc.isDevToolsOpened()) {
+      return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+    }
+    if (!control.debuggerAttachedByManager) {
+      return yield* new PreviewAutomationDebuggerAttachedError({ webContentsId: wc.id });
+    }
     automationForegroundWebContentsIds.add(wc.id);
   });
 
@@ -3425,18 +3494,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* recordActivityLeaseMetrics();
     for (const failure of results) {
       if (failure === null || Exit.isSuccess(failure.exit)) continue;
+      if (isAutomationDebuggerOwnershipConflict(failure.exit.cause)) continue;
       yield* Effect.logWarning("Could not foreground one preview automation guest.", {
         tabId: failure.tabId,
         webContentsId: failure.webContentsId,
         cause: failure.exit.cause,
       });
-    }
-    const firstFailure = results.find((result) => {
-      if (result === null || Exit.isSuccess(result.exit)) return false;
-      return !isAutomationDebuggerOwnershipConflict(result.exit.cause);
-    });
-    if (firstFailure != null && Exit.isFailure(firstFailure.exit)) {
-      return yield* Effect.failCause(firstFailure.exit.cause);
     }
   });
 
@@ -3495,13 +3558,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (previousExpiry) yield* Fiber.interrupt(previousExpiry);
 
           automationForegroundActive = true;
-          // One bad guest must not prevent the other tabs from being woken,
-          // and it must not strand the successfully activated subset forever.
-          // DevTools or an external debugger are expected per-tab ownership
-          // conflicts, so those guests stay unavailable without rejecting an
-          // unrelated request. Other activation failures still fail closed.
-          // Arm expiry either way so every acquired fleet lease is released.
-          const activation = yield* Effect.exit(activateAutomationForegroundFleet());
+          // Fleet renewal is target-agnostic: one unavailable hidden guest
+          // must not reject an operation for another tab. Each failed guest
+          // remains unavailable in automationStatus, where the actual target
+          // still fails closed. Arm expiry so every acquired lease is released.
+          yield* activateAutomationForegroundFleet();
           automationForegroundExpiryFiber = yield* Effect.forkIn(
             Effect.sleep(AUTOMATION_FOREGROUND_IDLE_MS).pipe(
               Effect.andThen(
@@ -3515,9 +3576,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ),
             parentScope,
           );
-          if (Exit.isFailure(activation)) {
-            return yield* Effect.failCause(activation.cause);
-          }
         }),
       );
     },

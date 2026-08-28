@@ -849,43 +849,170 @@ describe("PreviewManager", () => {
       ),
   );
 
-  effectIt.effect("releases a partially foregrounded fleet after activation fails", () =>
+  effectIt.effect("isolates DevTools ownership acquired while the foreground fleet attaches", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const guests = new Map<
-          number,
-          {
-            readonly invalidate: ReturnType<typeof vi.fn>;
-            readonly sendCommand: ReturnType<typeof vi.fn>;
-            readonly webContents: Electron.WebContents;
-          }
-        >();
-        const makeGuest = (id: number, failActivation: boolean) => {
-          const invalidate = vi.fn();
-          const sendCommand = vi.fn(
-            async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
-              if (
-                failActivation &&
-                method === "Emulation.setFocusEmulationEnabled" &&
-                params?.enabled === true
-              ) {
-                throw new Error("focus emulation unavailable");
-              }
-              return undefined;
-            },
+        let devToolsOpened = false;
+        const racedDetach = vi.fn();
+        const racedSendCommand = vi.fn(async (): Promise<unknown> => undefined);
+        const healthySendCommand = vi.fn(async (): Promise<unknown> => undefined);
+        const guests = new Map<number, Electron.WebContents>();
+        guests.set(41, {
+          id: 41,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://raced.example.com/",
+          getTitle: () => "Raced",
+          isLoading: () => false,
+          isDevToolsOpened: () => devToolsOpened,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(() => {
+              devToolsOpened = true;
+              throw new Error("DevTools acquired the debugger");
+            }),
+            detach: racedDetach,
+            sendCommand: racedSendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as unknown as Electron.WebContents);
+        guests.set(42, {
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://healthy.example.com/",
+          getTitle: () => "Healthy",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand: healthySendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as unknown as Electron.WebContents);
+        fromId.mockImplementation((id) => (id === undefined ? null : (guests.get(id) ?? null)));
+
+        yield* manager.createTab("tab_attach_race");
+        yield* manager.registerWebview("tab_attach_race", 41);
+        yield* manager.createTab("tab_attach_healthy");
+        yield* manager.registerWebview("tab_attach_healthy", 42);
+
+        const renewal = yield* Effect.exit(manager.renewAutomationForeground());
+        expect(Exit.isSuccess(renewal)).toBe(true);
+        expect(yield* manager.automationStatus("tab_attach_race")).toMatchObject({
+          available: false,
+        });
+        expect(yield* manager.automationStatus("tab_attach_healthy")).toMatchObject({
+          available: true,
+        });
+        expect(healthySendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+          enabled: true,
+        });
+
+        const direct = yield* Effect.exit(manager.automationSnapshot("tab_attach_race"));
+        expect(Exit.isFailure(direct)).toBe(true);
+        if (Exit.isFailure(direct)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(direct.cause))._tag).toBe(
+            "PreviewAutomationDevToolsOpenError",
           );
-          const webContents = {
-            id,
+        }
+        expect(racedDetach).not.toHaveBeenCalled();
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "isolates debugger ownership acquired while an active registration initializes",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let debuggerOwner: "none" | "manager" | "external" = "none";
+          let detachListener: ((event: Electron.Event, reason: string) => void) | undefined;
+          let takeOverDuringInitialization = true;
+          const racedDetach = vi.fn(() => {
+            debuggerOwner = "none";
+          });
+          const racedOff = vi.fn((event: string, listener: typeof detachListener) => {
+            if (event === "detach" && detachListener === listener) detachListener = undefined;
+          });
+          const racedSendCommand = vi.fn(async (method: string): Promise<unknown> => {
+            if (method === "Runtime.enable" && takeOverDuringInitialization) {
+              takeOverDuringInitialization = false;
+              debuggerOwner = "external";
+              detachListener?.({} as Electron.Event, "replaced_with_devtools");
+              throw new Error("external debugger acquired the target");
+            }
+            return undefined;
+          });
+          const healthySendCommand = vi.fn(async (): Promise<unknown> => undefined);
+          const guests = new Map<number, Electron.WebContents>();
+          guests.set(41, {
+            id: 41,
             isDestroyed: () => false,
             getType: () => "webview",
-            getURL: () => `https://example-${id}.com/`,
-            getTitle: () => `Example ${id}`,
+            getURL: () => "https://initializing.example.com/",
+            getTitle: () => "Initializing",
             isLoading: () => false,
             isDevToolsOpened: () => false,
             getZoomFactor: () => 1,
             setZoomFactor: vi.fn(),
             setBackgroundThrottling: vi.fn(),
-            invalidate,
+            invalidate: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => debuggerOwner !== "none",
+              attach: vi.fn(() => {
+                debuggerOwner = "manager";
+              }),
+              detach: racedDetach,
+              sendCommand: racedSendCommand,
+              on: vi.fn((event: string, listener: typeof detachListener) => {
+                if (event === "detach") detachListener = listener;
+              }),
+              off: racedOff,
+            },
+          } as unknown as Electron.WebContents);
+          guests.set(42, {
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://healthy.example.com/",
+            getTitle: () => "Healthy",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
             on: vi.fn(),
             off: vi.fn(),
             ipc: { on: vi.fn(), off: vi.fn() },
@@ -896,40 +1023,454 @@ describe("PreviewManager", () => {
               isAttached: () => false,
               attach: vi.fn(),
               detach: vi.fn(),
-              sendCommand,
+              sendCommand: healthySendCommand,
               on: vi.fn(),
               off: vi.fn(),
             },
-          } as unknown as Electron.WebContents;
-          guests.set(id, { invalidate, sendCommand, webContents });
-        };
-        makeGuest(41, true);
-        makeGuest(42, false);
-        fromId.mockImplementation((id) =>
-          id === undefined ? null : (guests.get(id)?.webContents ?? null),
-        );
+          } as unknown as Electron.WebContents);
+          fromId.mockImplementation((id) => (id === undefined ? null : (guests.get(id) ?? null)));
 
-        yield* manager.createTab("tab_broken");
-        yield* manager.registerWebview("tab_broken", 41);
-        yield* manager.createTab("tab_healthy");
-        yield* manager.registerWebview("tab_healthy", 42);
+          yield* manager.renewAutomationForeground();
+          yield* manager.createTab("tab_initialization_race");
+          const racedRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_initialization_race", 41),
+          );
+          expect(Exit.isSuccess(racedRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_initialization_race")).toMatchObject({
+            available: false,
+          });
 
-        const activation = yield* Effect.exit(manager.renewAutomationForeground());
-        expect(Exit.isFailure(activation)).toBe(true);
-        const healthy = guests.get(42)!;
-        expect(healthy.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+          yield* manager.createTab("tab_initialization_healthy");
+          const healthyRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_initialization_healthy", 42),
+          );
+          expect(Exit.isSuccess(healthyRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_initialization_healthy")).toMatchObject({
+            available: true,
+          });
+          expect(healthySendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: true,
+          });
+
+          const direct = yield* Effect.exit(manager.automationSnapshot("tab_initialization_race"));
+          expect(Exit.isFailure(direct)).toBe(true);
+          if (Exit.isFailure(direct)) {
+            expect(Option.getOrThrow(Cause.findErrorOption(direct.cause))._tag).toBe(
+              "PreviewAutomationDebuggerAttachedError",
+            );
+          }
+          expect(racedOff).toHaveBeenCalledWith("detach", expect.any(Function));
+          expect(racedDetach).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "rejects direct automation after successful initialization loses debugger ownership",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let debuggerOwner: "none" | "manager" | "external" = "none";
+          let detachListener: ((event: Electron.Event, reason: string) => void) | undefined;
+          let takeOverDuringInitialization = true;
+          const detach = vi.fn(() => {
+            debuggerOwner = "none";
+          });
+          const off = vi.fn((event: string, listener: typeof detachListener) => {
+            if (event === "detach" && detachListener === listener) detachListener = undefined;
+          });
+          const sendCommand = vi.fn(async (method: string): Promise<unknown> => {
+            if (method === "Runtime.enable" && takeOverDuringInitialization) {
+              takeOverDuringInitialization = false;
+              debuggerOwner = "external";
+              detachListener?.({} as Electron.Event, "replaced_with_devtools");
+            }
+            return undefined;
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://initializing.example.com/",
+            getTitle: () => "Initializing",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => debuggerOwner !== "none",
+              attach: vi.fn(() => {
+                debuggerOwner = "manager";
+              }),
+              detach,
+              sendCommand,
+              on: vi.fn((event: string, listener: typeof detachListener) => {
+                if (event === "detach") detachListener = listener;
+              }),
+              off,
+            },
+          } as never);
+
+          yield* manager.createTab("tab_direct_initialization_race");
+          yield* manager.registerWebview("tab_direct_initialization_race", 42);
+          const direct = yield* Effect.exit(
+            manager.automationSnapshot("tab_direct_initialization_race"),
+          );
+
+          expect(Exit.isFailure(direct)).toBe(true);
+          if (Exit.isFailure(direct)) {
+            expect(Option.getOrThrow(Cause.findErrorOption(direct.cause))._tag).toBe(
+              "PreviewAutomationDebuggerAttachedError",
+            );
+          }
+          expect(
+            sendCommand.mock.calls.every(([method]) =>
+              ["Runtime.enable", "Accessibility.enable", "Network.enable", "Log.enable"].includes(
+                method,
+              ),
+            ),
+          ).toBe(true);
+          expect(off).toHaveBeenCalledWith("detach", expect.any(Function));
+          expect(detach).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "does not publish readiness after a successful focus command loses debugger ownership",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let debuggerOwner: "none" | "manager" | "external" = "none";
+          let detachListener: ((event: Electron.Event, reason: string) => void) | undefined;
+          let takeOverDuringFocus = true;
+          const racedDetach = vi.fn(() => {
+            debuggerOwner = "none";
+          });
+          const racedOff = vi.fn((event: string, listener: typeof detachListener) => {
+            if (event === "detach" && detachListener === listener) detachListener = undefined;
+          });
+          const racedSendCommand = vi.fn(
+            async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+              if (
+                method === "Emulation.setFocusEmulationEnabled" &&
+                params?.enabled === true &&
+                takeOverDuringFocus
+              ) {
+                takeOverDuringFocus = false;
+                debuggerOwner = "external";
+                detachListener?.({} as Electron.Event, "replaced_with_devtools");
+              }
+              return undefined;
+            },
+          );
+          const healthySendCommand = vi.fn(async (): Promise<unknown> => undefined);
+          const guests = new Map<number, Electron.WebContents>();
+          guests.set(41, {
+            id: 41,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://focus-race.example.com/",
+            getTitle: () => "Focus race",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => debuggerOwner !== "none",
+              attach: vi.fn(() => {
+                debuggerOwner = "manager";
+              }),
+              detach: racedDetach,
+              sendCommand: racedSendCommand,
+              on: vi.fn((event: string, listener: typeof detachListener) => {
+                if (event === "detach") detachListener = listener;
+              }),
+              off: racedOff,
+            },
+          } as unknown as Electron.WebContents);
+          guests.set(42, {
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://healthy.example.com/",
+            getTitle: () => "Healthy",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              detach: vi.fn(),
+              sendCommand: healthySendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as unknown as Electron.WebContents);
+          fromId.mockImplementation((id) => (id === undefined ? null : (guests.get(id) ?? null)));
+
+          yield* manager.renewAutomationForeground();
+          yield* manager.createTab("tab_focus_race");
+          const racedRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_focus_race", 41),
+          );
+          expect(Exit.isSuccess(racedRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_focus_race")).toMatchObject({
+            available: false,
+          });
+
+          yield* manager.createTab("tab_focus_healthy");
+          const healthyRegistration = yield* Effect.exit(
+            manager.registerWebview("tab_focus_healthy", 42),
+          );
+          expect(Exit.isSuccess(healthyRegistration)).toBe(true);
+          expect(yield* manager.automationStatus("tab_focus_healthy")).toMatchObject({
+            available: true,
+          });
+          expect(healthySendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: true,
+          });
+
+          const direct = yield* Effect.exit(manager.automationSnapshot("tab_focus_race"));
+          expect(Exit.isFailure(direct)).toBe(true);
+          if (Exit.isFailure(direct)) {
+            expect(Option.getOrThrow(Cause.findErrorOption(direct.cause))._tag).toBe(
+              "PreviewAutomationDebuggerAttachedError",
+            );
+          }
+          yield* Effect.promise(() =>
+            vi.waitFor(() => expect(racedOff).toHaveBeenCalledWith("detach", expect.any(Function))),
+          );
+          expect(racedDetach).not.toHaveBeenCalled();
+        }),
+      ),
+  );
+
+  effectIt.effect("isolates an existing control session replaced by an external debugger", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let debuggerOwner: "none" | "manager" | "external" = "none";
+        let detachListener: ((event: Electron.Event, reason: string) => void) | undefined;
+        const racedDetach = vi.fn(() => {
+          debuggerOwner = "none";
+        });
+        const racedOff = vi.fn((event: string, listener: typeof detachListener) => {
+          if (event === "detach" && detachListener === listener) detachListener = undefined;
+        });
+        const racedSendCommand = vi.fn(async (): Promise<unknown> => undefined);
+        const healthySendCommand = vi.fn(async (): Promise<unknown> => undefined);
+        const guests = new Map<number, Electron.WebContents>();
+        guests.set(41, {
+          id: 41,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://external.example.com/",
+          getTitle: () => "External",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => debuggerOwner !== "none",
+            attach: vi.fn(() => {
+              debuggerOwner = "manager";
+            }),
+            detach: racedDetach,
+            sendCommand: racedSendCommand,
+            on: vi.fn((event: string, listener: typeof detachListener) => {
+              if (event === "detach") detachListener = listener;
+            }),
+            off: racedOff,
+          },
+        } as unknown as Electron.WebContents);
+        guests.set(42, {
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://healthy.example.com/",
+          getTitle: () => "Healthy",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand: healthySendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as unknown as Electron.WebContents);
+        fromId.mockImplementation((id) => (id === undefined ? null : (guests.get(id) ?? null)));
+
+        yield* manager.createTab("tab_external_takeover");
+        yield* manager.registerWebview("tab_external_takeover", 41);
+        yield* manager.createTab("tab_external_healthy");
+        yield* manager.registerWebview("tab_external_healthy", 42);
+        yield* manager.renewAutomationForeground();
+        expect(debuggerOwner).toBe("manager");
+
+        debuggerOwner = "external";
+        detachListener?.({} as Electron.Event, "replaced_with_devtools");
+
+        const renewal = yield* Effect.exit(manager.renewAutomationForeground());
+        expect(Exit.isSuccess(renewal)).toBe(true);
+        expect(yield* manager.automationStatus("tab_external_takeover")).toMatchObject({
+          available: false,
+        });
+        expect(yield* manager.automationStatus("tab_external_healthy")).toMatchObject({
+          available: true,
+        });
+        expect(healthySendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
           enabled: true,
         });
-        expect(healthy.invalidate).toHaveBeenCalledOnce();
 
-        yield* TestClock.adjust(60_000);
-        yield* Effect.yieldNow;
-        expect(healthy.sendCommand.mock.calls.at(-1)).toEqual([
-          "Emulation.setFocusEmulationEnabled",
-          { enabled: false },
-        ]);
+        const direct = yield* Effect.exit(manager.automationSnapshot("tab_external_takeover"));
+        expect(Exit.isFailure(direct)).toBe(true);
+        if (Exit.isFailure(direct)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(direct.cause))._tag).toBe(
+            "PreviewAutomationDebuggerAttachedError",
+          );
+        }
+        yield* Effect.promise(() =>
+          vi.waitFor(() => expect(racedOff).toHaveBeenCalledWith("detach", expect.any(Function))),
+        );
+        expect(racedDetach).not.toHaveBeenCalled();
       }),
     ),
+  );
+
+  effectIt.effect(
+    "isolates and releases a partially foregrounded fleet after activation fails",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const guests = new Map<
+            number,
+            {
+              readonly invalidate: ReturnType<typeof vi.fn>;
+              readonly sendCommand: ReturnType<typeof vi.fn>;
+              readonly webContents: Electron.WebContents;
+            }
+          >();
+          const makeGuest = (id: number, failActivation: boolean) => {
+            const invalidate = vi.fn();
+            const sendCommand = vi.fn(
+              async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+                if (
+                  failActivation &&
+                  method === "Emulation.setFocusEmulationEnabled" &&
+                  params?.enabled === true
+                ) {
+                  throw new Error("focus emulation unavailable");
+                }
+                return undefined;
+              },
+            );
+            const webContents = {
+              id,
+              isDestroyed: () => false,
+              getType: () => "webview",
+              getURL: () => `https://example-${id}.com/`,
+              getTitle: () => `Example ${id}`,
+              isLoading: () => false,
+              isDevToolsOpened: () => false,
+              getZoomFactor: () => 1,
+              setZoomFactor: vi.fn(),
+              setBackgroundThrottling: vi.fn(),
+              invalidate,
+              on: vi.fn(),
+              off: vi.fn(),
+              ipc: { on: vi.fn(), off: vi.fn() },
+              send: webviewSend,
+              navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+              setWindowOpenHandler: vi.fn(),
+              debugger: {
+                isAttached: () => false,
+                attach: vi.fn(),
+                detach: vi.fn(),
+                sendCommand,
+                on: vi.fn(),
+                off: vi.fn(),
+              },
+            } as unknown as Electron.WebContents;
+            guests.set(id, { invalidate, sendCommand, webContents });
+          };
+          makeGuest(41, true);
+          makeGuest(42, false);
+          fromId.mockImplementation((id) =>
+            id === undefined ? null : (guests.get(id)?.webContents ?? null),
+          );
+
+          yield* manager.createTab("tab_broken");
+          yield* manager.registerWebview("tab_broken", 41);
+          yield* manager.createTab("tab_healthy");
+          yield* manager.registerWebview("tab_healthy", 42);
+
+          const activation = yield* Effect.exit(manager.renewAutomationForeground());
+          expect(Exit.isSuccess(activation)).toBe(true);
+          expect(yield* manager.automationStatus("tab_broken")).toMatchObject({
+            available: false,
+          });
+          expect(yield* manager.automationStatus("tab_healthy")).toMatchObject({
+            available: true,
+          });
+          const healthy = guests.get(42)!;
+          expect(healthy.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+            enabled: true,
+          });
+          expect(healthy.invalidate).toHaveBeenCalledOnce();
+
+          yield* TestClock.adjust(60_000);
+          yield* Effect.yieldNow;
+          expect(healthy.sendCommand.mock.calls.at(-1)).toEqual([
+            "Emulation.setFocusEmulationEnabled",
+            { enabled: false },
+          ]);
+        }),
+      ),
   );
 
   effectIt.effect("fails a new registration closed when active foregrounding fails", () =>
@@ -1001,6 +1542,117 @@ describe("PreviewManager", () => {
         expect(states.at(-1)?.webContentsId).toBe(42);
       }),
     ),
+  );
+
+  effectIt.effect("fails a new registration closed when debugger attachment genuinely fails", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const detach = vi.fn();
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setBackgroundThrottling: vi.fn(),
+          invalidate: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(() => {
+              throw new Error("debugger transport unavailable");
+            }),
+            detach,
+            sendCommand: vi.fn(async (): Promise<unknown> => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.renewAutomationForeground();
+        yield* manager.createTab("tab_attach_failure");
+        const registration = yield* Effect.exit(manager.registerWebview("tab_attach_failure", 42));
+
+        expect(Exit.isFailure(registration)).toBe(true);
+        expect(yield* manager.automationStatus("tab_attach_failure")).toMatchObject({
+          available: false,
+        });
+        expect(detach).not.toHaveBeenCalled();
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "fails a new registration closed when debugger initialization genuinely fails",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let attached = false;
+          const detach = vi.fn(() => {
+            attached = false;
+          });
+          fromId.mockReturnValue({
+            id: 42,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            setBackgroundThrottling: vi.fn(),
+            invalidate: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => attached,
+              attach: vi.fn(() => {
+                attached = true;
+              }),
+              detach,
+              sendCommand: vi.fn(async (method: string): Promise<unknown> => {
+                if (method === "Runtime.enable") {
+                  throw new Error("debugger initialization transport failed");
+                }
+                return undefined;
+              }),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+
+          yield* manager.renewAutomationForeground();
+          yield* manager.createTab("tab_initialization_failure");
+          const registration = yield* Effect.exit(
+            manager.registerWebview("tab_initialization_failure", 42),
+          );
+
+          expect(Exit.isFailure(registration)).toBe(true);
+          if (Exit.isFailure(registration)) {
+            expect(Option.getOrThrow(Cause.findErrorOption(registration.cause))._tag).toBe(
+              "PreviewOperationError",
+            );
+          }
+          expect(yield* manager.automationStatus("tab_initialization_failure")).toMatchObject({
+            available: false,
+          });
+          expect(detach).toHaveBeenCalledOnce();
+        }),
+      ),
   );
 
   effectIt.effect("clears foreground readiness on debugger detach and retries reactivation", () =>
