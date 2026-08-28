@@ -9,9 +9,12 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import {
+  emittedAgentStop,
   isProviderAuthenticationFailure,
   shouldAgentContinueAfterReply,
 } from "@t3tools/shared/agentMode";
+import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
+import { isResumePrompt } from "@t3tools/shared/resumePrompt";
 import { SETTINGS_UPDATE_MESSAGE_PREFIX } from "@t3tools/shared/settingsPrompt";
 import type { ThreadWorkKind } from "../persistence/Services/ThreadWorkObligations.ts";
 
@@ -380,6 +383,70 @@ export const VM_AGENT_TASK_MESSAGE_ID_PREFIX = "vm-task:";
  */
 export function isVmAgentTaskPromptMessageId(messageId: string): boolean {
   return messageId.startsWith(VM_AGENT_TASK_MESSAGE_ID_PREFIX);
+}
+
+export function isSyntheticAgentLoopUserMessage(input: {
+  readonly role: string;
+  readonly id?: string;
+  readonly messageId?: string;
+  readonly text?: string;
+  readonly inputOrigin?: string | null | undefined;
+}): boolean {
+  if (input.role !== "user") return false;
+  const id = input.id ?? input.messageId ?? "";
+  if (isVmAgentTaskPromptMessageId(id)) return false;
+  return (
+    input.inputOrigin === "agent-loop" ||
+    isBrowserTabCleanupMessageId(id) ||
+    isAgentAutoResumeMessageId(id) ||
+    id.startsWith("startup-auto-resume-message:") ||
+    (input.text !== undefined && isResumePrompt(input.text))
+  );
+}
+
+/**
+ * AGENT_STOP ends the Agent loop until the user types again. Grok (and other
+ * providers) can still emit a later assistant fragment on the same turn after
+ * the signoff — a tool result, a short "I'll check terminals" line. Judging
+ * only that newest fragment re-armed continuation and produced the
+ * auto-resume loop observed live on 2026-08-28.
+ */
+export function agentLoopSignedOffSinceUserIntent(
+  messages: ReadonlyArray<{
+    readonly role: string;
+    readonly text: string;
+    readonly streaming?: boolean | undefined;
+    readonly isStreaming?: boolean | undefined;
+    readonly inputOrigin?: string | null | undefined;
+    readonly id?: string;
+    readonly messageId?: string;
+  }>,
+): boolean {
+  let lastIntent = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message === undefined) continue;
+    if (
+      message.role === "user" &&
+      !isSyntheticAgentLoopUserMessage({
+        role: message.role,
+        id: message.id ?? message.messageId,
+        text: message.text,
+        inputOrigin: message.inputOrigin,
+      })
+    ) {
+      lastIntent = index;
+    }
+  }
+  return messages
+    .slice(lastIntent + 1)
+    .some(
+      (message) =>
+        message.role === "assistant" &&
+        message.streaming !== true &&
+        message.isStreaming !== true &&
+        emittedAgentStop(message.text),
+    );
 }
 
 const ACTIVE_TURN_WORK_SOURCE_PREFIX = "turn-start:";

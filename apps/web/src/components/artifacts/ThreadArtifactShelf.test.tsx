@@ -7,11 +7,10 @@ import {
   type ThreadArtifactSummary,
 } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   listResult: null as unknown,
-  setThreadPanelExpanded: vi.fn(),
 }));
 
 vi.mock("@effect/atom-react", () => ({
@@ -24,20 +23,6 @@ vi.mock("~/assets/assetUrls", () => ({
 
 vi.mock("~/state/threadArtifacts", () => ({
   threadArtifactEnvironment: { list: () => Symbol.for("artifact-list-query") },
-}));
-
-vi.mock("../../uiStateStore", () => ({
-  THREAD_PANEL_ARTIFACTS: "artifacts",
-  useUiStateStore: (selector: (state: object) => unknown) =>
-    selector({
-      threadPanelExpandedById: new Proxy(
-        {},
-        {
-          get: () => ({ artifacts: true }),
-        },
-      ),
-      setThreadPanelExpanded: mocks.setThreadPanelExpanded,
-    }),
 }));
 
 import { ThreadArtifactShelf } from "./ThreadArtifactShelf";
@@ -94,10 +79,6 @@ function artifactSummary(input: {
 }
 
 describe("ThreadArtifactShelf ordering", () => {
-  beforeEach(() => {
-    mocks.setThreadPanelExpanded.mockClear();
-  });
-
   it("preserves the deterministic newest-first and id-tiebreak order from the host", () => {
     const newest = artifactSummary({
       id: "artifact-z",
@@ -134,5 +115,6 @@ describe("ThreadArtifactShelf ordering", () => {
     expect(newestIndex).toBeLessThan(alphaIndex);
     expect(alphaIndex).toBeLessThan(betaIndex);
     expect(markup).toContain('aria-current="page"');
+    expect(markup).toMatch(/<details[^>]*\sopen[=\s>]/);
   });
 });

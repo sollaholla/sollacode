@@ -13,8 +13,10 @@ import {
   buildProviderHandoffSummary,
   detectProviderUsageLimitExhaustion,
   deriveProviderHandoffContinuity,
+  isAccountWideProviderExhaustion,
   PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,
   PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS,
+  providerFailoverModelKey,
   selectProviderFailoverTarget,
 } from "./ProviderUsageLimitFailover.ts";
 
@@ -28,6 +30,9 @@ function provider(input: {
   readonly installed?: boolean;
   readonly status?: ServerProvider["status"];
   readonly authStatus?: ServerProvider["auth"]["status"];
+  readonly capabilitiesBySlug?: Readonly<
+    Record<string, NonNullable<ServerProvider["models"][number]["capabilities"]>>
+  >;
 }): ServerProvider {
   const slugs = input.models ?? (input.model === undefined ? [] : [input.model]);
   return {
@@ -47,12 +52,29 @@ function provider(input: {
       // Mirrors the registry: only a single-model fixture declares a default,
       // so multi-model Claude fixtures fall through to capability order.
       ...(slugs.length === 1 && index === 0 ? { isDefault: true } : {}),
-      capabilities: null,
+      capabilities: input.capabilitiesBySlug?.[slug] ?? null,
     })),
     slashCommands: [],
     skills: [],
   };
 }
+
+const OPUS_5_CAPABILITIES = {
+  optionDescriptors: [
+    {
+      id: "effort",
+      label: "Reasoning",
+      type: "select" as const,
+      currentValue: "high",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High", isDefault: true },
+        { id: "xhigh", label: "Extra High" },
+      ],
+    },
+  ],
+};
 
 const CLAUDE_MODELS = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"];
 
@@ -313,6 +335,254 @@ describe("selectProviderFailoverTarget with Claude model quotas", () => {
       instanceId: ProviderInstanceId.make("grok"),
       modelSelection: { model: "grok-code" },
     });
+  });
+});
+
+describe("selectProviderFailoverTarget same-instance Claude models", () => {
+  const enabledProviders = () => [
+    provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+    provider({
+      instanceId: "claude",
+      driver: "claudeAgent",
+      models: CLAUDE_MODELS,
+      capabilitiesBySlug: { "claude-opus-5": OPUS_5_CAPABILITIES },
+    }),
+    provider({ instanceId: "grok", driver: "grok", model: "grok-code" }),
+  ];
+
+  it("stays on Claude Opus 5 High when Fable is the exhausted current model", () => {
+    const target = selectProviderFailoverTarget({
+      providers: enabledProviders(),
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      currentModel: "claude-fable-5",
+    });
+
+    expect(target).toMatchObject({
+      instanceId: ProviderInstanceId.make("claude"),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "claude-opus-5",
+        options: [{ id: "effort", value: "high" }],
+      },
+    });
+  });
+
+  it("skips Fable from a live rate-limit snapshot and still picks Opus 5", () => {
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+        provider({
+          instanceId: "claude",
+          driver: "claudeAgent",
+          models: CLAUDE_MODELS,
+          accountUsage: {
+            type: "rate_limit_event",
+            rate_limit_info: { status: "rejected", rateLimitType: "seven_day_fable" },
+          },
+        }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      currentModel: "claude-fable-5",
+    });
+
+    expect(target?.modelSelection.model).toBe("claude-opus-5");
+  });
+
+  it("leaves Claude for the next enabled provider after every Claude model is spent", () => {
+    const target = selectProviderFailoverTarget({
+      providers: enabledProviders(),
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      currentModel: "claude-sonnet-5",
+      excludedModels: new Set(
+        CLAUDE_MODELS.map((model) => providerFailoverModelKey("claude", model)),
+      ),
+    });
+
+    expect(target).toMatchObject({
+      instanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { model: "gpt-5.6-sol" },
+    });
+  });
+
+  it("walks remaining enabled providers then returns null", () => {
+    const providers = enabledProviders();
+    const afterClaude = selectProviderFailoverTarget({
+      providers,
+      currentInstanceId: ProviderInstanceId.make("codex"),
+      currentDriver: ProviderDriverKind.make("codex"),
+      currentModel: "gpt-5.6-sol",
+      excludedInstanceIds: new Set(["claude"]),
+    });
+    expect(afterClaude?.instanceId).toBe("grok");
+
+    expect(
+      selectProviderFailoverTarget({
+        providers,
+        currentInstanceId: ProviderInstanceId.make("grok"),
+        currentDriver: ProviderDriverKind.make("grok"),
+        currentModel: "grok-code",
+        excludedInstanceIds: new Set(["claude", "codex"]),
+      }),
+    ).toBeNull();
+  });
+
+  it("treats a Claude five-hour rejection as account-wide and skips remaining Claude models", () => {
+    const target = selectProviderFailoverTarget({
+      providers: [
+        provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+        provider({
+          instanceId: "claude",
+          driver: "claudeAgent",
+          models: CLAUDE_MODELS,
+          accountUsage: {
+            type: "rate_limit_event",
+            rate_limit_info: { status: "rejected", rateLimitType: "five_hour" },
+          },
+        }),
+      ],
+      currentInstanceId: ProviderInstanceId.make("claude"),
+      currentDriver: ProviderDriverKind.make("claudeAgent"),
+      currentModel: "claude-fable-5",
+    });
+
+    expect(target?.instanceId).toBe("codex");
+  });
+});
+
+describe("selectProviderFailoverTarget with partial provider configs", () => {
+  function walkFailover(input: {
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly currentInstanceId: string;
+    readonly currentDriver: string;
+    readonly currentModel: string;
+  }): ReadonlyArray<string> {
+    const excludedInstances = new Set<string>();
+    const excludedModels = new Set<string>();
+    const hops: string[] = [];
+    let currentInstanceId = ProviderInstanceId.make(input.currentInstanceId);
+    let currentDriver = ProviderDriverKind.make(input.currentDriver);
+    let currentModel = input.currentModel;
+
+    for (let step = 0; step < 16; step += 1) {
+      excludedModels.add(providerFailoverModelKey(currentInstanceId, currentModel));
+      const target = selectProviderFailoverTarget({
+        providers: input.providers,
+        currentInstanceId,
+        currentDriver,
+        currentModel,
+        excludedInstanceIds: excludedInstances,
+        excludedModels,
+      });
+      if (!target) {
+        return hops;
+      }
+      hops.push(`${String(target.instanceId)}:${target.modelSelection.model}`);
+      if (target.instanceId !== currentInstanceId) {
+        excludedInstances.add(String(currentInstanceId));
+      }
+      currentInstanceId = target.instanceId;
+      currentDriver = target.driver;
+      currentModel = target.modelSelection.model;
+    }
+    throw new Error("failover walk did not stop after the last enabled provider");
+  }
+
+  it("does not require Grok or Claude to be configured", () => {
+    expect(
+      walkFailover({
+        providers: [
+          provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+          provider({ instanceId: "cursor", driver: "cursor", model: "composer" }),
+        ],
+        currentInstanceId: "codex",
+        currentDriver: "codex",
+        currentModel: "gpt-5.6-sol",
+      }),
+    ).toEqual(["cursor:composer"]);
+  });
+
+  it("skips disabled or logged-out providers and uses the next enabled one", () => {
+    expect(
+      walkFailover({
+        providers: [
+          provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+          provider({
+            instanceId: "claude",
+            driver: "claudeAgent",
+            model: "claude-fable-5",
+            enabled: false,
+          }),
+          provider({
+            instanceId: "grok",
+            driver: "grok",
+            model: "grok-code",
+            authStatus: "unauthenticated",
+          }),
+          provider({ instanceId: "opencode", driver: "opencode", model: "opencode-model" }),
+        ],
+        currentInstanceId: "codex",
+        currentDriver: "codex",
+        currentModel: "gpt-5.6-sol",
+      }),
+    ).toEqual(["opencode:opencode-model"]);
+  });
+
+  it("still uses Opus 5 High when Grok is absent, then the remaining enabled providers", () => {
+    expect(
+      walkFailover({
+        providers: [
+          provider({
+            instanceId: "claude",
+            driver: "claudeAgent",
+            models: ["claude-fable-5", "claude-opus-5"],
+            capabilitiesBySlug: { "claude-opus-5": OPUS_5_CAPABILITIES },
+          }),
+          provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" }),
+          provider({ instanceId: "cursor", driver: "cursor", model: "composer", enabled: false }),
+        ],
+        currentInstanceId: "claude",
+        currentDriver: "claudeAgent",
+        currentModel: "claude-fable-5",
+      }),
+    ).toEqual(["claude:claude-opus-5", "codex:gpt-5.6-sol"]);
+  });
+
+  it("stops when the current provider is the only enabled one", () => {
+    expect(
+      walkFailover({
+        providers: [provider({ instanceId: "codex", driver: "codex", model: "gpt-5.6-sol" })],
+        currentInstanceId: "codex",
+        currentDriver: "codex",
+        currentModel: "gpt-5.6-sol",
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("isAccountWideProviderExhaustion", () => {
+  it("keeps Claude Fable rejections on the same instance and treats shared windows as account-wide", () => {
+    expect(
+      isAccountWideProviderExhaustion(ProviderDriverKind.make("claudeAgent"), {
+        reason: "rate_limit_rejected:seven_day_fable",
+        resetsAt: null,
+      }),
+    ).toBe(false);
+    expect(
+      isAccountWideProviderExhaustion(ProviderDriverKind.make("claudeAgent"), {
+        reason: "rate_limit_rejected:five_hour",
+        resetsAt: null,
+      }),
+    ).toBe(true);
+    expect(
+      isAccountWideProviderExhaustion(ProviderDriverKind.make("codex"), {
+        reason: "rate_limit_reached",
+        resetsAt: null,
+      }),
+    ).toBe(true);
   });
 });
 

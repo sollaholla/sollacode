@@ -381,7 +381,9 @@ function makeProviderSnapshot(input: {
   readonly instanceId: string;
   readonly driver: string;
   readonly model: string;
+  readonly models?: ReadonlyArray<string>;
 }): ServerProvider {
+  const slugs = input.models ?? [input.model];
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
     driver: ProviderDriverKind.make(input.driver),
@@ -391,15 +393,31 @@ function makeProviderSnapshot(input: {
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
-    models: [
-      {
-        slug: input.model,
-        name: input.model,
-        isCustom: false,
-        isDefault: true,
-        capabilities: null,
-      },
-    ],
+    models: slugs.map((slug, index) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      ...(slugs.length === 1 && index === 0 ? { isDefault: true } : {}),
+      capabilities:
+        slug === "claude-opus-5"
+          ? {
+              optionDescriptors: [
+                {
+                  id: "effort",
+                  label: "Reasoning",
+                  type: "select",
+                  currentValue: "high",
+                  options: [
+                    { id: "low", label: "Low" },
+                    { id: "medium", label: "Medium" },
+                    { id: "high", label: "High", isDefault: true },
+                    { id: "xhigh", label: "Extra High" },
+                  ],
+                },
+              ],
+            }
+          : null,
+    })),
     slashCommands: [],
     skills: [],
   };
@@ -1039,18 +1057,15 @@ describe("ProviderRuntimeIngestion", () => {
     expect(reminder).toMatchObject({ role: "user", inputOrigin: "agent-loop" });
     expect(reminder?.text).toContain("2 tabs are open");
     expect(reminder?.text).not.toContain("tab_");
-    expect(await harness.readThreadWork(threadId)).toEqual([
-      {
-        kind: "active-turn-recovery",
-        sourceTurnId: "turn-start:browser-tab-cleanup-message:thread-1:turn-browser-work",
-        state: "pending",
-      },
-      {
-        kind: "agent-continuation",
-        sourceTurnId: "turn-browser-work",
-        state: "cancelled",
-      },
-    ]);
+    const work = await harness.readThreadWork(threadId);
+    expect(work).toContainEqual({
+      kind: "active-turn-recovery",
+      sourceTurnId: "turn-start:browser-tab-cleanup-message:thread-1:turn-browser-work",
+      state: "pending",
+    });
+    expect(
+      work.filter((entry) => entry.kind === "agent-continuation" && entry.state === "pending"),
+    ).toEqual([]);
     expect(await harness.readBrowserTabCleanupState(threadId)).toEqual([
       {
         tabSetJson: '["tab-test-1","tab-test-2"]',
@@ -1618,6 +1633,398 @@ describe("ProviderRuntimeIngestion", () => {
     expect(handoff.kind).toBe("t3.provider-handoff");
     expect(handoff.handoff?.from?.instanceId).toBe("codex");
     expect(handoff.handoff?.to?.instanceId).toBe("claudeAgent");
+  });
+
+  it("fails over to the next enabled provider when Claude and Grok are not configured", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "cursor",
+          driver: "cursor",
+          model: "composer",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-no-claude-grok"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted-partial"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      activeTurnId: asTurnId("turn-exhausted-partial"),
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit-no-claude-grok"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted-partial"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.modelSelection.instanceId === "cursor" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      10_000,
+    );
+
+    expect(thread.modelSelection.model).toBe("composer");
+    expect(harness.startSessionCalls.map((call) => call.input.providerInstanceId)).toEqual([
+      "cursor",
+    ]);
+  });
+
+  it("fails over from Claude Fable 5 to Claude Opus 5 High instead of Codex", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-fable-5",
+          models: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5"],
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-select-claude-fable"),
+        threadId,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-fable-5",
+        },
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-claude-fable"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-fable-exhausted"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-fable-exhausted"),
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-fable-limit-exhausted"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-fable-exhausted"),
+      payload: {
+        rateLimits: {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "rejected",
+            rateLimitType: "seven_day_fable",
+          },
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.modelSelection.model === "claude-opus-5" &&
+        entry.session?.providerInstanceId === "claudeAgent" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      10_000,
+    );
+
+    expect(thread.modelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5",
+      options: [{ id: "effort", value: "high" }],
+    });
+    expect(harness.startSessionCalls).toHaveLength(1);
+    expect(harness.startSessionCalls[0]?.input.providerInstanceId).toBe("claudeAgent");
+    expect(harness.startSessionCalls[0]?.input.modelSelection?.model).toBe("claude-opus-5");
+  });
+
+  it("continues failover to the next enabled provider after Opus 5 is exhausted, then stops", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({
+          instanceId: "codex",
+          driver: "codex",
+          model: "gpt-5-codex",
+        }),
+        makeProviderSnapshot({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          model: "claude-fable-5",
+          models: ["claude-fable-5", "claude-opus-5"],
+        }),
+        makeProviderSnapshot({
+          instanceId: "grok",
+          driver: "grok",
+          model: "grok-code",
+        }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-select-claude-fable-chain"),
+        threadId,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-fable-5",
+        },
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-claude-fable-chain"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-fable-chain"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-fable-chain"),
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-fable-chain-exhausted"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-fable-chain"),
+      payload: {
+        rateLimits: {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "rejected",
+            rateLimitType: "seven_day_fable",
+          },
+        },
+      },
+    });
+
+    const afterFable = await waitForThread(
+      harness.readModel,
+      (entry) => entry.modelSelection.model === "claude-opus-5",
+      10_000,
+    );
+    expect(afterFable.session?.providerInstanceId).toBe("claudeAgent");
+    const opusTurnId = afterFable.session?.activeTurnId;
+    expect(opusTurnId).toBeTruthy();
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: opusTurnId ?? undefined,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-opus-chain-exhausted"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId,
+      createdAt: "2026-01-01T00:00:20.000Z",
+      turnId: opusTurnId,
+      payload: {
+        rateLimits: {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "rejected",
+            rateLimitType: "seven_day_opus",
+          },
+        },
+      },
+    });
+
+    const afterOpus = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.providerInstanceId === "codex",
+      10_000,
+    );
+    expect(afterOpus.modelSelection.model).toBe("gpt-5-codex");
+    const codexTurnId = afterOpus.session?.activeTurnId;
+    expect(codexTurnId).toBeTruthy();
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: codexTurnId ?? undefined,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-chain-exhausted"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: "2026-01-01T00:00:30.000Z",
+      turnId: codexTurnId,
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+
+    const afterCodex = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.providerInstanceId === "grok",
+      10_000,
+    );
+    expect(afterCodex.modelSelection.model).toBe("grok-code");
+    const grokTurnId = afterCodex.session?.activeTurnId;
+    expect(grokTurnId).toBeTruthy();
+
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("grok"),
+      providerInstanceId: ProviderInstanceId.make("grok"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: grokTurnId ?? undefined,
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-grok-chain-exhausted"),
+      provider: ProviderDriverKind.make("grok"),
+      providerInstanceId: ProviderInstanceId.make("grok"),
+      threadId,
+      createdAt: "2026-01-01T00:00:40.000Z",
+      turnId: grokTurnId,
+      payload: {
+        rateLimits: {
+          config: {
+            creditUsagePercent: 100,
+            currentPeriod: { end: "2026-08-22T00:00:00+00:00" },
+          },
+        },
+      },
+    });
+
+    const stopped = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "error" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.unavailable"),
+      10_000,
+    );
+    expect(stopped.session?.providerInstanceId).toBe("grok");
+    expect(stopped.modelSelection.model).toBe("grok-code");
+    expect(harness.startSessionCalls.map((call) => call.input.providerInstanceId)).toEqual([
+      "claudeAgent",
+      "codex",
+      "grok",
+    ]);
   });
 
   it("does not fail over for a stale instance or an unsupported provider limit shape", async () => {

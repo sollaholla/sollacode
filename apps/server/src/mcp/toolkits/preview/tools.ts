@@ -49,7 +49,7 @@ const PreviewActionResult = Schema.Struct({});
 
 export const PreviewStatusTool = Tool.make("preview_status", {
   description:
-    "Report whether a collaborative browser tab is automation-capable, including its URL, title, visibility, loading state, viewport mode, measured CSS-pixel size, and any human-verification gate. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. If humanVerification is required, keep the tab staged for the user and do not automate or retry the challenge.",
+    "Report whether a collaborative browser tab is automation-capable, including its URL, title, visibility, loading state, viewport mode, measured CSS-pixel size, downloadApprovalRequired, and any human-verification gate. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Tab IDs from other custom agents are rejected — use this agent's own tabs. If the viewport is under 240px on either axis (often ~320×200), call preview_resize before clicking. If downloadApprovalRequired is true, call preview_wait_for_download and do not retry the fetch. If humanVerification is required, keep the tab staged for the user and do not automate or retry the challenge.",
   parameters: PreviewAutomationTabTargetInput,
   success: PreviewAutomationStatus,
   failure: PreviewAutomationError,
@@ -98,7 +98,7 @@ export const PreviewNavigateTool = safeBrowserTool(
 export const PreviewResizeTool = safeBrowserTool(
   Tool.make("preview_resize", {
     description:
-      "Resize a collaborative browser tab, optionally selected by tabId. Use {mode:'fill'}, {mode:'freeform',width:1024,height:768}, or {mode:'preset',preset:'iphone-12-pro',orientation:'portrait'}. This changes CSS layout breakpoints without changing the desktop browser user agent.",
+      "Resize a collaborative browser tab, optionally selected by tabId. Use {mode:'fill'} to follow a usable panel, {mode:'freeform',width:1280,height:800} for a desktop CSS viewport, or {mode:'preset',preset:'iphone-12-pro',orientation:'portrait'}. If preview_status.viewport is around 320×200 or either axis is under 240px, the guest is stuck in the floating thumbnail: call this with fill or freeform 1280×800 before clicking — pages like Gmail collapse and clicks miss at that size. This changes CSS layout breakpoints without changing the desktop browser user agent.",
     parameters: PreviewAutomationResizeInput,
     success: PreviewAutomationResizeResult,
     failure: PreviewAutomationError,
@@ -124,7 +124,7 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics, action history, a PNG screenshot, and any human-verification gate. When verification is required, stop automated interaction and leave the same tab staged for the user.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Do not pass tab IDs from other custom agents — use this agent's own tabs. Returns page state, semantic elements, diagnostics, action history, a PNG screenshot, pending download approvals, documentKind (pdf when Chromium's PDF viewer is showing), and any human-verification gate. PDF viewers often have empty DOM text; use visibleText. When verification is required, stop automated interaction and leave the same tab staged for the user.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,
@@ -212,7 +212,7 @@ export const PreviewWaitForTool = readonlyBrowserTool(
 export const PreviewWaitForDownloadTool = readonlyBrowserTool(
   Tool.make("preview_wait_for_download", {
     description:
-      "Wait for a download started in this tab to finish, including the time a download from a site the user has not approved yet spends waiting for their answer. Downloads from a new domain are held until the user allows or denies them, and a held download is indistinguishable from a slow one in a snapshot — call this instead of polling. Returns the files that landed, or settled:false with the still-pending request when the wait runs out.",
+      "Wait for a download started in this tab to finish, including the time a download from a site the user has not approved yet spends waiting for their answer. Downloads from a new domain are held until the user allows or denies them. Call this after clicking a download — do not treat an empty pending list at the start as a denial. Returns outcome downloaded, denied, waiting, or none, plus the files that landed. If outcome is waiting, the user still has the Allow/Deny question: do not retry the fetch. End the turn; in Agent mode emit AGENT_STOP.",
     parameters: PreviewAutomationWaitForDownloadInput,
     success: PreviewAutomationWaitForDownloadResult,
     failure: PreviewAutomationError,

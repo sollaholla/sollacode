@@ -1,8 +1,11 @@
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { actionApprovalFingerprint } from "@t3tools/shared/actionApproval";
+
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ActionApprovalBroker from "./ActionApprovalBroker.ts";
 import * as ActionApprovalPrompt from "./prompt.ts";
 import { ActionApprovalToolkit } from "./tools.ts";
 import {
@@ -58,6 +61,19 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
     };
   }
 
+  const fingerprint = actionApprovalFingerprint(input);
+  const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
+  const existing = yield* broker.findOpen({ threadId: invocation.threadId, fingerprint });
+  if (existing !== null) {
+    return {
+      status: "pending" as const,
+      approvalMode: "user" as const,
+      requestId: existing,
+      message:
+        "This exact approval is already waiting for the user. Do not retry it or create another. End the turn now; in Agent mode emit AGENT_STOP.",
+    };
+  }
+
   const prompt = yield* ActionApprovalPrompt.ActionApprovalPrompt;
   const outcome = yield* prompt.request(input, {
     threadId: invocation.threadId,
@@ -65,10 +81,17 @@ export const handleActionApproval = Effect.fn("ActionApproval.handle")(function*
   });
   switch (outcome.status) {
     case "pending":
+      yield* broker.rememberOpen({
+        threadId: invocation.threadId,
+        requestId: outcome.requestId,
+        fingerprint,
+      });
       return {
         status: "pending" as const,
         approvalMode: "user" as const,
         requestId: outcome.requestId,
+        message:
+          "The user has this approval. Do not retry it or continue the gated action. End the turn now; in Agent mode emit AGENT_STOP.",
       };
     case "unsupported":
       return { status: "approval_unavailable" as const, approvalMode: "none" as const };

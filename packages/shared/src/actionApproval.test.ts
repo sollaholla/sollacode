@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { actionApprovalAnswerFromUnknown, isActionApprovalRequestId } from "./actionApproval.ts";
+import {
+  actionApprovalAnswerFromUnknown,
+  actionApprovalFingerprint,
+  isActionApprovalRequestId,
+} from "./actionApproval.ts";
 
 describe("durable action approvals", () => {
   it("recognizes only the reserved request namespace", () => {
@@ -21,5 +25,15 @@ describe("durable action approvals", () => {
       feedback: "Use the VeeraMedical account instead.",
     });
     expect(actionApprovalAnswerFromUnknown({})).toEqual({ status: "cancelled" });
+  });
+
+  it("fingerprints a proposal so identical retries reuse one request", () => {
+    expect(
+      actionApprovalFingerprint({
+        actionKind: "send_email",
+        summary: "Send email to pat@example.com",
+        preview: "Hello",
+      }),
+    ).toBe("send_email\nSend email to pat@example.com\nHello");
   });
 });

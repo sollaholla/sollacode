@@ -3,6 +3,7 @@ import {
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationExecutionError,
+  PreviewAutomationForeignAgentTabError,
   PreviewAutomationHumanVerificationRequiredError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -211,6 +212,11 @@ const classifyResponseError = (
       });
     case "PreviewAutomationTabNotFoundError":
       return new PreviewAutomationTabNotFoundError({
+        ...context,
+        ...remoteDiagnostics,
+      });
+    case "PreviewAutomationForeignAgentTabError":
+      return new PreviewAutomationForeignAgentTabError({
         ...context,
         ...remoteDiagnostics,
       });

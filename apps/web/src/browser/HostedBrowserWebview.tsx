@@ -17,17 +17,23 @@ import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browse
 import {
   browserViewportSettingKey,
   resolveBrowserViewportLayout,
+  resolveFillCssViewport,
   resolveFittedBrowserViewport,
 } from "./browserViewportLayout";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
 import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime";
+import { acquireDesktopWebviewRegistrationOwner } from "./desktopWebviewRegistration";
 import {
   applyHostedBrowserWebviewAudio,
   type AudioMutableBrowserWebview,
 } from "./hostedBrowserWebviewAudio";
 import {
   isHostedBrowserWebviewPresented,
+  readHostedBrowserHostWindowPresenting,
+  resolveHostedBrowserWebviewAccessibilityState,
+  resolveHostedBrowserWebviewContainerSize,
+  resolveHostedBrowserWebviewTabIndex,
   resolveHostedBrowserWebviewWrapperStyle,
 } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
@@ -76,6 +82,7 @@ export function HostedBrowserWebview(props: {
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly zoomFactor: number;
+  readonly hostSize: { readonly width: number; readonly height: number };
 }) {
   const {
     threadRef,
@@ -86,6 +93,7 @@ export function HostedBrowserWebview(props: {
     initialUrl,
     viewport,
     zoomFactor,
+    hostSize,
   } = props;
   const loadedConfig = usePreviewWebviewConfig(
     threadRef.environmentId,
@@ -132,7 +140,7 @@ export function HostedBrowserWebview(props: {
     () => typeof document !== "undefined" && document.visibilityState !== "hidden",
   );
   const [ownerWindowFocused, setOwnerWindowFocused] = useState(
-    () => typeof document !== "undefined" && document.hasFocus(),
+    () => typeof document !== "undefined" && readHostedBrowserHostWindowPresenting(document),
   );
   const surfacePresented = isHostedBrowserWebviewPresented(active, ownerWindowFocused);
   const snapshotStaged = snapshotStageId !== null && !surfacePresented;
@@ -176,15 +184,38 @@ export function HostedBrowserWebview(props: {
   }, []);
 
   useEffect(() => {
-    const markFocused = () => setOwnerWindowFocused(true);
-    const markBlurred = () => setOwnerWindowFocused(false);
-    window.addEventListener("focus", markFocused);
-    window.addEventListener("blur", markBlurred);
+    const syncHostWindowPresenting = () => {
+      setOwnerWindowFocused(readHostedBrowserHostWindowPresenting(document));
+    };
+    const syncAfterBlur = () => {
+      // Window blur runs before the webview becomes document.activeElement.
+      queueMicrotask(syncHostWindowPresenting);
+    };
+    window.addEventListener("focus", syncHostWindowPresenting);
+    window.addEventListener("blur", syncAfterBlur);
+    document.addEventListener("focusin", syncHostWindowPresenting);
+    document.addEventListener("visibilitychange", syncHostWindowPresenting);
     return () => {
-      window.removeEventListener("focus", markFocused);
-      window.removeEventListener("blur", markBlurred);
+      window.removeEventListener("focus", syncHostWindowPresenting);
+      window.removeEventListener("blur", syncAfterBlur);
+      document.removeEventListener("focusin", syncHostWindowPresenting);
+      document.removeEventListener("visibilitychange", syncHostWindowPresenting);
     };
   }, []);
+
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+    const syncHostWindowPresenting = () => {
+      setOwnerWindowFocused(readHostedBrowserHostWindowPresenting(document));
+    };
+    webview.addEventListener("focus", syncHostWindowPresenting);
+    webview.addEventListener("blur", syncHostWindowPresenting);
+    return () => {
+      webview.removeEventListener("focus", syncHostWindowPresenting);
+      webview.removeEventListener("blur", syncHostWindowPresenting);
+    };
+  }, [webviewGeneration, config]);
 
   useEffect(() => {
     const webview = webviewRef.current;
@@ -192,6 +223,10 @@ export function HostedBrowserWebview(props: {
     if (!webview || !config || !bridge) return;
     let disposed = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
+    const registrationOwner = acquireDesktopWebviewRegistrationOwner(
+      runtimeTabId,
+      (webContentsId) => bridge.registerWebview(runtimeTabId, webContentsId),
+    );
     const register = () => {
       applyHostedBrowserWebviewAudio(webview, audibleRef.current);
       const lease = tabLeaseRef.current;
@@ -205,7 +240,7 @@ export function HostedBrowserWebview(props: {
           if (disposed || webviewRef.current !== webview) return;
           const webContentsId = webview.getWebContentsId();
           if (Number.isInteger(webContentsId) && webContentsId > 0) {
-            await bridge.registerWebview(runtimeTabId, webContentsId);
+            registrationOwner.request(webContentsId);
           }
         } catch {
           // did-attach/dom-ready will retry if the guest was not ready yet.
@@ -231,6 +266,7 @@ export function HostedBrowserWebview(props: {
     register();
     return () => {
       disposed = true;
+      registrationOwner.release();
       if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
@@ -289,6 +325,15 @@ export function HostedBrowserWebview(props: {
         height: presentation.content.height / presentation.content.scale,
       }
     : null;
+  const fillCssViewport =
+    viewport._tag === "fill"
+      ? resolveFillCssViewport({
+          presented: lastRect,
+          fitSourceContent: presentation.fitSourceContent,
+          sourceContent: presentation.fittedSourceContent ?? presentation.content,
+          zoomFactor: normalizedZoomFactor,
+        })
+      : null;
   const hiddenSize =
     viewport._tag !== "fill"
       ? {
@@ -296,11 +341,14 @@ export function HostedBrowserWebview(props: {
           height: viewport.height * normalizedZoomFactor,
         }
       : {
-          width: hiddenContentSize?.width ?? lastRect?.width ?? 1280,
-          height: hiddenContentSize?.height ?? lastRect?.height ?? 800,
+          width:
+            (fillCssViewport?.width ?? hiddenContentSize?.width ?? 1280) * normalizedZoomFactor,
+          height:
+            (fillCssViewport?.height ?? hiddenContentSize?.height ?? 800) * normalizedZoomFactor,
         };
-  const containerSize = active && lastRect ? lastRect : hiddenSize;
-  const deviceToolbarVisible = active && viewport._tag !== "fill" && !presentation.fitSourceContent;
+  const containerSize = resolveHostedBrowserWebviewContainerSize(lastRect, hiddenSize);
+  const deviceToolbarVisible =
+    lastRect !== null && viewport._tag !== "fill" && !presentation.fitSourceContent;
   const {
     activeDrag,
     commitViewportChange,
@@ -316,8 +364,15 @@ export function HostedBrowserWebview(props: {
     deviceToolbarVisible,
     aspectRatio: lockedAspectRatio,
   });
-  const fittedSourceViewport =
-    presentation.fitSourceContent && lastRect
+  const scaleFillCssIntoSlot =
+    fillCssViewport !== null &&
+    lastRect !== null &&
+    (presentation.fitSourceContent ||
+      fillCssViewport.width * normalizedZoomFactor > lastRect.width ||
+      fillCssViewport.height * normalizedZoomFactor > lastRect.height);
+  const fittedSourceViewport = scaleFillCssIntoSlot
+    ? fillCssViewport
+    : presentation.fitSourceContent && lastRect
       ? resolveFittedBrowserViewport(
           viewport,
           presentation.fittedSourceContent,
@@ -362,13 +417,17 @@ export function HostedBrowserWebview(props: {
     cornerRadius: presentation.cornerRadius,
     rect: lastRect,
     hiddenSize,
+    hostSize,
     interactive: presentation.interactive,
   });
+  const guestInteractive = active && presentation.interactive;
+  const wrapperAccessibility = resolveHostedBrowserWebviewAccessibilityState(guestInteractive);
 
   return (
     <div
       ref={wrapperRef}
-      className="fixed overflow-hidden bg-muted/35"
+      {...wrapperAccessibility}
+      className={cn("fixed overflow-hidden", active ? "bg-muted/35" : "bg-transparent")}
       style={{ ...wrapperStyle, overscrollBehavior: "contain" }}
       onScroll={syncContentPresentation}
       data-preview-viewport={runtimeTabId}
@@ -376,6 +435,7 @@ export function HostedBrowserWebview(props: {
       <div className="relative" style={{ width: layout.canvasWidth, height: layout.canvasHeight }}>
         {deviceToolbarVisible && effectiveViewport._tag !== "fill" ? (
           <BrowserDeviceToolbar
+            active={guestInteractive}
             setting={effectiveViewport}
             width={Math.max(1, Math.round(containerSize.width))}
             aspectRatio={lockedAspectRatio}
@@ -395,21 +455,25 @@ export function HostedBrowserWebview(props: {
           data-preview-server-tab={tabId}
           data-preview-viewport-mode={effectiveViewport._tag}
           data-preview-viewport-key={browserViewportSettingKey(effectiveViewport)}
+          tabIndex={resolveHostedBrowserWebviewTabIndex(guestInteractive)}
           data-preview-css-width={
             fittedSourceViewport
               ? fittedSourceViewport.width
-              : effectiveViewport._tag === "fill"
-                ? Math.max(1, Math.round(layout.viewportWidth / normalizedZoomFactor))
-                : effectiveViewport.width
+              : fillCssViewport
+                ? fillCssViewport.width
+                : effectiveViewport._tag === "fill"
+                  ? Math.max(1, Math.round(layout.viewportWidth / normalizedZoomFactor))
+                  : effectiveViewport.width
           }
           data-preview-css-height={
             fittedSourceViewport
               ? fittedSourceViewport.height
-              : effectiveViewport._tag === "fill"
-                ? Math.max(1, Math.round(layout.viewportHeight / normalizedZoomFactor))
-                : effectiveViewport.height
+              : fillCssViewport
+                ? fillCssViewport.height
+                : effectiveViewport._tag === "fill"
+                  ? Math.max(1, Math.round(layout.viewportHeight / normalizedZoomFactor))
+                  : effectiveViewport.height
           }
-          aria-hidden={active ? undefined : true}
           className={cn(
             "absolute flex overflow-hidden bg-background",
             active && !layout.fillsPanel && "ring-1 ring-border/70 shadow-sm",

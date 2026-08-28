@@ -81,10 +81,10 @@ import {
 } from "../composer-logic";
 import {
   mergeVoiceTranscriptPrompt,
+  previewVoiceTranscript,
   shouldTranscribeStoppedRecording,
 } from "../pushToTalkTranscription";
 import {
-  completeVoiceTranscriptionBackgroundTask,
   dismissVoiceTranscriptionResult,
   finishVoiceTranscriptionBackgroundTask,
   isBackgroundTaskActive,
@@ -196,6 +196,10 @@ import { PreviewDownloadDirectorySync } from "./preview/PreviewDownloadDirectory
 import { subscribePreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { PreviewSessionHydrator } from "./preview/PreviewSessionHydrator";
+import {
+  PreviewDownloadApprovalActions,
+  previewDownloadApprovalSource,
+} from "./preview/PreviewDownloadApprovalPrompt";
 import { reconcileHydratedBrowserSurfaces } from "./preview/reconcileHydratedBrowserSurfaces";
 import {
   selectThreadPreviewMiniPlayer,
@@ -217,6 +221,7 @@ import {
   ArrowUpRightIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
+  DownloadIcon,
   GitBranchIcon,
   LogInIcon,
   LoaderCircleIcon,
@@ -320,7 +325,6 @@ import {
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ComposerStatusRail } from "./chat/ComposerStatusRail";
-import { VoiceTranscriptionResultChip } from "./chat/VoiceTranscriptionResultChip";
 import { useTerminalLayoutSync } from "../hooks/useTerminalLayoutSync";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
@@ -394,6 +398,8 @@ import {
   deriveActiveSessionProviderDriver,
   deriveComposerSendState,
   deriveQueuedGrokMessageIds,
+  expireStaleQueuedMessagePromotion,
+  QUEUED_MESSAGE_PROMOTION_STALE_MS,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
@@ -2440,6 +2446,13 @@ function ChatViewContent(props: ChatViewProps) {
   // Flattened to a plain controller-per-tab map so the tab strip re-renders on
   // a controller change alone, not on every navigation or zoom the overlay
   // also carries.
+  const pendingPreviewDownloadApprovals = useMemo(() => {
+    const pending: DesktopPreviewOverlay["pendingDownloadApprovals"][number][] = [];
+    for (const overlay of Object.values(activePreviewState.desktopByTabId)) {
+      pending.push(...overlay.pendingDownloadApprovals);
+    }
+    return pending;
+  }, [activePreviewState.desktopByTabId]);
   const previewControllerByTabId = useMemo(() => {
     const entries: Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">> = {};
     for (const [tabId, overlay] of Object.entries(activePreviewState.desktopByTabId)) {
@@ -3131,6 +3144,17 @@ function ChatViewContent(props: ChatViewProps) {
         ),
       });
     }
+    if (pendingPreviewDownloadApprovals.length > 0) {
+      const first = pendingPreviewDownloadApprovals[0]!;
+      items.push({
+        id: `preview-download-approval:${first.id}`,
+        variant: "warning",
+        icon: <DownloadIcon />,
+        title: "Browser download waiting for you",
+        description: `${previewDownloadApprovalSource(first)} wants to save ${first.fileName}. The agent is paused until you choose.`,
+        actions: <PreviewDownloadApprovalActions approval={first} size="xs" />,
+      });
+    }
     if (
       showVersionMismatchBanner &&
       versionMismatch &&
@@ -3191,6 +3215,7 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchEnvironmentId,
     versionMismatchSelfUpdate,
     versionMismatchServerLabel,
+    pendingPreviewDownloadApprovals,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const activeSessionProviderDriver = deriveActiveSessionProviderDriver({
@@ -4252,6 +4277,29 @@ function ChatViewContent(props: ChatViewProps) {
     setThreadError,
     threadActivities,
   ]);
+  useEffect(() => {
+    if (!activeThread || !activeThreadKey || activeQueuedMessagePromotionState === undefined) {
+      return;
+    }
+    const remainingMs =
+      QUEUED_MESSAGE_PROMOTION_STALE_MS -
+      (Date.now() - activeQueuedMessagePromotionState.startedAtMs);
+    const timer = window.setTimeout(
+      () => {
+        const outcome = expireStaleQueuedMessagePromotion({
+          phasesRef: queuedMessagePromotionPhasesRef,
+          setPhases: setQueuedMessagePromotionPhases,
+          threadKey: activeThreadKey,
+          nowMs: Date.now(),
+        });
+        if (outcome?.status === "failed") {
+          setThreadError(activeThread.id, outcome.detail);
+        }
+      },
+      Math.max(0, remainingMs),
+    );
+    return () => window.clearTimeout(timer);
+  }, [activeQueuedMessagePromotionState, activeThread, activeThreadKey, setThreadError]);
   const dismissThreadError = useCallback(() => {
     if (!activeThread) return;
     setThreadError(activeThread.id, null);
@@ -7113,14 +7161,53 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
-  const dismissReadyVoiceTranscription = useCallback(() => {
-    if (!readyVoiceTranscriptionTask) return;
-    dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
-  }, [readyVoiceTranscriptionTask]);
-  const sendReadyVoiceTranscription = useCallback(() => {
-    void onSendRef.current(undefined, "transcription");
-  }, []);
-
+  const sendAwayVoiceTranscriptRef = useRef<(transcript: string) => void>(() => undefined);
+  sendAwayVoiceTranscriptRef.current = (transcript) => {
+    if (!activeThread || !isServerThread) return;
+    const draftStore = useComposerDraftStore.getState();
+    const prompt =
+      draftStore.getComposerDraft(composerDraftTarget)?.prompt?.trim() || transcript.trim();
+    if (prompt.length === 0) return;
+    const threadIdForSend = activeThread.id;
+    const createdAt = new Date().toISOString();
+    const modelSelection = activeThread.modelSelection;
+    const runtimeModeForSend = activeThread.runtimeMode;
+    const interactionModeForSend = activeThread.interactionMode;
+    if (readyVoiceTranscriptionTask) {
+      dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
+    }
+    void startThreadTurn({
+      environmentId,
+      input: {
+        threadId: threadIdForSend,
+        message: {
+          messageId: newMessageId(),
+          role: "user",
+          text: prompt,
+          inputOrigin: "transcription",
+          attachments: [],
+        },
+        modelSelection,
+        runtimeMode: runtimeModeForSend,
+        interactionMode: interactionModeForSend,
+        createdAt,
+      },
+    }).then((result) => {
+      if (result._tag === "Success") {
+        clearComposerDraftContent(composerDraftTarget);
+        return;
+      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not send transcription",
+          description: error instanceof Error ? error.message : "Failed to send the transcript.",
+        }),
+      );
+    });
+  };
   // Flushes a send the user made while the conversation was still catching up.
   // Their text never left the composer, so replaying the call sends exactly
   // what they wrote — and if they kept editing in the meantime, it sends the
@@ -7560,7 +7647,6 @@ function ChatViewContent(props: ChatViewProps) {
               );
               return;
             }
-            let retainCompletedResult = false;
             void transcribeRecordedAudio(audio, (progress) => {
               useBackgroundTaskStore.getState().updateTask(transcriptionTaskId, {
                 status: progress.status,
@@ -7631,11 +7717,6 @@ function ChatViewContent(props: ChatViewProps) {
                   } else {
                     submitTranscription();
                   }
-                } else {
-                  retainCompletedResult = completeVoiceTranscriptionBackgroundTask(
-                    transcriptionTaskId,
-                    transcript,
-                  );
                 }
                 if (!settings.autoSendVoiceTranscription && !disposed) {
                   // Let the active input render reach the editor before
@@ -7662,11 +7743,31 @@ function ChatViewContent(props: ChatViewProps) {
                     composerRef.current?.focusAtEnd();
                   });
                 } else if (disposed) {
-                  toastManager.add({
-                    type: "success",
-                    title: "Transcription ready in your draft",
-                    description: "Return to the conversation to review or send it.",
-                  });
+                  const preview = previewVoiceTranscript(transcript);
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "success",
+                      title: "Transcription ready",
+                      description: preview,
+                      timeout: 0,
+                      actionProps: {
+                        children: "Send",
+                        onClick: () => sendAwayVoiceTranscriptRef.current(transcript),
+                      },
+                      data: {
+                        expandableContent:
+                          preview === transcript.trim().replace(/\s+/g, " ") ? undefined : (
+                            <p className="whitespace-pre-wrap text-xs text-foreground">
+                              {transcript}
+                            </p>
+                          ),
+                        expandableDescriptionTrigger:
+                          preview !== transcript.trim().replace(/\s+/g, " "),
+                        expandableLabels: { expand: "Show full transcript", collapse: "Show less" },
+                        hideCopyButton: true,
+                      },
+                    }),
+                  );
                 }
               })
               .catch((cause) => {
@@ -7679,9 +7780,7 @@ function ChatViewContent(props: ChatViewProps) {
                 );
               })
               .finally(() => {
-                if (!retainCompletedResult) {
-                  finishVoiceTranscriptionBackgroundTask(transcriptionTaskId);
-                }
+                finishVoiceTranscriptionBackgroundTask(transcriptionTaskId);
               });
           },
           { once: true },
@@ -9010,12 +9109,6 @@ function ChatViewContent(props: ChatViewProps) {
                       <VoiceTranscriptionStatusChip
                         status={visiblePushToTalkStatus}
                         label={visiblePushToTalkLabel}
-                      />
-                    ) : readyVoiceTranscriptionTask?.transcript ? (
-                      <VoiceTranscriptionResultChip
-                        transcript={readyVoiceTranscriptionTask.transcript}
-                        onDismiss={dismissReadyVoiceTranscription}
-                        onSend={sendReadyVoiceTranscription}
                       />
                     ) : null
                   }

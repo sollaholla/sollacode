@@ -105,6 +105,7 @@ import {
   agentContinuationShouldAwaitBackgroundTask,
   isAgentAutoResumeMessageId,
   isControlOnlyAgentTurn,
+  agentLoopSignedOffSinceUserIntent,
   isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
   shouldDispatchStartupResume,
@@ -866,13 +867,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (switchingProviderDuringActiveTurn) {
         // A provider change is an explicit handoff, not a validation error. Stop
         // the source turn before rebinding the shared thread id so stale output
-        // cannot continue racing the replacement provider.
-        yield* providerService.interruptTurn({
-          threadId,
-          ...(activeThreadSession.activeTurnId !== null
-            ? { turnId: activeThreadSession.activeTurnId }
-            : {}),
-        });
+        // cannot continue racing the replacement provider. Claude's cooperative
+        // interrupt can leave the session running; close it like user Stop.
+        yield* providerService
+          .interruptTurn({
+            threadId,
+            ...(activeThreadSession.activeTurnId !== null
+              ? { turnId: activeThreadSession.activeTurnId }
+              : {}),
+          })
+          .pipe(
+            Effect.timeout("2 seconds"),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+              return Effect.logWarning("provider.session-handoff.interrupt-failed", {
+                threadId,
+                cause: Cause.pretty(cause),
+              });
+            }),
+          );
+        yield* providerService.stopSession({ threadId }).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+            return Effect.logWarning("provider.session-handoff.stop-failed", {
+              threadId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
       }
       const project = yield* resolveProject(thread.projectId);
       const effectiveCwd = resolveThreadWorkspaceCwd({
@@ -1737,25 +1760,36 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         (switchesProviderInstance || message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX))
       ) {
         const interruptedTurnId = activeTurnId;
+        // Cooperative interrupt is not enough on Claude: `query.interrupt()`
+        // can acknowledge while the SDK loop keeps the turn alive, so the
+        // parked replacement never starts until the user hits Stop (which also
+        // closes the session). Close the session the same way Stop does.
         yield* providerService
           .interruptTurn({
             threadId: event.payload.threadId,
             turnId: interruptedTurnId,
           })
           .pipe(
+            Effect.timeout("2 seconds"),
             Effect.catchCause((cause) => {
               if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
-              // The parked delivery still runs at the turn boundary either
-              // way; a failed interrupt only means the replacement waits for
-              // the turn to end on its own.
               return Effect.logWarning("provider.turn-replacement.interrupt-failed", {
                 threadId: event.payload.threadId,
                 turnId: interruptedTurnId,
                 cause: Cause.pretty(cause),
               });
             }),
-            Effect.forkScoped,
           );
+        yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+          Effect.timeout("10 seconds"),
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+            return Effect.logWarning("provider.turn-replacement.stop-failed", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
         yield* threadWorkScheduler.wake(
           event.payload.modelSelection?.instanceId ??
             liveProviderSession?.providerInstanceId ??
@@ -3331,6 +3365,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (thread.settledOverride === "settled") {
           return { state: "cancelled" as const, reason: "thread was settled" };
         }
+        if (agentLoopSignedOffSinceUserIntent(thread.messages)) {
+          return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
+        }
 
         const sourceMessage = thread.messages.find((message) => message.id === messageId);
         const recoveryVerdict = classifyTurnStartRecovery({
@@ -3620,10 +3657,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // the system contradicting the user-facing stop contract (observed
           // in production 2026-08-05). Only the not-yet-dispatched branch is
           // gated: once the resume turn exists we must keep supervising it.
-          const newestAssistant = thread.messages
-            .toReversed()
-            .find((message) => message.role === "assistant" && !message.streaming);
-          if (newestAssistant !== undefined && emittedAgentStop(newestAssistant.text)) {
+          if (agentLoopSignedOffSinceUserIntent(thread.messages)) {
             return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
           }
           yield* orchestrationEngine.dispatch({
@@ -3697,6 +3731,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             state: "cancelled" as const,
             reason: "continuation thread is no longer in Agent mode",
           };
+        }
+        if (agentLoopSignedOffSinceUserIntent(thread.messages)) {
+          return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
         }
 
         const assistant = thread.messages

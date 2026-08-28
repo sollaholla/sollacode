@@ -47,6 +47,7 @@ import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
+import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
@@ -59,6 +60,7 @@ import {
   PreviewAutomationHumanVerificationHostError,
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationRecordingNotActiveError,
+  PreviewAutomationForeignAgentTabHostError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
 } from "./previewAutomationErrors";
@@ -90,7 +92,11 @@ import {
 } from "./previewAutomationLifecycleQueue";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
-import { resolvePreviewAutomationThreadTarget } from "./previewAutomationThreadTarget";
+import {
+  isExclusiveAgentBrowserProfile,
+  previewAutomationBrowserProfileRoot,
+  resolvePreviewAutomationThreadTarget,
+} from "./previewAutomationThreadTarget";
 
 const renewPreviewAutomationForeground = (): Promise<void> => {
   const automation = previewBridge?.automation;
@@ -299,6 +305,28 @@ export function PreviewAutomationHosts() {
 
 function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
   const { environmentId } = props;
+  const threadShells = useThreadShells();
+  const browserProfiles = useMemo(
+    () =>
+      Object.fromEntries(
+        threadShells
+          .filter((shell) => shell.environmentId === environmentId)
+          .map((shell) => [
+            shell.id,
+            {
+              profileRootThreadId: previewAutomationBrowserProfileRoot(
+                shell.id,
+                shell.browserProfileThreadId,
+              ),
+              exclusiveAgentBrowser: isExclusiveAgentBrowserProfile(
+                shell.projectId,
+                shell.browserProfileThreadId,
+              ),
+            },
+          ]),
+      ),
+    [environmentId, threadShells],
+  );
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
@@ -345,17 +373,28 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         environmentId,
         threadId: request.threadId,
       };
-      const threadRef = resolvePreviewAutomationThreadTarget({
+      const target = resolvePreviewAutomationThreadTarget({
         environmentId,
         requestThreadRef,
         requestedTabId: request.tabId,
         previewByThreadKey: readActivePreviewSessions(),
         presentationsByRuntimeTabId: useBrowserSurfaceStore.getState().byTabId,
+        profiles: browserProfiles,
       });
-      let tabId = request.tabId ?? null;
+      const threadRef = target.threadRef;
+      let tabId = target.tabId ?? target.foreignAgentTabId ?? null;
       try {
+        if (target.foreignAgentTabId !== undefined) {
+          throw new PreviewAutomationForeignAgentTabHostError({
+            requestId: request.requestId,
+            operation: request.operation,
+            environmentId,
+            threadId: requestThreadRef.threadId,
+            tabId: target.foreignAgentTabId,
+          });
+        }
         let state = readThreadPreviewState(threadRef);
-        const needsSessionSync = needsPreviewAutomationSessionSync(state, request.tabId);
+        const needsSessionSync = needsPreviewAutomationSessionSync(state, target.tabId);
         if (needsSessionSync) {
           const listTarget = {
             environmentId,
@@ -374,7 +413,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           return useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible;
         });
         tabId =
-          request.tabId ??
+          target.tabId ??
           state.snapshot?.tabId ??
           presentedHostedTabId ??
           Object.keys(state.hostedSessions).at(-1) ??
@@ -471,7 +510,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                     url: input.url,
                   }).resolvedUrl
                 : undefined;
-              if (resolvedInputUrl && !request.tabIdExplicit && (input.reuseExistingTab ?? true)) {
+              if (
+                resolvedInputUrl &&
+                target.tabId === undefined &&
+                (input.reuseExistingTab ?? true)
+              ) {
                 const listTarget = {
                   environmentId,
                   input: { threadId: threadRef.threadId },
@@ -492,7 +535,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                     matchingTabs: matchingTabs.map((match) => ({
                       ...match,
                       activeForUser: state.activeTabId === match.tabId,
-                      currentForAgent: request.tabId === match.tabId,
+                      currentForAgent: target.tabId === match.tabId,
                       reuseCall: {
                         tool: "preview_open",
                         arguments: {
@@ -518,12 +561,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               }
 
               if (
-                request.tabIdExplicit &&
-                request.tabId !== undefined &&
-                !state.sessions[request.tabId] &&
-                !state.hostedSessions[request.tabId]
+                target.tabId !== undefined &&
+                !state.sessions[target.tabId] &&
+                !state.hostedSessions[target.tabId]
               ) {
-                tabId = request.tabId;
+                tabId = target.tabId;
                 throw new PreviewAutomationTargetUnavailableError({
                   ...unavailableTarget,
                   tabId,
@@ -532,7 +574,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
 
               let activeTabId = resolvePreviewAutomationOpenTab(
                 state,
-                request.tabId,
+                target.tabId,
                 input.reuseExistingTab ?? true,
                 tabId ?? undefined,
               );
@@ -636,8 +678,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "close": {
             return await runPreviewAutomationLifecycleMutation(threadRef, async () => {
-              const closeTabId = request.tabId;
-              if (!request.tabIdExplicit || !closeTabId) {
+              const closeTabId = target.tabId;
+              if (!closeTabId) {
                 tabId = closeTabId ?? null;
                 throw new PreviewAutomationTargetUnavailableError({
                   ...unavailableTarget,
@@ -973,11 +1015,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const activeTabIds = new Set(
               activeRecordings.map((recording) => recording.serverTabId),
             );
-            const stopTabId = resolveBrowserRecordingStopTarget(
-              activeTabIds,
-              tabId,
-              request.tabIdExplicit ? request.tabId : undefined,
-            );
+            const stopTabId = resolveBrowserRecordingStopTarget(activeTabIds, tabId, target.tabId);
             tabId = stopTabId ?? tabId;
             const stopRuntimeTabId =
               activeRecordings.find((recording) => recording.serverTabId === stopTabId)
@@ -1007,7 +1045,16 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         });
       }
     },
-    [closePreview, environmentId, listAgents, listPreviews, open, registry, resize],
+    [
+      browserProfiles,
+      closePreview,
+      environmentId,
+      listAgents,
+      listPreviews,
+      open,
+      registry,
+      resize,
+    ],
   );
   const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);

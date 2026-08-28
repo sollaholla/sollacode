@@ -1,24 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ThreadArtifactId, ThreadId } from "@t3tools/contracts";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
-import {
-  ArtifactDeepLinkButton,
-  artifactFrameSandbox,
-  resolveArtifactContentResource,
-} from "./ThreadArtifactSurface";
-
-describe("artifact toolbar navigation", () => {
-  it("uses an SPA action button rather than a full-document anchor", () => {
-    const markup = renderToStaticMarkup(
-      createElement(ArtifactDeepLinkButton, { onNavigate: () => undefined }),
-    );
-
-    expect(markup).toContain('<button type="button"');
-    expect(markup).not.toContain("href=");
-  });
-});
+import { artifactFrameSandbox, resolveArtifactContentResource } from "./ThreadArtifactSurface";
 
 describe("artifact iframe isolation", () => {
   it("allows only interactive scripts", () => {

@@ -1383,6 +1383,11 @@ export interface DesktopOrchestratorBubbleBridge {
   onState: (listener: (state: DesktopOrchestratorBubbleState) => void) => () => void;
   /** Move the bubble window (absolute screen coordinates, top-left origin). */
   move: (position: { readonly x: number; readonly y: number }) => Promise<void>;
+  /**
+   * Latch the OS-cursor grab offset before move events. Optional on older
+   * preloads; without it Windows DPI can freeze the orb in place.
+   */
+  beginDrag?: () => Promise<void>;
   /** Persist the bubble's resting position after a drag. */
   dragEnd: () => Promise<void>;
   /** Reveal the main window and navigate it to the orchestrator thread. */

@@ -115,6 +115,7 @@ export const ORCHESTRATOR_BUBBLE_PUBLISH_STATE_CHANNEL =
   "desktop:orchestrator-bubble-publish-state";
 export const ORCHESTRATOR_BUBBLE_STATE_CHANNEL = "desktop:orchestrator-bubble-state";
 export const ORCHESTRATOR_BUBBLE_MOVE_CHANNEL = "desktop:orchestrator-bubble-move";
+export const ORCHESTRATOR_BUBBLE_DRAG_START_CHANNEL = "desktop:orchestrator-bubble-drag-start";
 export const ORCHESTRATOR_BUBBLE_DRAG_END_CHANNEL = "desktop:orchestrator-bubble-drag-end";
 export const ORCHESTRATOR_BUBBLE_OPEN_CHANNEL = "desktop:orchestrator-bubble-open";
 export const ORCHESTRATOR_BUBBLE_TOGGLE_VOICE_CHANNEL = "desktop:orchestrator-bubble-toggle-voice";

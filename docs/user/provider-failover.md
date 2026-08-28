@@ -20,15 +20,23 @@ the thread.
 
 ## Choosing the next provider
 
-Solla Code reads the configured provider snapshots in their stable registry order. A candidate must be
-enabled, installed, available, not in an error/disabled state, not explicitly unauthenticated, and
-advertise at least one model. Solla Code prefers the first eligible provider using a different driver,
-then falls back to another instance of the same driver. The provider's default advertised model is
-used, or its first advertised model when no default is marked.
+When the exhausted provider still has another advertised model with remaining quota, Solla Code stays
+on that instance and switches to the next-highest remaining model. Claude Fable 5 therefore fails
+over to Claude Opus 5 with High effort instead of jumping to Codex. Shared Claude windows such as the
+five-hour session or weekly cap still leave the whole Claude instance.
 
-An instance that exhausted its limit is not reused by that thread for 24 hours in the current server
-process. If every eligible instance is exhausted or unavailable, the work log records that no
-failover target is available.
+If that instance has no remaining model, Solla Code reads the configured provider snapshots in their
+stable registry order. A candidate must be enabled, installed, available, not in an error/disabled
+state, not explicitly unauthenticated, and advertise at least one model. Solla Code prefers the first
+eligible provider using a different driver, then falls back to another instance of the same driver.
+The provider's default advertised model is used, or its first advertised model when no default is
+marked. If starting or handing off to a candidate fails, Solla Code tries the next remaining
+candidate rather than stopping on the first failure.
+
+An exhausted model is not reused by that thread for 24 hours in the current server process. An
+instance is skipped for further provider-level search once it has no remaining models or reports an
+account-wide limit. Failover continues through every remaining enabled provider; when none remain,
+the work log records that no failover target is available and the thread stops.
 
 ## JSON handoff behavior
 

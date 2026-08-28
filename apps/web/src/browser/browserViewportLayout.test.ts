@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DEFAULT_FILL_CSS_VIEWPORT,
+  isUsableFillCssViewport,
   resizeBrowserViewportFromRail,
   resizeFreeformViewport,
   resolveBrowserDeviceViewportLayout,
+  resolveFillCssViewport,
   resolveFittedBrowserViewport,
   resolveBrowserViewportLayout,
   resolveResponsiveBrowserViewportSize,
@@ -23,6 +26,49 @@ describe("resolveBrowserViewportLayout", () => {
     expect(
       resolveFittedBrowserViewport({ _tag: "fill" }, { width: 320, height: 200, scale: 0.25 }),
     ).toEqual({ _tag: "freeform", width: 1280, height: 800 });
+  });
+
+  it("does not let a 320×200 mini-player become the page CSS viewport", () => {
+    expect(isUsableFillCssViewport({ width: 321, height: 200 })).toBe(false);
+    expect(
+      resolveFillCssViewport({
+        presented: { width: 320, height: 200 },
+        fitSourceContent: true,
+        sourceContent: { width: 320, height: 200, scale: 1 },
+      }),
+    ).toEqual({ _tag: "freeform", ...DEFAULT_FILL_CSS_VIEWPORT });
+    expect(
+      resolveFillCssViewport({
+        presented: { width: 900, height: 640 },
+        fitSourceContent: false,
+        sourceContent: null,
+      }),
+    ).toEqual({ _tag: "freeform", ...DEFAULT_FILL_CSS_VIEWPORT });
+    expect(
+      resolveFillCssViewport({
+        presented: { width: 900, height: 640 },
+        fitSourceContent: false,
+        sourceContent: { width: 320, height: 200, scale: 1 },
+      }),
+    ).toEqual({ _tag: "freeform", ...DEFAULT_FILL_CSS_VIEWPORT });
+    expect(
+      resolveFillCssViewport({
+        presented: { width: 900, height: 640 },
+        fitSourceContent: false,
+        sourceContent: { width: 1280, height: 800, scale: 1 },
+      }),
+    ).toEqual({ _tag: "freeform", ...DEFAULT_FILL_CSS_VIEWPORT });
+  });
+
+  it("lets a desktop-sized panel become the page CSS viewport", () => {
+    expect(isUsableFillCssViewport(DEFAULT_FILL_CSS_VIEWPORT)).toBe(true);
+    expect(
+      resolveFillCssViewport({
+        presented: { width: 1400, height: 900 },
+        fitSourceContent: false,
+        sourceContent: null,
+      }),
+    ).toEqual({ _tag: "freeform", width: 1400, height: 900 });
   });
 
   it("fills the available surface in fill mode", () => {

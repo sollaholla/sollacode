@@ -5,6 +5,7 @@ import {
   PreviewAutomationOperation,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
+  previewForeignAgentTabErrorMessage,
   PreviewTabId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -115,6 +116,25 @@ export class PreviewAutomationTargetUnavailableError extends Schema.TaggedErrorC
 
   override get message(): string {
     return `Preview automation target for ${this.operation} request ${this.requestId} is unavailable on environment ${this.environmentId} thread ${this.threadId} (tab ${this.tabId ?? "unassigned"}, bridge ${this.bridgeAvailable ? "available" : "unavailable"}).`;
+  }
+}
+
+export class PreviewAutomationForeignAgentTabHostError extends Schema.TaggedErrorClass<PreviewAutomationForeignAgentTabHostError>()(
+  "PreviewAutomationForeignAgentTabHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: PreviewTabId,
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationForeignAgentTabError" as const;
+  }
+
+  override get message(): string {
+    return previewForeignAgentTabErrorMessage(this.tabId, this.operation);
   }
 }
 
@@ -254,6 +274,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationNavigationLoadFailedHostError,
   PreviewAutomationViewportTimeoutError,
   PreviewAutomationTargetUnavailableError,
+  PreviewAutomationForeignAgentTabHostError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationHumanVerificationHostError,
   PreviewAutomationTargetNotEditableHostError,

@@ -1,5 +1,6 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  AGENTS_PROJECT_ID,
   EnvironmentId,
   PreviewTabId,
   ThreadId,
@@ -11,7 +12,13 @@ import type { BrowserSurfacePresentation } from "~/browser/browserSurfaceStore";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import type { ThreadPreviewState } from "~/previewStateStore";
 
-import { resolvePreviewAutomationThreadTarget } from "./previewAutomationThreadTarget";
+import {
+  canReusePreviewAutomationBrowser,
+  isExclusiveAgentBrowserProfile,
+  previewAutomationBrowserProfileRoot,
+  resolvePreviewAutomationThreadTarget,
+  type PreviewAutomationThreadProfile,
+} from "./previewAutomationThreadTarget";
 
 const environmentId = EnvironmentId.make("environment-1");
 const requestThreadRef = scopeThreadRef(environmentId, ThreadId.make("thread-request"));
@@ -75,7 +82,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: visibleState },
         presentationsByRuntimeTabId: {},
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: PreviewTabId.make("tab-visible"),
+    });
   });
 
   it("defaults a fresh agent to the visible interactive browser in its environment", () => {
@@ -97,7 +107,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation({ updatedAt: 2 }),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("keeps targeting a visible hosted guest while server metadata reconnects", () => {
@@ -117,7 +130,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation(),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("prefers the interactive panel over a newer visible thumbnail", () => {
@@ -140,7 +156,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation({ interactive: false, updatedAt: 2 }),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("falls back to the requesting thread when no browser is presented", () => {
@@ -152,6 +171,110 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         previewByThreadKey: {},
         presentationsByRuntimeTabId: {},
       }),
-    ).toEqual(requestThreadRef);
+    ).toEqual({
+      threadRef: requestThreadRef,
+      tabId: undefined,
+    });
+  });
+});
+
+const agentHome = (threadId: string): PreviewAutomationThreadProfile => ({
+  profileRootThreadId: ThreadId.make(threadId),
+  exclusiveAgentBrowser: true,
+});
+
+describe("canReusePreviewAutomationBrowser", () => {
+  it("keeps a custom agent's dedicated browser private from sibling agents", () => {
+    expect(isExclusiveAgentBrowserProfile(AGENTS_PROJECT_ID, null)).toBe(true);
+    expect(
+      previewAutomationBrowserProfileRoot(ThreadId.make("agent-a"), ThreadId.make("agent-a")),
+    ).toEqual(ThreadId.make("agent-a"));
+    expect(
+      canReusePreviewAutomationBrowser({
+        requestThreadId: ThreadId.make("agent-veera"),
+        ownerThreadId: ThreadId.make("agent-pawstalgia"),
+        profiles: {
+          "agent-veera": agentHome("agent-veera"),
+          "agent-pawstalgia": agentHome("agent-pawstalgia"),
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("lets a delegated project thread keep using its creating agent's profile", () => {
+    expect(
+      canReusePreviewAutomationBrowser({
+        requestThreadId: ThreadId.make("project-thread"),
+        ownerThreadId: ThreadId.make("agent-veera"),
+        profiles: {
+          "project-thread": {
+            profileRootThreadId: ThreadId.make("agent-veera"),
+            exclusiveAgentBrowser: false,
+          },
+          "agent-veera": agentHome("agent-veera"),
+        },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("resolvePreviewAutomationThreadTarget agent isolation", () => {
+  const veeraRef = scopeThreadRef(environmentId, ThreadId.make("agent-veera"));
+  const pawstalgiaRef = scopeThreadRef(environmentId, ThreadId.make("agent-pawstalgia"));
+  const profiles = {
+    "agent-veera": agentHome("agent-veera"),
+    "agent-pawstalgia": agentHome("agent-pawstalgia"),
+  };
+
+  it("ignores an explicit tab from another custom agent's dedicated browser", () => {
+    const pawstalgiaState = state("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+    const veeraState = state("tab-veera-gmail");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef: veeraRef,
+        requestedTabId: PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4"),
+        previewByThreadKey: {
+          [scopedThreadKey(veeraRef)]: veeraState,
+          [scopedThreadKey(pawstalgiaRef)]: pawstalgiaState,
+        },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(veeraRef, veeraState.serverEpoch, "tab-veera-gmail")]: presentation({
+            interactive: true,
+            updatedAt: 2,
+          }),
+          [previewRuntimeTabId(
+            pawstalgiaRef,
+            pawstalgiaState.serverEpoch,
+            "tab_70d23993-1e1d-4caf-b190-0265822665c4",
+          )]: presentation({ interactive: true, updatedAt: 1 }),
+        },
+        profiles,
+      }),
+    ).toEqual({
+      threadRef: veeraRef,
+      tabId: undefined,
+      foreignAgentTabId: PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4"),
+    });
+  });
+
+  it("does not default a custom agent onto another agent's visible browser", () => {
+    const pawstalgiaState = state("tab-pawstalgia-gmail");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef: veeraRef,
+        requestedTabId: undefined,
+        previewByThreadKey: { [scopedThreadKey(pawstalgiaRef)]: pawstalgiaState },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(pawstalgiaRef, pawstalgiaState.serverEpoch, "tab-pawstalgia-gmail")]:
+            presentation(),
+        },
+        profiles,
+      }),
+    ).toEqual({
+      threadRef: veeraRef,
+      tabId: undefined,
+    });
   });
 });

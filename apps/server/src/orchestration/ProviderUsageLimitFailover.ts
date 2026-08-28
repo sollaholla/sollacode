@@ -177,9 +177,70 @@ const QUOTA_EXHAUSTED_PERCENT = 100;
 const CLAUDE_MODEL_FAMILIES = ["sonnet", "haiku", "fable", "opus"] as const;
 type ClaudeModelFamily = (typeof CLAUDE_MODEL_FAMILIES)[number];
 
+const CLAUDE_ACCOUNT_WIDE_LIMIT_KEYS = new Set([
+  "five_hour",
+  "current_session",
+  "seven_day",
+  "one_day",
+  "daily",
+  "weekly",
+  "seven_day_oauth_apps",
+]);
+
+export function providerFailoverModelKey(
+  instanceId: ProviderInstanceId | string,
+  model: string,
+): string {
+  return `${String(instanceId)}\0${model}`;
+}
+
 function claudeModelFamily(slug: string): ClaudeModelFamily | null {
   const normalized = slug.toLowerCase();
   return CLAUDE_MODEL_FAMILIES.find((family) => normalized.includes(family)) ?? null;
+}
+
+function normalizeClaudeLimitKey(value: string): string {
+  return value
+    .trim()
+    .replace(/([a-z\d])([A-Z])/g, "$1_$2")
+    .replaceAll(/[\s-]+/g, "_")
+    .toLowerCase();
+}
+
+function claudeFamilyFromLimitKey(key: string): ClaudeModelFamily | null {
+  return claudeModelFamily(normalizeClaudeLimitKey(key));
+}
+
+function isClaudeExtraUsageLimitKey(key: string): boolean {
+  const normalized = normalizeClaudeLimitKey(key);
+  return (
+    normalized.includes("extra") || normalized.includes("overage") || normalized.includes("credit")
+  );
+}
+
+function isClaudeAccountWideLimitKey(key: string): boolean {
+  const normalized = normalizeClaudeLimitKey(key);
+  if (claudeFamilyFromLimitKey(normalized) !== null) return false;
+  if (isClaudeExtraUsageLimitKey(normalized)) return false;
+  return CLAUDE_ACCOUNT_WIDE_LIMIT_KEYS.has(normalized);
+}
+
+/**
+ * Codex and Grok meter the whole account. Claude only does so for shared
+ * windows such as the five-hour session or weekly cap; a Fable-only rejection
+ * must not disqualify Opus 5 on the same instance.
+ */
+export function isAccountWideProviderExhaustion(
+  driver: ProviderDriverKind,
+  exhaustion: ProviderUsageLimitExhaustion,
+): boolean {
+  if (String(driver) !== CLAUDE_DRIVER) {
+    return true;
+  }
+  const reason = exhaustion.reason.trim();
+  const separator = reason.lastIndexOf(":");
+  const limitType = separator >= 0 ? reason.slice(separator + 1) : reason;
+  return isClaudeAccountWideLimitKey(limitType);
 }
 
 function epochMilliseconds(value: unknown): number | null {
@@ -250,6 +311,36 @@ function isClaudeModelFamilyExhausted(input: {
   return false;
 }
 
+function isRejectedWindowStillOpen(record: UnknownRecord, nowEpochMs: number | null): boolean {
+  const resetAt = epochMilliseconds(record.resetsAt ?? record.overageResetsAt ?? record.resets_at);
+  return !(resetAt !== null && nowEpochMs !== null && resetAt <= nowEpochMs);
+}
+
+/**
+ * Live `rate_limit_event` snapshots overwrite the usage probe. A Fable
+ * rejection stored this way must still skip Fable without treating every
+ * other Claude family as spent.
+ */
+function isClaudeRateLimitInfoRejectedForFamily(input: {
+  readonly accountUsage: unknown;
+  readonly family: ClaudeModelFamily;
+  readonly nowEpochMs: number | null;
+}): boolean {
+  const info = asRecord(asRecord(input.accountUsage)?.rate_limit_info);
+  if (info?.status !== "rejected") {
+    return false;
+  }
+  const limitType = typeof info.rateLimitType === "string" ? info.rateLimitType : "";
+  const family = claudeFamilyFromLimitKey(limitType);
+  if (
+    family !== input.family &&
+    !(input.family === "fable" && isClaudeExtraUsageLimitKey(limitType))
+  ) {
+    return false;
+  }
+  return isRejectedWindowStillOpen(info, input.nowEpochMs);
+}
+
 /**
  * Fable is metered against the plan's extra-usage credit pool, so a depleted
  * pool rejects the turn ("out of usage credits") even when no Fable-scoped
@@ -293,6 +384,11 @@ export function isClaudeModelExhausted(input: {
   if (isClaudeModelFamilyExhausted({ accountUsage: input.accountUsage, family, nowEpochMs })) {
     return true;
   }
+  if (
+    isClaudeRateLimitInfoRejectedForFamily({ accountUsage: input.accountUsage, family, nowEpochMs })
+  ) {
+    return true;
+  }
   return family === "fable" && isClaudeExtraUsageDepleted(input.accountUsage, nowEpochMs);
 }
 
@@ -316,25 +412,26 @@ function isEligibleTarget(provider: ServerProvider): boolean {
 function failoverModel(
   provider: ServerProvider,
   nowEpochMs: number | null,
+  skipSlugs?: ReadonlySet<string>,
 ): ServerProviderModel | null {
-  const usable =
-    String(provider.driver) === CLAUDE_DRIVER
-      ? provider.models.filter(
-          (entry) =>
-            !isClaudeModelExhausted({
-              accountUsage: provider.accountUsage,
-              modelSlug: entry.slug,
-              nowEpochMs,
-            }),
-        )
-      : provider.models;
+  const usable = provider.models.filter((entry) => {
+    if (skipSlugs?.has(entry.slug)) return false;
+    if (String(provider.driver) !== CLAUDE_DRIVER) return true;
+    return !isClaudeModelExhausted({
+      accountUsage: provider.accountUsage,
+      modelSlug: entry.slug,
+      nowEpochMs,
+    });
+  });
   return usable.find((entry) => entry.isDefault === true) ?? usable[0] ?? null;
 }
 
 /**
  * Whether this provider's *account* is out of quota, as opposed to one of its
  * models. Claude meters per model family and is screened in `failoverModel`;
- * Codex meters the whole account, so a per-model screen can never see it.
+ * only shared Claude windows (five-hour session, weekly cap) disqualify the
+ * whole instance. Codex meters the whole account, so a per-model screen can
+ * never see it.
  *
  * Without this, failover happily hands the turn to a provider whose own health
  * probe already said it was spent, and the replacement turn is rejected on
@@ -347,7 +444,33 @@ function failoverModel(
  * stale snapshot says nothing, and must not exclude an otherwise usable
  * provider.
  */
+function isClaudeAccountExhausted(accountUsage: unknown, nowEpochMs: number | null): boolean {
+  const envelope = asRecord(accountUsage);
+  const info = asRecord(envelope?.rate_limit_info);
+  if (info?.status === "rejected") {
+    const limitType = typeof info.rateLimitType === "string" ? info.rateLimitType : "";
+    if (!isClaudeAccountWideLimitKey(limitType)) {
+      return false;
+    }
+    return isRejectedWindowStillOpen(info, nowEpochMs);
+  }
+
+  const rateLimits = asRecord(envelope?.rate_limits);
+  if (!rateLimits) {
+    return false;
+  }
+  for (const [key, value] of Object.entries(rateLimits)) {
+    if (!isClaudeAccountWideLimitKey(key)) continue;
+    const window = asRecord(value);
+    if (window && isWindowExhausted(window, nowEpochMs)) return true;
+  }
+  return false;
+}
+
 function isProviderAccountExhausted(provider: ServerProvider, nowEpochMs: number | null): boolean {
+  if (String(provider.driver) === CLAUDE_DRIVER) {
+    return isClaudeAccountExhausted(provider.accountUsage, nowEpochMs);
+  }
   const exhaustion = detectProviderUsageLimitExhaustion(provider.driver, provider.accountUsage);
   if (exhaustion === null || exhaustion.resetsAt === null) {
     return exhaustion !== null;
@@ -360,11 +483,12 @@ function isProviderAccountExhausted(provider: ServerProvider, nowEpochMs: number
 function targetFromProvider(
   provider: ServerProvider,
   nowEpochMs: number | null,
+  skipSlugs?: ReadonlySet<string>,
 ): ProviderFailoverTarget | null {
   if (isProviderAccountExhausted(provider, nowEpochMs)) {
     return null;
   }
-  const model = failoverModel(provider, nowEpochMs);
+  const model = failoverModel(provider, nowEpochMs, skipSlugs);
   if (!model) {
     return null;
   }
@@ -393,19 +517,73 @@ function targetFromProvider(
   };
 }
 
+function skippedSlugsForProvider(input: {
+  readonly provider: ServerProvider;
+  readonly currentInstanceId: ProviderInstanceId;
+  readonly currentModel?: string | null;
+  readonly excludedModels?: ReadonlySet<string>;
+}): Set<string> {
+  const skipped = new Set<string>();
+  if (
+    input.provider.instanceId === input.currentInstanceId &&
+    typeof input.currentModel === "string" &&
+    input.currentModel.length > 0
+  ) {
+    skipped.add(input.currentModel);
+  }
+  if (input.excludedModels) {
+    const prefix = `${String(input.provider.instanceId)}\0`;
+    for (const key of input.excludedModels) {
+      if (key.startsWith(prefix)) {
+        skipped.add(key.slice(prefix.length));
+      }
+    }
+  }
+  return skipped;
+}
+
 /**
- * Provider registry order is the stable tie-breaker. A different driver is
- * preferred so a second instance backed by the same exhausted subscription
- * does not preempt an independently billed provider. A candidate whose every
- * model is out of quota is passed over rather than ending the search.
+ * Remaining models on the exhausted instance are tried first so Claude Fable 5
+ * lands on Claude Opus 5 instead of jumping to Codex. Registry order is the
+ * stable tie-breaker after that. A different driver is preferred so a second
+ * instance backed by the same exhausted subscription does not preempt an
+ * independently billed provider. A candidate whose every model is out of quota
+ * is passed over rather than ending the search.
  */
 export function selectProviderFailoverTarget(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly currentInstanceId: ProviderInstanceId;
   readonly currentDriver: ProviderDriverKind;
+  readonly currentModel?: string | null;
   readonly excludedInstanceIds?: ReadonlySet<string>;
+  readonly excludedModels?: ReadonlySet<string>;
   readonly nowEpochMs?: number | null;
 }): ProviderFailoverTarget | null {
+  const nowEpochMs = input.nowEpochMs ?? null;
+  const currentModel =
+    typeof input.currentModel === "string" && input.currentModel.length > 0
+      ? input.currentModel
+      : null;
+
+  const currentProvider = input.providers.find(
+    (provider) => provider.instanceId === input.currentInstanceId,
+  );
+  if (currentProvider && currentModel && isEligibleTarget(currentProvider)) {
+    const currentTarget = targetFromProvider(
+      currentProvider,
+      nowEpochMs,
+      skippedSlugsForProvider({
+        provider: currentProvider,
+        currentInstanceId: input.currentInstanceId,
+        currentModel,
+        excludedModels: input.excludedModels,
+      }),
+    );
+    if (currentTarget && currentTarget.modelSelection.model !== currentModel) {
+      return currentTarget;
+    }
+  }
+
   const candidates = input.providers.filter(
     (provider) =>
       provider.instanceId !== input.currentInstanceId &&
@@ -417,7 +595,16 @@ export function selectProviderFailoverTarget(input: {
     ...candidates.filter((candidate) => candidate.driver === input.currentDriver),
   ];
   for (const provider of ordered) {
-    const target = targetFromProvider(provider, input.nowEpochMs ?? null);
+    const target = targetFromProvider(
+      provider,
+      nowEpochMs,
+      skippedSlugsForProvider({
+        provider,
+        currentInstanceId: input.currentInstanceId,
+        currentModel,
+        excludedModels: input.excludedModels,
+      }),
+    );
     if (target) {
       return target;
     }

@@ -32,4 +32,15 @@ describe("hasAgentDashboard", () => {
       ),
     ).toBe(true);
   });
+
+  it("shows an HTML dashboard the same way as other custom views", () => {
+    expect(
+      hasAgentDashboard(
+        workspaceWithArtifact({
+          kind: "html",
+          html: "<h1>Inbox</h1>",
+        }),
+      ),
+    ).toBe(true);
+  });
 });

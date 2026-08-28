@@ -131,6 +131,22 @@ export const makeLayer = () =>
             actionApproval: input,
           },
         });
+        // Returning pending does not stop the provider turn. Without this the
+        // agent retries the same approval until the user has answered it
+        // several times. Interrupt after the card exists so the MCP result
+        // can still leave; a fresh turn starts when the user answers.
+        if (scope.turnId !== null) {
+          const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+          yield* orchestrationEngine
+            .dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make(yield* nextId("server:action-approval:interrupt")),
+              threadId: scope.threadId,
+              turnId: scope.turnId,
+              createdAt,
+            })
+            .pipe(Effect.orDie);
+        }
         return { status: "pending" as const, requestId };
       });
 

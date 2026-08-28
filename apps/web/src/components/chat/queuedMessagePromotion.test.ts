@@ -4,6 +4,8 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  expireStaleQueuedMessagePromotion,
+  QUEUED_MESSAGE_PROMOTION_STALE_MS,
   runQueuedMessagePromotion,
   settleQueuedMessagePromotion,
   type QueuedMessagePromotionPhases,
@@ -73,11 +75,11 @@ describe("queued-message promotion lifecycle", () => {
     expect(promote).toHaveBeenCalledTimes(1);
     expect(setPhases).toHaveBeenCalledTimes(1);
     expect(setPhases).toHaveBeenCalledWith({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "requesting",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
+      }),
     });
     expect(
       settleQueuedMessagePromotion({
@@ -88,11 +90,11 @@ describe("queued-message promotion lifecycle", () => {
       }),
     ).toBeNull();
     expect(phasesRef.current).toEqual({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "requesting",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
+      }),
     });
 
     releasePromotion?.();
@@ -100,29 +102,29 @@ describe("queued-message promotion lifecycle", () => {
     expect(setPhases.mock.calls).toEqual([
       [
         {
-          "thread-a": {
+          "thread-a": expect.objectContaining({
             phase: "requesting",
             messageIds: ["message-a"],
             requestId: "request-a",
-          },
+          }),
         },
       ],
       [
         {
-          "thread-a": {
+          "thread-a": expect.objectContaining({
             phase: "awaiting-projection",
             messageIds: ["message-a"],
             requestId: "request-a",
-          },
+          }),
         },
       ],
     ]);
     expect(phasesRef.current).toEqual({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
+      }),
     });
     expect(onStart).toHaveBeenCalledTimes(1);
     expect(onSuccess).toHaveBeenCalledTimes(1);
@@ -150,11 +152,11 @@ describe("queued-message promotion lifecycle", () => {
 
     await expect(runQueuedMessagePromotion(input)).resolves.toBe(true);
     expect(phasesRef.current).toEqual({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
+      }),
     });
 
     await expect(runQueuedMessagePromotion(input)).resolves.toBe(false);
@@ -199,11 +201,11 @@ describe("queued-message promotion lifecycle", () => {
     expect(promote).toHaveBeenCalledTimes(2);
     expect(setError.mock.calls).toEqual([[null], [error], [null], [null]]);
     expect(phasesRef.current).toEqual({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
+      }),
     });
   });
 
@@ -233,16 +235,16 @@ describe("queued-message promotion lifecycle", () => {
     });
 
     expect(phasesRef.current).toEqual({
-      "thread-a": {
+      "thread-a": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-a"],
         requestId: "request-a",
-      },
-      "thread-b": {
+      }),
+      "thread-b": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-b"],
         requestId: "request-b",
-      },
+      }),
     });
     expect(
       settleQueuedMessagePromotion({
@@ -253,11 +255,11 @@ describe("queued-message promotion lifecycle", () => {
       }),
     ).toEqual({ status: "succeeded", messageIds: ["message-a"] });
     expect(phasesRef.current).toEqual({
-      "thread-b": {
+      "thread-b": expect.objectContaining({
         phase: "awaiting-projection",
         messageIds: ["message-b"],
         requestId: "request-b",
-      },
+      }),
     });
   });
 
@@ -337,6 +339,7 @@ describe("queued-message promotion lifecycle", () => {
           phase: "awaiting-projection",
           messageIds: ["promoted-a", "promoted-b"],
           requestId: "request-a",
+          startedAtMs: 0,
         },
       },
     };
@@ -365,6 +368,7 @@ describe("queued-message promotion lifecycle", () => {
           phase: "awaiting-projection",
           messageIds: ["message-a"],
           requestId: "request-a",
+          startedAtMs: 0,
         },
       },
     };
@@ -401,5 +405,83 @@ describe("queued-message promotion lifecycle", () => {
       }),
     ).toEqual({ status: "failed", detail: "session stopped before promotion" });
     expect(phasesRef.current).toEqual({});
+  });
+
+  it("unlocks a promotion that never received a terminal projection", () => {
+    const phasesRef: { current: QueuedMessagePromotionPhases } = {
+      current: {
+        "thread-a": {
+          phase: "awaiting-projection",
+          messageIds: ["message-a"],
+          requestId: "request-a",
+          startedAtMs: 1_000,
+        },
+      },
+    };
+    const setPhases = vi.fn();
+
+    expect(
+      expireStaleQueuedMessagePromotion({
+        phasesRef,
+        setPhases,
+        threadKey: "thread-a",
+        nowMs: 1_000 + QUEUED_MESSAGE_PROMOTION_STALE_MS - 1,
+      }),
+    ).toBeNull();
+    expect(phasesRef.current["thread-a"]).toBeDefined();
+
+    expect(
+      expireStaleQueuedMessagePromotion({
+        phasesRef,
+        setPhases,
+        threadKey: "thread-a",
+        nowMs: 1_000 + QUEUED_MESSAGE_PROMOTION_STALE_MS,
+      }),
+    ).toEqual({
+      status: "failed",
+      detail: "Sending queued messages timed out. Try Send queued now again.",
+    });
+    expect(phasesRef.current).toEqual({});
+  });
+
+  it("does not revive an expired promotion when the RPC later accepts", async () => {
+    let releasePromotion: (() => void) | undefined;
+    const phasesRef: { current: QueuedMessagePromotionPhases } = { current: {} };
+    const setPhases = vi.fn();
+    const onSuccess = vi.fn();
+    const onError = vi.fn();
+
+    const pending = runQueuedMessagePromotion({
+      phasesRef,
+      setPhases,
+      threadKey: "thread-a",
+      messageIds: ["message-a"],
+      requestId: "request-a",
+      promote: () =>
+        new Promise<boolean>((resolve) => {
+          releasePromotion = () => resolve(true);
+        }),
+      onStart: vi.fn(),
+      onSuccess,
+      onError,
+    });
+
+    expect(
+      expireStaleQueuedMessagePromotion({
+        phasesRef,
+        setPhases,
+        threadKey: "thread-a",
+        nowMs: Date.now() + QUEUED_MESSAGE_PROMOTION_STALE_MS,
+      }),
+    ).toEqual({
+      status: "failed",
+      detail: "Sending queued messages timed out. Try Send queued now again.",
+    });
+
+    releasePromotion?.();
+    await expect(pending).resolves.toBe(true);
+    expect(phasesRef.current).toEqual({});
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@ Custom-agent workspaces extend the existing Agent Stack (agents work in their th
 
 ## Data and contracts
 
-The shared schemas in `packages/contracts/src/vm.ts` define tasks, task runs, notifications, preferences, and the safe artifact vocabulary. WebSocket RPC definitions live in `packages/contracts/src/rpc.ts` and are authorized with the existing VM operate scope.
+The shared schemas in `packages/contracts/src/vm.ts` define tasks, task runs, notifications, preferences, and the artifact vocabulary (structured views plus an HTML/CSS dashboard). WebSocket RPC definitions live in `packages/contracts/src/rpc.ts` and are authorized with the existing VM operate scope.
 
 Migration 051 adds five environment-local SQLite tables:
 
@@ -28,7 +28,7 @@ Running task completion is observed through the existing `projection_turns.pendi
 
 ## Agent authority
 
-The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It derives the caller from the credential-bound thread through `VmAgentStore.getByThreadId`; callers cannot supply another agent id. Agent-created recurrence requires user approval. Artifact input is decoded against the declarative contract before persistence.
+The `agent_workspace` MCP tool is guarded by the `vm` invocation capability. It derives the caller from the credential-bound thread through `VmAgentStore.getByThreadId`; callers cannot supply another agent id. Agent-created recurrence requires user approval. Artifact input is decoded against the contract before persistence. An `html` dashboard is stored as markup and rendered in the same opaque iframe sandbox as a thread web artifact.
 
 The hidden Agents project remains the organizational parent for agent chats, but it is not their
 shared execution directory. Every newly created named agent receives a readable, uniquely suffixed

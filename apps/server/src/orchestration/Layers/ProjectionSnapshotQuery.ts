@@ -1271,6 +1271,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               AND later.stream_id = events.stream_id
               AND later.event_type = 'thread.turn-start-requested'
               AND later.sequence > events.sequence
+              AND NOT EXISTS (
+                SELECT 1
+                FROM orchestration_events AS absorbed
+                WHERE absorbed.aggregate_kind = 'thread'
+                  AND absorbed.stream_id = later.stream_id
+                  AND absorbed.event_type = 'thread.activity-appended'
+                  AND json_extract(absorbed.payload_json, '$.activity.kind') =
+                    'message.delivered'
+                  AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                    json_extract(later.payload_json, '$.messageId')
+                  AND json_extract(absorbed.payload_json, '$.activity.turnId') =
+                    source_turn.turn_id
+              )
           ) AS "hasLaterRealUserTurn",
           source_turn.turn_id AS "providerTurnId",
           source_turn.state AS "providerTurnState"

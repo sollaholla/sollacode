@@ -58,11 +58,11 @@ const PreviewAutomationTabTargetFields = {
   tabId: Schema.optional(
     PreviewTabId.annotate({
       description:
-        "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+        "Exact collaborative browser tab to target. Omit to use this agent session's current tab. Do not pass tab IDs from other custom agents; those are rejected.",
     }),
   ).annotate({
     description:
-      "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+      "Exact collaborative browser tab to target. Omit to use this agent session's current tab. Do not pass tab IDs from other custom agents; those are rejected.",
   }),
 };
 
@@ -175,6 +175,16 @@ export const PreviewAutomationWaitForDownloadResult = Schema.Struct({
   tabId: PreviewTabId,
   /** False when the wait ran out with the question still on screen. */
   settled: Schema.Boolean,
+  /**
+   * Why the wait ended. Optional for hosts predating this field.
+   * `none` means no hold and no file appeared before the timeout.
+   */
+  outcome: Schema.optional(Schema.Literals(["downloaded", "denied", "waiting", "none"])),
+  /**
+   * When outcome is waiting, tells the caller to stop rather than retry.
+   * Optional for hosts predating this field.
+   */
+  message: Schema.optional(Schema.String),
   /** Files that finished on this tab while waiting, newest first. */
   downloads: Schema.Array(PreviewDownload),
   /** Still held, so the user has not answered yet. */
@@ -204,6 +214,12 @@ export const PreviewAutomationStatus = Schema.Struct({
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
   /** Optional for compatibility with hosts predating navigation failure details. */
   loadFailure: Schema.optional(PreviewAutomationLoadFailure),
+  /**
+   * True when this tab is holding a download for the user to allow or deny.
+   * Arrays stay off Status so older hosts keep decoding; use snapshot for the
+   * actual requests.
+   */
+  downloadApprovalRequired: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -803,6 +819,11 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   title: Schema.String,
   loading: Schema.Boolean,
   visibleText: Schema.String,
+  /**
+   * `pdf` when Chromium is showing a PDF viewer (empty DOM text). Optional for
+   * hosts that only report HTML pages.
+   */
+  documentKind: Schema.optional(Schema.Literals(["page", "pdf"])),
   interactiveElements: Schema.Array(PreviewAutomationElement),
   accessibilityTree: Schema.Unknown,
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
@@ -1026,6 +1047,24 @@ export class PreviewAutomationTabNotFoundError extends Schema.TaggedErrorClass<P
   }
 }
 
+export function previewForeignAgentTabErrorMessage(tabId: string, operation: string): string {
+  return `Tab ${tabId} belongs to another agent's dedicated browser and cannot be used for ${operation}. Use this agent's own tabs only. Do not reuse tab IDs from other agents. Omit tabId to use this agent's current tab, or call preview_open without that tabId (reuseExistingTab: false creates a new tab in this agent's browser).`;
+}
+
+export class PreviewAutomationForeignAgentTabError extends Schema.TaggedErrorClass<PreviewAutomationForeignAgentTabError>()(
+  "PreviewAutomationForeignAgentTabError",
+  {
+    ...PreviewAutomationRequestErrorFields,
+    ...PreviewAutomationRemoteDiagnosticFields,
+  },
+) {
+  override get message(): string {
+    return this.tabId
+      ? previewForeignAgentTabErrorMessage(this.tabId, this.operation)
+      : `That tab belongs to another agent's dedicated browser and cannot be used for ${this.operation}. Use this agent's own tabs only. Do not reuse tab IDs from other agents.`;
+  }
+}
+
 export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<PreviewAutomationTimeoutError>()(
   "PreviewAutomationTimeoutError",
   {
@@ -1196,6 +1235,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationUnsupportedClientError,
   PreviewAutomationTabNotFoundError,
+  PreviewAutomationForeignAgentTabError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationHumanVerificationRequiredError,

@@ -1,8 +1,12 @@
+/**
+ * Distil-small.en (and every other `.en` Whisper) is English-only. Passing
+ * `language` or `task` throws:
+ * "Cannot specify `task` or `language` for an English-only model."
+ * Observed on Windows where the local fallback is the only dictation path.
+ */
 export const LONG_FORM_TRANSCRIPTION_OPTIONS = {
   chunk_length_s: 30,
   stride_length_s: 5,
-  language: "english",
-  task: "transcribe",
 } as const;
 
 /**
@@ -52,6 +56,18 @@ export function assembleTranscriptionText(
     .filter((segment) => segment.length > 0)
     .join(" ")
     .trim();
+}
+
+/** One-line preview for the away-from-chat transcription toast. */
+export const VOICE_TRANSCRIPT_TOAST_PREVIEW_CHARS = 160;
+
+export function previewVoiceTranscript(
+  transcript: string,
+  maxChars = VOICE_TRANSCRIPT_TOAST_PREVIEW_CHARS,
+): string {
+  const collapsed = transcript.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxChars) return collapsed;
+  return `${collapsed.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
 }
 
 /** Keep existing draft text and append the completed dictation as one phrase. */

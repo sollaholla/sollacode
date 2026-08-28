@@ -79,8 +79,12 @@ export interface QueuedMessagePromotionState {
   readonly phase: QueuedMessagePromotionPhase;
   readonly messageIds: ReadonlyArray<string>;
   readonly requestId: string;
+  readonly startedAtMs: number;
 }
 export type QueuedMessagePromotionPhases = Readonly<Record<string, QueuedMessagePromotionState>>;
+
+/** Composer lock for "Sending queued…" if the provider never projects a terminal. */
+export const QUEUED_MESSAGE_PROMOTION_STALE_MS = 20_000;
 
 export function deriveQueuedGrokMessageIds(input: {
   readonly activeSessionProviderDriver: ProviderDriverKind | null | undefined;
@@ -137,13 +141,22 @@ export async function runQueuedMessagePromotion(input: {
 }): Promise<boolean> {
   if (input.phasesRef.current[input.threadKey] !== undefined) return false;
 
+  const startedAtMs = Date.now();
   setQueuedMessagePromotionPhase({
     ...input,
-    state: { phase: "requesting", messageIds: input.messageIds, requestId: input.requestId },
+    state: {
+      phase: "requesting",
+      messageIds: input.messageIds,
+      requestId: input.requestId,
+      startedAtMs,
+    },
   });
   input.onStart();
+  const isCurrentRequest = () =>
+    input.phasesRef.current[input.threadKey]?.requestId === input.requestId;
   try {
     const accepted = await input.promote();
+    if (!isCurrentRequest()) return true;
     if (!accepted) {
       setQueuedMessagePromotionPhase({ ...input, state: null });
       return true;
@@ -154,15 +167,33 @@ export async function runQueuedMessagePromotion(input: {
         phase: "awaiting-projection",
         messageIds: input.messageIds,
         requestId: input.requestId,
+        startedAtMs,
       },
     });
     input.onSuccess();
     return true;
   } catch (error) {
+    if (!isCurrentRequest()) return true;
     input.onError(error);
     setQueuedMessagePromotionPhase({ ...input, state: null });
     return true;
   }
+}
+
+export function expireStaleQueuedMessagePromotion(input: {
+  phasesRef: { current: QueuedMessagePromotionPhases };
+  setPhases: (phases: QueuedMessagePromotionPhases) => void;
+  threadKey: string;
+  nowMs: number;
+}): QueuedTurnPromotionOutcome | null {
+  const state = input.phasesRef.current[input.threadKey];
+  if (state === undefined) return null;
+  if (input.nowMs - state.startedAtMs < QUEUED_MESSAGE_PROMOTION_STALE_MS) return null;
+  setQueuedMessagePromotionPhase({ ...input, state: null });
+  return {
+    status: "failed",
+    detail: "Sending queued messages timed out. Try Send queued now again.",
+  };
 }
 
 export function settleQueuedMessagePromotion(input: {

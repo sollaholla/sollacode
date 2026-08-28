@@ -2,7 +2,10 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { acquireBrowserSurface } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurface,
+  shouldDeferVisibleBrowserSurfaceMeasurement,
+} from "./browserSurfaceStore";
 
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
@@ -44,6 +47,15 @@ export function BrowserSurfaceSlot(props: {
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
+      if (
+        shouldDeferVisibleBrowserSurfaceMeasurement({
+          slotVisible: presentation.visible,
+          width: rect.width,
+          height: rect.height,
+        })
+      ) {
+        return;
+      }
       lease.present(
         {
           x: Math.round(rect.x),

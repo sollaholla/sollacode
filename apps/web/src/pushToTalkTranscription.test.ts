@@ -6,8 +6,10 @@ import {
   LOCAL_TRANSCRIPTION_MODEL,
   LONG_FORM_TRANSCRIPTION_OPTIONS,
   mergeVoiceTranscriptPrompt,
+  previewVoiceTranscript,
   resolveVoiceTranscriptInputUpdate,
   shouldTranscribeStoppedRecording,
+  VOICE_TRANSCRIPT_TOAST_PREVIEW_CHARS,
 } from "./pushToTalkTranscription";
 
 describe("long-form push-to-talk transcription", () => {
@@ -15,9 +17,9 @@ describe("long-form push-to-talk transcription", () => {
     expect(LONG_FORM_TRANSCRIPTION_OPTIONS).toEqual({
       chunk_length_s: 30,
       stride_length_s: 5,
-      language: "english",
-      task: "transcribe",
     });
+    expect(LONG_FORM_TRANSCRIPTION_OPTIONS).not.toHaveProperty("language");
+    expect(LONG_FORM_TRANSCRIPTION_OPTIONS).not.toHaveProperty("task");
   });
 
   it("uses the accurate distilled model rather than Whisper tiny", () => {
@@ -44,6 +46,14 @@ describe("long-form push-to-talk transcription", () => {
     expect(assembleTranscriptionText({ text: "  Complete dictation.  " })).toBe(
       "Complete dictation.",
     );
+  });
+
+  it("shortens a long transcript for the away-from-chat notification", () => {
+    const transcript = `${"word ".repeat(80)}end.`;
+    const preview = previewVoiceTranscript(transcript);
+    expect(preview.length).toBeLessThanOrEqual(VOICE_TRANSCRIPT_TOAST_PREVIEW_CHARS);
+    expect(preview.endsWith("…")).toBe(true);
+    expect(previewVoiceTranscript("Short note.")).toBe("Short note.");
   });
 
   it("keeps completed dictation in the current composer draft", () => {

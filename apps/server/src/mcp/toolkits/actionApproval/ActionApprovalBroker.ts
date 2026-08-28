@@ -45,11 +45,31 @@ export class ActionApprovalBroker extends Context.Service<
       readonly threadId: ThreadId;
       readonly requestId: ApprovalRequestId;
     }) => Effect.Effect<void>;
+    readonly rememberOpen: (input: {
+      readonly threadId: ThreadId;
+      readonly requestId: ApprovalRequestId;
+      readonly fingerprint: string;
+    }) => Effect.Effect<void>;
+    readonly findOpen: (input: {
+      readonly threadId: ThreadId;
+      readonly fingerprint: string;
+    }) => Effect.Effect<ApprovalRequestId | null>;
   }
 >()("t3/mcp/toolkits/actionApproval/ActionApprovalBroker") {}
 
+const fingerprintKey = (threadId: ThreadId, fingerprint: string) => `${threadId}\0${fingerprint}`;
+
 const make = Effect.fn("ActionApprovalBroker.make")(function* () {
   const entries = new Map<ApprovalRequestId, BrokerEntry>();
+  const openByFingerprint = new Map<string, ApprovalRequestId>();
+  const fingerprintByRequest = new Map<ApprovalRequestId, string>();
+
+  const forgetFingerprint = (requestId: ApprovalRequestId) => {
+    const key = fingerprintByRequest.get(requestId);
+    if (key === undefined) return;
+    fingerprintByRequest.delete(requestId);
+    if (openByFingerprint.get(key) === requestId) openByFingerprint.delete(key);
+  };
 
   const pruneRetired = () => {
     let retiredCount = 0;
@@ -94,6 +114,7 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
       threadId: input.threadId,
     });
     pruneRetired();
+    forgetFingerprint(input.requestId);
     yield* Deferred.succeed(entry.deferred, input.answers);
     return "accepted" as const;
   }, Effect.uninterruptible);
@@ -103,7 +124,9 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
   )(function* (input) {
     yield* Effect.sync(() => {
       const entry = entries.get(input.requestId);
-      if (!entry || entry.threadId !== input.threadId) return;
+      if (entry && entry.threadId !== input.threadId) return;
+      forgetFingerprint(input.requestId);
+      if (!entry) return;
       entries.set(input.requestId, {
         state: "retired",
         threadId: input.threadId,
@@ -112,7 +135,25 @@ const make = Effect.fn("ActionApprovalBroker.make")(function* () {
     });
   });
 
-  return ActionApprovalBroker.of({ register, resolve, retire });
+  const rememberOpen: ActionApprovalBroker["Service"]["rememberOpen"] = Effect.fn(
+    "ActionApprovalBroker.rememberOpen",
+  )(function* (input) {
+    yield* Effect.sync(() => {
+      const key = fingerprintKey(input.threadId, input.fingerprint);
+      openByFingerprint.set(key, input.requestId);
+      fingerprintByRequest.set(input.requestId, key);
+    });
+  });
+
+  const findOpen: ActionApprovalBroker["Service"]["findOpen"] = Effect.fn(
+    "ActionApprovalBroker.findOpen",
+  )(function* (input) {
+    return yield* Effect.sync(
+      () => openByFingerprint.get(fingerprintKey(input.threadId, input.fingerprint)) ?? null,
+    );
+  });
+
+  return ActionApprovalBroker.of({ register, resolve, retire, rememberOpen, findOpen });
 });
 
 export const layer = Layer.effect(ActionApprovalBroker, make());

@@ -7167,23 +7167,15 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
-    expect(harness.sendTurn.mock.calls.length).toBe(1);
-    const switchWork = Option.getOrUndefined(
-      await Effect.runPromise(
-        harness.threadWorkObligations.getByKey({
-          threadId: ThreadId.make("thread-1"),
-          sourceTurnId: activeTurnWorkSourceId(asMessageId("user-message-provider-switch-2")),
-          kind: "active-turn-recovery",
-        }),
-      ),
-    );
-    expect(switchWork?.state).toBe("pending");
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.interruptTurn).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+      turnId: sourceTurnId,
+    });
+    expect(harness.stopSession).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+    });
 
-    harness.runtimeSessions[runtimeIndex] = {
-      ...harness.runtimeSessions[runtimeIndex]!,
-      status: "ready",
-      activeTurnId: undefined,
-    };
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -7205,12 +7197,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
-
-    expect(harness.stopSession.mock.calls.length).toBe(0);
-    expect(harness.interruptTurn).toHaveBeenCalledWith({
-      threadId: ThreadId.make("thread-1"),
-      turnId: sourceTurnId,
-    });
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       provider: ProviderDriverKind.make("claudeAgent"),
       providerInstanceId: ProviderInstanceId.make("claudeAgent"),

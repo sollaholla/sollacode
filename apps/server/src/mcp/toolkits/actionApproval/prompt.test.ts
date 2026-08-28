@@ -87,6 +87,11 @@ it.effect("persists a durable approval prompt and returns pending without blocki
           .filter((command) => command.type === "thread.activity.append")
           .map((command) => command.activity.kind),
       ).toEqual(["user-input.requested"]);
+      const interrupt = harness.commands.find(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.turn.interrupt" }> =>
+          command.type === "thread.turn.interrupt",
+      );
+      expect(interrupt).toMatchObject({ threadId, turnId });
     }).pipe(Effect.provide(harness.layer));
   }),
 );

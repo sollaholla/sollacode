@@ -78,7 +78,8 @@ export const AgentBuilderInput = Schema.Struct({
   notifyTaskFailures: Schema.optional(Schema.Boolean),
   notifyAgentMessages: Schema.optional(Schema.Boolean),
   artifactDefinition: Schema.optional(VmAgentArtifactDefinition).annotate({
-    description: "define_artifact: the agent's single structured surface.",
+    description:
+      "define_artifact: the agent's Dashboard. Structured kinds (metrics, checklist, table, timeline, cards) or kind html with html and optional css.",
   }),
   confirmName: Schema.optional(Schema.String).annotate({
     description:
