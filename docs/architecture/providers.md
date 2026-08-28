@@ -20,10 +20,13 @@ instance and active turn it was meant to steer. The service does not resume or r
 that request, and each adapter validates the target again at its native send boundary. If the target
 has ended or a successor now owns the session, the adapter fails closed and orchestration re-arms the
 durable queued delivery. Synthetic Agent continuations and startup auto-resume prompts stay on the
-ordinary work lane. Repeated steers for the same live provider target remain FIFO through
-provider-native admission, but the next steer does not wait for the previous prompt response to
-finish. Grok exposes that admission boundary from its concurrent ACP prompt runtime; providers
-whose send call is already an admission acknowledgement release the lane when that call returns.
+ordinary work lane. A mid-turn Grok follow-up that was already delivered into the live turn is a
+steer, not later user intent: native synthetic-dispatch admission must not cancel the resume after
+the auto-resume message is already in the thread. Repeated steers for the same live provider target
+remain FIFO through provider-native admission, but the next steer does not wait for the previous
+prompt response to finish. Grok exposes that admission boundary from its concurrent ACP prompt
+runtime; providers whose send call is already an admission acknowledgement release the lane when
+that call returns.
 
 Grok background commands arrive as `_x.ai/session/update` (`task_backgrounded` / `task_completed`) or the dedicated `_x.ai/task_*` notifications. The Grok adapter maps those onto the shared `task.started` / `task.completed` stream so the right-panel task list and agent-mode continuation wait on them. Per-task stop is `_x.ai/task/kill`.
 

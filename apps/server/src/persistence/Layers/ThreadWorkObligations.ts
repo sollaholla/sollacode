@@ -470,6 +470,25 @@ const make = Effect.gen(function* () {
                   AND later.sequence > source_event.sequence
                   AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'agent-auto-resume-message:%'
                   AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'startup-auto-resume-message:%'
+                  -- Grok follow-ups emit turn-start-requested then get
+                  -- delivered into the in-flight turn. That is not newer
+                  -- intent. Counting them here cancelled native dispatch after
+                  -- the synthetic resume message was already persisted, so the
+                  -- UI sat on "Agent auto-resuming" / "Queued for Grok" with
+                  -- no provider turn (observed 2026-08-28 on 66e462cc).
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM orchestration_events AS absorbed
+                    WHERE absorbed.aggregate_kind = 'thread'
+                      AND absorbed.stream_id = later.stream_id
+                      AND absorbed.event_type = 'thread.activity-appended'
+                      AND json_extract(absorbed.payload_json, '$.activity.kind') =
+                        'message.delivered'
+                      AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                        json_extract(later.payload_json, '$.messageId')
+                      AND json_extract(absorbed.payload_json, '$.activity.turnId') =
+                        work.source_turn_id
+                  )
               )
         )
       RETURNING obligation_id AS "obligationId"
