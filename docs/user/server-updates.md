@@ -63,6 +63,12 @@ commands.
 Keep the web or desktop app open while the server restarts. When it reconnects with the matching
 version, the warning and update action disappear.
 
+If a route change (for example, switching a thread from chat to terminal mode) reaches an old cached
+module after an update, Solla Code retries that route once with a fresh app-shell URL. The retry
+keeps the same route and runs only once for that app version and path during the recovery window. If
+the module still cannot load, the error screen remains available with **Reload app** instead of
+reloading in a loop.
+
 If the client reports a timeout, the server may still be finishing the update. Wait a minute, then
 reconnect or open **Settings** → **Connections** again. If the warning remains:
 

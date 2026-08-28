@@ -10,7 +10,7 @@ import {
 } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 
-import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
+import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPaletteLoader } from "../components/CommandPaletteLoader";
@@ -53,6 +53,13 @@ import {
   createKeybindingsUpdateToastController,
   type KeybindingsUpdateToastController,
 } from "../components/KeybindingsUpdateToast.logic";
+import {
+  attemptDynamicImportRecovery,
+  dynamicImportRecoveryCleanupUrlAfterNavigation,
+  isDynamicImportFailure,
+  reloadWithFreshAppShell,
+  shouldAutoRecoverDynamicImportFailure,
+} from "./-rootErrorRecovery.logic";
 
 const SshPasswordPromptDialog = lazy(() =>
   import("../components/desktop/SshPasswordPromptDialog").then((module) => ({
@@ -97,6 +104,7 @@ export const Route = createRootRoute({
 
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  const initialPathnameRef = useRef(pathname);
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
   const desktopBridgeAvailable = window.desktopBridge !== undefined;
@@ -108,6 +116,17 @@ function RootRouteView() {
     return () => {
       window.cancelAnimationFrame(frame);
     };
+  }, [pathname]);
+
+  useEffect(() => {
+    const cleanUrl = dynamicImportRecoveryCleanupUrlAfterNavigation({
+      href: window.location.href,
+      initialPathname: initialPathnameRef.current,
+      currentPathname: pathname,
+    });
+    if (cleanUrl !== null) {
+      window.history.replaceState(window.history.state, "", cleanUrl);
+    }
   }, [pathname]);
 
   if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {
@@ -226,8 +245,29 @@ function HostedStaticEnvironmentBootstrap() {
 }
 
 function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
-  const message = errorMessage(error);
+  const dynamicImportFailure = isDynamicImportFailure(error);
+  const autoRecoverDynamicImportFailure = shouldAutoRecoverDynamicImportFailure({
+    dynamicImportFailure,
+    desktopBridgeAvailable: window.desktopBridge !== undefined,
+  });
+  const message = dynamicImportFailure
+    ? "This page could not load part of the app. Reload to fetch the current version."
+    : errorMessage(error);
   const details = errorDetails(error);
+
+  useEffect(() => {
+    if (!autoRecoverDynamicImportFailure) {
+      return;
+    }
+
+    attemptDynamicImportRecovery({
+      appVersion: APP_VERSION,
+      error,
+      getStorage: () => window.sessionStorage,
+      location: window.location,
+      now: Date.now(),
+    });
+  }, [autoRecoverDynamicImportFailure, error]);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
@@ -246,12 +286,23 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{message}</p>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => reset()}>
-            Try again
+          <Button
+            size="sm"
+            onClick={() => {
+              if (dynamicImportFailure) {
+                reloadWithFreshAppShell(window.location, Date.now());
+                return;
+              }
+              reset();
+            }}
+          >
+            {dynamicImportFailure ? "Reload app" : "Try again"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-            Reload app
-          </Button>
+          {dynamicImportFailure ? null : (
+            <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+              Reload app
+            </Button>
+          )}
         </div>
 
         <details className="group mt-5 overflow-hidden rounded-lg border border-border/70 bg-background/55">
