@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
 import { assertSome } from "@effect/vitest/utils";
 import * as Effect from "effect/Effect";
@@ -118,6 +118,98 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
           cwd: "/tmp/project",
           model: "gpt-5-codex",
           activeTurnId: "turn-1",
+        });
+      }
+    }));
+
+  it("conditionally updates only the expected provider owner, lifecycle, and generation", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-conditional-runtime-update");
+      const codex = ProviderInstanceId.make("codex-primary");
+
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codex,
+        threadId,
+        status: "running",
+        runtimePayload: { sessionGeneration: "generation-1" },
+      });
+      assert.isTrue(
+        yield* directory.upsertIfCurrent(
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            threadId,
+            status: "running",
+            runtimePayload: { activeTurnId: "turn-accepted" },
+          },
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            status: "running",
+            sessionGeneration: "generation-1",
+          },
+        ),
+      );
+
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codex,
+        threadId,
+        status: "running",
+        runtimePayload: { sessionGeneration: "generation-2", activeTurnId: null },
+      });
+      assert.isFalse(
+        yield* directory.upsertIfCurrent(
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            threadId,
+            status: "running",
+            runtimePayload: { activeTurnId: "turn-stale-generation" },
+          },
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            status: "running",
+            sessionGeneration: "generation-1",
+          },
+        ),
+      );
+
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codex,
+        threadId,
+        status: "stopped",
+        runtimePayload: { activeTurnId: null },
+      });
+      assert.isFalse(
+        yield* directory.upsertIfCurrent(
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            threadId,
+            status: "running",
+            runtimePayload: { activeTurnId: "turn-stale" },
+          },
+          {
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: codex,
+            status: "running",
+            sessionGeneration: "generation-2",
+          },
+        ),
+      );
+
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(binding), true);
+      if (Option.isSome(binding)) {
+        assert.equal(binding.value.status, "stopped");
+        assert.deepEqual(binding.value.runtimePayload, {
+          sessionGeneration: "generation-2",
+          activeTurnId: null,
         });
       }
     }));

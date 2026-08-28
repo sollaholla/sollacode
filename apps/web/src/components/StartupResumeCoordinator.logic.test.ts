@@ -136,6 +136,51 @@ describe("startup resumable threads", () => {
         }),
       ),
     ).toBe(false);
+    expect(
+      isStartupResumableThread(
+        makeThread("interrupted", {
+          session: { ...makeThread("interrupted").session!, status: "interrupted" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("excludes threads that were retired, need a human, or already own queued work", () => {
+    expect(isStartupResumableThread(makeThread("archived", { archivedAt: NOW }))).toBe(false);
+    expect(isStartupResumableThread(makeThread("settled", { settledOverride: "settled" }))).toBe(
+      false,
+    );
+    expect(isStartupResumableThread(makeThread("approval", { hasPendingApprovals: true }))).toBe(
+      false,
+    );
+    expect(isStartupResumableThread(makeThread("question", { hasPendingUserInput: true }))).toBe(
+      false,
+    );
+    expect(
+      isStartupResumableThread(
+        makeThread("queued", {
+          pendingWork: {
+            kind: "active-turn-recovery",
+            state: "pending",
+            since: NOW,
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not use cross-client timestamps as a startup authorization boundary", () => {
+    expect(
+      isStartupResumableThread(
+        makeThread("clock-skewed", {
+          latestTurn: {
+            ...makeThread("clock-skewed").latestTurn!,
+            completedAt: "2026-07-30T19:59:00.000Z",
+          },
+          latestUserMessageAt: "2026-07-31T20:00:00.000Z",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("sorts the newest resumable work first", () => {

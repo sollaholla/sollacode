@@ -1,13 +1,10 @@
-export const GROK_SESSION_UPDATE_METHODS = ["_x.ai/session/update", "x.ai/session/update"] as const;
+export const GROK_SESSION_UPDATE_METHODS = ["x.ai/session/update"] as const;
 
-export const GROK_TASK_BACKGROUNDED_METHODS = [
-  "_x.ai/task_backgrounded",
-  "x.ai/task_backgrounded",
-] as const;
+export const GROK_TASK_BACKGROUNDED_METHODS = ["x.ai/task_backgrounded"] as const;
 
-export const GROK_TASK_COMPLETED_METHODS = ["_x.ai/task_completed", "x.ai/task_completed"] as const;
+export const GROK_TASK_COMPLETED_METHODS = ["x.ai/task_completed"] as const;
 
-export const GROK_TASK_KILL_METHODS = ["_x.ai/task/kill", "x.ai/task/kill"] as const;
+export const GROK_TASK_KILL_METHODS = ["x.ai/task/kill"] as const;
 
 export const GROK_BACKGROUND_TASK_NOTIFICATION_METHODS = [
   ...GROK_SESSION_UPDATE_METHODS,

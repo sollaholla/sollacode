@@ -27,7 +27,11 @@ import { makeInMemoryStdio } from "./_internal/stdio.ts";
 
 const InitializeRequest = jsonRpcRequest("initialize", AcpSchema.InitializeRequest);
 const InitializeResponse = jsonRpcResponse(AcpSchema.InitializeResponse);
-const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
+const ExtRequest = jsonRpcRequest("_x/test", Schema.Struct({ hello: Schema.String }));
+const ExtNotification = jsonRpcNotification(
+  "_x.ai/interject",
+  Schema.Struct({ text: Schema.String }),
+);
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
 const PromptRequest = jsonRpcRequest("session/prompt", AcpSchema.PromptRequest);
 const PromptResponse = jsonRpcResponse(AcpSchema.PromptResponse);
@@ -421,6 +425,14 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
       const { stdio, input, output } = yield* makeInMemoryStdio();
       const scope = yield* Scope.make();
       const acp = yield* AcpClient.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+
+      yield* acp.raw.notify("x.ai/interject", { text: "one more thing" });
+      const decodedExtNotification = Schema.decodeEffect(Schema.fromJsonString(ExtNotification));
+      assert.deepEqual(yield* decodedExtNotification(yield* Queue.take(output)), {
+        jsonrpc: "2.0",
+        method: "_x.ai/interject",
+        params: { text: "one more thing" },
+      });
 
       const initializeFiber = yield* acp.agent
         .initialize({

@@ -803,6 +803,7 @@ function ThreadRouteContent(
           threadCwd={selectedThreadCwd}
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
           hasQueuedSendNow={composer.hasQueuedSendNow}
+          isPromotingQueuedMessages={composer.isPromotingQueuedMessages}
           composerFocusRequest={composer.composerFocusRequest}
           onConsumeComposerFocusRequest={composer.onConsumeComposerFocusRequest}
           layoutVariant={layout.variant}
@@ -815,6 +816,7 @@ function ThreadRouteContent(
           serverConfig={serverConfig}
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
+          onPromoteQueuedMessages={composer.onPromoteQueuedMessages}
           onReconnectEnvironment={handleReconnectEnvironment}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}

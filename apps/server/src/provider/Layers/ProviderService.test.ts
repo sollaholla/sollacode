@@ -46,7 +46,10 @@ import {
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterSendTurnOptions,
+  ProviderAdapterShape,
+} from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -97,6 +100,15 @@ function readPendingContextRecovery(
     : undefined;
 }
 
+function readSessionGeneration(
+  binding: ProviderSessionDirectory.ProviderRuntimeBinding,
+): string | undefined {
+  const payload = binding.runtimePayload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const generation = "sessionGeneration" in payload ? payload.sessionGeneration : undefined;
+  return typeof generation === "string" ? generation : undefined;
+}
+
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
   readonly eventId: EventId;
@@ -110,7 +122,10 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
-function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
+function makeFakeCodexAdapter(
+  provider: ProviderDriverKind = CODEX_DRIVER,
+  options?: { readonly messageDeliveryReceipts?: boolean },
+) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
@@ -141,6 +156,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
   const sendTurn = vi.fn(
     (
       input: ProviderSendTurnInput,
+      options?: ProviderAdapterSendTurnOptions,
     ): Effect.Effect<ProviderTurnStartResult, ProviderAdapterError> => {
       if (!sessions.has(input.threadId)) {
         return Effect.fail(
@@ -151,10 +167,27 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
         );
       }
 
-      return Effect.succeed({
+      const turn = {
         threadId: input.threadId,
         turnId: TurnId.make(`turn-${String(input.threadId)}`),
-      });
+      };
+      return (options?.onNativeDispatch ?? Effect.void).pipe(
+        Effect.andThen(
+          input.messageId !== undefined && adapter.capabilities.messageDeliveryReceipts === true
+            ? PubSub.publish(runtimeEventPubSub, {
+                type: "message.delivered",
+                eventId: EventId.make(`fake-delivered:${input.messageId}`),
+                provider,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                threadId: input.threadId,
+                turnId: turn.turnId,
+                payload: { messageId: input.messageId },
+                providerRefs: {},
+              }).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Effect.as(turn),
+      );
     },
   );
 
@@ -230,6 +263,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      ...(options?.messageDeliveryReceipts === true ? { messageDeliveryReceipts: true } : {}),
     },
     startSession,
     sendTurn,
@@ -296,7 +330,9 @@ const hasMetricSnapshot = (
 
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
-  const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER, {
+    messageDeliveryReceipts: true,
+  });
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
   const registry = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
@@ -1038,20 +1074,22 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       routing.codex.sendTurn.mockClear();
 
-      const originalUpsert = directory.upsert;
+      const originalUpsertIfCurrent = directory.upsertIfCurrent;
       let failedRunningUpserts = 0;
-      const upsertSpy = vi.spyOn(directory, "upsert").mockImplementation((binding) => {
-        if (binding.threadId === threadId && binding.status === "running") {
-          failedRunningUpserts += 1;
-          return Effect.fail(
-            new ProviderSessionDirectoryPersistenceError({
-              operation: "ProviderSessionDirectory.upsert:upsert",
-              detail: "simulated post-acceptance persistence failure",
-            }),
-          );
-        }
-        return originalUpsert(binding);
-      });
+      const upsertSpy = vi
+        .spyOn(directory, "upsertIfCurrent")
+        .mockImplementation((binding, expected) => {
+          if (binding.threadId === threadId && binding.status === "running") {
+            failedRunningUpserts += 1;
+            return Effect.fail(
+              new ProviderSessionDirectoryPersistenceError({
+                operation: "ProviderSessionDirectory.upsertIfCurrent:update",
+                detail: "simulated post-acceptance persistence failure",
+              }),
+            );
+          }
+          return originalUpsertIfCurrent(binding, expected);
+        });
 
       const accepted = yield* provider
         .sendTurn({
@@ -1764,6 +1802,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       if (!pendingContextRecovery) return;
 
       const recoveryEnteredAdapter = yield* Deferred.make<void>();
+      const steerEnteredAdapter = yield* Deferred.make<void>();
       const releaseRecovery = yield* Deferred.make<void>();
       routing.codex.sendTurn.mockClear();
       routing.codex.sendTurn.mockImplementationOnce((input) =>
@@ -1772,6 +1811,15 @@ routing.layer("ProviderServiceLive routing", (it) => {
           Effect.as({
             threadId: input.threadId,
             turnId: asTurnId("turn-codex-slow-recovery"),
+          }),
+        ),
+      );
+      routing.codex.sendTurn.mockImplementationOnce((input, options) =>
+        (options?.onNativeDispatch ?? Effect.void).pipe(
+          Effect.andThen(Deferred.succeed(steerEnteredAdapter, undefined)),
+          Effect.as({
+            threadId: input.threadId,
+            turnId: asTurnId("turn-codex-priority-steer"),
           }),
         ),
       );
@@ -1815,7 +1863,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           },
         }),
       );
-      yield* Effect.yieldNow;
+      yield* Deferred.await(steerEnteredAdapter);
 
       // Context recovery alone owns its serialization lock. A proven live
       // steer must reach the adapter while that recovery send is unresolved.
@@ -1837,7 +1885,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("serializes explicit live steers without joining the recovery lock", () =>
+  it.effect("admits explicit live steers in FIFO order without awaiting either response", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;
       const threadId = asThreadId("thread-serialized-live-steers");
@@ -1858,8 +1906,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const firstEntered = yield* Deferred.make<void>();
       const releaseFirst = yield* Deferred.make<void>();
       routing.codex.sendTurn.mockClear();
-      routing.codex.sendTurn.mockImplementationOnce((input) =>
-        Deferred.succeed(firstEntered, undefined).pipe(
+      routing.codex.sendTurn.mockImplementationOnce((input, options) =>
+        (options?.onNativeDispatch ?? Effect.void).pipe(
+          Effect.andThen(Deferred.succeed(firstEntered, undefined)),
           Effect.andThen(Deferred.await(releaseFirst)),
           Effect.as({ threadId: input.threadId, turnId: activeTurnId }),
         ),
@@ -1892,7 +1941,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         routing.codex.sendTurn.mock.calls.map(
           (call) => (call[0] as ProviderSendTurnInput).messageId,
         ),
-        [firstMessageId],
+        [firstMessageId, secondMessageId],
       );
 
       yield* Deferred.succeed(releaseFirst, undefined);
@@ -1908,6 +1957,757 @@ routing.layer("ProviderServiceLive routing", (it) => {
         ),
         [firstMessageId, secondMessageId],
       );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("keeps live-steer FIFO locked when an adapter never acknowledges native dispatch", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-live-steer-without-native-ack");
+      const activeTurnId = asTurnId("turn-live-steer-without-native-ack");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-live-steer-without-native-ack",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId,
+      }));
+
+      const firstEntered = yield* Deferred.make<void>();
+      const secondEntered = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(firstEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseFirst)),
+          Effect.as({ threadId: input.threadId, turnId: activeTurnId }),
+        ),
+      );
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(secondEntered, undefined).pipe(
+          Effect.as({ threadId: input.threadId, turnId: activeTurnId }),
+        ),
+      );
+      const liveSteerTarget = { providerInstanceId: codexInstanceId, activeTurnId };
+
+      const firstFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-live-steer-without-native-ack-first"),
+          input: "first steer",
+          attachments: [],
+          liveSteerTarget,
+        }),
+      );
+      yield* Deferred.await(firstEntered);
+      const secondFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-live-steer-without-native-ack-second"),
+          input: "second steer",
+          attachments: [],
+          liveSteerTarget,
+        }),
+      );
+      yield* Effect.yieldNow;
+      assert.isTrue(Option.isNone(yield* Deferred.poll(secondEntered)));
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Deferred.await(secondEntered);
+      const [firstExit, secondExit] = yield* Effect.all([
+        Fiber.await(firstFiber),
+        Fiber.await(secondFiber),
+      ]);
+      assert.equal(Exit.isSuccess(firstExit), true);
+      assert.equal(Exit.isSuccess(secondExit), true);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect(
+    "does not let an accepted send resurrect a session stopped while the adapter waited",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-send-completes-after-stop");
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-send-completes-after-stop",
+          runtimeMode: "full-access",
+        });
+
+        const sendEntered = yield* Deferred.make<void>();
+        const releaseSend = yield* Deferred.make<void>();
+        routing.codex.sendTurn.mockClear();
+        routing.codex.sendTurn.mockImplementationOnce((input) =>
+          Deferred.succeed(sendEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSend)),
+            Effect.as({
+              threadId: input.threadId,
+              turnId: asTurnId("turn-completed-after-stop"),
+            }),
+          ),
+        );
+
+        const sendFiber = yield* Effect.forkScoped(
+          provider.sendTurn({
+            threadId,
+            messageId: asMessageId("message-completed-after-stop"),
+            input: "wait while Stop wins",
+            attachments: [],
+          }),
+        );
+        yield* Deferred.await(sendEntered);
+        yield* provider.stopSession({ threadId });
+        yield* Deferred.succeed(releaseSend, undefined);
+        assert.equal(Exit.isSuccess(yield* Fiber.await(sendFiber)), true);
+
+        const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(binding, undefined);
+        if (!binding) return;
+        assert.equal(binding.status, "stopped");
+        assert.equal(
+          (binding.runtimePayload as { readonly activeTurnId?: unknown }).activeTurnId,
+          null,
+        );
+      }),
+  );
+
+  it.effect(
+    "serializes Stop before a same-instance restart and rejects the old accepted send generation",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-stop-restart-generation-race");
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          cwd: "/tmp/project-stop-restart-generation-race",
+          runtimeMode: "full-access",
+        });
+
+        const initialBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(initialBinding, undefined);
+        if (!initialBinding) return;
+        const initialGeneration = readSessionGeneration(initialBinding);
+        assert.typeOf(initialGeneration, "string");
+
+        const sendEntered = yield* Deferred.make<void>();
+        const releaseSend = yield* Deferred.make<void>();
+        routing.codex.sendTurn.mockClear();
+        routing.codex.sendTurn.mockImplementationOnce((input) =>
+          Deferred.succeed(sendEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSend)),
+            Effect.as({
+              threadId: input.threadId,
+              turnId: asTurnId("turn-old-generation-completed-late"),
+            }),
+          ),
+        );
+        const sendFiber = yield* Effect.forkScoped(
+          provider.sendTurn({
+            threadId,
+            messageId: asMessageId("message-old-generation-completed-late"),
+            input: "old generation send",
+            attachments: [],
+          }),
+        );
+        yield* Deferred.await(sendEntered);
+
+        const originalStopSession = routing.codex.stopSession.getMockImplementation();
+        const originalStartSession = routing.codex.startSession.getMockImplementation();
+        if (originalStopSession === undefined || originalStartSession === undefined) {
+          return yield* Effect.die("fake adapter lifecycle implementations are unavailable");
+        }
+        const stopEntered = yield* Deferred.make<void>();
+        const releaseStop = yield* Deferred.make<void>();
+        const restartEntered = yield* Deferred.make<void>();
+        routing.codex.stopSession.mockClear();
+        routing.codex.startSession.mockClear();
+        routing.codex.stopSession.mockImplementationOnce((stoppedThreadId) =>
+          Deferred.succeed(stopEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseStop)),
+            Effect.andThen(originalStopSession(stoppedThreadId)),
+          ),
+        );
+        routing.codex.startSession.mockImplementationOnce((input) =>
+          Deferred.succeed(restartEntered, undefined).pipe(
+            Effect.andThen(originalStartSession(input)),
+          ),
+        );
+
+        const stopFiber = yield* Effect.forkScoped(provider.stopSession({ threadId }));
+        yield* Deferred.await(stopEntered);
+        const restartFiber = yield* Effect.forkScoped(
+          provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            threadId,
+            cwd: "/tmp/project-stop-restart-generation-race",
+            runtimeMode: "full-access",
+          }),
+        );
+        yield* Effect.yieldNow;
+        assert.isTrue(Option.isNone(yield* Deferred.poll(restartEntered)));
+
+        yield* Deferred.succeed(releaseStop, undefined);
+        assert.equal(Exit.isSuccess(yield* Fiber.await(stopFiber)), true);
+        yield* Deferred.await(restartEntered);
+        assert.equal(Exit.isSuccess(yield* Fiber.await(restartFiber)), true);
+
+        const restartedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(restartedBinding, undefined);
+        if (!restartedBinding) return;
+        const restartedGeneration = readSessionGeneration(restartedBinding);
+        assert.typeOf(restartedGeneration, "string");
+        assert.notEqual(restartedGeneration, initialGeneration);
+
+        yield* Deferred.succeed(releaseSend, undefined);
+        assert.equal(Exit.isSuccess(yield* Fiber.await(sendFiber)), true);
+
+        const finalBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.notEqual(finalBinding, undefined);
+        if (!finalBinding) return;
+        assert.equal(finalBinding.status, "running");
+        assert.equal(readSessionGeneration(finalBinding), restartedGeneration);
+        assert.notEqual(
+          (finalBinding.runtimePayload as { readonly activeTurnId?: unknown }).activeTurnId,
+          asTurnId("turn-old-generation-completed-late"),
+        );
+        yield* provider.stopSession({ threadId });
+      }),
+  );
+
+  it.effect("captures the exact admitted route capability and generation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-native-dispatch-route");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-native-dispatch-route",
+        runtimeMode: "full-access",
+      });
+      let admittedRoute: ProviderService.ProviderServiceNativeDispatchRoute | undefined;
+
+      yield* provider.sendTurn(
+        {
+          threadId,
+          messageId: asMessageId("message-native-dispatch-route"),
+          input: "capture the exact native route",
+          attachments: [],
+        },
+        {
+          onNativeDispatchRoute: (route) => {
+            admittedRoute = route;
+          },
+        },
+      );
+
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(binding, undefined);
+      assert.notEqual(admittedRoute, undefined);
+      if (binding === undefined || admittedRoute === undefined) return;
+      assert.equal(admittedRoute.providerInstanceId, codexInstanceId);
+      assert.equal(admittedRoute.sessionGeneration, readSessionGeneration(binding));
+      assert.equal(admittedRoute.messageDeliveryReceipts, false);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("publishes one canonical receipt per successful receipt-capable send", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-canonical-delivery-receipt");
+      const firstMessageId = asMessageId("message-canonical-delivery-first");
+      const secondMessageId = asMessageId("message-canonical-delivery-second");
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-canonical-delivery-receipt",
+        runtimeMode: "full-access",
+      });
+
+      const firstReceiptPublished = yield* Deferred.make<void>();
+      const receiptsFiber = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.type === "message.delivered"),
+        Stream.tap((event) =>
+          event.type === "message.delivered" && event.payload.messageId === firstMessageId
+            ? Deferred.succeed(firstReceiptPublished, undefined)
+            : Effect.void,
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      const originalClaudeSend = routing.claude.sendTurn.getMockImplementation();
+      if (originalClaudeSend === undefined) {
+        return yield* Effect.die("fake Claude send implementation is unavailable");
+      }
+      routing.claude.sendTurn.mockImplementationOnce((input, options) =>
+        Effect.gen(function* () {
+          yield* options?.onNativeDispatch ?? Effect.void;
+          routing.claude.emit({
+            type: "message.delivered",
+            eventId: asEventId("fake-delivered-before-service-return"),
+            provider: CLAUDE_AGENT_DRIVER,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            threadId,
+            turnId: asTurnId("turn-canonical-delivery-first"),
+            payload: { messageId: firstMessageId },
+            providerRefs: {},
+          });
+          yield* Deferred.await(firstReceiptPublished);
+          return {
+            threadId: input.threadId,
+            turnId: asTurnId("turn-canonical-delivery-first"),
+          };
+        }),
+      );
+
+      yield* provider.sendTurn({
+        threadId,
+        messageId: firstMessageId,
+        input: "first accepted prompt",
+        attachments: [],
+      });
+      routing.claude.emit({
+        type: "message.delivered",
+        eventId: asEventId("fake-delivered-late-duplicate"),
+        provider: CLAUDE_AGENT_DRIVER,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        threadId,
+        turnId: asTurnId("turn-canonical-delivery-first"),
+        payload: { messageId: firstMessageId },
+        providerRefs: {},
+      });
+      yield* provider.sendTurn({
+        threadId,
+        messageId: secondMessageId,
+        input: "second accepted prompt",
+        attachments: [],
+      });
+
+      const receipts = Array.from(yield* Fiber.join(receiptsFiber));
+      assert.deepEqual(
+        receipts.map((event) =>
+          event.type === "message.delivered" ? event.payload.messageId : undefined,
+        ),
+        [firstMessageId, secondMessageId],
+      );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("serializes Stop after an in-flight provider-switch start", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-provider-switch-start-stop-race");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-provider-switch-start-stop-race",
+        runtimeMode: "full-access",
+      });
+
+      const originalClaudeStart = routing.claude.startSession.getMockImplementation();
+      if (originalClaudeStart === undefined) {
+        return yield* Effect.die("fake Claude start implementation is unavailable");
+      }
+      const switchEntered = yield* Deferred.make<void>();
+      const releaseSwitch = yield* Deferred.make<void>();
+      routing.claude.startSession.mockClear();
+      routing.claude.stopSession.mockClear();
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(switchEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseSwitch)),
+          Effect.andThen(originalClaudeStart(input)),
+        ),
+      );
+
+      const switchFiber = yield* Effect.forkScoped(
+        provider.startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          cwd: "/tmp/project-provider-switch-start-stop-race",
+          runtimeMode: "full-access",
+        }),
+      );
+      yield* Deferred.await(switchEntered);
+      const stopCompleted = yield* Deferred.make<void>();
+      const stopFiber = yield* Effect.forkScoped(
+        provider
+          .stopSession({ threadId })
+          .pipe(Effect.tap(() => Deferred.succeed(stopCompleted, undefined))),
+      );
+      yield* Effect.yieldNow;
+      assert.isTrue(Option.isNone(yield* Deferred.poll(stopCompleted)));
+      assert.equal(routing.claude.stopSession.mock.calls.length, 0);
+
+      yield* Deferred.succeed(releaseSwitch, undefined);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(switchFiber)), true);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(stopFiber)), true);
+      assert.equal(routing.claude.stopSession.mock.calls.length, 1);
+
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(binding, undefined);
+      if (!binding) return;
+      assert.equal(binding.provider, CLAUDE_AGENT_DRIVER);
+      assert.equal(binding.providerInstanceId, claudeAgentInstanceId);
+      assert.equal(binding.status, "stopped");
+    }),
+  );
+
+  it.effect("recovers the provider-switch winner instead of resurrecting a captured route", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-send-recovery-provider-switch-race");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-recovery-provider-switch-race",
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      routing.claude.sendTurn.mockClear();
+
+      const originalClaudeStart = routing.claude.startSession.getMockImplementation();
+      if (originalClaudeStart === undefined) {
+        return yield* Effect.die("fake Claude start implementation is unavailable");
+      }
+      const switchEntered = yield* Deferred.make<void>();
+      const releaseSwitch = yield* Deferred.make<void>();
+      routing.claude.startSession.mockImplementationOnce((input) =>
+        Deferred.succeed(switchEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseSwitch)),
+          Effect.andThen(originalClaudeStart(input)),
+        ),
+      );
+
+      const switchFiber = yield* Effect.forkScoped(
+        provider.startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          threadId,
+          cwd: "/tmp/project-send-recovery-provider-switch-race",
+          runtimeMode: "full-access",
+        }),
+      );
+      yield* Deferred.await(switchEntered);
+      const sendFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-send-recovery-provider-switch-race"),
+          input: "route to the provider-switch winner",
+          attachments: [],
+        }),
+      );
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+
+      yield* Deferred.succeed(releaseSwitch, undefined);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(switchFiber)), true);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(sendFiber)), true);
+
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(binding, undefined);
+      if (binding === undefined) return;
+      assert.equal(binding.provider, CLAUDE_AGENT_DRIVER);
+      assert.equal(binding.providerInstanceId, claudeAgentInstanceId);
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("retries SessionNotFound on a provider switch that wins after native dispatch", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-send-missing-after-provider-switch");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-missing-after-provider-switch",
+        runtimeMode: "full-access",
+      });
+
+      const firstAttemptEntered = yield* Deferred.make<void>();
+      const releaseMissingResult = yield* Deferred.make<void>();
+      const admittedRoutes: Array<ProviderService.ProviderServiceNativeDispatchRoute> = [];
+      routing.codex.sendTurn.mockClear();
+      routing.claude.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(firstAttemptEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseMissingResult)),
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterSessionNotFoundError({
+                provider: CODEX_DRIVER,
+                threadId: input.threadId,
+              }),
+            ),
+          ),
+        ),
+      );
+
+      const sendFiber = yield* Effect.forkScoped(
+        provider.sendTurn(
+          {
+            threadId,
+            messageId: asMessageId("message-send-missing-after-provider-switch"),
+            input: "deliver exactly once to the provider-switch winner",
+            attachments: [],
+          },
+          {
+            onNativeDispatchRoute: (route) => {
+              admittedRoutes.push(route);
+            },
+          },
+        ),
+      );
+      yield* Deferred.await(firstAttemptEntered);
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-missing-after-provider-switch",
+        runtimeMode: "full-access",
+      });
+      const switchedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(switchedBinding, undefined);
+      if (switchedBinding === undefined) return;
+      assert.equal(switchedBinding.providerInstanceId, claudeAgentInstanceId);
+
+      yield* Deferred.succeed(releaseMissingResult, undefined);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(sendFiber)), true);
+
+      const finalBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(finalBinding, undefined);
+      if (finalBinding === undefined) return;
+      const finalGeneration = readSessionGeneration(finalBinding);
+      assert.typeOf(finalGeneration, "string");
+      if (finalGeneration === undefined) return;
+      assert.equal(finalBinding.provider, CLAUDE_AGENT_DRIVER);
+      assert.equal(finalBinding.providerInstanceId, claudeAgentInstanceId);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      assert.equal(routing.claude.sendTurn.mock.calls.length, 1);
+      assert.equal(admittedRoutes.length, 2);
+      assert.deepEqual(admittedRoutes.at(-1), {
+        providerInstanceId: claudeAgentInstanceId,
+        sessionGeneration: finalGeneration,
+        messageDeliveryReceipts: true,
+      });
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("does not let an old send overwrite a provider switch that wins completion", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-send-completes-after-provider-switch");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-completes-after-provider-switch",
+        runtimeMode: "full-access",
+      });
+
+      const sendEntered = yield* Deferred.make<void>();
+      const releaseSend = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(sendEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseSend)),
+          Effect.as({
+            threadId: input.threadId,
+            turnId: asTurnId("turn-old-provider-completed-late"),
+          }),
+        ),
+      );
+
+      const sendFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-old-provider-completed-late"),
+          input: "old provider send",
+          attachments: [],
+        }),
+      );
+      yield* Deferred.await(sendEntered);
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-completes-after-provider-switch",
+        runtimeMode: "full-access",
+      });
+      yield* Deferred.succeed(releaseSend, undefined);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(sendFiber)), true);
+
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.notEqual(binding, undefined);
+      if (!binding) return;
+      assert.equal(binding.provider, CLAUDE_AGENT_DRIVER);
+      assert.equal(binding.providerInstanceId, claudeAgentInstanceId);
+      assert.notEqual(
+        (binding.runtimePayload as { readonly activeTurnId?: unknown }).activeTurnId,
+        asTurnId("turn-old-provider-completed-late"),
+      );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("lets a switched provider bypass the prior provider's unacknowledged steer lane", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-provider-switch-bypasses-steer-lane");
+      const codexTurnId = asTurnId("turn-provider-switch-old-codex");
+      const claudeTurnId = asTurnId("turn-provider-switch-new-claude");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-provider-switch-bypasses-steer-lane",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: codexTurnId,
+      }));
+
+      const oldSteerEntered = yield* Deferred.make<void>();
+      const releaseOldSteer = yield* Deferred.make<void>();
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input) =>
+        Deferred.succeed(oldSteerEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseOldSteer)),
+          Effect.as({ threadId: input.threadId, turnId: codexTurnId }),
+        ),
+      );
+      const oldSteerFiber = yield* Effect.forkScoped(
+        provider.sendTurn({
+          threadId,
+          messageId: asMessageId("message-provider-switch-old-steer"),
+          input: "old provider correction",
+          attachments: [],
+          liveSteerTarget: {
+            providerInstanceId: codexInstanceId,
+            activeTurnId: codexTurnId,
+          },
+        }),
+      );
+      yield* Deferred.await(oldSteerEntered);
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-provider-switch-bypasses-steer-lane",
+        runtimeMode: "full-access",
+      });
+      routing.claude.updateSession(threadId, (current) => ({
+        ...current,
+        status: "running",
+        activeTurnId: claudeTurnId,
+      }));
+      const newSteerEntered = yield* Deferred.make<void>();
+      routing.claude.sendTurn.mockClear();
+      routing.claude.sendTurn.mockImplementationOnce((input, options) =>
+        (options?.onNativeDispatch ?? Effect.void).pipe(
+          Effect.andThen(Deferred.succeed(newSteerEntered, undefined)),
+          Effect.as({ threadId: input.threadId, turnId: claudeTurnId }),
+        ),
+      );
+
+      const newSteer = yield* provider.sendTurn({
+        threadId,
+        messageId: asMessageId("message-provider-switch-new-steer"),
+        input: "new provider correction",
+        attachments: [],
+        liveSteerTarget: {
+          providerInstanceId: claudeAgentInstanceId,
+          activeTurnId: claudeTurnId,
+        },
+      });
+      yield* Deferred.await(newSteerEntered);
+      assert.equal(newSteer.turnId, claudeTurnId);
+
+      yield* Deferred.succeed(releaseOldSteer, undefined);
+      assert.equal(Exit.isSuccess(yield* Fiber.await(oldSteerFiber)), true);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("runs the pre-dispatch hook once and prevents adapter admission when it fails", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-failed-before-native-dispatch");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-failed-before-native-dispatch",
+        runtimeMode: "full-access",
+      });
+      const hookRuns = yield* Ref.make(0);
+      routing.codex.sendTurn.mockClear();
+      const hookFailure = new ProviderAdapterRequestError({
+        provider: CODEX_DRIVER,
+        method: "beforeNativeDispatch",
+        detail: "synthetic resume was superseded before provider admission",
+      });
+
+      const exit = yield* provider
+        .sendTurn(
+          {
+            threadId,
+            messageId: asMessageId("message-failed-before-native-dispatch"),
+            input: "synthetic resume",
+            attachments: [],
+          },
+          {
+            beforeNativeDispatch: Ref.update(hookRuns, (count) => count + 1).pipe(
+              Effect.andThen(Effect.fail(hookFailure)),
+            ),
+          },
+        )
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(yield* Ref.get(hookRuns), 1);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
       yield* provider.stopSession({ threadId });
     }),
   );
@@ -2606,6 +3406,68 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
 
       assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+    }),
+  );
+
+  it.effect("revalidates native admission before a SessionNotFound recovery retry", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-send-turn-missing-superseded");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-send-turn-missing-superseded",
+        runtimeMode: "full-access",
+      });
+
+      const admissionChecks = yield* Ref.make(0);
+      let laterRealEventObserved = false;
+      routing.codex.sendTurn.mockClear();
+      routing.codex.sendTurn.mockImplementationOnce((input: ProviderSendTurnInput) =>
+        Effect.sync(() => {
+          laterRealEventObserved = true;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterSessionNotFoundError({
+                provider: String(CODEX_DRIVER),
+                threadId: input.threadId,
+              }),
+            ),
+          ),
+        ),
+      );
+
+      const superseded = new ProviderAdapterRequestError({
+        provider: CODEX_DRIVER,
+        method: "beforeNativeDispatch",
+        detail: "a later real user event superseded this synthetic retry",
+      });
+      const exit = yield* provider
+        .sendTurn(
+          {
+            threadId,
+            messageId: asMessageId("message-send-turn-missing-superseded"),
+            input: "synthetic retry must be revalidated",
+            attachments: [],
+          },
+          {
+            beforeNativeDispatch: Ref.update(admissionChecks, (count) => count + 1).pipe(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  laterRealEventObserved ? Effect.fail(superseded) : Effect.void,
+                ),
+              ),
+            ),
+          },
+        )
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(yield* Ref.get(admissionChecks), 2);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      yield* provider.stopSession({ threadId });
     }),
   );
 

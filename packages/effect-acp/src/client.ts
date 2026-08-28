@@ -20,6 +20,7 @@ import {
   decodeExtNotificationRegistration,
   decodeExtRequestRegistration,
   runHandler,
+  toWireExtensionMethod,
 } from "./_internal/shared.ts";
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 
@@ -27,6 +28,9 @@ export interface AcpClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  readonly onRequestEnqueued?: (
+    event: AcpProtocol.AcpRequestEnqueuedEvent,
+  ) => Effect.Effect<void, never>;
 }
 
 type AcpClientRaw = {
@@ -404,6 +408,7 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.onRequestEnqueued ? { onRequestEnqueued: options.onRequestEnqueued } : {}),
     onNotification: dispatchNotification,
     onExtRequest: dispatchExtRequest,
   });
@@ -459,8 +464,8 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
   return AcpClient.of({
     raw: {
       notifications: transport.incoming,
-      request: transport.request,
-      notify: transport.notify,
+      request: (method, payload) => transport.request(toWireExtensionMethod(method), payload),
+      notify: (method, payload) => transport.notify(toWireExtensionMethod(method), payload),
     },
     agent: {
       initialize: (payload) =>

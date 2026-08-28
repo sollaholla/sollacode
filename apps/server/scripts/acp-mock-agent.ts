@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeChildProcess from "node:child_process";
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -43,12 +44,25 @@ const emitStaleXAiPromptCompleteBeforeSecondHang =
 const emitOverlappingXAiPromptCompleteOutOfOrder =
   process.env.T3_ACP_EMIT_OVERLAPPING_XAI_PROMPT_COMPLETE_OUT_OF_ORDER === "1";
 const failPrompt = process.env.T3_ACP_FAIL_PROMPT === "1";
+const failPromptMessageId = process.env.T3_ACP_FAIL_PROMPT_MESSAGE_ID;
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const emitGrokBackgroundTasks = process.env.T3_ACP_EMIT_GROK_BACKGROUND_TASKS;
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const promptDelayMs = Number(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0");
 const emitXAiQueueChanged = process.env.T3_ACP_EMIT_XAI_QUEUE_CHANGED === "1";
+const omitXAiQueueChangedPromptMessageId =
+  process.env.T3_ACP_OMIT_XAI_QUEUE_CHANGED_PROMPT_MESSAGE_ID;
+const removeXAiQueueRowBeforeFailMessageId =
+  process.env.T3_ACP_REMOVE_XAI_QUEUE_ROW_BEFORE_FAIL_MESSAGE_ID;
+const xAiQueueInterjectNoRunningTurn =
+  process.env.T3_ACP_XAI_QUEUE_INTERJECT_NO_RUNNING_TURN === "1";
+const xAiQueueInterjectUnrelatedSnapshotFirst =
+  process.env.T3_ACP_XAI_QUEUE_INTERJECT_UNRELATED_SNAPSHOT_FIRST === "1";
+const xAiQueueInterjectStaleOnceId = process.env.T3_ACP_XAI_QUEUE_INTERJECT_STALE_ONCE_ID;
+const xAiQueueInterjectStaleCount = Number(
+  process.env.T3_ACP_XAI_QUEUE_INTERJECT_STALE_COUNT ?? "1",
+);
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -82,6 +96,7 @@ let parameterizedModelPicker = false;
 let currentReasoning = "medium";
 let runningQueuePromptId: string | undefined;
 const queuedPromptEntries: Array<{ id: string; version: number; kind: string; text: string }> = [];
+const staleQueueInterjectCounts = new Map<string, number>();
 let currentContext = "272k";
 let currentFast = false;
 let promptCount = 0;
@@ -172,6 +187,19 @@ function logExit(reason: string): void {
 
 function writeJsonRpcNotification(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+}
+
+function emitXAiQueueSnapshot(
+  requestedSessionId: string,
+  options?: { readonly noRunningTurn?: boolean },
+): void {
+  writeJsonRpcNotification("_x.ai/queue/changed", {
+    sessionId: requestedSessionId,
+    entries: queuedPromptEntries.map((entry, position) => ({ ...entry, position })),
+    ...(options?.noRunningTurn !== true && runningQueuePromptId
+      ? { runningPromptId: runningQueuePromptId, runningKind: "prompt" }
+      : {}),
+  });
 }
 
 process.once("SIGTERM", () => {
@@ -574,33 +602,68 @@ const program = Effect.gen(function* () {
     }),
   );
 
+  yield* agent.handleExtNotification(
+    "x.ai/queue/interject",
+    Schema.Struct({
+      sessionId: Schema.String,
+      id: Schema.String,
+      expectedVersion: Schema.Number,
+    }),
+    (notification) =>
+      Effect.sync(() => {
+        if (!emitXAiQueueChanged) return;
+        if (xAiQueueInterjectUnrelatedSnapshotFirst) {
+          emitXAiQueueSnapshot(notification.sessionId);
+        }
+        const entryIndex = queuedPromptEntries.findIndex((entry) => entry.id === notification.id);
+        const entry = entryIndex >= 0 ? queuedPromptEntries[entryIndex] : undefined;
+        if (entry !== undefined && !xAiQueueInterjectNoRunningTurn) {
+          const staleCount = staleQueueInterjectCounts.get(entry.id) ?? 0;
+          if (
+            xAiQueueInterjectStaleOnceId === entry.id &&
+            staleCount < xAiQueueInterjectStaleCount
+          ) {
+            staleQueueInterjectCounts.set(entry.id, staleCount + 1);
+            entry.version += 1;
+          } else if (entry.version === notification.expectedVersion) {
+            queuedPromptEntries.splice(entryIndex, 1);
+            runningQueuePromptId = entry.id;
+          }
+        }
+        emitXAiQueueSnapshot(notification.sessionId, {
+          noRunningTurn: xAiQueueInterjectNoRunningTurn,
+        });
+      }),
+  );
+
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
       promptCount += 1;
+      const requestMessageId =
+        request.messageId ?? promptIdFromRequestMeta(request) ?? `prompt-${promptCount}`;
 
-      if (emitXAiQueueChanged) {
-        const messageId =
-          request.messageId ?? promptIdFromRequestMeta(request) ?? `prompt-${promptCount}`;
+      if (emitXAiQueueChanged && requestMessageId !== omitXAiQueueChangedPromptMessageId) {
+        const messageId = requestMessageId;
         if (runningQueuePromptId === undefined) {
           runningQueuePromptId = messageId;
         } else {
           queuedPromptEntries.push({ id: messageId, version: 0, kind: "prompt", text: messageId });
         }
-        writeJsonRpcNotification("_x.ai/queue/changed", {
-          sessionId: requestedSessionId,
-          entries: queuedPromptEntries.map((entry, position) => ({ ...entry, position })),
-          ...(runningQueuePromptId
-            ? { runningPromptId: runningQueuePromptId, runningKind: "prompt" }
-            : {}),
-        });
+        emitXAiQueueSnapshot(requestedSessionId);
       }
 
       if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
         yield* Effect.sleep(`${promptDelayMs} millis`);
       }
 
-      if (failPrompt) {
+      if (emitXAiQueueChanged && requestMessageId === removeXAiQueueRowBeforeFailMessageId) {
+        const entryIndex = queuedPromptEntries.findIndex((entry) => entry.id === requestMessageId);
+        if (entryIndex >= 0) queuedPromptEntries.splice(entryIndex, 1);
+        emitXAiQueueSnapshot(requestedSessionId);
+      }
+
+      if (failPrompt || requestMessageId === failPromptMessageId) {
         return yield* AcpError.AcpRequestError.internalError("Mock prompt failure");
       }
 
@@ -922,7 +985,7 @@ const program = Effect.gen(function* () {
       }
 
       if (emitXAiAskUserQuestion) {
-        const result = yield* agent.client.extRequest("_x.ai/ask_user_question", {
+        const result = yield* agent.client.extRequest("x.ai/ask_user_question", {
           method: "x.ai/ask_user_question",
           params: {
             sessionId: requestedSessionId,

@@ -29,6 +29,7 @@ import {
   threadLostBackgroundTaskAtRestart,
   providerAuthenticationResumeIds,
   shouldAutoContinueAgentThread,
+  shouldDispatchStartupResume,
   shouldResumeProviderAuthenticationPausedThread,
   startupAutoResumeIds,
   startupResumeSourceTurnId,
@@ -266,6 +267,48 @@ describe("server-owned Agent continuation", () => {
         messageId: MessageId.make("agent-auto-resume-message:another-thread:turn-completed"),
       }),
     ).toBeNull();
+  });
+
+  it("revalidates startup resume eligibility after the scheduler claim", () => {
+    const resumable = shell({
+      latestTurn: { ...shell().latestTurn!, state: "incomplete" },
+      session: { ...shell().session!, status: "stopped" },
+    });
+    const input = {
+      sourceTurnId: turnId,
+      sourceTurnState: "incomplete" as const,
+      hasLaterRealUserTurn: false,
+    };
+    expect(shouldDispatchStartupResume(resumable, input)).toBe(true);
+    expect(
+      shouldDispatchStartupResume(
+        { ...resumable, session: { ...resumable.session!, status: "interrupted" } },
+        input,
+      ),
+    ).toBe(false);
+    expect(shouldDispatchStartupResume({ ...resumable, hasPendingUserInput: true }, input)).toBe(
+      false,
+    );
+    expect(shouldDispatchStartupResume(resumable, { ...input, hasLaterRealUserTurn: true })).toBe(
+      false,
+    );
+    expect(
+      shouldDispatchStartupResume(resumable, { ...input, sourceTurnState: "interrupted" }),
+    ).toBe(false);
+    expect(
+      shouldDispatchStartupResume(
+        { ...resumable, latestUserMessageAt: "2026-08-03T12:02:00.000Z" },
+        input,
+      ),
+    ).toBe(true);
+    // Wall-clock order is not causality; the exact start-event query supplied
+    // in `hasLaterRealUserTurn` is the only supersession verdict.
+    expect(
+      shouldDispatchStartupResume(
+        { ...resumable, latestUserMessageAt: "2026-08-03T11:58:00.000Z" },
+        { ...input, hasLaterRealUserTurn: true },
+      ),
+    ).toBe(false);
   });
 });
 

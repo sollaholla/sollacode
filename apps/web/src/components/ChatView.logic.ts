@@ -15,6 +15,10 @@ import type {
   ConnectionTargetKind,
   EnvironmentConnectionPhase,
 } from "@t3tools/client-runtime/connection";
+import {
+  resolveQueuedTurnPromotionOutcome,
+  type QueuedTurnPromotionOutcome,
+} from "@t3tools/client-runtime/state/queued-turn-promotion";
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -68,6 +72,115 @@ export async function runResumeIncompleteTurn(input: {
   } finally {
     input.inFlightRef.current = false;
   }
+}
+
+export type QueuedMessagePromotionPhase = "requesting" | "awaiting-projection";
+export interface QueuedMessagePromotionState {
+  readonly phase: QueuedMessagePromotionPhase;
+  readonly messageIds: ReadonlyArray<string>;
+  readonly requestId: string;
+}
+export type QueuedMessagePromotionPhases = Readonly<Record<string, QueuedMessagePromotionState>>;
+
+export function deriveQueuedGrokMessageIds(input: {
+  readonly activeSessionProviderDriver: ProviderDriverKind | null | undefined;
+  readonly phase: SessionPhase;
+  readonly messages: ReadonlyArray<
+    Pick<ChatMessage, "id" | "role" | "turnId" | "createdAt" | "voiceTranscript">
+  >;
+  readonly activeWorkStartedAt: string | null;
+  readonly promotedMessageIds: ReadonlySet<string>;
+  readonly pendingMessageIds: ReadonlySet<string>;
+  readonly deliveredMessageIds: ReadonlySet<string>;
+}): ReadonlyArray<ChatMessage["id"]> {
+  if (input.activeSessionProviderDriver !== "grok" || input.phase !== "running") return [];
+  return input.messages
+    .filter(
+      (message) =>
+        message.role === "user" &&
+        message.voiceTranscript !== true &&
+        message.turnId === null &&
+        (input.activeWorkStartedAt === null || message.createdAt > input.activeWorkStartedAt) &&
+        !input.promotedMessageIds.has(message.id) &&
+        !input.pendingMessageIds.has(message.id) &&
+        !input.deliveredMessageIds.has(message.id),
+    )
+    .map((message) => message.id);
+}
+
+function setQueuedMessagePromotionPhase(input: {
+  phasesRef: { current: QueuedMessagePromotionPhases };
+  setPhases: (phases: QueuedMessagePromotionPhases) => void;
+  threadKey: string;
+  state: QueuedMessagePromotionState | null;
+}): void {
+  const phases = { ...input.phasesRef.current };
+  if (input.state === null) {
+    delete phases[input.threadKey];
+  } else {
+    phases[input.threadKey] = input.state;
+  }
+  input.phasesRef.current = phases;
+  input.setPhases(phases);
+}
+
+export async function runQueuedMessagePromotion(input: {
+  phasesRef: { current: QueuedMessagePromotionPhases };
+  setPhases: (phases: QueuedMessagePromotionPhases) => void;
+  threadKey: string;
+  messageIds: ReadonlyArray<string>;
+  requestId: string;
+  promote: () => Promise<boolean>;
+  onStart: () => void;
+  onSuccess: () => void;
+  onError: (error: unknown) => void;
+}): Promise<boolean> {
+  if (input.phasesRef.current[input.threadKey] !== undefined) return false;
+
+  setQueuedMessagePromotionPhase({
+    ...input,
+    state: { phase: "requesting", messageIds: input.messageIds, requestId: input.requestId },
+  });
+  input.onStart();
+  try {
+    const accepted = await input.promote();
+    if (!accepted) {
+      setQueuedMessagePromotionPhase({ ...input, state: null });
+      return true;
+    }
+    setQueuedMessagePromotionPhase({
+      ...input,
+      state: {
+        phase: "awaiting-projection",
+        messageIds: input.messageIds,
+        requestId: input.requestId,
+      },
+    });
+    input.onSuccess();
+    return true;
+  } catch (error) {
+    input.onError(error);
+    setQueuedMessagePromotionPhase({ ...input, state: null });
+    return true;
+  }
+}
+
+export function settleQueuedMessagePromotion(input: {
+  phasesRef: { current: QueuedMessagePromotionPhases };
+  setPhases: (phases: QueuedMessagePromotionPhases) => void;
+  threadKey: string;
+  activities: Thread["activities"];
+}): QueuedTurnPromotionOutcome | null {
+  const state = input.phasesRef.current[input.threadKey];
+  if (state?.phase !== "awaiting-projection") return null;
+  const outcome = resolveQueuedTurnPromotionOutcome({
+    activities: input.activities,
+    expectedMessageIds: state.messageIds,
+    requestId: state.requestId,
+  });
+  if (outcome === null) return null;
+  setQueuedMessagePromotionPhase({ ...input, state: null });
+  return outcome;
 }
 
 export function isProviderOverloadRetrying(input: {

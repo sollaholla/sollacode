@@ -74,6 +74,18 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
     ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
 
     /**
+     * Replace a runtime row only while its routing owner and lifecycle status
+     * still match the caller's pre-dispatch snapshot.
+     */
+    readonly updateIfCurrent: (input: {
+      readonly runtime: ProviderSessionRuntime;
+      readonly expectedProviderName: string;
+      readonly expectedProviderInstanceId: ProviderInstanceId;
+      readonly expectedStatus: ProviderSessionRuntimeStatus;
+      readonly expectedSessionGeneration: string | null;
+    }) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+
+    /**
      * Read provider runtime state by canonical thread id.
      */
     readonly getByThreadId: (
@@ -128,6 +140,16 @@ const GetRuntimeRequestSchema = Schema.Struct({
 });
 
 const DeleteRuntimeRequestSchema = GetRuntimeRequestSchema;
+
+const UpdateRuntimeIfCurrentRequestSchema = Schema.Struct({
+  runtime: ProviderSessionRuntimeDbRowSchema,
+  expectedProviderName: Schema.String,
+  expectedProviderInstanceId: ProviderInstanceId,
+  expectedStatus: ProviderSessionRuntimeStatus,
+  expectedSessionGeneration: Schema.NullOr(Schema.String),
+});
+
+const ReturnedRuntimeRef = Schema.Struct({ threadId: ThreadId });
 
 function toPersistenceSqlOrDecodeError(
   sqlOperation: string,
@@ -206,6 +228,36 @@ export const make = Effect.gen(function* () {
       `,
   });
 
+  const updateRuntimeRowIfCurrent = SqlSchema.findOneOption({
+    Request: UpdateRuntimeIfCurrentRequestSchema,
+    Result: ReturnedRuntimeRef,
+    execute: ({
+      runtime,
+      expectedProviderName,
+      expectedProviderInstanceId,
+      expectedStatus,
+      expectedSessionGeneration,
+    }) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET
+          provider_name = ${runtime.providerName},
+          provider_instance_id = ${runtime.providerInstanceId},
+          adapter_key = ${runtime.adapterKey},
+          runtime_mode = ${runtime.runtimeMode},
+          status = ${runtime.status},
+          last_seen_at = ${runtime.lastSeenAt},
+          resume_cursor_json = ${runtime.resumeCursor},
+          runtime_payload_json = ${runtime.runtimePayload}
+        WHERE thread_id = ${runtime.threadId}
+          AND provider_name = ${expectedProviderName}
+          AND provider_instance_id = ${expectedProviderInstanceId}
+          AND status = ${expectedStatus}
+          AND json_extract(runtime_payload_json, '$.sessionGeneration') IS ${expectedSessionGeneration}
+        RETURNING thread_id AS "threadId"
+      `,
+  });
+
   const listRuntimeRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProviderSessionRuntimeRawDbRowSchema,
@@ -244,6 +296,18 @@ export const make = Effect.gen(function* () {
           { threadId: runtime.threadId },
         ),
       ),
+    );
+
+  const updateIfCurrent: ProviderSessionRuntimeRepository["Service"]["updateIfCurrent"] = (input) =>
+    updateRuntimeRowIfCurrent(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.updateIfCurrent:query",
+          "ProviderSessionRuntimeRepository.updateIfCurrent:encodeRequest",
+          { threadId: input.runtime.threadId },
+        ),
+      ),
+      Effect.map(Option.isSome),
     );
 
   const getByThreadId: ProviderSessionRuntimeRepository["Service"]["getByThreadId"] = (input) =>
@@ -324,6 +388,7 @@ export const make = Effect.gen(function* () {
 
   return {
     upsert,
+    updateIfCurrent,
     getByThreadId,
     list,
     deleteByThreadId,

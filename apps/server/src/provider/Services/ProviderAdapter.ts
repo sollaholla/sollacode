@@ -54,6 +54,12 @@ export interface ProviderAdapterCapabilities {
 
   /** Whether this instance may be selected for auxiliary text generation. */
   readonly textGeneration?: boolean;
+
+  /**
+   * Whether a successful send is followed by an exact durable
+   * `message.delivered` runtime receipt.
+   */
+  readonly messageDeliveryReceipts?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -74,6 +80,11 @@ export interface ProviderSessionForkInput {
   readonly runtimeMode: RuntimeMode;
   readonly cwd?: string;
   readonly modelSelection?: ModelSelection;
+}
+
+export interface ProviderAdapterSendTurnOptions {
+  /** Runs after the adapter enters its provider-native prompt or steer call. */
+  readonly onNativeDispatch?: Effect.Effect<void>;
 }
 
 export interface ProviderAdapterShape<TError> {
@@ -104,6 +115,7 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+    options?: ProviderAdapterSendTurnOptions,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
@@ -114,6 +126,7 @@ export interface ProviderAdapterShape<TError> {
   /** Promote every provider-native queued follow-up without cancelling background work. */
   readonly promoteQueuedTurn?: (
     threadId: ThreadId,
+    messageIds?: ReadonlyArray<MessageId>,
   ) => Effect.Effect<ReadonlyArray<MessageId>, TError>;
 
   /**

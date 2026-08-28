@@ -44,6 +44,7 @@ import { useRemoteConnectionStatus } from "./use-remote-environment-registry";
 import { setPendingConnectionError } from "./use-remote-environment-registry";
 import {
   clearQueuedTurnPromotionRequest,
+  markQueuedTurnPromotionAwaitingProjection,
   queuedTurnPromotionRequestsAtom,
 } from "./thread-queued-turn-promotion";
 
@@ -418,6 +419,7 @@ export function useThreadOutboxDrain(): void {
     if (dispatchingQueuedMessageId !== null || promotingThreadKeyRef.current !== null) return;
 
     for (const [threadKey, request] of Object.entries(queuedTurnPromotionRequests)) {
+      if (request.phase !== "requested") continue;
       if ((queuedMessagesByThreadKey[threadKey] ?? []).length > 0) continue;
       const environment = connectedEnvironments.find(
         (candidate) => candidate.environmentId === request.environmentId,
@@ -427,7 +429,11 @@ export function useThreadOutboxDrain(): void {
       promotingThreadKeyRef.current = threadKey;
       void promoteQueuedTurns({
         environmentId: request.environmentId,
-        input: { threadId: request.threadId },
+        input: {
+          commandId: request.commandId,
+          threadId: request.threadId,
+          messageIds: request.messageIds,
+        },
       })
         .then((result) => {
           if (AsyncResult.isFailure(result)) {
@@ -437,11 +443,13 @@ export function useThreadOutboxDrain(): void {
                 ? error.message
                 : "Queued messages could not be sent immediately.",
             );
+            clearQueuedTurnPromotionRequest(request);
+            return;
           }
+          markQueuedTurnPromotionAwaitingProjection(request);
         })
         .finally(() => {
           promotingThreadKeyRef.current = null;
-          clearQueuedTurnPromotionRequest(request);
         });
       return;
     }

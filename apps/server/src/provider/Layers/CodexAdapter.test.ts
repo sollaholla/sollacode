@@ -253,6 +253,7 @@ function makeScopedRuntimeFactory(options?: {
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
   upsert: () => Effect.void,
+  upsertIfCurrent: () => Effect.succeed(false),
   getProvider: () =>
     Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),
   getBinding: () => Effect.succeed(Option.none()),

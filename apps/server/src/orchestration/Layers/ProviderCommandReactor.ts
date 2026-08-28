@@ -41,13 +41,16 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TxRef from "effect/TxRef";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
@@ -56,7 +59,11 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { formatProviderFailureDetail } from "../../provider/providerFailureMessage.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
-import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import {
+  ProviderService,
+  type ProviderServiceNativeDispatchRoute,
+  type ProviderServiceSendTurnOptions,
+} from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
@@ -100,6 +107,7 @@ import {
   isControlOnlyAgentTurn,
   isVmAgentTaskPromptMessageId,
   shouldAutoContinueCompletedAgentTurn,
+  shouldDispatchStartupResume,
   startupAutoResumeIds,
   startupResumeSourceTurnId,
   STARTUP_RESUME_SIGNED_OFF_REASON,
@@ -111,6 +119,7 @@ import {
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const SYNTHETIC_DISPATCH_SUPERSEDED_METHOD = "thread-work/synthetic-dispatch-superseded";
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -136,6 +145,10 @@ type AssistantMessageSentEvent = Extract<ProviderIntentEvent, { type: "thread.me
 type TurnStartRequestedEvent = Extract<
   ProviderIntentEvent,
   { type: "thread.turn-start-requested" }
+>;
+type QueuedTurnPromoteRequestedEvent = Extract<
+  ProviderIntentEvent,
+  { type: "thread.queued-turn-promote-requested" }
 >;
 type TurnStartRequestedPayload = Extract<
   OrchestrationEvent,
@@ -247,6 +260,9 @@ const isLocalProviderResumeTimeout = (cause: Cause.Cause<unknown>): boolean => {
 const isProviderContextRecoveryRequired = (cause: Cause.Cause<unknown>): boolean =>
   findProviderAdapterRequestError(cause)?.method === "thread/context-recovery";
 
+const isSyntheticDispatchSuperseded = (cause: Cause.Cause<unknown>): boolean =>
+  findProviderAdapterRequestError(cause)?.method === SYNTHETIC_DISPATCH_SUPERSEDED_METHOD;
+
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
   if (error) {
@@ -302,6 +318,27 @@ function hasResolvedProviderRequest(
       activity.payload !== null &&
       (activity.payload as Record<string, unknown>).requestId === input.requestId,
   );
+}
+
+function queuedPromotionCoveredMessageIds(
+  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+): ReadonlySet<string> {
+  const covered = new Set<string>();
+  for (const activity of activities) {
+    if (typeof activity.payload !== "object" || activity.payload === null) continue;
+    const payload = activity.payload as Record<string, unknown>;
+    if (activity.kind === "message.delivered" && typeof payload.messageId === "string") {
+      covered.add(payload.messageId);
+      continue;
+    }
+    if (activity.kind !== "provider.queue.promoted" || !Array.isArray(payload.messageIds)) {
+      continue;
+    }
+    for (const messageId of payload.messageIds) {
+      if (typeof messageId === "string") covered.add(messageId);
+    }
+  }
+  return covered;
 }
 
 interface DurableActionApprovalProposal {
@@ -405,6 +442,11 @@ export const classifyTurnStartRecovery = (input: {
   // overtaken for good. Real user sends are a durable FIFO, however: a later
   // message cannot erase an older one that the provider never accepted.
   if (input.sourceMessage.role !== "user") return "superseded";
+  // Startup resumes are synthetic and may be overtaken; ordinary user sends
+  // remain FIFO.
+  if (input.messageId.startsWith("startup-auto-resume-message:") && input.hasLaterRealUserTurn) {
+    return "superseded";
+  }
   // Only continuation auto-resume prompts own their launch elsewhere. Judging
   // by the raw `inputOrigin === "agent-loop"` tag instead swept up scheduled
   // VM-agent task prompts, whose obligation is their *only* launcher — every
@@ -414,6 +456,19 @@ export const classifyTurnStartRecovery = (input: {
   if (isAgentAutoResumeMessageId(input.messageId)) return "superseded";
   return "proceed";
 };
+
+export function classifyAuthenticationResumeDispatch(input: {
+  readonly sessionStatus?: ProviderSession["status"];
+  readonly activeTurnId?: TurnId;
+  readonly deliveryTurnId?: TurnId;
+  readonly preDispatchSuperseded: boolean;
+}): "dispatch" | "supervise" | "retry" | "cancel" {
+  if (input.sessionStatus === "running") {
+    if (input.activeTurnId === undefined || input.deliveryTurnId === undefined) return "retry";
+    return input.activeTurnId === input.deliveryTurnId ? "supervise" : "cancel";
+  }
+  return input.preDispatchSuperseded ? "cancel" : "dispatch";
+}
 
 export const isDirectUserSteerCandidate = (input: {
   readonly threadId: ThreadId;
@@ -475,8 +530,23 @@ export const countContinuationsSinceUserIntent = (
  * finished resume unless someone checks.
  */
 export const providerTurnProducedOutput = (thread: OrchestrationThread, turnId: TurnId): boolean =>
-  thread.messages.some((message) => message.turnId === turnId) ||
-  thread.activities.some((activity) => activity.turnId === turnId);
+  thread.messages.some(
+    (message) =>
+      message.turnId === turnId &&
+      message.role === "assistant" &&
+      !message.streaming &&
+      (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0),
+  ) ||
+  thread.activities.some(
+    (activity) =>
+      activity.turnId === turnId &&
+      (activity.kind.startsWith("tool.") ||
+        activity.kind.startsWith("task.") ||
+        activity.kind.startsWith("reasoning.") ||
+        activity.kind.startsWith("turn.plan.") ||
+        activity.kind.startsWith("approval.") ||
+        activity.kind.startsWith("user-input.")),
+  );
 
 /**
  * ProviderCommandReactorLiveOptions - test seams for the reactor's timers.
@@ -521,6 +591,18 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       capacity: HANDLED_TURN_START_KEY_MAX,
       timeToLive: HANDLED_TURN_START_KEY_TTL,
       lookup: () => Effect.succeed(true),
+    });
+    const deliveryStateWaiters = new Map<string, Set<Deferred.Deferred<void>>>();
+    const wakeDeliveryStateWaiters = Effect.fn("wakeDeliveryStateWaiters")(function* (
+      threadId: ThreadId,
+    ) {
+      const key = String(threadId);
+      const waiters = deliveryStateWaiters.get(key);
+      if (waiters === undefined) return;
+      deliveryStateWaiters.delete(key);
+      yield* Effect.forEach(waiters, (waiter) => Deferred.succeed(waiter, undefined), {
+        discard: true,
+      });
     });
 
     const hasHandledTurnStartRecently = (key: string) =>
@@ -581,6 +663,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly threadId: ThreadId;
       readonly turnId: TurnId | null;
       readonly messageIds: ReadonlyArray<MessageId>;
+      readonly requestId: string;
       readonly createdAt: string;
     }) =>
       Effect.all({
@@ -597,7 +680,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               tone: "info",
               kind: "provider.queue.promoted",
               summary: "Queued messages sent now",
-              payload: { messageIds: input.messageIds },
+              payload: { messageIds: input.messageIds, requestId: input.requestId },
               turnId: input.turnId,
               createdAt: input.createdAt,
             },
@@ -1380,6 +1463,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       readonly thread: OrchestrationThread;
       readonly message: OrchestrationThread["messages"][number];
       readonly context: TurnStartRequestedPayload;
+      readonly sendOptions?: ProviderServiceSendTurnOptions;
     }) {
       // Delivery records only exist for the claudeAgent driver; other drivers
       // would treat the whole recent history as "undelivered" and re-send it.
@@ -1431,7 +1515,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         requestedModelSelection !== undefined &&
         requestedModelSelection.instanceId !== sourceInstanceId;
       const settingsUpdateRequested = input.message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX);
-      return yield* providerService.sendTurn(sendTurnRequest).pipe(
+      return yield* providerService.sendTurn(sendTurnRequest, input.sendOptions).pipe(
         Effect.flatMap((turn) => {
           if (requestedModelSelection === undefined) {
             return Effect.succeed(turn);
@@ -1530,6 +1614,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
     const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
       event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+      liveSteerDispatchStarted?: Effect.Effect<void>,
     ) {
       const key = turnStartKeyForEvent(event);
       if (yield* hasHandledTurnStartRecently(key)) {
@@ -1691,7 +1776,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           sourceTurnId: activeTurnWorkSourceId(event.payload.messageId),
           kind: "active-turn-recovery",
         } as const;
-        yield* Effect.gen(function* () {
+        const dispatchSteer = Effect.gen(function* () {
           // Claim the parked delivery BEFORE dispatching the steer. Completing
           // it afterwards left a race: the running turn could end between our
           // send succeeding and the transition landing, letting the scheduler
@@ -1730,6 +1815,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             updatedAt: yield* nowIso,
           });
           if (!claimedForSteer) return;
+          let admittedRoute: ProviderServiceNativeDispatchRoute | undefined;
           const steerAccepted = yield* buildSendTurnRequestForThread({
             threadId: event.payload.threadId,
             messageId: event.payload.messageId,
@@ -1742,16 +1828,24 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             },
             createdAt: event.payload.createdAt,
           }).pipe(
-            Effect.flatMap(providerService.sendTurn),
-            // Claude now resolves only after its prompt iterator validates and
-            // accepts the exact target, emitting the delivery receipt. Wait for
-            // that receipt to reach the durable projection before finalizing;
-            // other adapters resolve at their own native acceptance boundary.
+            Effect.flatMap((request) =>
+              providerService.sendTurn(request, {
+                onNativeDispatchRoute: (route) => {
+                  admittedRoute = route;
+                },
+                ...(liveSteerDispatchStarted === undefined
+                  ? {}
+                  : { onNativeDispatch: liveSteerDispatchStarted }),
+              }),
+            ),
+            // Receipt-capable adapters emit an immutable message id only after
+            // native consumption. Wait for that exact receipt to reach the
+            // durable projection before clearing the replay guard.
             Effect.tap(() =>
-              waitForClaudeMessageDelivery({
+              waitForMessageDelivery({
                 threadId: event.payload.threadId,
                 messageId: event.payload.messageId,
-                providerInstanceId: currentProviderInstanceId,
+                required: admittedRoute?.messageDeliveryReceipts ?? true,
               }),
             ),
             Effect.as(true),
@@ -1843,8 +1937,13 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               cause: Cause.pretty(cause),
             });
           }),
-          Effect.forkScoped,
         );
+        // The priority worker owns ordering only until native admission. Its
+        // tracked child keeps supervising the full provider response so drain
+        // cannot report idle while an admitted steer is still unresolved.
+        yield* liveSteerDispatchStarted === undefined
+          ? dispatchSteer.pipe(Effect.forkScoped)
+          : dispatchSteer;
         return;
       }
 
@@ -2045,27 +2144,85 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         event: Extract<ProviderIntentEvent, { type: "thread.queued-turn-promote-requested" }>,
       ) {
         const thread = yield* resolveThread(event.payload.threadId);
-        if (!thread?.session || thread.session.status === "stopped") return;
-        yield* providerService.promoteQueuedTurn({ threadId: event.payload.threadId }).pipe(
-          Effect.flatMap((messageIds) =>
-            appendQueuedTurnPromotionActivity({
-              threadId: event.payload.threadId,
-              turnId: thread.session?.activeTurnId ?? null,
-              messageIds,
-              createdAt: event.payload.createdAt,
-            }),
-          ),
-          Effect.catchCause((cause) =>
-            appendProviderFailureActivity({
-              threadId: event.payload.threadId,
-              kind: "provider.queue.promote.failed",
-              summary: "Could not send the queued messages now",
-              detail: formatFailureDetail(cause),
-              turnId: thread.session?.activeTurnId ?? null,
-              createdAt: event.payload.createdAt,
-            }),
-          ),
+        const session = thread?.session;
+        const messageIds = event.payload.messageIds ?? [];
+        const requestId = String(event.commandId ?? event.correlationId ?? event.eventId);
+        const durablyCoveredMessageIds = queuedPromotionCoveredMessageIds(thread?.activities ?? []);
+        const remainingMessageIds = messageIds.filter(
+          (messageId) => !durablyCoveredMessageIds.has(messageId),
         );
+        if (messageIds.length > 0 && remainingMessageIds.length === 0) {
+          yield* appendQueuedTurnPromotionActivity({
+            threadId: event.payload.threadId,
+            turnId: session?.activeTurnId ?? null,
+            messageIds,
+            requestId,
+            createdAt: event.payload.createdAt,
+          });
+          return;
+        }
+        if (!session || session.status !== "running") {
+          yield* appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.queue.promote.failed",
+            summary: "Could not send the queued messages now",
+            detail:
+              session == null
+                ? "The thread no longer has a provider session. Try sending the queued messages again after the session starts."
+                : `The provider session is ${session.status}, not running. Try sending the queued messages again after it resumes.`,
+            turnId: session?.activeTurnId ?? null,
+            createdAt: event.payload.createdAt,
+            requestId,
+          });
+          return;
+        }
+        yield* providerService
+          .promoteQueuedTurn({
+            threadId: event.payload.threadId,
+            ...(remainingMessageIds.length > 0 ? { messageIds: remainingMessageIds } : {}),
+          })
+          .pipe(
+            Effect.flatMap((promotedMessageIds) => {
+              const newlyPromotedMessageIds = new Set(promotedMessageIds);
+              const terminalMessageIds =
+                messageIds.length === 0
+                  ? promotedMessageIds
+                  : messageIds.filter(
+                      (messageId) =>
+                        durablyCoveredMessageIds.has(messageId) ||
+                        newlyPromotedMessageIds.has(messageId),
+                    );
+              return terminalMessageIds.length > 0 &&
+                (messageIds.length === 0 || terminalMessageIds.length === messageIds.length)
+                ? appendQueuedTurnPromotionActivity({
+                    threadId: event.payload.threadId,
+                    turnId: session.activeTurnId ?? null,
+                    messageIds: terminalMessageIds,
+                    requestId,
+                    createdAt: event.payload.createdAt,
+                  })
+                : appendProviderFailureActivity({
+                    threadId: event.payload.threadId,
+                    kind: "provider.queue.promote.failed",
+                    summary: "Could not send the queued messages now",
+                    detail: "The provider did not confirm every requested queued message.",
+                    turnId: session.activeTurnId ?? null,
+                    createdAt: event.payload.createdAt,
+                    requestId,
+                  });
+            }),
+            Effect.catchCause((cause) =>
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.queue.promote.failed",
+                summary: "Could not send the queued messages now",
+                detail: formatFailureDetail(cause),
+                turnId: session.activeTurnId ?? null,
+                createdAt: event.payload.createdAt,
+                requestId,
+              }),
+            ),
+          );
       },
     );
 
@@ -2657,32 +2814,42 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         );
       }) ?? false;
 
-    const waitForClaudeMessageDelivery = Effect.fn("waitForClaudeMessageDelivery")(
-      function* (input: {
-        readonly threadId: ThreadId;
-        readonly messageId: MessageId;
-        readonly providerInstanceId: ServerProvider["instanceId"];
-      }) {
-        const info = yield* providerService.getInstanceInfo(input.providerInstanceId);
-        if (info.driverKind !== ProviderDriverKind.make("claudeAgent")) return;
-        while (true) {
-          const thread = yield* resolveThread(input.threadId);
-          if (!thread) return;
-          if (messageDeliveryRecorded(thread, input.messageId)) return;
-          if (thread.session?.status === "error") {
-            const detail = thread.session.lastError ?? "provider delivery failed";
-            return yield* new ProviderAdapterRequestError({
-              provider: providerErrorLabelFromInstanceHint({
-                instanceId: String(input.providerInstanceId),
-              }),
-              method: "thread.turn.start",
-              detail,
-            });
-          }
-          yield* Effect.sleep(Duration.millis(100));
-        }
-      },
-    );
+    const waitForMessageDelivery = Effect.fn("waitForMessageDelivery")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly messageId: MessageId;
+      readonly required: boolean;
+    }) {
+      if (!input.required) return;
+      const deliveryIsDurable = Effect.gen(function* () {
+        const thread = yield* resolveThread(input.threadId);
+        if (!thread) return true;
+        return messageDeliveryRecorded(thread, input.messageId);
+      });
+      while (true) {
+        if (yield* deliveryIsDurable) return;
+        const waiter = yield* Deferred.make<void>();
+        const key = String(input.threadId);
+        yield* Effect.sync(() => {
+          const waiters = deliveryStateWaiters.get(key) ?? new Set<Deferred.Deferred<void>>();
+          waiters.add(waiter);
+          deliveryStateWaiters.set(key, waiters);
+        });
+        yield* Effect.gen(function* () {
+          // Register before re-reading so an event can neither land between
+          // the snapshot check and subscription nor strand this waiter.
+          if (yield* deliveryIsDurable) return;
+          yield* Deferred.await(waiter);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              const waiters = deliveryStateWaiters.get(key);
+              waiters?.delete(waiter);
+              if (waiters?.size === 0) deliveryStateWaiters.delete(key);
+            }),
+          ),
+        );
+      }
+    });
 
     /**
      * Dead-feed ceiling. Every projected message and activity bumps the thread
@@ -2750,12 +2917,54 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
     };
 
+    const syntheticDispatchAdmission = (
+      obligation: ThreadWorkObligation,
+      sourceMessageId?: MessageId,
+    ) =>
+      Effect.gen(function* () {
+        const admitted = yield* threadWorkObligations.tryAdmitSyntheticDispatch({
+          obligationId: obligation.obligationId,
+          expectedAttempt: obligation.attempt,
+          ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
+          updatedAt: yield* nowIso,
+        });
+        return admitted;
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ProviderAdapterRequestError({
+              provider: "t3",
+              method: "thread-work/synthetic-dispatch-admission",
+              detail: "Could not persist the synthetic provider-dispatch admission marker.",
+              failureKind: "retryable-upstream",
+              cause: error,
+            }),
+        ),
+        Effect.flatMap((admitted) =>
+          admitted
+            ? Effect.void
+            : Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "t3",
+                  method: SYNTHETIC_DISPATCH_SUPERSEDED_METHOD,
+                  detail: "A later real user turn superseded this synthetic dispatch.",
+                }),
+              ),
+        ),
+      );
+
     const recoverThreadWorkFailure = (
       cause: Cause.Cause<unknown>,
       attempt: number,
     ): Effect.Effect<ThreadWorkExecutionOutcome, never> => {
       if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
       const detail = formatFailureDetail(cause);
+      if (isSyntheticDispatchSuperseded(cause)) {
+        return Effect.succeed({
+          state: "cancelled" as const,
+          reason: "a later user turn won before native synthetic dispatch",
+        });
+      }
       if (isProviderAuthenticationFailure(detail)) {
         return Effect.succeed({ state: "blocked-authentication" as const, reason: detail });
       }
@@ -3000,6 +3209,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     }): Effect.Effect<ThreadWorkExecutionOutcome, never> =>
       Effect.gen(function* () {
         if (Cause.hasInterruptsOnly(input.cause)) return yield* Effect.interrupt;
+        if (isSyntheticDispatchSuperseded(input.cause)) {
+          return {
+            state: "cancelled" as const,
+            reason: "a later user turn won before native synthetic dispatch",
+          };
+        }
         const detail = formatFailureDetail(input.cause);
         if (
           isLocalProviderResumeTimeout(input.cause) ||
@@ -3067,7 +3282,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         return yield* recoverThreadWorkFailure(input.cause, input.attempt);
       });
 
-    const executeActiveTurnRecovery: ThreadWorkHandler = (obligation) =>
+    const executeActiveTurnRecovery = (
+      obligation: ThreadWorkObligation,
+      admissionSourceMessageId?: MessageId,
+    ): Effect.Effect<ThreadWorkExecutionOutcome, never> =>
       Effect.gen(function* () {
         yield* Effect.logDebug("thread-work.active-turn.begin", {
           obligationId: obligation.obligationId,
@@ -3078,10 +3296,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (messageId === null) {
           return { state: "cancelled" as const, reason: "invalid turn-start work identity" };
         }
+        const recoveryMessageId = MessageId.make(
+          `active-turn-recovery-delivery:${obligation.threadId}:${messageId}`,
+        );
 
-        const [thread, context] = yield* Effect.all([
+        const [thread, context, recoveryTurn] = yield* Effect.all([
           resolveThread(obligation.threadId),
           getPersistedTurnStartContext(obligation.threadId, messageId).pipe(
+            Effect.map(Option.getOrUndefined),
+          ),
+          getPersistedProviderTurnForMessage(obligation.threadId, recoveryMessageId).pipe(
             Effect.map(Option.getOrUndefined),
           ),
         ]);
@@ -3172,7 +3396,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // from success: nobody is watching the screen to notice that "resumed"
         // produced no words. A real user send does not need this — the person
         // who typed it can see that nothing came back and press enter again.
-        const isResumeWork = obligation.kind === "startup-resume";
+        const isResumeWork = obligation.kind === "startup-resume" || sourceTurnAlreadyStarted;
         if (runningBeforeSend?.activeTurnId !== undefined) {
           // Waiting to terminal is only a valid *outcome* for this obligation
           // when the running turn is our own message's turn (recovery found it
@@ -3219,13 +3443,32 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // blocks any further attempt, so the thread sits dead wearing a resume
         // badge it never earned. Fall through and re-nudge the provider
         // instead; `retryFailureWork`'s cap still stops this eventually.
+        const persistedWorkTurn =
+          recoveryTurn ??
+          (context.providerTurnId === null || context.providerTurnState === null
+            ? undefined
+            : {
+                turnId: context.providerTurnId,
+                state: context.providerTurnState,
+              });
         const completedTurnWasEmpty =
           isResumeWork &&
-          context.providerTurnId !== null &&
-          !providerTurnProducedOutput(thread, context.providerTurnId);
-        if (context.providerTurnState === "completed" && !completedTurnWasEmpty) {
+          persistedWorkTurn?.state === "completed" &&
+          !providerTurnProducedOutput(thread, persistedWorkTurn.turnId);
+        if (persistedWorkTurn?.state === "completed" && !completedTurnWasEmpty) {
           return { state: "completed" as const };
         }
+        if (persistedWorkTurn?.state === "interrupted") {
+          return { state: "cancelled" as const, reason: "recovery turn was interrupted" };
+        }
+        const resumeSendOptions = isResumeWork
+          ? {
+              beforeNativeDispatch: syntheticDispatchAdmission(
+                obligation,
+                admissionSourceMessageId,
+              ),
+            }
+          : undefined;
 
         yield* Effect.logDebug("thread-work.active-turn.dispatch", {
           obligationId: obligation.obligationId,
@@ -3236,9 +3479,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const providerTurn = sourceTurnAlreadyStarted
           ? yield* buildSendTurnRequestForThread({
               threadId: obligation.threadId,
-              messageId: MessageId.make(
-                `active-turn-recovery-delivery:${obligation.threadId}:${messageId}`,
-              ),
+              messageId: recoveryMessageId,
               historyMessageId: messageId,
               // Browser providers type this nudge as a visible user message.
               // The autonomous-continue wall (AGENT_STOP contract) belongs to
@@ -3250,11 +3491,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               modelSelection: thread.modelSelection,
               interactionMode: providerInteractionMode(thread.interactionMode),
               createdAt: yield* nowIso,
-            }).pipe(Effect.flatMap(providerService.sendTurn))
+            }).pipe(
+              Effect.flatMap((request) => providerService.sendTurn(request, resumeSendOptions)),
+            )
           : yield* sendProjectedUserTurn({
               thread,
               message: sourceMessage,
               context: context.payload,
+              ...(resumeSendOptions === undefined ? {} : { sendOptions: resumeSendOptions }),
             });
 
         const sessionsAfterSend = yield* providerService.listSessions();
@@ -3276,7 +3520,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           liveAfterSend === undefined ||
           (liveAfterSend.status !== "running" && liveAfterSend.status !== "connecting")
         ) {
-          return { state: "completed" as const };
+          return isResumeWork
+            ? yield* retryWorkAfter15Seconds(
+                "provider startup resume left no running session to supervise",
+              )
+            : { state: "completed" as const };
         }
         return yield* waitForProviderTurnTerminal({
           threadId: obligation.threadId,
@@ -3316,8 +3564,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // headless servers and closed laptops never resumed at all. Dispatch
         // the resume turn ourselves, exactly like executeAgentContinuation;
         // the stable command id keeps a racing client dispatch idempotent.
-        const thread = yield* resolveThread(obligation.threadId);
-        if (!thread) {
+        const [thread, threadShell, sourceTurn] = yield* Effect.all([
+          resolveThread(obligation.threadId),
+          projectionSnapshotQuery
+            .getThreadShellById(obligation.threadId)
+            .pipe(Effect.map(Option.getOrUndefined)),
+          getPersistedProviderTurnById(obligation.threadId, obligation.sourceTurnId).pipe(
+            Effect.map(Option.getOrUndefined),
+          ),
+        ]);
+        if (!thread || !threadShell) {
           return { state: "cancelled" as const, reason: "thread disappeared" };
         }
         if (thread.settledOverride === "settled") {
@@ -3328,6 +3584,35 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           Effect.map(Option.getOrUndefined),
         );
         if (syntheticMessage === undefined && context === undefined) {
+          if (
+            projectionSnapshotQuery.getThreadProviderTurnById !== undefined &&
+            sourceTurn === undefined
+          ) {
+            return yield* retryWorkAfter15Seconds("source turn is not visible yet");
+          }
+          const sourceContext =
+            sourceTurn?.sourceMessageId === null || sourceTurn?.sourceMessageId === undefined
+              ? undefined
+              : yield* getPersistedTurnStartContext(
+                  obligation.threadId,
+                  sourceTurn.sourceMessageId,
+                ).pipe(Effect.map(Option.getOrUndefined));
+          if (
+            sourceTurn?.sourceMessageId !== null &&
+            sourceTurn?.sourceMessageId !== undefined &&
+            sourceContext === undefined
+          ) {
+            return yield* retryWorkAfter15Seconds("source turn context is not visible yet");
+          }
+          if (
+            !shouldDispatchStartupResume(threadShell, {
+              sourceTurnId: obligation.sourceTurnId,
+              ...(sourceTurn === undefined ? {} : { sourceTurnState: sourceTurn.state }),
+              hasLaterRealUserTurn: sourceContext?.hasLaterRealUserTurn === true,
+            })
+          ) {
+            return { state: "cancelled" as const, reason: "startup resume was superseded" };
+          }
           // Last line of defense against a self-inflicted resume: if the
           // thread's newest settled assistant message signed off with
           // AGENT_STOP and no real user message has landed since, the agent
@@ -3338,15 +3623,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           const newestAssistant = thread.messages
             .toReversed()
             .find((message) => message.role === "assistant" && !message.streaming);
-          if (
-            newestAssistant !== undefined &&
-            emittedAgentStop(newestAssistant.text) &&
-            !hasLaterRealUserMessage({
-              thread,
-              assistantMessageId: newestAssistant.id,
-              syntheticMessageId: messageId,
-            })
-          ) {
+          if (newestAssistant !== undefined && emittedAgentStop(newestAssistant.text)) {
             return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
           }
           yield* orchestrationEngine.dispatch({
@@ -3364,30 +3641,29 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             interactionMode: thread.interactionMode,
             createdAt: yield* nowIso,
           });
+        } else if (
+          syntheticMessage !== undefined &&
+          (syntheticMessage.role !== "user" || syntheticMessage.text !== RESUME_PROMPT)
+        ) {
+          return { state: "cancelled" as const, reason: "startup resume identity was reused" };
         }
-        return yield* executeActiveTurnRecovery({
-          ...obligation,
-          sourceTurnId: activeTurnWorkSourceId(messageId),
-        });
-      }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
-
-    const hasLaterRealUserMessage = (input: {
-      readonly thread: OrchestrationThread;
-      readonly assistantMessageId: MessageId;
-      readonly syntheticMessageId?: MessageId;
-    }): boolean => {
-      const assistantIndex = input.thread.messages.findIndex(
-        (message) => message.id === input.assistantMessageId,
-      );
-      if (assistantIndex < 0) return true;
-      return input.thread.messages
-        .slice(assistantIndex + 1)
-        .some(
-          (message) =>
-            message.role === "user" &&
-            (input.syntheticMessageId === undefined || message.id !== input.syntheticMessageId),
+        const provider = (yield* providerRegistry.getProviders).find(
+          (candidate) => candidate.instanceId === obligation.providerInstanceId,
         );
-    };
+        if (provider?.auth?.status === "unauthenticated") {
+          return {
+            state: "blocked-authentication" as const,
+            reason: "provider authentication required",
+          };
+        }
+        return yield* executeActiveTurnRecovery(
+          {
+            ...obligation,
+            sourceTurnId: activeTurnWorkSourceId(messageId),
+          },
+          sourceTurn?.sourceMessageId ?? undefined,
+        );
+      }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
 
     const executeAgentContinuation: ThreadWorkHandler = (obligation) =>
       Effect.gen(function* () {
@@ -3401,11 +3677,14 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const recoveryMessageId = MessageId.make(
           `agent-continuation-recovery-delivery:${obligation.threadId}:${obligation.sourceTurnId}`,
         );
-        const [thread, threadShell] = yield* Effect.all([
+        const [thread, threadShell, sourceTurn] = yield* Effect.all([
           resolveThread(obligation.threadId),
           projectionSnapshotQuery
             .getThreadShellById(obligation.threadId)
             .pipe(Effect.map(Option.getOrUndefined)),
+          getPersistedProviderTurnById(obligation.threadId, obligation.sourceTurnId).pipe(
+            Effect.map(Option.getOrUndefined),
+          ),
         ]);
         if (!thread || !threadShell || thread.settledOverride === "settled") {
           return {
@@ -3431,30 +3710,32 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const assistantIndex = assistant
           ? thread.messages.findIndex((message) => message.id === assistant.id)
           : -1;
-        const sourceUserMessage =
+        const fallbackSourceMessage =
           assistantIndex < 0
             ? undefined
             : thread.messages
                 .slice(0, assistantIndex)
                 .toReversed()
                 .find((message) => message.role === "user");
+        const sourceMessageId = sourceTurn?.sourceMessageId ?? fallbackSourceMessage?.id;
+        const sourceUserMessage = thread.messages.find((message) => message.id === sourceMessageId);
         const turnStartContext = sourceUserMessage
           ? yield* getPersistedTurnStartContext(obligation.threadId, sourceUserMessage.id).pipe(
               Effect.map(Option.getOrUndefined),
             )
           : undefined;
         const syntheticMessage = thread.messages.find((message) => message.id === messageId);
+        if (!assistant || !sourceUserMessage || !turnStartContext) {
+          return yield* retryWorkAfter15Seconds(
+            "continuation source message context is not projected yet",
+          );
+        }
         if (
-          !assistant ||
-          !sourceUserMessage ||
           turnStartContext?.payload.interactionMode !== "agent" ||
+          sourceUserMessage.role !== "user" ||
           isProviderAuthenticationFailure(assistant.text) ||
           !shouldAgentContinueAfterReply(assistant.text) ||
-          hasLaterRealUserMessage({
-            thread,
-            assistantMessageId: assistant.id,
-            syntheticMessageId: messageId,
-          })
+          turnStartContext.hasLaterRealUserTurn
         ) {
           return { state: "cancelled" as const, reason: "continuation was superseded" };
         }
@@ -3545,7 +3826,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             reason: "provider authentication required",
           };
         }
-
         if (syntheticMessage === undefined) {
           yield* orchestrationEngine.dispatch({
             type: "thread.turn.start",
@@ -3581,16 +3861,6 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           };
         }
         const deliveryAlreadyRecorded = messageDeliveryRecorded(refreshed, messageId);
-        if (
-          hasLaterRealUserMessage({
-            thread: refreshed,
-            assistantMessageId: assistant.id,
-            syntheticMessageId: messageId,
-          })
-        ) {
-          return { state: "cancelled" as const, reason: "user message won the continuation race" };
-        }
-
         const [syntheticTurnContext, recoveryTurn] = yield* Effect.all([
           getPersistedTurnStartContext(obligation.threadId, messageId).pipe(
             Effect.map(Option.getOrUndefined),
@@ -3617,7 +3887,10 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 turnId: syntheticTurnContext.providerTurnId,
                 state: syntheticTurnContext.providerTurnState,
               });
-        if (persistedWorkTurn?.state === "completed") {
+        if (
+          persistedWorkTurn?.state === "completed" &&
+          providerTurnProducedOutput(refreshed, persistedWorkTurn.turnId)
+        ) {
           return { state: "completed" as const };
         }
         if (persistedWorkTurn?.state === "interrupted") {
@@ -3631,6 +3904,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             threadId: obligation.threadId,
             turnId: active.activeTurnId,
             attempt: obligation.attempt,
+            requireTurnOutput: true,
           });
         }
 
@@ -3643,6 +3917,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           deliveryMessageId,
         );
         let dispatchedTurnId: TurnId | undefined;
+        let admittedRoute: ProviderServiceNativeDispatchRoute | undefined;
         if (!selectedDeliveryAlreadyRecorded || deliveryMessageId === recoveryMessageId) {
           const [deliveryThread, deliveryShell] = yield* Effect.all([
             resolveThread(obligation.threadId),
@@ -3687,13 +3962,22 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               reason: "continuation thread is no longer in Agent mode",
             };
           }
-          dispatchedTurnId = (yield* providerService.sendTurn(request)).turnId;
+          dispatchedTurnId = (yield* providerService.sendTurn(request, {
+            beforeNativeDispatch: syntheticDispatchAdmission(obligation, sourceUserMessage.id),
+            onNativeDispatchRoute: (route) => {
+              admittedRoute = route;
+            },
+          })).turnId;
         }
         if (!selectedDeliveryAlreadyRecorded) {
-          yield* waitForClaudeMessageDelivery({
+          yield* waitForMessageDelivery({
             threadId: obligation.threadId,
             messageId: deliveryMessageId,
-            providerInstanceId: obligation.providerInstanceId,
+            // ProviderService invokes the route callback synchronously after
+            // its final binding check. Missing metadata is an invariant breach;
+            // fail closed on acceptance proof rather than risk supervising or
+            // retrying a receipt-capable delivery before it is durable.
+            required: admittedRoute?.messageDeliveryReceipts ?? true,
           });
         }
         const sessionsAfterDelivery = yield* providerService.listSessions();
@@ -3703,9 +3987,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         // A delivery receipt means the provider pulled the message; it does not
         // mean the provider turn, tool, subagent, or compaction work finished.
         if (liveAfterDelivery?.status !== "running") {
-          return dispatchedTurnId === undefined
-            ? yield* retryWorkAfter15Seconds("provider continuation is not running")
-            : { state: "completed" as const };
+          return yield* retryWorkAfter15Seconds("provider continuation is not running");
         }
         const activeTurnId = liveAfterDelivery.activeTurnId ?? dispatchedTurnId;
         if (activeTurnId === undefined) {
@@ -3715,6 +3997,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           threadId: obligation.threadId,
           turnId: activeTurnId,
           attempt: obligation.attempt,
+          requireTurnOutput: true,
         });
       }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
 
@@ -3723,11 +4006,17 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         const deliveryMessageId = MessageId.make(
           `provider-auth-resume-delivery:${obligation.threadId}:${obligation.sourceTurnId}`,
         );
-        const [thread, threadShell] = yield* Effect.all([
+        const [thread, threadShell, deliveryTurn, sourceTurn] = yield* Effect.all([
           resolveThread(obligation.threadId),
           projectionSnapshotQuery
             .getThreadShellById(obligation.threadId)
             .pipe(Effect.map(Option.getOrUndefined)),
+          getPersistedProviderTurnForMessage(obligation.threadId, deliveryMessageId).pipe(
+            Effect.map(Option.getOrUndefined),
+          ),
+          getPersistedProviderTurnById(obligation.threadId, obligation.sourceTurnId).pipe(
+            Effect.map(Option.getOrUndefined),
+          ),
         ]);
         if (!thread || !threadShell || thread.settledOverride === "settled") {
           return { state: "cancelled" as const, reason: "authentication pause was superseded" };
@@ -3740,21 +4029,40 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
               message.turnId === obligation.sourceTurnId &&
               !message.streaming,
           );
+        const assistantIndex = assistant
+          ? thread.messages.findIndex((message) => message.id === assistant.id)
+          : -1;
+        const fallbackSourceMessage =
+          assistantIndex < 0
+            ? undefined
+            : thread.messages
+                .slice(0, assistantIndex)
+                .toReversed()
+                .find((message) => message.role === "user");
+        const sourceMessageId = sourceTurn?.sourceMessageId ?? fallbackSourceMessage?.id;
+        const sourceMessage = thread.messages.find((message) => message.id === sourceMessageId);
+        const sourceContext = sourceMessage
+          ? yield* getPersistedTurnStartContext(obligation.threadId, sourceMessage.id).pipe(
+              Effect.map(Option.getOrUndefined),
+            )
+          : undefined;
+        if (!assistant || !sourceMessage || !sourceContext) {
+          return yield* retryWorkAfter15Seconds(
+            "authentication source message context is not projected yet",
+          );
+        }
         if (
-          !assistant ||
+          sourceMessage.role !== "user" ||
           !isProviderAuthenticationFailure(assistant.text) ||
-          hasLaterRealUserMessage({ thread, assistantMessageId: assistant.id })
+          (deliveryTurn === undefined && sourceContext.hasLaterRealUserTurn)
         ) {
           return { state: "cancelled" as const, reason: "authentication pause is stale" };
         }
 
-        const deliveryTurn = yield* getPersistedProviderTurnForMessage(
-          obligation.threadId,
-          deliveryMessageId,
-        ).pipe(Effect.map(Option.getOrUndefined));
         if (deliveryTurn === undefined) {
           const latestTurn = threadShell.latestTurn;
           if (
+            threadShell.archivedAt !== null ||
             latestTurn?.turnId !== obligation.sourceTurnId ||
             (latestTurn.state !== "completed" &&
               latestTurn.state !== "incomplete" &&
@@ -3765,10 +4073,28 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           ) {
             return { state: "cancelled" as const, reason: "authentication pause was superseded" };
           }
-        } else if (deliveryTurn.state === "completed") {
+        } else if (
+          deliveryTurn.state === "completed" &&
+          providerTurnProducedOutput(thread, deliveryTurn.turnId)
+        ) {
           return { state: "completed" as const };
         } else if (deliveryTurn.state === "interrupted") {
           return { state: "cancelled" as const, reason: "authentication resume was interrupted" };
+        }
+
+        if (thread.interactionMode !== "agent" || threadShell.interactionMode !== "agent") {
+          if (deliveryTurn?.state === "running") {
+            return yield* waitForProviderTurnTerminal({
+              threadId: obligation.threadId,
+              turnId: deliveryTurn.turnId,
+              attempt: obligation.attempt,
+              requireTurnOutput: true,
+            });
+          }
+          return {
+            state: "cancelled" as const,
+            reason: "authentication resume requires Agent mode",
+          };
         }
 
         const provider = (yield* providerRegistry.getProviders).find(
@@ -3780,37 +4106,112 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             reason: "provider authentication required",
           };
         }
-        const deliveryAlreadyRecorded = messageDeliveryRecorded(thread, deliveryMessageId);
+        const [refreshed, refreshedShell] = yield* Effect.all([
+          resolveThread(obligation.threadId),
+          projectionSnapshotQuery
+            .getThreadShellById(obligation.threadId)
+            .pipe(Effect.map(Option.getOrUndefined)),
+        ]);
+        if (
+          !refreshed ||
+          !refreshedShell ||
+          refreshed.settledOverride === "settled" ||
+          refreshed.interactionMode !== "agent" ||
+          refreshedShell.interactionMode !== "agent"
+        ) {
+          return { state: "cancelled" as const, reason: "authentication pause was superseded" };
+        }
+        const deliveryAlreadyRecorded = messageDeliveryRecorded(refreshed, deliveryMessageId);
         const sessions = yield* providerService.listSessions();
         const active = sessions.find((session) => session.threadId === obligation.threadId);
-        if (active?.status === "running" && active.activeTurnId !== undefined) {
+        const activeDeliveryTurnId = active?.status === "running" ? active.activeTurnId : undefined;
+        // Before the recovery turn exists, newer user intent, an archive, or
+        // a human gate wins. Once that exact turn is running, keep its durable
+        // supervisor alive instead of abandoning it.
+        const disposition = classifyAuthenticationResumeDispatch({
+          ...(active === undefined ? {} : { sessionStatus: active.status }),
+          ...(activeDeliveryTurnId === undefined ? {} : { activeTurnId: activeDeliveryTurnId }),
+          ...(deliveryTurn === undefined ? {} : { deliveryTurnId: deliveryTurn.turnId }),
+          preDispatchSuperseded:
+            refreshedShell.archivedAt !== null ||
+            sourceContext.hasLaterRealUserTurn ||
+            refreshedShell.hasPendingApprovals ||
+            refreshedShell.hasPendingUserInput ||
+            (deliveryTurn === undefined &&
+              refreshedShell.latestTurn?.turnId !== obligation.sourceTurnId),
+        });
+        if (disposition === "supervise" && activeDeliveryTurnId !== undefined) {
           return yield* waitForProviderTurnTerminal({
             threadId: obligation.threadId,
-            turnId: active.activeTurnId,
+            turnId: activeDeliveryTurnId,
             attempt: obligation.attempt,
+            requireTurnOutput: true,
           });
         }
+        if (disposition === "retry" || disposition === "supervise") {
+          return yield* retryWorkAfter15Seconds(
+            "running authentication recovery has no active turn id",
+          );
+        }
+        if (disposition === "cancel") {
+          return { state: "cancelled" as const, reason: "authentication pause was superseded" };
+        }
         let dispatchedTurnId: TurnId | undefined;
+        let admittedRoute: ProviderServiceNativeDispatchRoute | undefined;
         if (!deliveryAlreadyRecorded || deliveryTurn !== undefined) {
           const createdAt = yield* nowIso;
           const request = yield* buildSendTurnRequestForThread({
             threadId: obligation.threadId,
             messageId: deliveryMessageId,
-            // Same contract as active-turn recovery: the autonomous-continue
-            // wall is Agent-mode-only; Default threads resume with the plain
-            // resume sentence.
-            messageText: thread.interactionMode === "agent" ? AGENT_CONTINUE_PROMPT : RESUME_PROMPT,
-            modelSelection: thread.modelSelection,
-            interactionMode: providerInteractionMode(thread.interactionMode),
+            messageText: AGENT_CONTINUE_PROMPT,
+            modelSelection: refreshed.modelSelection,
+            interactionMode: providerInteractionMode(refreshed.interactionMode),
             createdAt,
           });
-          dispatchedTurnId = (yield* providerService.sendTurn(request)).turnId;
+          dispatchedTurnId = (yield* providerService.sendTurn(request, {
+            beforeNativeDispatch: Effect.gen(function* () {
+              const [dispatchThread, dispatchShell] = yield* Effect.all([
+                resolveThread(obligation.threadId),
+                projectionSnapshotQuery
+                  .getThreadShellById(obligation.threadId)
+                  .pipe(Effect.map(Option.getOrUndefined)),
+              ]).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ProviderAdapterRequestError({
+                      provider: "t3",
+                      method: SYNTHETIC_DISPATCH_SUPERSEDED_METHOD,
+                      detail:
+                        "Could not revalidate Agent mode before authentication resume dispatch.",
+                      failureKind: "retryable-upstream",
+                      cause: error,
+                    }),
+                ),
+              );
+              if (
+                !dispatchThread ||
+                !dispatchShell ||
+                dispatchThread.interactionMode !== "agent" ||
+                dispatchShell.interactionMode !== "agent"
+              ) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: "t3",
+                  method: SYNTHETIC_DISPATCH_SUPERSEDED_METHOD,
+                  detail: "Authentication resume left Agent mode before native dispatch.",
+                });
+              }
+              yield* syntheticDispatchAdmission(obligation, sourceMessage.id);
+            }),
+            onNativeDispatchRoute: (route) => {
+              admittedRoute = route;
+            },
+          })).turnId;
         }
         if (!deliveryAlreadyRecorded) {
-          yield* waitForClaudeMessageDelivery({
+          yield* waitForMessageDelivery({
             threadId: obligation.threadId,
             messageId: deliveryMessageId,
-            providerInstanceId: obligation.providerInstanceId,
+            required: admittedRoute?.messageDeliveryReceipts ?? true,
           });
         }
         const sessionsAfterDelivery = yield* providerService.listSessions();
@@ -3818,9 +4219,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           (session) => session.threadId === obligation.threadId,
         );
         if (liveAfterDelivery?.status !== "running") {
-          return dispatchedTurnId === undefined
-            ? yield* retryWorkAfter15Seconds("provider authentication resume is not running")
-            : { state: "completed" as const };
+          return yield* retryWorkAfter15Seconds("provider authentication resume is not running");
         }
         const activeTurnId = liveAfterDelivery.activeTurnId ?? dispatchedTurnId;
         if (activeTurnId === undefined) {
@@ -3830,6 +4229,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           threadId: obligation.threadId,
           turnId: activeTurnId,
           attempt: obligation.attempt,
+          requireTurnOutput: true,
         });
       }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
 
@@ -3977,6 +4377,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
 
     const processDomainEvent = Effect.fn("processDomainEvent")(function* (
       event: ProviderIntentEvent,
+      liveSteerDispatchStarted?: Effect.Effect<void>,
     ) {
       yield* Effect.annotateCurrentSpan({
         "orchestration.event_type": event.type,
@@ -4034,7 +4435,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return;
         }
         case "thread.turn-start-requested":
-          yield* processTurnStartRequested(event);
+          yield* processTurnStartRequested(event, liveSteerDispatchStarted);
           return;
         case "thread.turn-interrupt-requested":
           yield* processTurnInterruptRequested(event);
@@ -4060,8 +4461,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       }
     });
 
-    const processDomainEventSafely = (event: ProviderIntentEvent) =>
-      processDomainEvent(event).pipe(
+    const processDomainEventSafely = (
+      event: ProviderIntentEvent,
+      liveSteerDispatchStarted?: Effect.Effect<void>,
+    ) =>
+      processDomainEvent(event, liveSteerDispatchStarted).pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
@@ -4080,11 +4484,31 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     // turns stay on the ordinary FIFO worker; only input that can target an
     // already-running provider turn uses this lane.
     const steerWorkers = new Map<string, DrainableWorker<TurnStartRequestedEvent>>();
+    const steerTasksInFlight = yield* TxRef.make(0);
+    const steerTasksDrain = TxRef.get(steerTasksInFlight).pipe(
+      Effect.tap((count) => (count > 0 ? Effect.txRetry : Effect.void)),
+      Effect.tx,
+    );
     const steerWorkerForThread = Effect.fn("steerWorkerForThread")(function* (threadId: ThreadId) {
       const key = String(threadId);
       const existing = steerWorkers.get(key);
       if (existing) return existing;
-      const created = yield* makeDrainableWorker(processDomainEventSafely);
+      const created = yield* makeDrainableWorker((event: TurnStartRequestedEvent) =>
+        Effect.gen(function* () {
+          const dispatchStarted = yield* Deferred.make<void>();
+          const task = yield* Effect.acquireUseRelease(
+            TxRef.update(steerTasksInFlight, (count) => count + 1).pipe(Effect.tx),
+            () => processDomainEventSafely(event, Deferred.succeed(dispatchStarted, undefined)),
+            () => TxRef.update(steerTasksInFlight, (count) => count - 1).pipe(Effect.tx),
+          ).pipe(Effect.forkScoped({ startImmediately: true }));
+          // Start same-thread steers in queue order, but do not await one
+          // provider response before beginning the next correction.
+          yield* Effect.raceFirst(
+            Deferred.await(dispatchStarted),
+            Fiber.await(task).pipe(Effect.asVoid),
+          );
+        }),
+      );
       steerWorkers.set(key, created);
       return created;
     });
@@ -4138,6 +4562,28 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         yield* controlWorker.enqueue(event);
       }),
     );
+    // Promotion may wait for a queued prompt to reach Grok, so it cannot share
+    // the cancellation lane (Stop must wake that wait) or the steer lane (the
+    // target steer may be what creates the native queue row). Keep duplicate
+    // promotions FIFO per thread while leaving both causal producers free.
+    const promotionWorkers = new Map<string, DrainableWorker<QueuedTurnPromoteRequestedEvent>>();
+    const promotionWorkerForThread = Effect.fn("promotionWorkerForThread")(function* (
+      threadId: ThreadId,
+    ) {
+      const key = String(threadId);
+      const existing = promotionWorkers.get(key);
+      if (existing) return existing;
+      const created = yield* makeDrainableWorker(processDomainEventSafely);
+      promotionWorkers.set(key, created);
+      return created;
+    });
+    const promotionDispatcher = yield* makeDrainableWorker(
+      Effect.fn("dispatchPromotionEvent")(function* (event: QueuedTurnPromoteRequestedEvent) {
+        const promotionWorker = yield* promotionWorkerForThread(event.payload.threadId);
+        yield* promotionWorker.enqueue(event);
+      }),
+    );
+    const domainEventsSeen = yield* TxRef.make(0);
 
     const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
       yield* threadWorkScheduler.registerHandler("active-turn-recovery", executeActiveTurnRecovery);
@@ -4157,9 +4603,18 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
 
       const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
+        yield* TxRef.update(domainEventsSeen, (count) => count + 1).pipe(Effect.tx);
+        if ("threadId" in event.payload) {
+          // Projection has committed this event before it reaches the reactor.
+          // Wake receipt waiters on durable state changes rather than polling;
+          // they re-read the exact receipt.
+          yield* wakeDeliveryStateWaiters(event.payload.threadId);
+        }
+        if (event.type === "thread.queued-turn-promote-requested") {
+          return yield* promotionDispatcher.enqueue(event);
+        }
         if (
           event.type === "thread.turn-interrupt-requested" ||
-          event.type === "thread.queued-turn-promote-requested" ||
           event.type === "thread.session-stop-requested"
         ) {
           return yield* controlDispatcher.enqueue(event);
@@ -4188,9 +4643,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
       const providerChanges = yield* providerRegistry.subscribeChanges;
       yield* Effect.forkScoped(
-        Stream.runForEach(providerChanges, (providers) =>
-          reconcileProviderAuthenticationPausesSafely(providers),
-        ),
+        Stream.runForEach(providerChanges, reconcileProviderAuthenticationPausesSafely),
       );
       yield* providerRegistry.getProviders.pipe(
         Effect.flatMap(reconcileProviderAuthenticationPausesSafely),
@@ -4199,17 +4652,33 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       yield* threadWorkScheduler.wake();
     });
 
+    const drainQueuedWork = Effect.gen(function* () {
+      yield* Effect.all(
+        [worker.drain, controlDispatcher.drain, steerDispatcher.drain, promotionDispatcher.drain],
+        { concurrency: "unbounded" },
+      );
+      yield* Effect.forEach(
+        [...controlWorkers.values(), ...steerWorkers.values(), ...promotionWorkers.values()],
+        (threadWorker) => threadWorker.drain,
+        { concurrency: "unbounded", discard: true },
+      );
+    });
+
     return {
       start,
       drain: Effect.gen(function* () {
-        yield* Effect.all([worker.drain, controlDispatcher.drain, steerDispatcher.drain], {
-          concurrency: "unbounded",
-        });
-        yield* Effect.forEach(
-          [...controlWorkers.values(), ...steerWorkers.values()],
-          (threadWorker) => threadWorker.drain,
-          { concurrency: "unbounded", discard: true },
-        );
+        while (true) {
+          const eventsBeforeDrain = yield* TxRef.get(domainEventsSeen).pipe(Effect.tx);
+          yield* drainQueuedWork;
+          // A steer task can publish follow-up orchestration events after its
+          // per-thread worker already reported idle. Wait for the task, yield
+          // to the domain-event subscriber, and repeat until that causal wave
+          // produces no new reactor input.
+          yield* steerTasksDrain;
+          yield* Effect.yieldNow;
+          const eventsAfterDrain = yield* TxRef.get(domainEventsSeen).pipe(Effect.tx);
+          if (eventsAfterDrain === eventsBeforeDrain) return;
+        }
       }),
     } satisfies ProviderCommandReactorShape;
   });

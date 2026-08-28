@@ -116,6 +116,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import {
+  resolveProcessingComposerEnterAction,
   shouldCollapseMobileComposer,
   shouldSendComposerWhileProcessing,
 } from "./mobileComposerPresentation";
@@ -133,6 +134,7 @@ import {
 } from "../../composerTransferClipboard";
 import { installMobileComposerTouchBoundary } from "./mobileComposerInteraction";
 import { shouldDismissMobileKeyboardOnSubmit } from "./mobileComposerViewport";
+import { useComposerTextPresence } from "./composerTextPresence";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
@@ -531,11 +533,13 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isApplyingSettings: boolean;
   isInterrupting: boolean;
   hasQueuedSendNow: boolean;
+  isPromotingQueued: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart: () => void;
   onPushToTalkStop: () => void;
   onApplySettings: () => void;
   onRevertSettings: () => void;
+  onPromoteQueued: () => void;
   onSwitchProviderAccount: (instanceId: ProviderInstanceId) => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -585,11 +589,13 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isApplyingSettings={props.isApplyingSettings}
         isInterrupting={props.isInterrupting}
         hasQueuedSendNow={props.hasQueuedSendNow}
+        isPromotingQueued={props.isPromotingQueued}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPushToTalkStart={props.onPushToTalkStart}
         onPushToTalkStop={props.onPushToTalkStop}
         onApplySettings={props.onApplySettings}
         onRevertSettings={props.onRevertSettings}
+        onPromoteQueued={props.onPromoteQueued}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}
@@ -680,6 +686,7 @@ export interface ChatComposerProps {
   isApplyingSettings: boolean;
   isInterrupting: boolean;
   hasQueuedSendNow: boolean;
+  isPromotingQueued: boolean;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -746,6 +753,7 @@ export interface ChatComposerProps {
   activeProviderAccountSwitch: ProviderAccountSwitchState | null;
   onSwitchProviderAccount: (instanceId: ProviderInstanceId) => void;
   onApplySettings: (description: string) => void;
+  onPromoteQueued: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onRespondToApproval: (
@@ -807,6 +815,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isApplyingSettings,
     isInterrupting,
     hasQueuedSendNow,
+    isPromotingQueued,
     environmentUnavailable,
     activePendingApproval,
     pendingApprovals,
@@ -847,6 +856,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProviderAccountSwitch,
     onSwitchProviderAccount,
     onApplySettings,
+    onPromoteQueued,
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
@@ -881,19 +891,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
   const prompt = composerDraft.prompt;
-  const [editorHasText, setEditorHasText] = useState(() => prompt.trim().length > 0);
+  const { currentEditorHasText, setEditorHasText, syncEditorTextPresence } =
+    useComposerTextPresence(prompt);
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerElementContexts = composerDraft.elementContexts;
   const composerPreviewAnnotations = composerDraft.previewAnnotations;
   const composerReviewComments = composerDraft.reviewComments;
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
-  const currentEditorHasText = editorHasText || prompt.trim().length > 0;
-
-  useEffect(() => {
-    setEditorHasText(prompt.trim().length > 0);
-  }, [prompt]);
-
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
@@ -1445,14 +1450,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
 
   const composerFooterHasWideActions =
-    showPlanFollowUpPrompt || activePendingProgress !== null || settingsUpdateLabel !== null;
+    showPlanFollowUpPrompt ||
+    activePendingProgress !== null ||
+    settingsUpdateLabel !== null ||
+    hasQueuedSendNow;
   const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
   const composerFooterActionLayoutKey = useMemo(() => {
     if (activePendingProgress) {
       return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
     }
     if (isInterruptible) {
-      return "running";
+      return `running:${hasQueuedSendNow}:${composerSendState.hasSendableContent}`;
     }
     if (showPlanFollowUpPrompt) {
       return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
@@ -1466,6 +1474,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isPreparingWorktree,
     isSendBusy,
     isInterruptible,
+    hasQueuedSendNow,
     prompt,
     showPlanFollowUpPrompt,
   ]);
@@ -1545,32 +1554,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : null,
     [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
   );
-  const sendWhileRunning =
-    shouldSendComposerWhileProcessing({
-      isProcessing: phase === "running",
-      hasCurrentEditorText: currentEditorHasText,
-      hasPendingComposerContent: composerSendState.hasSendableContent,
-    }) || hasQueuedSendNow;
-  const hasCurrentSendableContent =
-    composerSendState.hasSendableContent || currentEditorHasText || hasQueuedSendNow;
-  const collapsedComposerPrimaryActionDisabled = hasQueuedSendNow
-    ? isSendBusy || isConnecting || environmentUnavailable !== null
-    : isInterruptible
-      ? isInterrupting
-      : isSendBusy ||
-        isSendDisabled ||
-        isConnecting ||
-        noProviderAvailable ||
-        projectSelectionRequired ||
-        environmentUnavailable !== null ||
-        !(composerSendState.hasSendableContent || hasQueuedSendNow);
-  const collapsedComposerPrimaryActionLabel = hasQueuedSendNow
-    ? "Send all queued messages now"
-    : isInterruptible
-      ? isInterrupting
-        ? "Stopping generation"
-        : "Stop generation"
-      : "Send message";
+  const sendWhileRunning = shouldSendComposerWhileProcessing({
+    isProcessing: phase === "running",
+    hasCurrentEditorText: currentEditorHasText,
+    hasPendingComposerContent: composerSendState.hasSendableContent,
+  });
+  const hasCurrentSendableContent = composerSendState.hasSendableContent || currentEditorHasText;
+  const queuedPromotionDisabled =
+    isPromotingQueued ||
+    isSendBusy ||
+    isSendDisabled ||
+    isConnecting ||
+    noProviderAvailable ||
+    projectSelectionRequired ||
+    environmentUnavailable !== null;
+  const collapsedComposerShowsStop = isInterruptible && !sendWhileRunning;
+  const collapsedComposerPrimaryActionDisabled = collapsedComposerShowsStop
+    ? isInterrupting
+    : isSendBusy ||
+      isSendDisabled ||
+      isConnecting ||
+      noProviderAvailable ||
+      projectSelectionRequired ||
+      environmentUnavailable !== null ||
+      !hasCurrentSendableContent;
+  const collapsedComposerPrimaryActionLabel = collapsedComposerShowsStop
+    ? isInterrupting
+      ? "Stopping generation"
+      : "Stop generation"
+    : "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
   const showComposerCutButton =
@@ -2318,6 +2330,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (isComposerSubmitBlocked({ noProviderAvailable, isSendDisabled, pushToTalkStatus })) {
         return true;
       }
+      const enterAction = resolveProcessingComposerEnterAction({
+        hasQueuedMessages: hasQueuedSendNow,
+        hasCurrentSendableContent,
+        queuedPromotionDisabled,
+      });
+      if (enterAction === "promote-queued") {
+        onPromoteQueued();
+        return true;
+      }
+      if (enterAction === null) {
+        return true;
+      }
       const composerForm = composerFormRef.current;
       const submitButton =
         composerForm?.querySelector<HTMLButtonElement>('button[type="submit"]') ?? null;
@@ -2562,6 +2586,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       // destroying them here would be unrecoverable.
       promptRef.current = "";
       clearComposerDraftPromptAndImages(stashTarget);
+      syncEditorTextPresence("");
       setComposerCursor(0);
       setComposerTrigger(null);
       pulseStashBadge();
@@ -2647,6 +2672,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     promptRef,
     pulseStashBadge,
     stashEntryToQueue,
+    syncEditorTextPresence,
   ]);
 
   const toggleStashMenu = useCallback(() => {
@@ -2822,9 +2848,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
       promptRef.current = "";
       clearComposerDraftPromptAndImages(cutTarget);
+      syncEditorTextPresence("");
       setComposerCursor(0);
       setComposerTrigger(null);
-      setEditorHasText(false);
       toastManager.add({
         type: "success",
         title: "Draft cut",
@@ -3112,6 +3138,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }) => {
         const promptForState = options?.prompt ?? promptRef.current;
         const cursor = clampCollapsedComposerCursor(promptForState, options?.cursor ?? 0);
+        syncEditorTextPresence(promptForState);
         setComposerHighlightedItemId(null);
         setComposerCursor(cursor);
         setComposerTrigger(
@@ -3201,6 +3228,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       noProviderAvailable,
       onChangeActivePendingUserInputCustomAnswer,
       setPrompt,
+      syncEditorTextPresence,
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
@@ -3391,11 +3419,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ? "Selected provider unavailable on this environment"
                       : "Ask anything...")}
               </button>
+              {hasQueuedSendNow ? (
+                <button
+                  type="button"
+                  className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 text-xs font-medium text-foreground shadow-xs disabled:opacity-40"
+                  disabled={queuedPromotionDisabled}
+                  aria-label={isPromotingQueued ? "Sending queued messages now" : "Send queued now"}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPromoteQueued();
+                  }}
+                >
+                  {isPromotingQueued ? <Spinner className="size-3.5" aria-hidden="true" /> : null}
+                  <span>{isPromotingQueued ? "Sending queued…" : "Send queued now"}</span>
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={cn(
                   "flex size-8 shrink-0 items-center justify-center rounded-full text-white disabled:opacity-30",
-                  isInterruptible && !hasQueuedSendNow
+                  collapsedComposerShowsStop
                     ? "bg-destructive/90"
                     : "bg-primary/90 text-primary-foreground",
                 )}
@@ -3404,9 +3448,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (hasQueuedSendNow) {
-                    submitComposer();
-                  } else if (isInterruptible) {
+                  if (collapsedComposerShowsStop) {
                     handleInterruptPrimaryAction();
                   } else {
                     submitComposer();
@@ -3415,7 +3457,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               >
                 {isInterrupting ? (
                   <Spinner className="size-3.5" aria-hidden="true" />
-                ) : isInterruptible && !hasQueuedSendNow ? (
+                ) : collapsedComposerShowsStop ? (
                   <svg
                     width="12"
                     height="12"
@@ -3882,6 +3924,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isApplyingSettings={isApplyingSettings}
                   isInterrupting={isInterrupting}
                   hasQueuedSendNow={hasQueuedSendNow}
+                  isPromotingQueued={isPromotingQueued}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPushToTalkStart={onPushToTalkStart}
                   onPushToTalkStop={onPushToTalkStop}
@@ -3889,6 +3932,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     if (settingsUpdateLabel) onApplySettings(settingsUpdateLabel);
                   }}
                   onRevertSettings={revertSettingsToThread}
+                  onPromoteQueued={onPromoteQueued}
                   onSwitchProviderAccount={onSwitchProviderAccount}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}

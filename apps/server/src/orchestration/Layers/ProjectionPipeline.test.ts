@@ -5110,8 +5110,11 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
               },
               interactionMode: "agent",
               runtimeMode: "full-access",
+              // Deliberately skew the later user's wall clock behind the
+              // source. Event sequence, not timestamp or message sort order,
+              // must still give this newer intent priority.
               createdAt: input.laterUserBeforeAssistant
-                ? "2026-01-01T00:00:02.500Z"
+                ? "2025-12-31T23:59:59.000Z"
                 : "2026-01-01T00:00:04.000Z",
             });
           if (input.laterUserText !== undefined && input.laterUserBeforeAssistant === true) {
@@ -6776,6 +6779,169 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           blockedReason: "provider authentication required",
         },
       ]);
+
+      const supersededThreadId = ThreadId.make("thread-auth-work-superseded");
+      const supersededTurnId = TurnId.make("turn-auth-work-superseded");
+      const supersededMessageId = MessageId.make("message-auth-work-superseded");
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-auth-work-superseded-thread"),
+        threadId: supersededThreadId,
+        projectId,
+        title: "Superseded Authentication Work Thread",
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5.6-sol" },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-auth-work-superseded-turn"),
+        threadId: supersededThreadId,
+        message: {
+          messageId: supersededMessageId,
+          role: "user",
+          text: "Continue after credentials recover.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-auth-work-superseded-running"),
+        threadId: supersededThreadId,
+        session: {
+          threadId: supersededThreadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "full-access",
+          activeTurnId: supersededTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      // This command is appended later but carries a clock-skewed earlier
+      // timestamp. It still supersedes replaying the failed source turn.
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-auth-work-superseding-user"),
+        threadId: supersededThreadId,
+        message: {
+          messageId: MessageId.make("message-auth-work-superseding-user"),
+          role: "user",
+          text: "Use this newer direction after login.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "full-access",
+        createdAt: "2025-12-31T23:59:59.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-auth-work-superseded-delta"),
+        threadId: supersededThreadId,
+        messageId: MessageId.make("assistant-auth-work-superseded"),
+        delta: authFailure,
+        turnId: supersededTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-auth-work-superseded-complete"),
+        threadId: supersededThreadId,
+        messageId: MessageId.make("assistant-auth-work-superseded"),
+        turnId: supersededTurnId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+
+      const supersededAuthenticationRows = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM thread_work_obligations
+        WHERE thread_id = ${supersededThreadId}
+          AND kind = 'authentication-resume'
+      `;
+      assert.deepEqual(supersededAuthenticationRows, [{ count: 0 }]);
+
+      for (const interactionMode of ["default", "plan"] as const) {
+        const modeThreadId = ThreadId.make(`thread-auth-work-${interactionMode}`);
+        const modeTurnId = TurnId.make(`turn-auth-work-${interactionMode}`);
+        const modeMessageId = MessageId.make(`message-auth-work-${interactionMode}`);
+        const modeAssistantMessageId = MessageId.make(`assistant-auth-work-${interactionMode}`);
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-auth-work-${interactionMode}-thread`),
+          threadId: modeThreadId,
+          projectId,
+          title: `${interactionMode} Authentication Work Thread`,
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.6-sol" },
+          interactionMode,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-auth-work-${interactionMode}-turn`),
+          threadId: modeThreadId,
+          message: {
+            messageId: modeMessageId,
+            role: "user",
+            text: "Wait for me after credentials recover.",
+            attachments: [],
+          },
+          interactionMode,
+          runtimeMode: "full-access",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(`cmd-auth-work-${interactionMode}-running`),
+          threadId: modeThreadId,
+          session: {
+            threadId: modeThreadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId,
+            runtimeMode: "full-access",
+            activeTurnId: modeTurnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+          createdAt: "2026-01-01T00:00:02.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make(`cmd-auth-work-${interactionMode}-delta`),
+          threadId: modeThreadId,
+          messageId: modeAssistantMessageId,
+          delta: authFailure,
+          turnId: modeTurnId,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        });
+        yield* engine.dispatch({
+          type: "thread.message.assistant.complete",
+          commandId: CommandId.make(`cmd-auth-work-${interactionMode}-complete`),
+          threadId: modeThreadId,
+          messageId: modeAssistantMessageId,
+          turnId: modeTurnId,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        });
+      }
+
+      const nonAgentAuthenticationRows = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM thread_work_obligations
+        WHERE thread_id IN ('thread-auth-work-default', 'thread-auth-work-plan')
+          AND kind = 'authentication-resume'
+      `;
+      assert.deepEqual(nonAgentAuthenticationRows, [{ count: 0 }]);
     }),
   );
 
@@ -6905,6 +7071,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       readonly activeTurnId: string | null;
       readonly completedAt: string | null;
       readonly assistantText: string;
+      readonly assistantAttachmentsJson?: string;
       readonly interactionMode?: string;
       readonly pendingMessageId?: string;
     }) =>
@@ -6926,10 +7093,11 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         `;
         yield* sql`
           INSERT INTO projection_thread_messages (
-            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+            message_id, thread_id, turn_id, role, text, attachments_json,
+            is_streaming, created_at, updated_at
           ) VALUES (
             ${input.assistantMessageId}, ${input.threadId}, ${input.turnId}, 'assistant',
-            ${input.assistantText}, ${input.isStreaming},
+            ${input.assistantText}, ${input.assistantAttachmentsJson ?? null}, ${input.isStreaming},
             '2026-03-02T10:00:03.000Z', '2026-03-02T10:00:03.000Z'
           )
         `;
@@ -6952,6 +7120,98 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
           )
         `;
       });
+
+    it.effect(
+      "retires live synthetic resume owners after attachment-only or tool-only output",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+
+          for (const outputKind of ["attachment", "tool"] as const) {
+            const threadId = `thread-live-${outputKind}-resume-output`;
+            const sourceTurnId = `turn-before-live-${outputKind}-resume-output`;
+            const resumedTurnId = `turn-live-${outputKind}-resume-output`;
+            const resumeMessageId = `startup-auto-resume-message:${threadId}:${sourceTurnId}`;
+
+            yield* seedThread({
+              threadId,
+              turnId: resumedTurnId,
+              assistantMessageId: `assistant-live-${outputKind}-resume-output`,
+              turnState: "running",
+              isStreaming: 0,
+              sessionStatus: "running",
+              activeTurnId: resumedTurnId,
+              completedAt: null,
+              assistantText: " \n\t ",
+              ...(outputKind === "attachment"
+                ? {
+                    assistantAttachmentsJson:
+                      '[{"type":"image","id":"proof","name":"proof.png","mimeType":"image/png","sizeBytes":1}]',
+                  }
+                : {}),
+              pendingMessageId: resumeMessageId,
+            });
+            yield* sql`
+            INSERT INTO thread_work_obligations (
+              obligation_id, thread_id, source_turn_id, kind, state,
+              provider_instance_id, attempt, next_attempt_at, claimed_at,
+              lease_expires_at, blocked_reason, created_at, updated_at
+            ) VALUES (
+              ${`live-${outputKind}-resume-owner`}, ${threadId}, ${sourceTurnId},
+              'startup-resume', 'executing', 'codex', 1, NULL,
+              '2026-03-02T10:00:02.000Z', '2026-03-02T10:01:02.000Z', NULL,
+              '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:02.000Z'
+            )
+          `;
+            if (outputKind === "tool") {
+              yield* sql`
+              INSERT INTO projection_thread_activities (
+                activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+              ) VALUES (
+                'activity-live-tool-resume-output', ${threadId}, ${resumedTurnId},
+                'info', 'tool.completed', 'Tool completed', '{}',
+                '2026-03-02T10:00:03.000Z'
+              )
+            `;
+            }
+
+            const sessionReadyEvent = yield* eventStore.append({
+              type: "thread.session-set",
+              eventId: EventId.make(`evt-live-${outputKind}-resume-ready`),
+              aggregateKind: "thread",
+              aggregateId: ThreadId.make(threadId),
+              occurredAt: "2026-03-02T10:00:04.000Z",
+              commandId: CommandId.make(`cmd-live-${outputKind}-resume-ready`),
+              causationEventId: null,
+              correlationId: CorrelationId.make(`cmd-live-${outputKind}-resume-ready`),
+              metadata: {},
+              payload: {
+                threadId: ThreadId.make(threadId),
+                session: {
+                  threadId: ThreadId.make(threadId),
+                  status: "ready",
+                  providerName: "codex",
+                  providerInstanceId: ProviderInstanceId.make("codex"),
+                  runtimeMode: "full-access",
+                  activeTurnId: null,
+                  lastError: null,
+                  updatedAt: "2026-03-02T10:00:04.000Z",
+                },
+              },
+            });
+            yield* projectionPipeline.projectEvent(sessionReadyEvent);
+
+            const obligations = yield* sql<{ readonly state: string }>`
+            SELECT state
+            FROM thread_work_obligations
+            WHERE obligation_id = ${`live-${outputKind}-resume-owner`}
+          `;
+            assert.deepEqual(obligations, [{ state: "completed" }]);
+          }
+        }),
+    );
 
     it.effect("retires delivered steers and recovers only falsely terminal steer owners", () =>
       Effect.gen(function* () {
@@ -7722,6 +7982,83 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
+    it.effect(
+      "retires completed synthetic resume owners with attachment-only or tool-only output on restart",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const sql = yield* SqlClient.SqlClient;
+
+          for (const outputKind of ["attachment", "tool"] as const) {
+            const threadId = `thread-restart-${outputKind}-resume-output`;
+            const sourceTurnId = `turn-before-restart-${outputKind}-resume-output`;
+            const resumedTurnId = `turn-restart-${outputKind}-resume-output`;
+            const resumeMessageId = `startup-auto-resume-message:${threadId}:${sourceTurnId}`;
+
+            yield* seedThread({
+              threadId,
+              turnId: resumedTurnId,
+              assistantMessageId: `assistant-restart-${outputKind}-resume-output`,
+              turnState: "completed",
+              isStreaming: 0,
+              sessionStatus: "ready",
+              activeTurnId: null,
+              completedAt: "2026-03-02T10:00:04.000Z",
+              assistantText: " \n\t ",
+              ...(outputKind === "attachment"
+                ? {
+                    assistantAttachmentsJson:
+                      '[{"type":"image","id":"proof","name":"proof.png","mimeType":"image/png","sizeBytes":1}]',
+                  }
+                : {}),
+              pendingMessageId: resumeMessageId,
+            });
+            yield* sql`
+              INSERT INTO thread_work_obligations (
+                obligation_id, thread_id, source_turn_id, kind, state,
+                provider_instance_id, attempt, next_attempt_at, claimed_at,
+                lease_expires_at, blocked_reason, created_at, updated_at
+              ) VALUES (
+                ${`restart-${outputKind}-resume-owner`}, ${threadId}, ${sourceTurnId},
+                'startup-resume', 'executing', 'codex', 1, NULL,
+                '2026-03-02T10:00:02.000Z', '2026-03-02T10:01:02.000Z', NULL,
+                '2026-03-02T10:00:00.000Z', '2026-03-02T10:00:02.000Z'
+              )
+            `;
+            if (outputKind === "tool") {
+              yield* sql`
+                INSERT INTO projection_thread_activities (
+                  activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+                ) VALUES (
+                  'activity-restart-tool-resume-output', ${threadId}, ${resumedTurnId},
+                  'info', 'tool.completed', 'Tool completed', '{}',
+                  '2026-03-02T10:00:03.000Z'
+                )
+              `;
+            }
+          }
+
+          yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+          const obligations = yield* sql<{
+            readonly obligationId: string;
+            readonly state: string;
+          }>`
+            SELECT obligation_id AS "obligationId", state
+            FROM thread_work_obligations
+            WHERE obligation_id IN (
+              'restart-attachment-resume-owner',
+              'restart-tool-resume-owner'
+            )
+            ORDER BY obligation_id ASC
+          `;
+          assert.deepEqual(obligations, [
+            { obligationId: "restart-attachment-resume-owner", state: "completed" },
+            { obligationId: "restart-tool-resume-owner", state: "completed" },
+          ]);
+        }),
+    );
+
     it.effect("does not synthesize Agent continuation from a completed cleanup turn at boot", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -7983,6 +8320,140 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
+    it.effect(
+      "uses event sequence for restart supersession and ignores synthetic descendants",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const sql = yield* SqlClient.SqlClient;
+          const realThreadId = "thread-restart-later-real-user";
+          const realTurnId = "turn-restart-later-real-user";
+          const realSourceMessageId = "message-restart-before-real-user";
+          const syntheticThreadId = "thread-restart-later-synthetic";
+          const syntheticTurnId = "turn-restart-later-synthetic";
+          const syntheticSourceMessageId = "message-restart-before-synthetic";
+
+          yield* seedThread({
+            threadId: realThreadId,
+            turnId: realTurnId,
+            assistantMessageId: "assistant-restart-later-real-user",
+            turnState: "incomplete",
+            isStreaming: 0,
+            sessionStatus: "stopped",
+            activeTurnId: null,
+            completedAt: "2026-03-02T10:00:04.000Z",
+            assistantText: "Still working through the install.",
+            pendingMessageId: realSourceMessageId,
+          });
+          yield* seedThread({
+            threadId: syntheticThreadId,
+            turnId: syntheticTurnId,
+            assistantMessageId: "assistant-restart-later-synthetic",
+            turnState: "incomplete",
+            isStreaming: 0,
+            sessionStatus: "stopped",
+            activeTurnId: null,
+            completedAt: "2026-03-02T10:00:04.000Z",
+            assistantText: "Still working through the install.",
+            pendingMessageId: syntheticSourceMessageId,
+          });
+
+          const insertStartEvent = (input: {
+            readonly threadId: string;
+            readonly messageId: string;
+            readonly eventSuffix: string;
+            readonly streamVersion: number;
+            readonly occurredAt: string;
+          }) => {
+            const payload = JSON.stringify({
+              threadId: input.threadId,
+              messageId: input.messageId,
+              runtimeMode: "full-access",
+              createdAt: input.occurredAt,
+            });
+            return sql`
+              INSERT INTO orchestration_events (
+                event_id, aggregate_kind, stream_id, stream_version, event_type,
+                occurred_at, command_id, causation_event_id, correlation_id,
+                actor_kind, payload_json, metadata_json
+              ) VALUES (
+                ${`evt-${input.eventSuffix}`}, 'thread', ${input.threadId},
+                ${input.streamVersion}, 'thread.turn-start-requested',
+                ${input.occurredAt}, ${`cmd-${input.eventSuffix}`}, NULL,
+                ${`cmd-${input.eventSuffix}`}, 'client', ${payload}, '{}'
+              )
+            `;
+          };
+
+          for (const source of [
+            {
+              threadId: realThreadId,
+              messageId: realSourceMessageId,
+              eventSuffix: "restart-real-source",
+            },
+            {
+              threadId: syntheticThreadId,
+              messageId: syntheticSourceMessageId,
+              eventSuffix: "restart-synthetic-source",
+            },
+          ]) {
+            yield* insertStartEvent({
+              ...source,
+              streamVersion: 1,
+              occurredAt: "2026-03-02T10:00:01.000Z",
+            });
+          }
+          // Appended later, despite a clock-skewed earlier timestamp: this is
+          // newer real intent and must suppress replay of the source turn.
+          yield* insertStartEvent({
+            threadId: realThreadId,
+            messageId: "message-restart-later-real-user",
+            eventSuffix: "restart-real-later",
+            streamVersion: 2,
+            occurredAt: "2026-03-02T09:00:00.000Z",
+          });
+          // Startup/continuation descendants are implementation-owned resumes,
+          // not new user intent, and therefore do not supersede their source.
+          yield* insertStartEvent({
+            threadId: syntheticThreadId,
+            messageId: `startup-auto-resume-message:${syntheticThreadId}:${syntheticTurnId}`,
+            eventSuffix: "restart-synthetic-later",
+            streamVersion: 2,
+            occurredAt: "2026-03-02T11:00:00.000Z",
+          });
+          yield* insertStartEvent({
+            threadId: syntheticThreadId,
+            messageId: `agent-auto-resume-message:${syntheticThreadId}:${syntheticTurnId}`,
+            eventSuffix: "restart-agent-synthetic-later",
+            streamVersion: 3,
+            occurredAt: "2026-03-02T12:00:00.000Z",
+          });
+
+          yield* projectionPipeline.reconcileOrphanedInFlightWork;
+
+          const obligations = yield* sql<{
+            readonly threadId: string;
+            readonly sourceTurnId: string;
+            readonly kind: string;
+          }>`
+            SELECT
+              thread_id AS "threadId",
+              source_turn_id AS "sourceTurnId",
+              kind
+            FROM thread_work_obligations
+            WHERE thread_id IN (${realThreadId}, ${syntheticThreadId})
+            ORDER BY thread_id ASC
+          `;
+          assert.deepEqual(obligations, [
+            {
+              threadId: syntheticThreadId,
+              sourceTurnId: syntheticTurnId,
+              kind: "startup-resume",
+            },
+          ]);
+        }),
+    );
+
     // Reported 2026-08-15 (thread ed9e1e19): an in-place app update killed the
     // CLI 68s into a turn, before it emitted a single assistant token. The
     // shutdown settled the turn as "completed" — not "incomplete"/"error" —
@@ -8058,6 +8529,95 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
+    it.effect("recovers a completed whitespace-only failure but keeps real output terminal", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const emptyThreadId = "thread-killed-with-whitespace-output";
+        const emptyTurnId = "turn-killed-with-whitespace-output";
+        const attachmentThreadId = "thread-killed-with-attachment-output";
+        const attachmentTurnId = "turn-killed-with-attachment-output";
+        const toolThreadId = "thread-killed-with-tool-output";
+        const toolTurnId = "turn-killed-with-tool-output";
+
+        yield* seedThread({
+          threadId: emptyThreadId,
+          turnId: emptyTurnId,
+          assistantMessageId: "assistant-killed-with-whitespace-output",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "stopped",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: " \n\t\r ",
+        });
+        yield* seedThread({
+          threadId: attachmentThreadId,
+          turnId: attachmentTurnId,
+          assistantMessageId: "assistant-killed-with-attachment-output",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "stopped",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "",
+          assistantAttachmentsJson: '[{"type":"file","name":"proof.txt"}]',
+        });
+        yield* seedThread({
+          threadId: toolThreadId,
+          turnId: toolTurnId,
+          assistantMessageId: "assistant-killed-with-tool-output",
+          turnState: "completed",
+          isStreaming: 0,
+          sessionStatus: "stopped",
+          activeTurnId: null,
+          completedAt: "2026-03-02T10:00:04.000Z",
+          assistantText: "",
+        });
+        yield* sql`
+            INSERT INTO projection_thread_activities (
+              activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+            ) VALUES
+              (
+                'activity-whitespace-runtime-error', ${emptyThreadId}, ${emptyTurnId},
+                'error', 'runtime.error', 'Runtime error', '{}',
+                '2026-03-02T10:00:04.000Z'
+              ),
+              (
+                'activity-attachment-runtime-error', ${attachmentThreadId}, ${attachmentTurnId},
+                'error', 'runtime.error', 'Runtime error', '{}',
+                '2026-03-02T10:00:04.000Z'
+              ),
+              (
+                'activity-tool-runtime-error', ${toolThreadId}, ${toolTurnId},
+                'error', 'runtime.error', 'Runtime error', '{}',
+                '2026-03-02T10:00:04.000Z'
+              ),
+              (
+                'activity-tool-output', ${toolThreadId}, ${toolTurnId},
+                'info', 'tool.completed', 'Tool completed', '{}',
+                '2026-03-02T10:00:03.000Z'
+              )
+          `;
+
+        yield* projectionPipeline.bootstrap;
+
+        const obligations = yield* sql<{
+          readonly threadId: string;
+          readonly kind: string;
+          readonly state: string;
+        }>`
+            SELECT thread_id AS "threadId", kind, state
+            FROM thread_work_obligations
+            WHERE thread_id IN (${emptyThreadId}, ${attachmentThreadId}, ${toolThreadId})
+            ORDER BY thread_id ASC
+          `;
+        assert.deepEqual(obligations, [
+          { threadId: emptyThreadId, kind: "startup-resume", state: "pending" },
+        ]);
+      }),
+    );
+
     // Reported 2026-08-15: an in-place update kills the CLI mid-turn, the
     // stream failure marks the session `error`, and the continuation the turn
     // settle had already enqueued was cancelled ~1s after boot with "source
@@ -8103,38 +8663,66 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
       }),
     );
 
-    // An authentication failure is not stale — it needs the user to log in, and
-    // the scan routes it to a blocked-authentication obligation.
-    it.effect("leaves an authentication failure in error", () =>
+    // Authentication replay is an Agent-mode contract. Default and Plan stay
+    // manual after restart just as they do on the live projection path.
+    it.effect("keeps authentication restart recovery Agent-only", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
         const sql = yield* SqlClient.SqlClient;
-        const threadId = "thread-auth-error-session";
-        const turnId = "turn-auth-error-session";
+        const scenarios = ["agent", "default", "plan"] as const;
 
-        yield* seedThread({
-          threadId,
-          turnId,
-          assistantMessageId: "assistant-auth-error-session",
-          turnState: "completed",
-          isStreaming: 0,
-          sessionStatus: "error",
-          activeTurnId: null,
-          completedAt: "2026-03-02T10:00:04.000Z",
-          assistantText: "Working on it.",
-        });
-        yield* sql`
-          UPDATE projection_thread_sessions
-          SET last_error = 'Failed to authenticate: OAuth session expired and could not be refreshed'
-          WHERE thread_id = ${threadId}
-        `;
+        for (const interactionMode of scenarios) {
+          const threadId = `thread-auth-error-${interactionMode}`;
+          yield* seedThread({
+            threadId,
+            turnId: `turn-auth-error-${interactionMode}`,
+            assistantMessageId: `assistant-auth-error-${interactionMode}`,
+            turnState: "completed",
+            isStreaming: 0,
+            sessionStatus: "error",
+            activeTurnId: null,
+            completedAt: "2026-03-02T10:00:04.000Z",
+            assistantText: "Working on it.",
+            interactionMode,
+          });
+          yield* sql`
+            UPDATE projection_thread_sessions
+            SET last_error = 'Failed to authenticate: OAuth session expired and could not be refreshed'
+            WHERE thread_id = ${threadId}
+          `;
+        }
 
         yield* projectionPipeline.reconcileOrphanedInFlightWork;
 
-        const sessions = yield* sql<{ readonly status: string }>`
-          SELECT status FROM projection_thread_sessions WHERE thread_id = ${threadId}
+        const sessions = yield* sql<{ readonly threadId: string; readonly status: string }>`
+          SELECT thread_id AS "threadId", status
+          FROM projection_thread_sessions
+          WHERE thread_id LIKE 'thread-auth-error-%'
+          ORDER BY thread_id ASC
         `;
-        assert.equal(sessions[0]?.status, "error");
+        assert.deepEqual(sessions, [
+          { threadId: "thread-auth-error-agent", status: "error" },
+          { threadId: "thread-auth-error-default", status: "error" },
+          { threadId: "thread-auth-error-plan", status: "error" },
+        ]);
+
+        const obligations = yield* sql<{
+          readonly threadId: string;
+          readonly kind: string;
+          readonly state: string;
+        }>`
+          SELECT thread_id AS "threadId", kind, state
+          FROM thread_work_obligations
+          WHERE thread_id LIKE 'thread-auth-error-%'
+          ORDER BY thread_id ASC
+        `;
+        assert.deepEqual(obligations, [
+          {
+            threadId: "thread-auth-error-agent",
+            kind: "authentication-resume",
+            state: "blocked-authentication",
+          },
+        ]);
       }),
     );
 

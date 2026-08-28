@@ -67,6 +67,7 @@ export interface ThreadDetailScreenProps {
   readonly threadCwd: string | null;
   readonly selectedThreadQueueCount: number;
   readonly hasQueuedSendNow: boolean;
+  readonly isPromotingQueuedMessages: boolean;
   readonly composerFocusRequest: number | null;
   readonly onConsumeComposerFocusRequest: () => void;
   readonly serverConfig: T3ServerConfig | null;
@@ -80,6 +81,7 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onPromoteQueuedMessages: () => void;
   readonly onReconnectEnvironment: () => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
@@ -452,6 +454,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               serverConfig={props.serverConfig}
               queueCount={props.selectedThreadQueueCount}
               hasQueuedSendNow={props.hasQueuedSendNow}
+              isPromotingQueuedMessages={props.isPromotingQueuedMessages}
               activeThreadBusy={props.activeThreadBusy}
               environmentId={props.environmentId}
               projectCwd={props.projectWorkspaceRoot}
@@ -462,6 +465,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               onRemoveDraftImage={props.onRemoveDraftImage}
               onStopThread={props.onStopThread}
               onSendMessage={handleSendMessage}
+              onPromoteQueuedMessages={props.onPromoteQueuedMessages}
               onReconnectEnvironment={props.onReconnectEnvironment}
               onUpdateModelSelection={props.onUpdateThreadModelSelection}
               onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}

@@ -136,6 +136,7 @@ export type ProviderInterruptTurnInput = typeof ProviderInterruptTurnInput.Type;
 
 export const ProviderPromoteQueuedTurnInput = Schema.Struct({
   threadId: ThreadId,
+  messageIds: Schema.optional(Schema.Array(MessageId)),
 });
 export type ProviderPromoteQueuedTurnInput = typeof ProviderPromoteQueuedTurnInput.Type;
 

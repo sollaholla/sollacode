@@ -4,6 +4,7 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -14,7 +15,13 @@ import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 
-const makeRuntime = (env: NodeJS.ProcessEnv, options?: { concurrentPrompts?: boolean }) =>
+const makeRuntime = (
+  env: NodeJS.ProcessEnv,
+  options?: {
+    concurrentPrompts?: boolean;
+    requestLogger?: AcpSessionRuntime.AcpSessionRuntimeOptions["requestLogger"];
+  },
+) =>
   AcpSessionRuntime.make({
     spawn: {
       command: process.execPath,
@@ -27,6 +34,7 @@ const makeRuntime = (env: NodeJS.ProcessEnv, options?: { concurrentPrompts?: boo
     ...(options?.concurrentPrompts !== undefined
       ? { concurrentPrompts: options.concurrentPrompts }
       : {}),
+    ...(options?.requestLogger ? { requestLogger: options.requestLogger } : {}),
   });
 
 const waitForHangingPromptAnnouncement = (
@@ -58,6 +66,51 @@ describe("descendantProcessGroupsFromPs", () => {
 });
 
 describe("AcpSessionRuntime concurrent prompts", () => {
+  it.effect("signals native dispatch only after the exact prompt enters the outgoing queue", () =>
+    Effect.gen(function* () {
+      const requestLoggerEntered = yield* Deferred.make<void>();
+      const releaseRequestLogger = yield* Deferred.make<void>();
+      const nativeDispatch = yield* Deferred.make<void>();
+      const runtime = yield* makeRuntime(
+        {
+          T3_ACP_HANG_PROMPT_FOREVER: "1",
+          T3_ACP_ANNOUNCE_HANGING_PROMPT: "1",
+        },
+        {
+          concurrentPrompts: true,
+          requestLogger: (event) =>
+            event.method === "session/prompt" && event.status === "started"
+              ? Deferred.succeed(requestLoggerEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseRequestLogger)),
+                )
+              : Effect.void,
+        },
+      );
+      yield* runtime.start();
+
+      const promptFiber = yield* runtime
+        .prompt(
+          {
+            messageId: "24494813-596c-4217-a2bd-dab2c3da4bc3",
+            prompt: [{ type: "text", text: "hang after native enqueue" }],
+          },
+          { onNativeDispatch: Deferred.succeed(nativeDispatch, undefined) },
+        )
+        .pipe(Effect.forkScoped);
+
+      yield* Deferred.await(requestLoggerEntered);
+      expect(yield* Deferred.isDone(nativeDispatch)).toBe(false);
+
+      yield* Deferred.succeed(releaseRequestLogger, undefined);
+      yield* Deferred.await(nativeDispatch);
+      yield* waitForHangingPromptAnnouncement(runtime, 1);
+      expect(promptFiber.pollUnsafe()).toBeUndefined();
+
+      yield* runtime.cancel;
+      expect((yield* Fiber.join(promptFiber)).stopReason).toBe("cancelled");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("sends a second prompt while the first is still in flight", () =>
     Effect.gen(function* () {
       const runtime = yield* makeRuntime(
@@ -77,9 +130,12 @@ describe("AcpSessionRuntime concurrent prompts", () => {
       // second one is issued.
       yield* waitForHangingPromptAnnouncement(runtime, 1);
 
-      const secondPromptResult = yield* runtime.prompt({
-        prompt: [{ type: "text", text: "second" }],
-      });
+      const secondPromptDispatched = yield* Deferred.make<void>();
+      const secondPromptResult = yield* runtime.prompt(
+        { prompt: [{ type: "text", text: "second" }] },
+        { onNativeDispatch: Deferred.succeed(secondPromptDispatched, undefined) },
+      );
+      expect(yield* Deferred.isDone(secondPromptDispatched)).toBe(true);
       expect(secondPromptResult.stopReason).toBe("end_turn");
 
       yield* Fiber.interrupt(firstPromptFiber);

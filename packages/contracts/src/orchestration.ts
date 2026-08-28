@@ -868,6 +868,7 @@ const ThreadQueuedTurnPromoteCommand = Schema.Struct({
   type: Schema.Literal("thread.queued-turn.promote"),
   commandId: CommandId,
   threadId: ThreadId,
+  messageIds: Schema.optional(Schema.Array(MessageId)),
   createdAt: IsoDateTime,
 });
 
@@ -1316,6 +1317,7 @@ export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
 
 export const ThreadQueuedTurnPromoteRequestedPayload = Schema.Struct({
   threadId: ThreadId,
+  messageIds: Schema.optional(Schema.Array(MessageId)),
   createdAt: IsoDateTime,
 });
 

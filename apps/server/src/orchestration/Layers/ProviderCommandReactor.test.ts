@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
@@ -59,6 +60,7 @@ import { RuntimeLeaseRegistryLive } from "../../provider/Layers/RuntimeLeaseRegi
 import { ThreadSubscriptionRegistryLive } from "./ThreadSubscriptionRegistry.ts";
 import {
   ProviderService,
+  type ProviderServiceSendTurnOptions,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
@@ -68,6 +70,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import {
+  classifyAuthenticationResumeDispatch,
   providerErrorLabel,
   providerErrorLabelFromInstanceHint,
   classifyTurnStartRecovery,
@@ -81,7 +84,12 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { makeThreadWorkSchedulerLive } from "./ThreadWorkScheduler.ts";
-import { activeTurnWorkSourceId, agentAutoResumeIds } from "../agentModeContinuation.ts";
+import {
+  activeTurnWorkSourceId,
+  agentAutoResumeIds,
+  startupAutoResumeIds,
+  threadWorkObligationId,
+} from "../agentModeContinuation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -212,6 +220,23 @@ describe("ProviderCommandReactor", () => {
       ).toBe("proceed");
     });
 
+    it("drops a synthetic startup resume when newer user intent exists", () => {
+      expect(
+        classifyTurnStartRecovery({
+          sourceMessage: userMessage,
+          messageId: "startup-auto-resume-message:thread-1:turn-1",
+          hasLaterRealUserTurn: true,
+        }),
+      ).toBe("superseded");
+      expect(
+        classifyTurnStartRecovery({
+          sourceMessage: userMessage,
+          messageId: "startup-auto-resume-message:thread-1:turn-1",
+          hasLaterRealUserTurn: false,
+        }),
+      ).toBe("proceed");
+    });
+
     it("gives up when the message is not a real user send", () => {
       expect(
         classifyTurnStartRecovery({
@@ -242,6 +267,43 @@ describe("ProviderCommandReactor", () => {
           hasLaterRealUserTurn: false,
         }),
       ).toBe("proceed");
+    });
+  });
+
+  describe("classifyAuthenticationResumeDispatch", () => {
+    const deliveryTurnId = asTurnId("turn-auth-delivery");
+
+    it("keeps supervising an admitted recovery after a later blocker appears", () => {
+      expect(
+        classifyAuthenticationResumeDispatch({
+          sessionStatus: "running",
+          activeTurnId: deliveryTurnId,
+          deliveryTurnId,
+          preDispatchSuperseded: true,
+        }),
+      ).toBe("supervise");
+    });
+
+    it("fails closed before dispatch and for an unrelated or unidentified live turn", () => {
+      expect(classifyAuthenticationResumeDispatch({ preDispatchSuperseded: true })).toBe("cancel");
+      expect(
+        classifyAuthenticationResumeDispatch({
+          sessionStatus: "running",
+          activeTurnId: asTurnId("turn-newer"),
+          deliveryTurnId,
+          preDispatchSuperseded: false,
+        }),
+      ).toBe("cancel");
+      expect(
+        classifyAuthenticationResumeDispatch({
+          sessionStatus: "running",
+          deliveryTurnId,
+          preDispatchSuperseded: false,
+        }),
+      ).toBe("retry");
+      expect(classifyAuthenticationResumeDispatch({ preDispatchSuperseded: false })).toBe(
+        "dispatch",
+      );
     });
   });
 
@@ -360,20 +422,39 @@ describe("ProviderCommandReactor", () => {
 
   describe("providerTurnProducedOutput", () => {
     const threadWith = (input: {
-      readonly messageTurnIds: ReadonlyArray<string>;
-      readonly activityTurnIds: ReadonlyArray<string | null>;
+      readonly messages?: ReadonlyArray<{
+        readonly turnId: string;
+        readonly role?: "user" | "assistant";
+        readonly text?: string;
+        readonly streaming?: boolean;
+        readonly attachments?: ReadonlyArray<unknown>;
+      }>;
+      readonly activities?: ReadonlyArray<{
+        readonly turnId: string | null;
+        readonly kind?: string;
+      }>;
     }) =>
       ({
-        messages: input.messageTurnIds.map((turnId) => ({ turnId: asTurnId(turnId) })),
-        activities: input.activityTurnIds.map((turnId) => ({
-          turnId: turnId === null ? null : asTurnId(turnId),
+        messages: (input.messages ?? []).map((message) => ({
+          role: message.role ?? "assistant",
+          text: message.text ?? "substantive reply",
+          streaming: message.streaming ?? false,
+          attachments: message.attachments ?? [],
+          turnId: asTurnId(message.turnId),
+        })),
+        activities: (input.activities ?? []).map((activity) => ({
+          kind: activity.kind ?? "tool.completed",
+          turnId: activity.turnId === null ? null : asTurnId(activity.turnId),
         })),
       }) as unknown as Parameters<typeof providerTurnProducedOutput>[0];
 
     it("is false for a turn that emitted neither a message nor an activity", () => {
       expect(
         providerTurnProducedOutput(
-          threadWith({ messageTurnIds: ["other-turn"], activityTurnIds: ["other-turn", null] }),
+          threadWith({
+            messages: [{ turnId: "other-turn" }],
+            activities: [{ turnId: "other-turn" }, { turnId: null }],
+          }),
           asTurnId("empty-resume-turn"),
         ),
       ).toBe(false);
@@ -382,7 +463,7 @@ describe("ProviderCommandReactor", () => {
     it("is true when the turn spoke", () => {
       expect(
         providerTurnProducedOutput(
-          threadWith({ messageTurnIds: ["resume-turn"], activityTurnIds: [] }),
+          threadWith({ messages: [{ turnId: "resume-turn" }] }),
           asTurnId("resume-turn"),
         ),
       ).toBe(true);
@@ -393,7 +474,50 @@ describe("ProviderCommandReactor", () => {
     it("is true when the turn only ran tools", () => {
       expect(
         providerTurnProducedOutput(
-          threadWith({ messageTurnIds: [], activityTurnIds: ["resume-turn"] }),
+          threadWith({ activities: [{ turnId: "resume-turn" }] }),
+          asTurnId("resume-turn"),
+        ),
+      ).toBe(true);
+    });
+
+    it("is false for input, delivery receipts, telemetry, blank rows, and streaming placeholders", () => {
+      expect(
+        providerTurnProducedOutput(
+          threadWith({
+            messages: [
+              { turnId: "resume-turn", role: "user", text: "resume" },
+              { turnId: "resume-turn", role: "assistant", text: "   " },
+              {
+                turnId: "resume-turn",
+                role: "assistant",
+                text: "partial",
+                streaming: true,
+              },
+            ],
+            activities: [
+              { turnId: "resume-turn", kind: "message.delivered" },
+              { turnId: "resume-turn", kind: "provider.usage.updated" },
+              { turnId: "resume-turn", kind: "context-window.updated" },
+            ],
+          }),
+          asTurnId("resume-turn"),
+        ),
+      ).toBe(false);
+    });
+
+    it("is true for a settled assistant attachment without prose", () => {
+      expect(
+        providerTurnProducedOutput(
+          threadWith({
+            messages: [
+              {
+                turnId: "resume-turn",
+                role: "assistant",
+                text: "",
+                attachments: [{}],
+              },
+            ],
+          }),
           asTurnId("resume-turn"),
         ),
       ).toBe(true);
@@ -439,18 +563,25 @@ describe("ProviderCommandReactor", () => {
     readonly interruptTurnEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     readonly promoteQueuedTurnEffect?: (input: {
       readonly threadId: ThreadId;
-    }) => Effect.Effect<ReadonlyArray<MessageId>>;
+      readonly messageIds?: ReadonlyArray<MessageId>;
+    }) => Effect.Effect<ReadonlyArray<MessageId>, ProviderAdapterRequestError>;
     readonly stopSessionEffect?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     readonly startSessionEffect?: (
       session: ProviderSession,
       runtimeSessions: Array<ProviderSession>,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError | ProviderAdapterProcessError>;
-    readonly getCapabilitiesEffect?: (
-      instanceId: ProviderInstanceId,
-    ) => Effect.Effect<{ readonly sessionModelSwitch: "unsupported" | "in-session" }>;
+    readonly getCapabilitiesEffect?: (instanceId: ProviderInstanceId) => Effect.Effect<{
+      readonly sessionModelSwitch: "unsupported" | "in-session";
+      readonly messageDeliveryReceipts?: boolean;
+    }>;
+    readonly nativeRouteCapabilitiesEffect?: (instanceId: ProviderInstanceId) => Effect.Effect<{
+      readonly sessionModelSwitch: "unsupported" | "in-session";
+      readonly messageDeliveryReceipts?: boolean;
+    }>;
     readonly sendTurnEffect?: (
       input: unknown,
       runtimeSessions: Array<ProviderSession>,
+      options?: ProviderServiceSendTurnOptions,
     ) => Effect.Effect<
       { readonly threadId: ThreadId; readonly turnId: TurnId },
       ProviderAdapterRequestError | ProviderAdapterProcessError
@@ -553,20 +684,51 @@ describe("ProviderCommandReactor", () => {
         return serializeSessionLifecycle ? sessionLifecycleSemaphore.withPermit(start) : start;
       },
     );
-    const sendTurn = vi.fn(
-      (rawInput: unknown) =>
-        input?.sendTurnEffect?.(rawInput, runtimeSessions) ??
+    const sendTurn = vi.fn((rawInput: unknown, options?: ProviderServiceSendTurnOptions) => {
+      const threadId =
+        typeof rawInput === "object" &&
+        rawInput !== null &&
+        "threadId" in rawInput &&
+        typeof rawInput.threadId === "string"
+          ? ThreadId.make(rawInput.threadId)
+          : ThreadId.make("thread-1");
+      const admittedInstanceId =
+        runtimeSessions.find((session) => session.threadId === threadId)?.providerInstanceId ??
+        modelSelection.instanceId;
+      const capabilities =
+        input?.nativeRouteCapabilitiesEffect?.(admittedInstanceId) ??
+        input?.getCapabilitiesEffect?.(admittedInstanceId) ??
         Effect.succeed({
-          threadId: ThreadId.make("thread-1"),
-          turnId: asTurnId("turn-1"),
-        }),
-    );
+          sessionModelSwitch: input?.sessionModelSwitch ?? ("in-session" as const),
+        });
+      return capabilities.pipe(
+        Effect.tap((admittedCapabilities) =>
+          Effect.sync(() =>
+            options?.onNativeDispatchRoute?.({
+              providerInstanceId: admittedInstanceId,
+              sessionGeneration: null,
+              messageDeliveryReceipts: admittedCapabilities.messageDeliveryReceipts === true,
+            }),
+          ),
+        ),
+        Effect.andThen(
+          input?.sendTurnEffect?.(rawInput, runtimeSessions, options) ??
+            Effect.succeed({
+              threadId,
+              turnId: asTurnId("turn-1"),
+            }),
+        ),
+      );
+    });
     const interruptTurn = vi.fn((rawInput: unknown) => {
       const interruptInput = rawInput as { readonly threadId: ThreadId };
       return input?.interruptTurnEffect?.(interruptInput) ?? Effect.void;
     });
     const promoteQueuedTurn = vi.fn((rawInput: unknown) => {
-      const promoteInput = rawInput as { readonly threadId: ThreadId };
+      const promoteInput = rawInput as {
+        readonly threadId: ThreadId;
+        readonly messageIds?: ReadonlyArray<MessageId>;
+      };
       return (
         input?.promoteQueuedTurnEffect?.(promoteInput) ??
         Effect.succeed([asMessageId("queued-grok-message-1"), asMessageId("queued-grok-message-2")])
@@ -864,11 +1026,185 @@ describe("ProviderCommandReactor", () => {
       runtimeSessions,
       stateDir,
       drain,
+      drainEffect: reactor.drain,
       startReactor,
       threadWorkObligations,
       projectionTurns,
       threadWorkScheduler,
       actionApprovalBroker,
+    };
+  }
+
+  type RoutedReceiptWorkKind = "agent-continuation" | "authentication-resume";
+
+  async function seedRoutedReceiptWork(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: {
+      readonly kind: RoutedReceiptWorkKind;
+      readonly suffix: string;
+      readonly obligationProviderInstanceId: ProviderInstanceId;
+    },
+  ) {
+    const threadId = ThreadId.make(`thread-routed-receipt-${input.kind}-${input.suffix}`);
+    const sourceTurnId = asTurnId(`turn-routed-receipt-${input.kind}-${input.suffix}`);
+    const sourceMessageId = asMessageId(`user-routed-receipt-${input.kind}-${input.suffix}`);
+    const assistantMessageId = asMessageId(
+      `assistant-routed-receipt-${input.kind}-${input.suffix}`,
+    );
+    const authFailure = "Failed to authenticate: OAuth session expired and could not be refreshed";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`cmd-routed-receipt-create-${input.kind}-${input.suffix}`),
+        threadId,
+        projectId: asProjectId("project-1"),
+        title: `Routed receipt ${input.kind}`,
+        modelSelection: {
+          instanceId: input.obligationProviderInstanceId,
+          model: "test-model",
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-routed-receipt-turn-${input.kind}-${input.suffix}`),
+        threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Continue until this work is complete.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-routed-receipt-running-${input.kind}-${input.suffix}`),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: input.obligationProviderInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-routed-receipt-delta-${input.kind}-${input.suffix}`),
+        threadId,
+        messageId: assistantMessageId,
+        delta:
+          input.kind === "authentication-resume"
+            ? authFailure
+            : "One phase is complete; more verified work remains.",
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`cmd-routed-receipt-complete-${input.kind}-${input.suffix}`),
+        threadId,
+        messageId: assistantMessageId,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-routed-receipt-terminal-${input.kind}-${input.suffix}`),
+        threadId,
+        session: {
+          threadId,
+          status: input.kind === "authentication-resume" ? "error" : "ready",
+          providerName: "codex",
+          providerInstanceId: input.obligationProviderInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: input.kind === "authentication-resume" ? authFailure : null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    let obligation = Option.getOrUndefined(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId,
+          kind: input.kind,
+        }),
+      ),
+    );
+    if (obligation === undefined) {
+      await waitFor(async () =>
+        Option.isSome(
+          await Effect.runPromise(
+            harness.threadWorkObligations.getByKey({
+              threadId,
+              sourceTurnId,
+              kind: input.kind,
+            }),
+          ),
+        ),
+      );
+      obligation = Option.getOrThrow(
+        await Effect.runPromise(
+          harness.threadWorkObligations.getByKey({
+            threadId,
+            sourceTurnId,
+            kind: input.kind,
+          }),
+        ),
+      );
+    }
+    if (input.kind === "authentication-resume") {
+      expect(obligation.state).toBe("blocked-authentication");
+      expect(
+        await Effect.runPromise(
+          harness.threadWorkObligations.transition({
+            obligationId: obligation.obligationId,
+            expectedState: "blocked-authentication",
+            expectedAttempt: obligation.attempt,
+            state: "pending",
+            nextAttemptAt: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            blockedReason: null,
+            updatedAt: "2026-01-01T00:00:05.000Z",
+          }),
+        ),
+      ).toBe(true);
+    }
+
+    return {
+      threadId,
+      sourceTurnId,
+      deliveryMessageId:
+        input.kind === "agent-continuation"
+          ? agentAutoResumeIds({ threadId, completedTurnId: sourceTurnId }).messageId
+          : MessageId.make(`provider-auth-resume-delivery:${threadId}:${sourceTurnId}`),
     };
   }
 
@@ -961,6 +1297,30 @@ describe("ProviderCommandReactor", () => {
           updatedAt: "2026-01-01T00:00:01.000Z",
         },
         createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.projectionTurns.deletePendingTurnStart({
+        threadId,
+        messageId: asMessageId("user-message-agent-first-turn"),
+      }),
+    );
+    await Effect.runPromise(
+      harness.projectionTurns.upsertByTurnId({
+        threadId,
+        turnId,
+        pendingMessageId: asMessageId("user-message-agent-first-turn"),
+        sourceProposedPlanThreadId: null,
+        sourceProposedPlanId: null,
+        assistantMessageId: null,
+        state: "running",
+        requestedAt: now,
+        startedAt: "2026-01-01T00:00:01.000Z",
+        completedAt: null,
+        checkpointTurnCount: null,
+        checkpointRef: null,
+        checkpointStatus: null,
+        checkpointFiles: [],
       }),
     );
     await Effect.runPromise(
@@ -1423,6 +1783,158 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("redispatches an Agent continuation whose prior provider turn completed empty", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const threadId = ThreadId.make("thread-1");
+    const sourceTurnId = asTurnId("turn-agent-empty-source");
+    const emptyContinuationTurnId = asTurnId("turn-agent-empty-continuation");
+    const sourceMessageId = asMessageId("user-message-agent-empty-source");
+    const assistantMessageId = asMessageId("assistant-message-agent-empty-source");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("cmd-agent-empty-mode"),
+        threadId,
+        interactionMode: "agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-agent-empty-source"),
+        threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Keep working until the remaining acceptance checks pass.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agent-empty-source-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-agent-empty-source-delta"),
+        threadId,
+        messageId: assistantMessageId,
+        delta: "One phase is complete; more work remains.",
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-agent-empty-source-complete"),
+        threadId,
+        messageId: assistantMessageId,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-agent-empty-source-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    const continuationIds = agentAutoResumeIds({ threadId, completedTurnId: sourceTurnId });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: continuationIds.commandId,
+        threadId,
+        message: {
+          messageId: continuationIds.messageId,
+          role: "user",
+          text: AGENT_CONTINUE_PROMPT,
+          inputOrigin: "agent-loop",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.projectionTurns.deletePendingTurnStart({
+        threadId,
+        messageId: continuationIds.messageId,
+      }),
+    );
+    await Effect.runPromise(
+      harness.projectionTurns.upsertByTurnId({
+        threadId,
+        turnId: emptyContinuationTurnId,
+        pendingMessageId: continuationIds.messageId,
+        sourceProposedPlanThreadId: null,
+        sourceProposedPlanId: null,
+        assistantMessageId: null,
+        state: "completed",
+        requestedAt: "2026-01-01T00:00:05.000Z",
+        startedAt: "2026-01-01T00:00:06.000Z",
+        completedAt: "2026-01-01T00:00:07.000Z",
+        checkpointTurnCount: null,
+        checkpointRef: null,
+        checkpointStatus: null,
+        checkpointFiles: [],
+      }),
+    );
+
+    await harness.startReactor();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId,
+      messageId: MessageId.make(`agent-continuation-recovery-delivery:${threadId}:${sourceTurnId}`),
+      input: AGENT_CONTINUE_PROMPT,
+    });
+
+    const readObligation = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({ threadId, sourceTurnId, kind: "agent-continuation" })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    await waitFor(async () => (await readObligation())?.state === "sleeping");
+    expect((await readObligation())?.blockedReason).toBe("provider continuation is not running");
+  });
+
   it("recovers a Default-mode active turn with the plain resume sentence", async () => {
     // Observed live 2026-08-14: a Default-mode chat whose turn died mid-flight
     // received the Agent-mode autonomous-continue wall (AGENT_STOP contract)
@@ -1484,6 +1996,146 @@ describe("ProviderCommandReactor", () => {
       messageId: MessageId.make(`active-turn-recovery-delivery:${threadId}:${sourceMessageId}`),
       input: RESUME_PROMPT,
     });
+  });
+
+  it("adopts a persisted active-turn recovery with output but retries one that completed empty", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const scenarios = [
+      { suffix: "output", producedOutput: true },
+      { suffix: "empty", producedOutput: false },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const threadId = ThreadId.make(`thread-active-recovery-${scenario.suffix}`);
+      const sourceMessageId = asMessageId(`message-active-recovery-${scenario.suffix}`);
+      const sourceTurnId = asTurnId(`turn-active-recovery-source-${scenario.suffix}`);
+      const recoveryTurnId = asTurnId(`turn-active-recovery-delivery-${scenario.suffix}`);
+      const recoveryMessageId = MessageId.make(
+        `active-turn-recovery-delivery:${threadId}:${sourceMessageId}`,
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`cmd-active-recovery-thread-${scenario.suffix}`),
+          threadId,
+          projectId: asProjectId("project-1"),
+          title: `Active recovery ${scenario.suffix}`,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-active-recovery-start-${scenario.suffix}`),
+          threadId,
+          message: {
+            messageId: sourceMessageId,
+            role: "user",
+            text: "Continue the interrupted work.",
+            attachments: [],
+          },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.projectionTurns.deletePendingTurnStart({ threadId, messageId: sourceMessageId }),
+      );
+      await Effect.runPromise(
+        harness.projectionTurns.upsertByTurnId({
+          threadId,
+          turnId: sourceTurnId,
+          pendingMessageId: sourceMessageId,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+          assistantMessageId: null,
+          state: "completed",
+          requestedAt: "2026-01-01T00:00:01.000Z",
+          startedAt: "2026-01-01T00:00:02.000Z",
+          completedAt: "2026-01-01T00:00:03.000Z",
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
+        }),
+      );
+      await Effect.runPromise(
+        harness.projectionTurns.upsertByTurnId({
+          threadId,
+          turnId: recoveryTurnId,
+          pendingMessageId: recoveryMessageId,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+          assistantMessageId: null,
+          state: "completed",
+          requestedAt: "2026-01-01T00:00:04.000Z",
+          startedAt: "2026-01-01T00:00:05.000Z",
+          completedAt: "2026-01-01T00:00:06.000Z",
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
+        }),
+      );
+      if (scenario.producedOutput) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: CommandId.make("cmd-active-recovery-output-delta"),
+            threadId,
+            messageId: asMessageId("assistant-active-recovery-output"),
+            delta: "The interrupted work is complete.",
+            turnId: recoveryTurnId,
+            createdAt: "2026-01-01T00:00:05.500Z",
+          }),
+        );
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.message.assistant.complete",
+            commandId: CommandId.make("cmd-active-recovery-output-complete"),
+            threadId,
+            messageId: asMessageId("assistant-active-recovery-output"),
+            turnId: recoveryTurnId,
+            createdAt: "2026-01-01T00:00:06.000Z",
+          }),
+        );
+      }
+    }
+
+    await harness.startReactor();
+    const readWork = (suffix: "output" | "empty") =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId: ThreadId.make(`thread-active-recovery-${suffix}`),
+            sourceTurnId: activeTurnWorkSourceId(asMessageId(`message-active-recovery-${suffix}`)),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    await waitFor(async () => (await readWork("output"))?.state === "completed");
+    await waitFor(async () => (await readWork("empty"))?.state === "sleeping");
+
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.make("thread-active-recovery-empty"),
+      messageId: MessageId.make(
+        "active-turn-recovery-delivery:thread-active-recovery-empty:message-active-recovery-empty",
+      ),
+      input: RESUME_PROMPT,
+    });
+    expect((await readWork("empty"))?.blockedReason).toBe(
+      "provider startup resume left no running session to supervise",
+    );
   });
 
   it("does not deliver an already-projected Agent continuation after leaving Agent mode", async () => {
@@ -1763,7 +2415,485 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
   });
 
-  it("resumes twenty authentication-paused threads exactly once each with recovery concurrency two", async () => {
+  it("redispatches an authentication resume whose prior provider turn completed empty", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const threadId = ThreadId.make("thread-1");
+    const sourceTurnId = asTurnId("turn-auth-empty-source");
+    const emptyDeliveryTurnId = asTurnId("turn-auth-empty-delivery");
+    const sourceMessageId = asMessageId("user-message-auth-empty-source");
+    const assistantMessageId = asMessageId("assistant-message-auth-empty-source");
+    const deliveryMessageId = MessageId.make(
+      `provider-auth-resume-delivery:${threadId}:${sourceTurnId}`,
+    );
+    const authFailure = "Failed to authenticate: OAuth session expired and could not be refreshed";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make("cmd-auth-empty-agent-mode"),
+        threadId,
+        interactionMode: "agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-auth-empty-source"),
+        threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Continue the task after authentication recovers.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-auth-empty-source-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-auth-empty-source-delta"),
+        threadId,
+        messageId: assistantMessageId,
+        delta: authFailure,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("cmd-auth-empty-source-complete"),
+        threadId,
+        messageId: assistantMessageId,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-auth-empty-source-error"),
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: authFailure,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+
+    const obligation = Option.getOrThrow(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId,
+          kind: "authentication-resume",
+        }),
+      ),
+    );
+    expect(
+      await Effect.runPromise(
+        harness.threadWorkObligations.transition({
+          obligationId: obligation.obligationId,
+          expectedState: "blocked-authentication",
+          expectedAttempt: obligation.attempt,
+          state: "pending",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        }),
+      ),
+    ).toBe(true);
+    await Effect.runPromise(
+      harness.projectionTurns.upsertByTurnId({
+        threadId,
+        turnId: emptyDeliveryTurnId,
+        pendingMessageId: deliveryMessageId,
+        sourceProposedPlanThreadId: null,
+        sourceProposedPlanId: null,
+        assistantMessageId: null,
+        state: "completed",
+        requestedAt: "2026-01-01T00:00:05.000Z",
+        startedAt: "2026-01-01T00:00:06.000Z",
+        completedAt: "2026-01-01T00:00:07.000Z",
+        checkpointTurnCount: null,
+        checkpointRef: null,
+        checkpointStatus: null,
+        checkpointFiles: [],
+      }),
+    );
+
+    await harness.startReactor();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId,
+      messageId: deliveryMessageId,
+      input: AGENT_CONTINUE_PROMPT,
+    });
+
+    const readObligation = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({ threadId, sourceTurnId, kind: "authentication-resume" })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    await waitFor(async () => (await readObligation())?.state === "sleeping");
+    expect((await readObligation())?.blockedReason).toBe(
+      "provider authentication resume is not running",
+    );
+  });
+
+  it.each([
+    { name: "Agent continuation", kind: "agent-continuation" as const },
+    { name: "authentication resume", kind: "authentication-resume" as const },
+  ])(
+    "uses the admitted non-receipt route for a $name after a provider switch",
+    async ({ kind }) => {
+      const obligationProviderInstanceId = ProviderInstanceId.make("receipt-provider");
+      const admittedProviderInstanceId = ProviderInstanceId.make("nonreceipt-provider");
+      const capabilityReads: Array<ProviderInstanceId> = [];
+      const nativeRouteCapabilityReads: Array<ProviderInstanceId> = [];
+      const harness = await createHarness({
+        startReactor: false,
+        threadModelSelection: {
+          instanceId: obligationProviderInstanceId,
+          model: "test-model",
+        },
+        getCapabilitiesEffect: (instanceId) =>
+          Effect.sync(() => {
+            capabilityReads.push(instanceId);
+            return {
+              sessionModelSwitch: "in-session" as const,
+              messageDeliveryReceipts: instanceId === obligationProviderInstanceId,
+            };
+          }),
+        nativeRouteCapabilitiesEffect: (instanceId) =>
+          Effect.sync(() => {
+            nativeRouteCapabilityReads.push(instanceId);
+            return {
+              sessionModelSwitch: "in-session" as const,
+              messageDeliveryReceipts: false,
+            };
+          }),
+      });
+      const work = await seedRoutedReceiptWork(harness, {
+        kind,
+        suffix: "receipt-to-nonreceipt",
+        obligationProviderInstanceId,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(`cmd-routed-receipt-switch-${kind}`),
+          threadId: work.threadId,
+          modelSelection: {
+            instanceId: admittedProviderInstanceId,
+            model: "test-model",
+          },
+        }),
+      );
+      await Effect.runPromise(
+        harness.startSession(work.threadId, {
+          threadId: work.threadId,
+          provider: ProviderDriverKind.make(String(admittedProviderInstanceId)),
+          providerInstanceId: admittedProviderInstanceId,
+          cwd: "/tmp/provider-project",
+          runtimeMode: "approval-required",
+        }),
+      );
+
+      await harness.startReactor();
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      const readObligation = () =>
+        Effect.runPromise(
+          harness.threadWorkObligations
+            .getByKey({
+              threadId: work.threadId,
+              sourceTurnId: work.sourceTurnId,
+              kind,
+            })
+            .pipe(Effect.map(Option.getOrUndefined)),
+        );
+      await waitFor(async () => (await readObligation())?.state === "sleeping");
+
+      expect(nativeRouteCapabilityReads).toEqual([admittedProviderInstanceId]);
+      expect((await readObligation())?.blockedReason).toBe(
+        kind === "agent-continuation"
+          ? "provider continuation is not running"
+          : "provider authentication resume is not running",
+      );
+    },
+  );
+
+  it.each([
+    { name: "Agent continuation", kind: "agent-continuation" as const },
+    { name: "authentication resume", kind: "authentication-resume" as const },
+  ])(
+    "requires the admitted receipt route for a $name without a post-acceptance capability lookup",
+    async ({ kind }) => {
+      const obligationProviderInstanceId = ProviderInstanceId.make("nonreceipt-provider");
+      const admittedProviderInstanceId = ProviderInstanceId.make("receipt-provider");
+      const capabilityReads: Array<ProviderInstanceId> = [];
+      const nativeRouteCapabilityReads: Array<ProviderInstanceId> = [];
+      let registryEntryAvailable = true;
+      let nativeAccepted = false;
+      const harness = await createHarness({
+        startReactor: false,
+        threadModelSelection: {
+          instanceId: obligationProviderInstanceId,
+          model: "test-model",
+        },
+        getCapabilitiesEffect: (instanceId) =>
+          Effect.sync(() => {
+            if (!registryEntryAvailable) {
+              throw new Error("admitted provider registry entry was removed");
+            }
+            capabilityReads.push(instanceId);
+            return {
+              sessionModelSwitch: "in-session" as const,
+              messageDeliveryReceipts: instanceId === admittedProviderInstanceId,
+            };
+          }),
+        nativeRouteCapabilitiesEffect: (instanceId) =>
+          Effect.sync(() => {
+            nativeRouteCapabilityReads.push(instanceId);
+            return {
+              sessionModelSwitch: "in-session" as const,
+              messageDeliveryReceipts: true,
+            };
+          }),
+        sendTurnEffect: (rawInput) =>
+          Effect.sync(() => {
+            const request = rawInput as ProviderSendTurnInput;
+            nativeAccepted = true;
+            registryEntryAvailable = false;
+            return {
+              threadId: request.threadId,
+              turnId: asTurnId(`turn-routed-receipt-${kind}`),
+            };
+          }),
+      });
+      const work = await seedRoutedReceiptWork(harness, {
+        kind,
+        suffix: "nonreceipt-to-receipt",
+        obligationProviderInstanceId,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(`cmd-routed-receipt-switch-${kind}`),
+          threadId: work.threadId,
+          modelSelection: {
+            instanceId: admittedProviderInstanceId,
+            model: "test-model",
+          },
+        }),
+      );
+      await Effect.runPromise(
+        harness.startSession(work.threadId, {
+          threadId: work.threadId,
+          provider: ProviderDriverKind.make(String(admittedProviderInstanceId)),
+          providerInstanceId: admittedProviderInstanceId,
+          cwd: "/tmp/provider-project",
+          runtimeMode: "approval-required",
+        }),
+      );
+
+      await harness.startReactor();
+      await waitFor(() => nativeAccepted);
+      const readObligation = () =>
+        Effect.runPromise(
+          harness.threadWorkObligations
+            .getByKey({
+              threadId: work.threadId,
+              sourceTurnId: work.sourceTurnId,
+              kind,
+            })
+            .pipe(Effect.map(Option.getOrUndefined)),
+        );
+      await Effect.runPromise(Effect.yieldNow);
+      expect(await readObligation()).toMatchObject({ state: "executing" });
+      expect(nativeRouteCapabilityReads).toEqual([admittedProviderInstanceId]);
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(`cmd-routed-receipt-delivered-${kind}`),
+          threadId: work.threadId,
+          activity: {
+            id: EventId.make(`activity-routed-receipt-delivered-${kind}`),
+            tone: "info",
+            kind: "message.delivered",
+            summary: "Message delivered to the provider",
+            payload: { messageId: work.deliveryMessageId },
+            turnId: null,
+            createdAt: "2026-01-01T00:00:06.000Z",
+          },
+          createdAt: "2026-01-01T00:00:06.000Z",
+        }),
+      );
+      await waitFor(async () => (await readObligation())?.state === "sleeping");
+      expect(nativeRouteCapabilityReads).toEqual([admittedProviderInstanceId]);
+    },
+  );
+
+  it("does not let route replacement preempt an already-emitted lagging receipt", async () => {
+    const admittedProviderInstanceId = ProviderInstanceId.make("receipt-provider");
+    const harness = await createHarness({
+      startReactor: false,
+      threadModelSelection: {
+        instanceId: admittedProviderInstanceId,
+        model: "test-model",
+      },
+      nativeRouteCapabilitiesEffect: () =>
+        Effect.succeed({
+          sessionModelSwitch: "in-session" as const,
+          messageDeliveryReceipts: true,
+        }),
+    });
+    const work = await seedRoutedReceiptWork(harness, {
+      kind: "agent-continuation",
+      suffix: "lagging-receipt-after-replacement",
+      obligationProviderInstanceId: admittedProviderInstanceId,
+    });
+    await Effect.runPromise(
+      harness.startSession(work.threadId, {
+        threadId: work.threadId,
+        provider: ProviderDriverKind.make(String(admittedProviderInstanceId)),
+        providerInstanceId: admittedProviderInstanceId,
+        cwd: "/tmp/provider-project",
+        runtimeMode: "approval-required",
+      }),
+    );
+
+    await harness.startReactor();
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const readObligation = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId: work.threadId,
+            sourceTurnId: work.sourceTurnId,
+            kind: "agent-continuation",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    await waitFor(async () => (await readObligation())?.state === "executing");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-routed-receipt-route-replaced"),
+        threadId: work.threadId,
+        session: {
+          threadId: work.threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("replacement-provider"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:07.000Z",
+        },
+        createdAt: "2026-01-01T00:00:07.000Z",
+      }),
+    );
+    await Effect.runPromise(Effect.yieldNow);
+    expect(await readObligation()).toMatchObject({ state: "executing" });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-routed-receipt-route-lagging-delivery"),
+        threadId: work.threadId,
+        activity: {
+          id: EventId.make("activity-routed-receipt-route-lagging-delivery"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: { messageId: work.deliveryMessageId },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:08.000Z",
+        },
+        createdAt: "2026-01-01T00:00:08.000Z",
+      }),
+    );
+    await waitFor(async () => (await readObligation())?.state === "sleeping");
+    expect((await readObligation())?.blockedReason).toBe("provider continuation is not running");
+  });
+
+  it.each(["default", "plan"] as const)(
+    "cancels a preexisting authentication resume after the thread moves to %s mode",
+    async (interactionMode) => {
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const harness = await createHarness({ startReactor: false });
+      const work = await seedRoutedReceiptWork(harness, {
+        kind: "authentication-resume",
+        suffix: `persisted-${interactionMode}`,
+        obligationProviderInstanceId: providerInstanceId,
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make(`cmd-auth-resume-mode-${interactionMode}`),
+          threadId: work.threadId,
+          interactionMode,
+          createdAt: "2026-01-01T00:00:06.000Z",
+        }),
+      );
+
+      await harness.startReactor();
+      const readObligation = () =>
+        Effect.runPromise(
+          harness.threadWorkObligations
+            .getByKey({
+              threadId: work.threadId,
+              sourceTurnId: work.sourceTurnId,
+              kind: "authentication-resume",
+            })
+            .pipe(Effect.map(Option.getOrUndefined)),
+        );
+      await waitFor(async () => (await readObligation())?.state === "cancelled");
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readObligation()).toMatchObject({
+        state: "cancelled",
+        blockedReason: "authentication resume requires Agent mode",
+      });
+    },
+  );
+
+  it("dispatches twenty authentication resumes once each with concurrency two and keeps empty acknowledgements retryable", async () => {
     const harness = await createHarness({ startReactor: false });
     const threadCount = 20;
     const authFailure = "Failed to authenticate: OAuth session expired and could not be refreshed";
@@ -1825,6 +2955,30 @@ describe("ProviderCommandReactor", () => {
             updatedAt: "2026-01-01T00:00:01.000Z",
           },
           createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+      );
+      await Effect.runPromise(
+        harness.projectionTurns.deletePendingTurnStart({
+          threadId,
+          messageId: asMessageId(`user-message-auth-mass-${index}`),
+        }),
+      );
+      await Effect.runPromise(
+        harness.projectionTurns.upsertByTurnId({
+          threadId,
+          turnId: sourceTurnId,
+          pendingMessageId: asMessageId(`user-message-auth-mass-${index}`),
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+          assistantMessageId: null,
+          state: "running",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:01.000Z",
+          completedAt: null,
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
         }),
       );
       await Effect.runPromise(
@@ -1906,8 +3060,16 @@ describe("ProviderCommandReactor", () => {
     let inFlight = 0;
     let peakInFlight = 0;
     let dispatchedTurns = 0;
-    harness.sendTurn.mockImplementation((request: unknown) =>
+    harness.sendTurn.mockImplementation((request: unknown, options) =>
       Effect.gen(function* () {
+        yield* Effect.sync(() =>
+          options?.onNativeDispatchRoute?.({
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            sessionGeneration: null,
+            messageDeliveryReceipts: false,
+          }),
+        );
+        yield* options?.onNativeDispatch ?? Effect.void;
         inFlight += 1;
         peakInFlight = Math.max(peakInFlight, inFlight);
         yield* Effect.sleep(Duration.millis(40));
@@ -1927,6 +3089,7 @@ describe("ProviderCommandReactor", () => {
     // Reactor startup runs the authentication recovery sweep against the
     // already-authenticated provider snapshot, releasing every paused thread.
     await harness.startReactor();
+    await waitFor(() => harness.sendTurn.mock.calls.length === threadCount);
     await waitFor(async () => {
       for (let index = 0; index < threadCount; index += 1) {
         const obligation = await Effect.runPromise(
@@ -1936,7 +3099,7 @@ describe("ProviderCommandReactor", () => {
             kind: "authentication-resume",
           }),
         );
-        if (Option.getOrNull(obligation)?.state !== "completed") return false;
+        if (Option.getOrNull(obligation)?.state !== "sleeping") return false;
       }
       return true;
     });
@@ -1950,6 +3113,19 @@ describe("ProviderCommandReactor", () => {
     );
     expect([...deliveredMessageIds].sort()).toEqual([...expectedMessageIds].sort());
     expect(peakInFlight).toBe(2);
+
+    for (let index = 0; index < threadCount; index += 1) {
+      const obligation = Option.getOrThrow(
+        await Effect.runPromise(
+          harness.threadWorkObligations.getByKey({
+            threadId: threadIds[index]!,
+            sourceTurnId: sourceTurnIdFor(index),
+            kind: "authentication-resume",
+          }),
+        ),
+      );
+      expect(obligation.blockedReason).toBe("provider authentication resume is not running");
+    }
 
     const resumedReadModel = await harness.readModel();
     for (const threadId of threadIds) {
@@ -2410,7 +3586,6 @@ describe("ProviderCommandReactor", () => {
         runtimeMode: "approval-required",
         createdAt: "2026-01-01T00:00:01.000Z",
       });
-
       yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
       readModel = yield* Effect.promise(() => harness.readModel());
       thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
@@ -2791,6 +3966,142 @@ describe("ProviderCommandReactor", () => {
     );
     expect(handoff.currentRequest).toBe(RESUME_PROMPT);
   });
+
+  effectIt.effect(
+    "dispatches an eligible durable startup resume and retries an empty acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = ThreadId.make("thread-1");
+        const sourceMessageId = asMessageId("user-message-before-durable-startup-resume");
+        const sourceTurnId = asTurnId("turn-1");
+        const stoppedAt = "2026-01-01T00:00:03.000Z";
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-before-durable-startup-resume"),
+          threadId,
+          message: {
+            messageId: sourceMessageId,
+            role: "user",
+            text: "Keep working after the application restarts.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-before-durable-startup-resume-running"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: sourceTurnId,
+            lastError: null,
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+          createdAt: "2026-01-01T00:00:01.000Z",
+        });
+        yield* harness.projectionTurns.deletePendingTurnStart({
+          threadId,
+          messageId: sourceMessageId,
+        });
+        yield* harness.projectionTurns.upsertByTurnId({
+          threadId,
+          turnId: sourceTurnId,
+          pendingMessageId: sourceMessageId,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+          assistantMessageId: null,
+          state: "running",
+          requestedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:01.000Z",
+          completedAt: null,
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("cmd-before-durable-startup-resume-stop"),
+          threadId,
+          createdAt: stoppedAt,
+        });
+        yield* Effect.promise(() =>
+          waitFor(async () => {
+            const model = await harness.readModel();
+            const thread = model.threads.find((candidate) => candidate.id === threadId);
+            return (
+              thread?.session?.status === "stopped" && thread.latestTurn?.state === "incomplete"
+            );
+          }),
+        );
+
+        harness.sendTurn.mockClear();
+        const startupIds = startupAutoResumeIds({ threadId, incompleteTurnId: sourceTurnId });
+        const obligationId = threadWorkObligationId({
+          threadId,
+          sourceTurnId,
+          kind: "startup-resume",
+        });
+        yield* harness.threadWorkObligations.insert({
+          obligationId,
+          threadId,
+          sourceTurnId,
+          kind: "startup-resume",
+          state: "pending",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          attempt: 0,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          createdAt: stoppedAt,
+          updatedAt: stoppedAt,
+        });
+        yield* harness.threadWorkScheduler.wake();
+
+        yield* Effect.promise(() =>
+          waitFor(() =>
+            harness.sendTurn.mock.calls.some(
+              (call) => (call[0] as ProviderSendTurnInput).messageId === startupIds.messageId,
+            ),
+          ),
+        );
+        const work = yield* Effect.gen(function* () {
+          for (let attempts = 0; attempts < 10_000; attempts += 1) {
+            const candidate = yield* harness.threadWorkObligations.getByKey({
+              threadId,
+              sourceTurnId,
+              kind: "startup-resume",
+            });
+            if (Option.isSome(candidate) && candidate.value.state === "sleeping") {
+              return candidate.value;
+            }
+            yield* Effect.yieldNow;
+          }
+          return yield* Effect.die("startup resume obligation did not become retryable");
+        });
+
+        expect(work.blockedReason).toBe(
+          "provider startup resume left no running session to supervise",
+        );
+
+        const model = yield* Effect.promise(harness.readModel);
+        const thread = model.threads.find((candidate) => candidate.id === threadId);
+        expect(thread?.messages.some((message) => message.id === startupIds.messageId)).toBe(true);
+        expect(thread?.messages.find((message) => message.id === startupIds.messageId)?.text).toBe(
+          RESUME_PROMPT,
+        );
+      }),
+  );
 
   it("retries a route-created recovery marker without surfacing a terminal error", async () => {
     const threadId = ThreadId.make("thread-1");
@@ -3490,8 +4801,19 @@ describe("ProviderCommandReactor", () => {
   // parked delivery resolves without double-sending, a steer the provider
   // rejects stays parked and delivers at turn end, and the user's Stop never
   // drops a parked message.
-  it("finalizes no-receipt steers and does not rearm one after a delivery receipt wins the race", async () => {
-    const harness = await createHarness();
+  it("uses the admitted no-receipt steer policy after a receipt-capable registry snapshot", async () => {
+    const harness = await createHarness({
+      getCapabilitiesEffect: () =>
+        Effect.succeed({
+          sessionModelSwitch: "in-session" as const,
+          messageDeliveryReceipts: true,
+        }),
+      nativeRouteCapabilitiesEffect: () =>
+        Effect.succeed({
+          sessionModelSwitch: "in-session" as const,
+          messageDeliveryReceipts: false,
+        }),
+    });
     const threadId = ThreadId.make("thread-1");
     const providerInstanceId = ProviderInstanceId.make("codex");
     const hostTurnId = asTurnId("turn-steer-finalization-host");
@@ -3532,8 +4854,16 @@ describe("ProviderCommandReactor", () => {
       );
 
     harness.sendTurn.mockImplementation(
-      (_rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+      (
+        _rawInput: unknown,
+        options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
         Effect.sync(() => {
+          options?.onNativeDispatchRoute?.({
+            providerInstanceId,
+            sessionGeneration: null,
+            messageDeliveryReceipts: false,
+          });
           const index = harness.runtimeSessions.findIndex(
             (session) => session.threadId === threadId,
           );
@@ -3594,9 +4924,9 @@ describe("ProviderCommandReactor", () => {
       return obligation?.state === "executing";
     });
 
-    // Codex has no separate prompt-stream receipt. Its successful send result
-    // is the acceptance boundary, so the temporary marker and exact pending
-    // placeholder must both be finalized immediately.
+    // This harness adapter does not declare durable delivery receipts. Its
+    // successful send result is therefore the acceptance boundary, so the
+    // temporary marker and exact pending placeholder finalize immediately.
     const immediateMessageId = "message-steer-finalization-immediate";
     await dispatchTurn(
       "cmd-steer-finalization-immediate",
@@ -3616,7 +4946,15 @@ describe("ProviderCommandReactor", () => {
     let racedSendSettled = false;
     const racedSend = Effect.runSync(Deferred.make<{ threadId: ThreadId; turnId: TurnId }>());
     harness.sendTurn.mockImplementation(
-      (rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> => {
+      (
+        rawInput: unknown,
+        options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> => {
+        options?.onNativeDispatchRoute?.({
+          providerInstanceId,
+          sessionGeneration: null,
+          messageDeliveryReceipts: false,
+        });
         const messageId = (rawInput as { readonly messageId?: string }).messageId;
         if (messageId !== racedMessageId) {
           return Effect.succeed({ threadId, turnId: hostTurnId });
@@ -3700,6 +5038,161 @@ describe("ProviderCommandReactor", () => {
         (call) => (call[0] as { readonly messageId?: string }).messageId === racedMessageId,
       ),
     ).toHaveLength(1);
+  });
+
+  it("uses the admitted receipt-capable steer policy after a non-receipt registry snapshot", async () => {
+    const threadId = ThreadId.make("thread-1");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const hostTurnId = asTurnId("turn-exact-delivery-receipt-host");
+    const steerMessageId = asMessageId("message-exact-delivery-receipt-steer");
+    const harness = await createHarness({
+      getCapabilitiesEffect: () =>
+        Effect.succeed({
+          sessionModelSwitch: "in-session" as const,
+          messageDeliveryReceipts: false,
+        }),
+      nativeRouteCapabilitiesEffect: () =>
+        Effect.succeed({
+          sessionModelSwitch: "in-session" as const,
+          messageDeliveryReceipts: true,
+        }),
+      sendTurnEffect: (_rawInput, _runtimeSessions, options) =>
+        (options?.onNativeDispatch ?? Effect.void).pipe(
+          Effect.as({ threadId, turnId: hostTurnId }),
+        ),
+    });
+    const dispatchTurn = (commandId: string, messageId: MessageId, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: String(messageId),
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const readSteerObligation = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(steerMessageId),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+
+    await dispatchTurn(
+      "cmd-exact-delivery-receipt-host",
+      asMessageId("message-exact-delivery-receipt-host"),
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const liveSession = harness.runtimeSessions[0];
+    if (liveSession === undefined) throw new Error("provider session was not started");
+    harness.runtimeSessions[0] = {
+      ...liveSession,
+      status: "running",
+      activeTurnId: hostTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-exact-delivery-receipt-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: hostTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+
+    await dispatchTurn(
+      "cmd-exact-delivery-receipt-steer",
+      steerMessageId,
+      "2026-01-01T00:00:03.000Z",
+    );
+    await waitFor(async () => {
+      const obligation = await readSteerObligation();
+      return (
+        obligation?.state === "completed" &&
+        obligation.blockedReason === ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON
+      );
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-wrong-delivery-receipt"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-wrong-delivery-receipt"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Different message delivered",
+          payload: { messageId: "message-some-other-steer" },
+          turnId: hostTurnId,
+          createdAt: "2026-01-01T00:00:03.100Z",
+        },
+        createdAt: "2026-01-01T00:00:03.100Z",
+      }),
+    );
+    expect(await readSteerObligation()).toMatchObject({
+      state: "completed",
+      blockedReason: ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+    });
+    expect(
+      Option.isSome(
+        await Effect.runPromise(
+          harness.projectionTurns.getPendingTurnStart({ threadId, messageId: steerMessageId }),
+        ),
+      ),
+    ).toBe(true);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-exact-delivery-receipt"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-exact-delivery-receipt"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: { messageId: steerMessageId },
+          turnId: hostTurnId,
+          createdAt: "2026-01-01T00:00:03.200Z",
+        },
+        createdAt: "2026-01-01T00:00:03.200Z",
+      }),
+    );
+    await waitFor(async () => {
+      const obligation = await readSteerObligation();
+      return obligation?.state === "completed" && obligation.blockedReason === null;
+    });
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          harness.projectionTurns.getPendingTurnStart({ threadId, messageId: steerMessageId }),
+        ),
+      ),
+    ).toBe(true);
+    await harness.drain();
   });
 
   it("dispatches a live user steer before slow session work finishes", async () => {
@@ -3831,6 +5324,167 @@ describe("ProviderCommandReactor", () => {
 
     await harness.drain();
     expect(startCount).toBe(2);
+  });
+
+  it("starts repeated live steers in FIFO order before either provider response resolves", async () => {
+    const firstSteerEntered = await Effect.runPromise(Deferred.make<void>());
+    const secondSteerEntered = await Effect.runPromise(Deferred.make<void>());
+    const releaseFirstNativeAdmission = await Effect.runPromise(Deferred.make<void>());
+    const releaseSteers = await Effect.runPromise(Deferred.make<void>());
+    const followupWorkEntered = await Effect.runPromise(Deferred.make<void>());
+    const releaseFollowupWork = await Effect.runPromise(Deferred.make<void>());
+    let blockFollowupWork = false;
+    let dispatchFollowupWork: Effect.Effect<void> = Effect.void;
+    const threadId = ThreadId.make("thread-1");
+    const activeTurnId = asTurnId("turn-repeated-steer-host");
+    const firstMessageId = asMessageId("message-repeated-steer-first");
+    const secondMessageId = asMessageId("message-repeated-steer-second");
+    const harness = await createHarness({
+      getCapabilitiesEffect: () =>
+        blockFollowupWork
+          ? Deferred.succeed(followupWorkEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseFollowupWork)),
+              Effect.as({ sessionModelSwitch: "in-session" as const }),
+            )
+          : Effect.succeed({ sessionModelSwitch: "in-session" as const }),
+      sendTurnEffect: (rawInput, _runtimeSessions, options) => {
+        const input = rawInput as ProviderSendTurnInput;
+        const entered =
+          input.messageId === firstMessageId
+            ? firstSteerEntered
+            : input.messageId === secondMessageId
+              ? secondSteerEntered
+              : undefined;
+        if (entered === undefined) {
+          return Effect.succeed({ threadId, turnId: activeTurnId });
+        }
+        const waitForAdmission =
+          input.messageId === firstMessageId
+            ? Deferred.await(releaseFirstNativeAdmission)
+            : Effect.void;
+        return waitForAdmission.pipe(
+          Effect.andThen(options?.onNativeDispatch ?? Effect.void),
+          Effect.andThen(Deferred.succeed(entered, undefined)),
+          Effect.andThen(Deferred.await(releaseSteers)),
+          Effect.andThen(
+            input.messageId === secondMessageId
+              ? Effect.sync(() => {
+                  blockFollowupWork = true;
+                }).pipe(Effect.andThen(Effect.suspend(() => dispatchFollowupWork)))
+              : Effect.void,
+          ),
+          Effect.as({ threadId, turnId: activeTurnId }),
+        );
+      },
+    });
+    dispatchFollowupWork = harness.engine
+      .dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-repeated-steer-followup-work"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      })
+      .pipe(Effect.asVoid, Effect.orDie);
+
+    const dispatchTurn = (
+      commandId: string,
+      messageId: MessageId,
+      createdAt: string,
+      modelSelection?: ModelSelection,
+    ) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: String(messageId),
+            attachments: [],
+          },
+          ...(modelSelection === undefined ? {} : { modelSelection }),
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+
+    await dispatchTurn(
+      "cmd-repeated-steer-host",
+      asMessageId("message-repeated-steer-host"),
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const liveSession = harness.runtimeSessions[0];
+    if (liveSession === undefined) throw new Error("provider session was not started");
+    harness.runtimeSessions[0] = {
+      ...liveSession,
+      status: "running",
+      activeTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-repeated-steer-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await harness.drain();
+
+    await dispatchTurn("cmd-repeated-steer-first", firstMessageId, "2026-01-01T00:00:03.000Z");
+    await dispatchTurn("cmd-repeated-steer-second", secondMessageId, "2026-01-01T00:00:04.000Z", {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex-next",
+    });
+    await waitFor(() =>
+      harness.sendTurn.mock.calls.some(
+        (call) => (call[0] as ProviderSendTurnInput).messageId === firstMessageId,
+      ),
+    );
+    expect(
+      harness.sendTurn.mock.calls.some(
+        (call) => (call[0] as ProviderSendTurnInput).messageId === secondMessageId,
+      ),
+    ).toBe(false);
+
+    await Effect.runPromise(Deferred.succeed(releaseFirstNativeAdmission, undefined));
+    await Effect.runPromise(
+      Effect.all([Deferred.await(firstSteerEntered), Deferred.await(secondSteerEntered)], {
+        concurrency: 2,
+      }).pipe(Effect.timeout("5 seconds")),
+    );
+
+    expect(
+      harness.sendTurn.mock.calls
+        .map((call) => (call[0] as ProviderSendTurnInput).messageId)
+        .filter((messageId) => messageId === firstMessageId || messageId === secondMessageId),
+    ).toEqual([firstMessageId, secondMessageId]);
+
+    const drainCompleted = await Effect.runPromise(Deferred.make<void>());
+    const drainFiber = Effect.runFork(
+      harness.drainEffect.pipe(Effect.andThen(Deferred.succeed(drainCompleted, undefined))),
+    );
+    await Effect.runPromise(Effect.yieldNow);
+    expect(await Effect.runPromise(Deferred.isDone(drainCompleted))).toBe(false);
+
+    await Effect.runPromise(Deferred.succeed(releaseSteers, undefined));
+    await Effect.runPromise(Deferred.await(followupWorkEntered).pipe(Effect.timeout("5 seconds")));
+    expect(await Effect.runPromise(Deferred.isDone(drainCompleted))).toBe(false);
+    await Effect.runPromise(Deferred.succeed(releaseFollowupWork, undefined));
+    await Effect.runPromise(Fiber.join(drainFiber).pipe(Effect.timeout("5 seconds")));
   });
 
   it("re-arms a steer when restart teardown removed its exact live target", async () => {
@@ -3997,34 +5651,53 @@ describe("ProviderCommandReactor", () => {
     const refuseSteerFor = new Set<string>();
     let startedTurns = 0;
     harness.sendTurn.mockImplementation(
-      (rawInput: unknown): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
-        Effect.suspend(() => {
-          const request = rawInput as { readonly messageId?: string };
-          const index = harness.runtimeSessions.findIndex(
-            (session) => session.threadId === threadId,
-          );
-          const live = index >= 0 ? harness.runtimeSessions[index] : undefined;
-          const liveTurnId = live?.activeTurnId ?? undefined;
-          if (live?.status === "running" && liveTurnId !== undefined) {
-            // Mid-turn send = steer attempt against the live turn.
-            if (request.messageId !== undefined && refuseSteerFor.has(request.messageId)) {
-              return Effect.die(
-                new ProviderAdapterRequestError({
-                  provider: "codex",
-                  method: "turn/steer",
-                  detail: "steer refused in test",
-                }),
+      (
+        rawInput: unknown,
+        options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+        Effect.sync(() =>
+          options?.onNativeDispatchRoute?.({
+            providerInstanceId: codex,
+            sessionGeneration: null,
+            messageDeliveryReceipts: false,
+          }),
+        ).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const request = rawInput as { readonly messageId?: string };
+              const index = harness.runtimeSessions.findIndex(
+                (session) => session.threadId === threadId,
               );
-            }
-            return Effect.succeed({ threadId, turnId: liveTurnId });
-          }
-          startedTurns += 1;
-          const turnId = asTurnId(`turn-live-${startedTurns}`);
-          if (index >= 0 && live !== undefined) {
-            harness.runtimeSessions[index] = { ...live, status: "running", activeTurnId: turnId };
-          }
-          return Effect.succeed({ threadId, turnId });
-        }),
+              const live = index >= 0 ? harness.runtimeSessions[index] : undefined;
+              const liveTurnId = live?.activeTurnId ?? undefined;
+              if (live?.status === "running" && liveTurnId !== undefined) {
+                // Mid-turn send = steer attempt against the live turn.
+                if (request.messageId !== undefined && refuseSteerFor.has(request.messageId)) {
+                  return Effect.die(
+                    new ProviderAdapterRequestError({
+                      provider: "codex",
+                      method: "turn/steer",
+                      detail: "steer refused in test",
+                    }),
+                  );
+                }
+                return (options?.onNativeDispatch ?? Effect.void).pipe(
+                  Effect.as({ threadId, turnId: liveTurnId }),
+                );
+              }
+              startedTurns += 1;
+              const turnId = asTurnId(`turn-live-${startedTurns}`);
+              if (index >= 0 && live !== undefined) {
+                harness.runtimeSessions[index] = {
+                  ...live,
+                  status: "running",
+                  activeTurnId: turnId,
+                };
+              }
+              return Effect.succeed({ threadId, turnId });
+            }),
+          ),
+        ),
     );
     const providerIdle = () => {
       const index = harness.runtimeSessions.findIndex((session) => session.threadId === threadId);
@@ -5805,6 +7478,10 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
+    const messageIds = [
+      MessageId.make("queued-grok-message-1"),
+      MessageId.make("queued-grok-message-2"),
+    ];
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -5828,12 +7505,13 @@ describe("ProviderCommandReactor", () => {
         type: "thread.queued-turn.promote",
         commandId: CommandId.make("cmd-promote-grok-queue"),
         threadId,
+        messageIds,
         createdAt: "2026-01-01T00:00:05.000Z",
       }),
     );
 
     await waitFor(() => harness.promoteQueuedTurn.mock.calls.length === 1);
-    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({ threadId });
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({ threadId, messageIds });
     await harness.drain();
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
@@ -5844,8 +7522,365 @@ describe("ProviderCommandReactor", () => {
         createdAt: "2026-01-01T00:00:05.000Z",
         payload: {
           messageIds: ["queued-grok-message-1", "queued-grok-message-2"],
+          requestId: "cmd-promote-grok-queue",
         },
       }),
+    );
+  });
+
+  it("deduplicates the exact promoted batch after remount or an ambiguous RPC retry", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const messageIds = [
+      MessageId.make("queued-grok-message-1"),
+      MessageId.make("queued-grok-message-2"),
+    ];
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set-idempotent-promotion"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-idempotent-promotion"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-original"),
+        threadId,
+        messageIds,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-stop-before-duplicate-promotion"),
+        threadId,
+        session: {
+          threadId,
+          status: "stopped",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:06.000Z",
+        },
+        createdAt: "2026-01-01T00:00:06.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-retry-after-remount"),
+        threadId,
+        messageIds,
+        createdAt: "2026-01-01T00:00:07.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledTimes(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities
+        .filter((activity) => activity.kind === "provider.queue.promoted")
+        .map((activity) => activity.payload),
+    ).toEqual([
+      { messageIds, requestId: "cmd-promote-original" },
+      { messageIds, requestId: "cmd-promote-retry-after-remount" },
+    ]);
+  });
+
+  it("serializes concurrent retries of the same exact promotion batch", async () => {
+    const promotionStarted = await Effect.runPromise(Deferred.make<void>());
+    const releasePromotion = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      promoteQueuedTurnEffect: (input) =>
+        Deferred.succeed(promotionStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releasePromotion)),
+          Effect.as(input.messageIds ?? []),
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const messageIds = [
+      MessageId.make("queued-grok-message-1"),
+      MessageId.make("queued-grok-message-2"),
+    ];
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set-concurrent-promotion-retry"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-concurrent-promotion-retry"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-concurrent-original"),
+        threadId,
+        messageIds,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(promotionStarted));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-concurrent-retry"),
+        threadId,
+        messageIds,
+        createdAt: "2026-01-01T00:00:06.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.succeed(releasePromotion, undefined));
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledTimes(1);
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities
+        .filter((activity) => activity.kind === "provider.queue.promoted")
+        .map((activity) => activity.payload),
+    ).toEqual([
+      { messageIds, requestId: "cmd-promote-concurrent-original" },
+      { messageIds, requestId: "cmd-promote-concurrent-retry" },
+    ]);
+  });
+
+  it("filters durably covered messages before replaying a partial promotion batch", async () => {
+    const harness = await createHarness({
+      promoteQueuedTurnEffect: (input) => Effect.succeed(input.messageIds ?? []),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const coveredMessageId = MessageId.make("queued-grok-message-covered");
+    const remainingMessageId = MessageId.make("queued-grok-message-remaining");
+    const messageIds = [coveredMessageId, remainingMessageId];
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set-partial-promotion-replay"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-partial-promotion-replay"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-covered-message-delivered-before-promotion-replay"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-covered-message-delivered-before-promotion-replay"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: { messageId: coveredMessageId },
+          turnId: asTurnId("grok-turn-partial-promotion-replay"),
+          createdAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-partially-covered-replay"),
+        threadId,
+        messageIds,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledTimes(1);
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({
+      threadId,
+      messageIds: [remainingMessageId],
+    });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promoted",
+        payload: {
+          messageIds,
+          requestId: "cmd-promote-partially-covered-replay",
+        },
+      }),
+    );
+  });
+
+  it("records a correlated terminal failure when queued promotion has no provider session", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-missing-session"),
+        threadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).not.toHaveBeenCalled();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promote.failed",
+        payload: expect.objectContaining({
+          requestId: "cmd-promote-missing-session",
+          detail: expect.stringContaining("no longer has a provider session"),
+        }),
+      }),
+    );
+  });
+
+  it("records a correlated terminal failure when the provider session already stopped", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set-stopped-promotion"),
+        threadId,
+        session: {
+          threadId,
+          status: "stopped",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-stopped-session"),
+        threadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).not.toHaveBeenCalled();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promote.failed",
+        payload: expect.objectContaining({
+          requestId: "cmd-promote-stopped-session",
+          detail: expect.stringContaining("session is stopped, not running"),
+        }),
+      }),
+    );
+  });
+
+  it("records a correlated terminal failure when the provider rejects queued promotion", async () => {
+    const harness = await createHarness({
+      promoteQueuedTurnEffect: () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "Grok",
+            method: "x.ai/queue/interject",
+            detail: "the native queue retained the requested prompt",
+            failureKind: "retryable-upstream",
+          }),
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-grok-session-set-for-rejection"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-rejected-promotion"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: CommandId.make("cmd-promote-provider-rejection"),
+        threadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.promoteQueuedTurn).toHaveBeenCalledWith({ threadId });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promote.failed",
+        payload: expect.objectContaining({
+          requestId: "cmd-promote-provider-rejection",
+          detail: expect.stringContaining("native queue retained"),
+        }),
+      }),
+    );
+    expect(thread?.activities.some((activity) => activity.kind === "provider.queue.promoted")).toBe(
+      false,
     );
   });
 
@@ -6145,6 +8180,175 @@ describe("ProviderCommandReactor", () => {
 
     await Effect.runPromise(Deferred.succeed(releaseTaskStop, undefined));
     await harness.drain();
+  });
+
+  it("lets session Stop preempt an unknown-target queued promotion wait", async () => {
+    const promotionStarted = await Effect.runPromise(Deferred.make<void>());
+    const releasePromotion = await Effect.runPromise(Deferred.make<void>());
+    const stopExecuted = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      promoteQueuedTurnEffect: () =>
+        Deferred.succeed(promotionStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releasePromotion)),
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "Grok",
+                method: "x.ai/queue/interject",
+                detail: "the session stopped while the target was awaiting native admission",
+                failureKind: "retryable-upstream",
+              }),
+            ),
+          ),
+        ),
+      stopSessionEffect: () =>
+        Deferred.succeed(stopExecuted, undefined).pipe(
+          Effect.andThen(Deferred.succeed(releasePromotion, undefined)),
+          Effect.asVoid,
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const requestId = CommandId.make("cmd-promote-preempted-by-session-stop");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-running-before-promotion-session-stop"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("grok-turn-before-promotion-session-stop"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: requestId,
+        threadId,
+        messageIds: [MessageId.make("unknown-native-target")],
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(promotionStarted));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-session-stop-preempts-promotion"),
+        threadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(stopExecuted));
+    await harness.drain();
+
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("stopped");
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promote.failed",
+        payload: expect.objectContaining({
+          requestId,
+          detail: expect.stringContaining("session stopped while the target"),
+        }),
+      }),
+    );
+  });
+
+  it("lets turn interrupt preempt an unknown-target queued promotion wait", async () => {
+    const promotionStarted = await Effect.runPromise(Deferred.make<void>());
+    const releasePromotion = await Effect.runPromise(Deferred.make<void>());
+    const interruptExecuted = await Effect.runPromise(Deferred.make<void>());
+    const harness = await createHarness({
+      promoteQueuedTurnEffect: () =>
+        Deferred.succeed(promotionStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releasePromotion)),
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "Grok",
+                method: "x.ai/queue/interject",
+                detail: "the turn ended while the target was awaiting native admission",
+                failureKind: "retryable-upstream",
+              }),
+            ),
+          ),
+        ),
+      interruptTurnEffect: () =>
+        Deferred.succeed(interruptExecuted, undefined).pipe(
+          Effect.andThen(Deferred.succeed(releasePromotion, undefined)),
+          Effect.asVoid,
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("grok-turn-before-promotion-interrupt");
+    const requestId = CommandId.make("cmd-promote-preempted-by-turn-interrupt");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-running-before-promotion-interrupt"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.queued-turn.promote",
+        commandId: requestId,
+        threadId,
+        messageIds: [MessageId.make("unknown-native-target")],
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(promotionStarted));
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-preempts-promotion"),
+        threadId,
+        turnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(Deferred.await(interruptExecuted));
+    await harness.drain();
+
+    expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId });
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("stopped");
+    expect(thread?.activities).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.queue.promote.failed",
+        payload: expect.objectContaining({
+          requestId,
+          detail: expect.stringContaining("turn ended while the target"),
+        }),
+      }),
+    );
   });
 
   it("does not queue one thread's interrupt behind another thread's blocked session stop", async () => {

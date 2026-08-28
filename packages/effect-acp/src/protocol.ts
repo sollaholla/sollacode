@@ -15,12 +15,19 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
 import * as AcpSchema from "./_generated/schema.gen.ts";
 import { CLIENT_METHODS } from "./_generated/meta.gen.ts";
+import { fromWireExtensionMethod } from "./_internal/shared.ts";
 import * as AcpError from "./errors.ts";
 const isAcpError = Schema.is(AcpError.AcpError);
 
 export interface AcpProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
   readonly stage: "raw" | "decoded" | "decode_failed";
+  readonly payload: unknown;
+}
+
+export interface AcpRequestEnqueuedEvent {
+  readonly method: string;
+  readonly requestId: AcpError.AcpRequestId;
   readonly payload: unknown;
 }
 
@@ -48,6 +55,7 @@ export interface AcpPatchedProtocolOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  readonly onRequestEnqueued?: (event: AcpRequestEnqueuedEvent) => Effect.Effect<void, never>;
   readonly onNotification?: (
     notification: AcpIncomingNotification,
   ) => Effect.Effect<void, AcpError.AcpError, never>;
@@ -133,7 +141,14 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
       });
 
-      yield* Queue.offer(outgoing, encoded).pipe(Effect.asVoid);
+      const offered = yield* Queue.offer(outgoing, encoded);
+      if (offered && message._tag === "Request" && options.onRequestEnqueued) {
+        yield* options.onRequestEnqueued({
+          method: message.tag,
+          requestId: message.id,
+          payload: message.payload,
+        });
+      }
     }
   });
 
@@ -246,16 +261,16 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       },
     });
 
-  const handleExtRequest = (message: RpcMessage.RequestEncoded) => {
+  const handleExtRequest = (message: RpcMessage.RequestEncoded, method: string) => {
     if (!options.onExtRequest) {
-      return respondWithError(message.id, AcpError.AcpRequestError.methodNotFound(message.tag));
+      return respondWithError(message.id, AcpError.AcpRequestError.methodNotFound(method));
     }
-    return options.onExtRequest(message.tag, message.payload).pipe(
+    return options.onExtRequest(method, message.payload).pipe(
       Effect.matchEffect({
         onFailure: (error) =>
           respondWithError(
             message.id,
-            AcpError.AcpRequestError.fromExtensionHandlerError(error, message.tag),
+            AcpError.AcpRequestError.fromExtensionHandlerError(error, method),
           ),
         onSuccess: (value) => respondWithSuccess(message.id, value),
       }),
@@ -306,18 +321,19 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
       }
       return dispatchNotification({
         _tag: "ExtNotification",
-        method: message.tag,
+        method: fromWireExtensionMethod(message.tag),
         params: message.payload,
       });
     }
 
     if (!options.serverRequestMethods.has(message.tag)) {
-      return handleExtRequest(message).pipe(
+      const method = fromWireExtensionMethod(message.tag);
+      return handleExtRequest(message, method).pipe(
         Effect.catchTags({
           AcpProtocolParseError: (error) =>
             Effect.logWarning(error).pipe(
               Effect.annotateLogs({
-                method: message.tag,
+                method,
                 requestId: message.id,
                 operation: error.operation,
               }),
@@ -325,7 +341,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
                 respondWithError(
                   message.id,
                   AcpError.AcpRequestError.fromExtensionResponseEncodingError(
-                    message.tag,
+                    method,
                     message.id,
                     error,
                   ),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  resolveProcessingComposerEnterAction,
   shouldCollapseMobileComposer,
   shouldSendComposerWhileProcessing,
 } from "./mobileComposerPresentation";
@@ -116,5 +117,47 @@ describe("processing composer primary action", () => {
         hasCurrentEditorText: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("processing composer Enter action", () => {
+  it("promotes the existing queue when the running composer is empty", () => {
+    expect(
+      resolveProcessingComposerEnterAction({
+        hasQueuedMessages: true,
+        hasCurrentSendableContent: false,
+        queuedPromotionDisabled: false,
+      }),
+    ).toBe("promote-queued");
+  });
+
+  it("submits a new draft without conflating it with queued promotion", () => {
+    expect(
+      resolveProcessingComposerEnterAction({
+        hasQueuedMessages: true,
+        hasCurrentSendableContent: true,
+        queuedPromotionDisabled: false,
+      }),
+    ).toBe("submit-draft");
+  });
+
+  it("submits normally when there is no queue", () => {
+    expect(
+      resolveProcessingComposerEnterAction({
+        hasQueuedMessages: false,
+        hasCurrentSendableContent: true,
+        queuedPromotionDisabled: false,
+      }),
+    ).toBe("submit-draft");
+  });
+
+  it("does not dispatch a second promotion while the first is busy", () => {
+    expect(
+      resolveProcessingComposerEnterAction({
+        hasQueuedMessages: true,
+        hasCurrentSendableContent: false,
+        queuedPromotionDisabled: true,
+      }),
+    ).toBeNull();
   });
 });

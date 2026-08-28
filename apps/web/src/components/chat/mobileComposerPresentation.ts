@@ -15,6 +15,15 @@ export function shouldSendComposerWhileProcessing(input: {
   );
 }
 
+export function resolveProcessingComposerEnterAction(input: {
+  readonly hasQueuedMessages: boolean;
+  readonly hasCurrentSendableContent: boolean;
+  readonly queuedPromotionDisabled: boolean;
+}): "promote-queued" | "submit-draft" | null {
+  if (!input.hasQueuedMessages || input.hasCurrentSendableContent) return "submit-draft";
+  return input.queuedPromotionDisabled ? null : "promote-queued";
+}
+
 export function shouldCollapseMobileComposer(input: {
   readonly isMobileViewport: boolean;
   readonly isPortraitViewport: boolean;

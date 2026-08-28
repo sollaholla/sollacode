@@ -94,9 +94,18 @@ prompts do not use the human steering lane.
 
 Pressing Enter while Grok is already working adds the message to Grok's native prompt queue without
 stopping the active turn or its background commands. Once Grok acknowledges that queue entry, the
-empty composer shows a blue **Send all queued messages now** action. Press Enter again, or choose the
-action, to promote every waiting message in send order. This is distinct from the red **Stop** action:
-it preserves the current session and background work.
+empty composer shows an outlined **Send queued now** action alongside the red **Stop** action. The
+blue send arrow is not used for an empty queued composer. Press Enter again, or choose **Send queued
+now**, to promote every waiting message in send order without stopping the current session or its
+background work.
 
-After the batch is promoted the action disappears. It returns only when a newer message enters the
-queue, including after a reload or reconnect.
+While that request is being accepted, the action reads **Sending queued…** and cannot be triggered a
+second time. It disappears only after Grok confirms that it adopted or consumed every message in the
+exact batch and Solla Code projects the matching completion; a queue row merely disappearing is not
+enough. If the session stops, Grok rejects the promotion, or only part of the batch is confirmed, the
+action unlocks and the failure is shown so the same messages can be retried. A completion from another
+request, thread, or environment cannot clear the lock. Retrying the same exact batch after a reload,
+restart, or ambiguous connection failure is safe: Solla Code reuses durable delivery evidence and
+asks Grok only about messages that remain unconfirmed. The action returns when a newer message enters
+the queue, including after a reload or reconnect. Web and mobile clients use the same separate queue,
+Stop, and draft-send actions.
