@@ -1,8 +1,8 @@
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   isAgentsProjectId,
+  PreviewTabId,
   type EnvironmentId,
-  type PreviewTabId,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -13,6 +13,7 @@ import type { ThreadPreviewState } from "~/previewStateStore";
 
 interface PresentedPreviewTarget {
   readonly threadRef: ScopedThreadRef;
+  readonly tabId: string;
   readonly presentation: BrowserSurfacePresentation;
 }
 
@@ -69,6 +70,8 @@ export function canReusePreviewAutomationBrowser(input: {
  * agent's dedicated guest is never a default or explicit reuse target.
  * Before a valid pin exists, the visible interactive guest is the browser the
  * user means by "the browser" even when another ordinary thread owns that tab.
+ * The returned `tabId` is that visible tab so later open/status/snapshot calls
+ * without an explicit id do not fall through to a hidden agent snapshot.
  */
 export function resolvePreviewAutomationThreadTarget(input: {
   readonly environmentId: EnvironmentId;
@@ -118,7 +121,7 @@ export function resolvePreviewAutomationThreadTarget(input: {
     return Object.keys(state.hostedSessions).flatMap((tabId) => {
       const runtimeTabId = previewRuntimeTabId(threadRef, state.serverEpoch, tabId);
       const presentation = input.presentationsByRuntimeTabId[runtimeTabId];
-      return presentation?.visible ? [{ threadRef, presentation }] : [];
+      return presentation?.visible ? [{ threadRef, tabId, presentation }] : [];
     });
   });
   const visible = presented.toSorted(
@@ -128,6 +131,10 @@ export function resolvePreviewAutomationThreadTarget(input: {
   )[0];
   return {
     threadRef: visible?.threadRef ?? input.requestThreadRef,
-    tabId: undefined,
+    // Bind to the tab the user is actually looking at. Returning undefined
+    // here used to fall through to the agent's last snapshot tab, which could
+    // be a hidden guest on a login page while the panel still showed Gmail or
+    // YouTube Studio.
+    tabId: visible ? PreviewTabId.make(visible.tabId) : undefined,
   };
 }

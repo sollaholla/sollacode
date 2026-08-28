@@ -72,7 +72,10 @@ ordinary user thread. They do not reuse another custom agent's dedicated browser
 agent is rejected with an error telling the caller to use this agent's own tabs and not reuse
 other agents' tab IDs. Opening a new tab from a valid visible user surface keeps it in that
 browser's profile, so the user's authenticated session does not silently become an empty
-thread-local session. An explicitly selected tab stays pinned only when it belongs to this
+thread-local session. `preview_open` with the default `open: true` selects that tab in the
+thread's Browser panel so the user and the agent are looking at the same guest, cookies, and
+login; it does not leave the agent's tab in a hidden mini-player while the panel stays on a
+different page. An explicitly selected tab stays pinned only when it belongs to this
 agent's profile. When no reusable browser surface is visible, automation falls back to the
 requesting thread's isolated browser profile.
 
