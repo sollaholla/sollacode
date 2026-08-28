@@ -5,6 +5,8 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
+import * as Electron from "electron";
+
 import * as NetService from "@t3tools/shared/Net";
 import * as Crypto from "effect/Crypto";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -247,6 +249,29 @@ const startup = Effect.gen(function* () {
     Effect.catchCause((cause) => fatalStartupCause("whenReady", cause)),
   );
   yield* logStartupInfo("app ready");
+  /**
+   * Give the cookie store an encryption key before anything opens a session.
+   *
+   * Chromium hands its network service an OS-backed key at startup and only
+   * mints one the first time something encrypts. Nothing in an ordinary run
+   * did, so the network service came up keyless: every cookie was written in
+   * plaintext and the stored ones were discarded on load, which read as the
+   * browser being signed out of every site in every tab and every agent, with
+   * a sign-in lasting only until the next restart. This has to run here — a
+   * later touch (from the preview layer, say) is after the network service
+   * has already taken its key, and changes nothing for this run.
+   */
+  yield* Effect.sync(() => {
+    // Deliberately not gated on `isEncryptionAvailable()`: before a key
+    // exists that reports false, so gating skips the encrypt that mints it.
+    Electron.safeStorage.encryptString("cookie-store-key-init");
+  }).pipe(
+    // A platform that will not hand over a key still browses fine, just
+    // without durable logins; that is not worth failing startup over.
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Could not initialize cookie encryption.", { cause }),
+    ),
+  );
   yield* appIdentity.configureAfterReady;
   yield* applicationMenu.configure;
   yield* Fiber.join(shellEnvironmentInstall);
