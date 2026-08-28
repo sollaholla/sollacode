@@ -12,6 +12,23 @@ When an agent consults a project by opening a new thread, that thread is marked 
 
 Every thread and agent in an environment shares one browser profile: the same cookies, logins, storage, and HTTP cache. Signing into a site once — in any thread, or in the agent's own panel — signs in everywhere in that environment, which is what lets an agent act on the sites you are already signed into. Profiles used to be per thread, so each conversation opened an empty cookie jar and an agent read a site as signed out while you were signed in one thread over. Separate environments still keep separate profiles: a remote machine's browser is that machine's browser.
 
+### If the browser reads as signed out on macOS
+
+Chromium keys its cookie store on a Keychain item named `<product> Safe
+Storage`. Installs that predate the rename from `t3code` still hold
+`t3code Safe Storage`, and nothing ever created `Solla Code Safe Storage` — so
+the browser writes every cookie in plaintext and does not apply stored logins.
+Sites then read as signed out in every tab, and a sign-in lasts only until the
+app restarts. Create the key once and restart:
+
+```sh
+security add-generic-password -a "Solla Code" -s "Solla Code Safe Storage" \
+  -w "$(openssl rand -base64 16)" -T "/Applications/Solla Code.app" -U
+```
+
+Sign in once afterwards; the session then persists and every thread and agent
+sees it. Windows stores this key through DPAPI and is unaffected.
+
 ## Workspace views
 
 Opening an agent goes directly to its conversation. The header keeps only contextual controls:
