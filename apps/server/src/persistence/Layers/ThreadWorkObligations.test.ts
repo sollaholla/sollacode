@@ -617,6 +617,46 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         }),
       );
 
+      // A later turn-start that Grok already absorbed as a steer on the
+      // source turn is not newer user intent. Refusing it here dispatched the
+      // synthetic resume message, then cancelled native send, leaving
+      // "Queued for Grok" with no provider turn.
+      const absorbedSteer = yield* seed({
+        suffix: "absorbed-steer",
+        laterMessageIds: ["message-steer-into-source"],
+      });
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, command_id, causation_event_id, correlation_id,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          'event-work-admit-absorbed-steer-delivered', 'thread', ${absorbedSteer.threadId}, 10,
+          'thread.activity-appended', ${later}, 'command-absorbed-steer-delivered',
+          NULL, NULL, 'system',
+          ${encodeUnknownJson({
+            threadId: absorbedSteer.threadId,
+            activity: {
+              kind: "message.delivered",
+              payload: { messageId: "message-steer-into-source" },
+              turnId: absorbedSteer.sourceTurnId,
+            },
+          })},
+          '{}'
+        )
+      `;
+      assert.isTrue(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: absorbedSteer.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.strictEqual(
+        Option.getOrThrow(yield* repository.getById(absorbedSteer.obligationId)).blockedReason,
+        SYNTHETIC_DISPATCH_ADMITTED_REASON,
+      );
+
       const missingSource = yield* seed({ suffix: "missing-source", includeSourceEvent: false });
       assert.isFalse(
         yield* repository.tryAdmitSyntheticDispatch({

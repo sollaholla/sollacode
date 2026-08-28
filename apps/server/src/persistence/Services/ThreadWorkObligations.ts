@@ -284,9 +284,11 @@ export interface ThreadWorkObligationRepositoryShape {
 
   /**
    * Atomically admit an executing synthetic prompt only when no later real
-   * user turn exists in the thread event stream. Once admitted, retries in the
-   * same claim must revalidate the event stream before a definitely-undispatched
-   * provider retry; restart recovery clears the marker.
+   * user turn exists in the thread event stream. Follow-ups that were already
+   * delivered into the source turn (Grok steers) are not later intent. Once
+   * admitted, retries in the same claim must revalidate the event stream
+   * before a definitely-undispatched provider retry; restart recovery clears
+   * the marker.
    */
   readonly tryAdmitSyntheticDispatch: (
     input: TryAdmitSyntheticDispatchInput,
