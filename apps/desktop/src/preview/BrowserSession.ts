@@ -388,10 +388,25 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   const adoptLegacyProfile = Effect.fn("BrowserSession.adoptLegacyProfile")(function* (
     scope: string,
   ) {
-    if (adoptedSharedProfile) return;
-    adoptedSharedProfile = true;
     const partition = yield* getPartition(scope);
-    yield* Effect.sync(() => {
+    // Held against the session map for the whole rename. Several guests ask
+    // for their config at once on startup; the first adopts while the others
+    // fall straight through to `getSession`. Without this lock one of them
+    // opened the partition mid-rename, and Electron's per-partition session
+    // stayed bound to the directory that had just been moved aside — cookies
+    // written to a jar nothing would read again, which looked exactly like
+    // the adoption never happening.
+    yield* SynchronizedRef.updateEffect(sessionsRef, (sessions) =>
+      Effect.suspend(() => {
+        if (adoptedSharedProfile || sessions.has(partition)) return Effect.succeed(sessions);
+        adoptedSharedProfile = true;
+        return adoptOnDisk(partition).pipe(Effect.as(sessions));
+      }),
+    );
+  });
+
+  const adoptOnDisk = (partition: string) =>
+    Effect.sync(() => {
       const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
       if (!NodeFS.existsSync(partitionsDir)) return;
       const targetName = partition.slice("persist:".length);
@@ -415,8 +430,13 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       const target = NodePath.join(partitionsDir, targetName);
       if (NodeFS.existsSync(target)) {
         // Moved aside rather than removed: it is the user's browsing history,
-        // and a wrong pick here should be recoverable by hand.
-        NodeFS.renameSync(target, `${target}.superseded-${Date.now()}`);
+        // and a wrong pick here should be recoverable by hand. Numbered rather
+        // than timestamped so this needs no clock inside a sync Electron path.
+        let aside = `${target}.superseded`;
+        for (let attempt = 2; NodeFS.existsSync(aside); attempt += 1) {
+          aside = `${target}.superseded-${attempt}`;
+        }
+        NodeFS.renameSync(target, aside);
       }
       NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
     }).pipe(
@@ -426,7 +446,6 @@ export const make = Effect.gen(function* BrowserSessionMake() {
         Effect.logWarning("Could not adopt an existing browser profile.", { cause }),
       ),
     );
-  });
 
   const getSession = Effect.fn("BrowserSession.getSession")(function* (scope = "shared") {
     const partition = yield* getPartition(scope);
