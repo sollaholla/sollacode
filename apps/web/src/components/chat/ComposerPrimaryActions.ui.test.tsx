@@ -1,34 +1,76 @@
+// @vitest-environment happy-dom
+
+import { ProviderDriverKind } from "@t3tools/contracts";
+import { act, type ComponentProps, useState } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ComposerPrimaryActions, formatPushToTalkActionLabel } from "./ComposerPrimaryActions";
+import { deriveQueuedGrokMessageIds } from "../ChatView.logic";
+import { useComposerTextPresence } from "./composerTextPresence";
+import { shouldSendComposerWhileProcessing } from "./mobileComposerPresentation";
+
+const actions = (overrides: Partial<ComponentProps<typeof ComposerPrimaryActions>> = {}) => (
+  <ComposerPrimaryActions
+    compact={false}
+    pendingAction={null}
+    isRunning={false}
+    showPlanFollowUpPrompt={false}
+    promptHasText
+    isSendBusy={false}
+    sendDisabledReason={null}
+    isConnecting={false}
+    isEnvironmentUnavailable={false}
+    isPreparingWorktree={false}
+    hasSendableContent
+    pushToTalkStatus={null}
+    pushToTalkDisabled={false}
+    pushToTalkDisabledReason={null}
+    onPushToTalkStart={vi.fn()}
+    onPushToTalkStop={vi.fn()}
+    onPreviousPendingQuestion={vi.fn()}
+    onInterrupt={vi.fn()}
+    onImplementPlanInNewThread={vi.fn()}
+    {...overrides}
+  />
+);
 
 const renderActions = (overrides: Partial<ComponentProps<typeof ComposerPrimaryActions>> = {}) =>
-  renderToStaticMarkup(
-    <ComposerPrimaryActions
-      compact={false}
-      pendingAction={null}
-      isRunning={false}
-      showPlanFollowUpPrompt={false}
-      promptHasText
-      isSendBusy={false}
-      sendDisabledReason={null}
-      isConnecting={false}
-      isEnvironmentUnavailable={false}
-      isPreparingWorktree={false}
-      hasSendableContent
-      pushToTalkStatus={null}
-      pushToTalkDisabled={false}
-      pushToTalkDisabledReason={null}
-      onPushToTalkStart={vi.fn()}
-      onPushToTalkStop={vi.fn()}
-      onPreviousPendingQuestion={vi.fn()}
-      onInterrupt={vi.fn()}
-      onImplementPlanInNewThread={vi.fn()}
-      {...overrides}
-    />,
+  renderToStaticMarkup(actions(overrides));
+
+function ExternalComposerClearHarness(props: {
+  readonly onRender: (state: {
+    readonly prompt: string;
+    readonly currentEditorHasText: boolean;
+  }) => void;
+}) {
+  const [prompt, setPrompt] = useState("queued follow-up");
+  const { currentEditorHasText, syncEditorTextPresence } = useComposerTextPresence(prompt);
+  props.onRender({ prompt, currentEditorHasText });
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Clear composer externally"
+        onClick={() => {
+          setPrompt("");
+          syncEditorTextPresence("");
+        }}
+      />
+      {actions({
+        isRunning: true,
+        sendWhileRunning: shouldSendComposerWhileProcessing({
+          isProcessing: true,
+          hasCurrentEditorText: currentEditorHasText,
+        }),
+        promptHasText: currentEditorHasText,
+        hasSendableContent: currentEditorHasText,
+      })}
+    </>
   );
+}
 
 beforeEach(() => {
   vi.stubGlobal("navigator", { platform: "MacIntel" });
@@ -122,16 +164,158 @@ describe("composer push-to-talk action", () => {
     expect(markup).not.toContain('disabled=""');
   });
 
-  it("offers one send-now action for the complete Grok queue", () => {
+  it("keeps Stop primary and offers a distinct queued action for an empty running composer", () => {
+    const markup = renderActions({
+      isRunning: true,
+      hasQueuedSendNow: true,
+      sendWhileRunning: false,
+      promptHasText: false,
+      hasSendableContent: false,
+    });
+
+    expect(markup).toContain('aria-label="Send queued now"');
+    expect(markup).toContain(">Send queued now</span>");
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('aria-label="Send message"');
+    expect(markup).not.toContain('disabled=""');
+  });
+
+  it("removes the actionable Send state in the same transition as an external composer clear", async () => {
+    const renders: Array<{ prompt: string; currentEditorHasText: boolean }> = [];
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<ExternalComposerClearHarness onRender={(state) => renders.push(state)} />);
+    });
+    expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Clear composer externally"]')
+        ?.click();
+    });
+
+    expect(renders).not.toContainEqual({ prompt: "", currentEditorHasText: true });
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Stop generation"]')).not.toBeNull();
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("ignores transcript-only rows while still surfacing a real queued Grok follow-up", () => {
+    const queuedIds = deriveQueuedGrokMessageIds({
+      activeSessionProviderDriver: ProviderDriverKind.make("grok"),
+      phase: "running",
+      activeWorkStartedAt: "2026-08-27T12:00:00.000Z",
+      messages: [
+        {
+          id: "voice-transcript",
+          role: "user",
+          turnId: null,
+          createdAt: "2026-08-27T12:01:00.000Z",
+          voiceTranscript: true,
+        },
+        {
+          id: "real-follow-up-1",
+          role: "user",
+          turnId: null,
+          createdAt: "2026-08-27T12:02:00.000Z",
+        },
+        {
+          id: "real-follow-up-2",
+          role: "user",
+          turnId: null,
+          createdAt: "2026-08-27T12:03:00.000Z",
+          voiceTranscript: false,
+        },
+      ] as never,
+      promotedMessageIds: new Set(),
+      pendingMessageIds: new Set(),
+      deliveredMessageIds: new Set(),
+    });
+
+    expect(queuedIds).toEqual(["real-follow-up-1", "real-follow-up-2"]);
+    const markup = renderActions({
+      isRunning: true,
+      hasQueuedSendNow: queuedIds.length > 0,
+      sendWhileRunning: false,
+      promptHasText: false,
+      hasSendableContent: false,
+    });
+    expect(markup).toContain('aria-label="Send queued now"');
+    expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).not.toContain('aria-label="Send message"');
+  });
+
+  it("shows separate queue and draft actions when a queued message has a new draft", () => {
     const markup = renderActions({
       isRunning: true,
       hasQueuedSendNow: true,
       sendWhileRunning: true,
+      promptHasText: true,
+      hasSendableContent: true,
     });
 
-    expect(markup).toContain('aria-label="Send all queued messages now"');
+    expect(markup).toContain('aria-label="Send queued now"');
+    expect(markup).toContain('aria-label="Send message"');
     expect(markup).not.toContain('aria-label="Stop generation"');
-    expect(markup).not.toContain('disabled=""');
+  });
+
+  it("keeps Stop visible while queued promotion is busy", () => {
+    const markup = renderActions({
+      isRunning: true,
+      hasQueuedSendNow: true,
+      isPromotingQueued: true,
+      sendWhileRunning: false,
+      promptHasText: false,
+      hasSendableContent: false,
+    });
+
+    expect(markup).toContain('disabled="" aria-label="Sending queued messages now"');
+    expect(markup).toContain('aria-label="Stop generation"');
+  });
+
+  it("invokes queued promotion without submitting the draft action", async () => {
+    const onPromoteQueued = vi.fn();
+    const onSubmit = vi.fn();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit();
+          }}
+        >
+          {actions({
+            isRunning: true,
+            hasQueuedSendNow: true,
+            sendWhileRunning: true,
+            promptHasText: true,
+            hasSendableContent: true,
+            onPromoteQueued,
+          })}
+        </form>,
+      );
+    });
+
+    const queuedButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Send queued now"]',
+    );
+    expect(queuedButton).not.toBeNull();
+    await act(async () => queuedButton?.click());
+
+    expect(onPromoteQueued).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+    container.remove();
   });
 
   it("shows the microphone beside a pending plan-question action", () => {
@@ -197,6 +381,7 @@ describe("composer push-to-talk action", () => {
 
     expect(markup).toContain('aria-label="Stop generation"');
     expect(markup).not.toContain('aria-label="Send message"');
+    expect(markup).not.toContain('aria-label="Send queued now"');
   });
 
   it("shows an immediate Apply changes action when composer settings differ", () => {

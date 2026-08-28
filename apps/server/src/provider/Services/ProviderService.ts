@@ -31,7 +31,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
-import type { ProviderServiceError } from "../Errors.ts";
+import type { ProviderAdapterError, ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
@@ -42,6 +42,30 @@ export interface ProviderSessionStartOptions {
    * matching session here was created by lifecycle work that won the race.
    */
   readonly reuseMatchingSession?: boolean;
+}
+
+export interface ProviderServiceNativeDispatchRoute {
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly sessionGeneration: string | null;
+  readonly messageDeliveryReceipts: boolean;
+}
+
+export interface ProviderServiceSendTurnOptions {
+  /**
+   * Runs after routing and live-target gates succeed, immediately before each
+   * provider-native send attempt (including a definitely-undispatched
+   * SessionNotFound recovery retry).
+   */
+  readonly beforeNativeDispatch?: Effect.Effect<void, ProviderAdapterError>;
+  /**
+   * Captures the exact persisted route that passed ProviderService's final
+   * lifecycle check for this native attempt. Synthetic supervisors use this
+   * to select the acceptance proof required by the adapter that actually
+   * received the prompt, rather than a stale obligation owner.
+   */
+  readonly onNativeDispatchRoute?: (route: ProviderServiceNativeDispatchRoute) => void;
+  /** Runs only after a live steer has entered the provider-native transport. */
+  readonly onNativeDispatch?: Effect.Effect<void>;
 }
 
 /**
@@ -62,6 +86,7 @@ export interface ProviderServiceShape {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+    options?: ProviderServiceSendTurnOptions,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
 
   /**

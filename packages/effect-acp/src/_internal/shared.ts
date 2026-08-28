@@ -6,6 +6,11 @@ import * as AcpSchema from "../_generated/schema.gen.ts";
 import * as AcpError from "../errors.ts";
 const isError = Schema.is(AcpSchema.Error);
 
+export const toWireExtensionMethod = (method: string) => `_${method}`;
+
+export const fromWireExtensionMethod = (method: string) =>
+  method.startsWith("_") ? method.slice(1) : method;
+
 export const callRpc = <A>(
   method: string,
   effect: Effect.Effect<A, RpcClientError.RpcClientError | AcpSchema.Error>,

@@ -9,9 +9,12 @@
  *
  * @module ProviderServiceLive
  */
+import * as NodeCrypto from "node:crypto";
+
 import {
   isAgentBuilderThreadId,
   type MessageId,
+  EventId,
   ModelSelection,
   NonNegativeInt,
   ProviderPendingContextRecovery,
@@ -32,8 +35,10 @@ import {
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -75,6 +80,7 @@ import { VmAgentStore } from "../../persistence/Services/VmAgents.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderPendingContextRecovery = Schema.is(ProviderPendingContextRecovery);
+const isSessionGenerationPayload = Schema.is(Schema.Struct({ sessionGeneration: Schema.String }));
 
 function isLocalProviderResumeTimeout(error: unknown): boolean {
   return (
@@ -207,6 +213,7 @@ function toRuntimePayloadFromSession(
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
     readonly clearPendingContextRecovery?: boolean;
+    readonly sessionGeneration?: string;
   },
 ): Record<string, unknown> {
   return {
@@ -224,7 +231,18 @@ function toRuntimePayloadFromSession(
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
       : {}),
+    ...(extra?.sessionGeneration !== undefined
+      ? { sessionGeneration: extra.sessionGeneration }
+      : {}),
   };
+}
+
+function readSessionGeneration(
+  runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"],
+): string | null {
+  if (!isSessionGenerationPayload(runtimePayload)) return null;
+  const generation = runtimePayload.sessionGeneration.trim();
+  return generation.length > 0 ? generation : null;
 }
 
 function readPersistedModelSelection(
@@ -321,23 +339,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const contextRecoveryLocksRef = yield* SynchronizedRef.make(
     new Map<ThreadId, Semaphore.Semaphore>(),
   );
-  const liveSteerLocksRef = yield* SynchronizedRef.make(new Map<ThreadId, Semaphore.Semaphore>());
+  const liveSteerLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
   const sessionLifecycleLocksRef = yield* SynchronizedRef.make(
     new Map<ThreadId, Semaphore.Semaphore>(),
   );
-  const getThreadSemaphore = (
-    locksRef: SynchronizedRef.SynchronizedRef<Map<ThreadId, Semaphore.Semaphore>>,
-    threadId: ThreadId,
+  const getThreadSemaphore = <Key>(
+    locksRef: SynchronizedRef.SynchronizedRef<Map<Key, Semaphore.Semaphore>>,
+    key: Key,
   ) =>
     SynchronizedRef.modifyEffect(locksRef, (current) => {
-      const existing = current.get(threadId);
+      const existing = current.get(key);
       if (existing !== undefined) {
         return Effect.succeed([existing, current] as const);
       }
       return Semaphore.make(1).pipe(
         Effect.map((semaphore) => {
           const next = new Map(current);
-          next.set(threadId, semaphore);
+          next.set(key, semaphore);
           return [semaphore, next] as const;
         }),
       );
@@ -346,15 +364,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Effect.flatMap(getThreadSemaphore(contextRecoveryLocksRef, threadId), (semaphore) =>
       semaphore.withPermit(effect),
     );
-  const withLiveSteerLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
-    Effect.flatMap(getThreadSemaphore(liveSteerLocksRef, threadId), (semaphore) =>
-      semaphore.withPermit(effect),
+  const withLiveSteerLock = <A, E, R>(
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    Effect.flatMap(
+      getThreadSemaphore(liveSteerLocksRef, `${threadId}\u0000${providerInstanceId}`),
+      (semaphore) => semaphore.withPermit(effect),
     );
   const withSessionLifecycleLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
     Effect.flatMap(getThreadSemaphore(sessionLifecycleLocksRef, threadId), (semaphore) =>
       semaphore.withPermit(effect),
     );
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const deliveryReceiptPublicationLock = yield* Semaphore.make(1);
+  const publishedDeliveryReceiptKeys = new Map<string, true>();
+  const maxPublishedDeliveryReceiptKeys = 65_536;
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
@@ -408,7 +434,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       McpProviderSession.clearMcpProviderSession(threadId);
     });
 
-  const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
+  const publishRuntimeEventUnchecked = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
@@ -418,6 +444,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
       Effect.asVoid,
     );
+
+  const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
+    if (event.type !== "message.delivered") return publishRuntimeEventUnchecked(event);
+    const key = `${event.providerInstanceId ?? event.provider}\u0000${event.threadId}\u0000${event.payload.messageId}`;
+    return deliveryReceiptPublicationLock.withPermit(
+      Effect.gen(function* () {
+        if (publishedDeliveryReceiptKeys.has(key)) return;
+        yield* publishRuntimeEventUnchecked(event);
+        publishedDeliveryReceiptKeys.set(key, true);
+        if (publishedDeliveryReceiptKeys.size <= maxPublishedDeliveryReceiptKeys) return;
+        const oldest = publishedDeliveryReceiptKeys.keys().next();
+        if (!oldest.done) publishedDeliveryReceiptKeys.delete(oldest.value);
+      }),
+    );
+  };
 
   const requireBindingInstanceId = (
     operation: string,
@@ -602,6 +643,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       readonly lastRuntimeEvent?: string;
       readonly lastRuntimeEventAt?: string;
       readonly clearPendingContextRecovery?: boolean;
+      readonly sessionGeneration?: string;
     },
   ) =>
     Effect.gen(function* () {
@@ -726,7 +768,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             providerInstanceId: bindingInstanceId,
             ...(pendingContextRecovery !== undefined ? { pendingContextRecovery } : {}),
           };
-          yield* upsertSessionBinding(existingWithBinding, input.binding.threadId);
+          yield* upsertSessionBinding(existingWithBinding, input.binding.threadId, {
+            sessionGeneration: NodeCrypto.randomUUID(),
+          });
           yield* analytics.record("provider.session.recovered", {
             provider: existing.provider,
             strategy: "adopt-existing",
@@ -808,7 +852,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         providerInstanceId: bindingInstanceId,
         ...(pendingContextRecovery !== undefined ? { pendingContextRecovery } : {}),
       };
-      yield* upsertSessionBinding(resumedWithBinding, input.binding.threadId);
+      yield* upsertSessionBinding(resumedWithBinding, input.binding.threadId, {
+        sessionGeneration: NodeCrypto.randomUUID(),
+      });
       yield* analytics.record("provider.session.recovered", {
         provider: resumed.provider,
         strategy: "resume-thread",
@@ -829,7 +875,25 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   ) {
     return yield* withSessionLifecycleLock(
       input.binding.threadId,
-      recoverSessionForThreadUnlocked(input),
+      Effect.gen(function* () {
+        // Route resolution happens before this lifecycle lock is acquired. A
+        // provider switch may win the lock in between, so never resurrect the
+        // captured route after waiting: recover whichever binding is current
+        // at the protected boundary.
+        const currentBinding = Option.getOrUndefined(
+          yield* directory.getBinding(input.binding.threadId),
+        );
+        if (currentBinding === undefined) {
+          return yield* toValidationError(
+            input.operation,
+            `Cannot recover thread '${input.binding.threadId}' because its provider binding no longer exists.`,
+          );
+        }
+        return yield* recoverSessionForThreadUnlocked({
+          ...input,
+          binding: currentBinding,
+        });
+      }),
     );
   });
 
@@ -874,9 +938,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       operation: input.operation,
       ...(input.sourceMessageId !== undefined ? { sourceMessageId: input.sourceMessageId } : {}),
     });
+    const recoveredInstanceId = yield* requireBindingInstanceId(input.operation, recovered.session);
     return {
       adapter: recovered.adapter,
-      instanceId,
+      instanceId: recoveredInstanceId,
       threadId: input.threadId,
       isActive: true,
     } as const;
@@ -1070,6 +1135,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
       yield* upsertSessionBinding(sessionWithInstance, threadId, {
         modelSelection: input.modelSelection,
+        sessionGeneration: NodeCrypto.randomUUID(),
         clearPendingContextRecovery:
           persistedBinding !== undefined &&
           (persistedBinding.providerInstanceId !== resolvedInstanceId ||
@@ -1172,201 +1238,342 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         : startSessionUnlocked(threadId, input),
     );
 
-  const sendTurn: ProviderServiceMethod<"sendTurn"> = Effect.fn("sendTurn")(function* (rawInput) {
-    const parsed = yield* decodeInputOrValidationError({
-      operation: "ProviderService.sendTurn",
-      schema: ProviderSendTurnInput,
-      payload: rawInput,
-    });
-    if (parsed.contextRecovery !== undefined && parsed.liveSteerTarget !== undefined) {
-      return yield* toValidationError(
-        "ProviderService.sendTurn",
-        "A turn cannot be both a bounded context-recovery handoff and a live steer.",
-      );
-    }
-
-    const send = Effect.gen(function* () {
-      // A VM agent's thread gets its identity and collaborative-browser context
-      // (mutually exclusive with side chat). VmAgentStore is optional: absent in
-      // unit tests, where no thread is a VM agent anyway.
-      const vmAgentIdentity =
-        parsed.isSideChat === true
-          ? null
-          : yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
-              onNone: () => Effect.succeed(null),
-              onSome: (store) =>
-                store.getByThreadId(parsed.threadId).pipe(
-                  Effect.map(Option.getOrNull),
-                  Effect.orElseSucceed(() => null),
-                ),
-            });
-
-      const input = {
-        ...parsed,
-        ...(parsed.isSideChat === true
-          ? { input: withSideChatAgentContext(parsed.input) }
-          : vmAgentIdentity
-            ? { input: withVmAgentContext(parsed.input, vmAgentIdentity) }
-            : {}),
-        attachments: parsed.attachments ?? [],
-      };
-      if (!input.input && input.attachments.length === 0) {
+  const sendTurn: ProviderServiceMethod<"sendTurn"> = Effect.fn("sendTurn")(
+    function* (rawInput, sendOptions) {
+      const parsed = yield* decodeInputOrValidationError({
+        operation: "ProviderService.sendTurn",
+        schema: ProviderSendTurnInput,
+        payload: rawInput,
+      });
+      if (parsed.contextRecovery !== undefined && parsed.liveSteerTarget !== undefined) {
         return yield* toValidationError(
           "ProviderService.sendTurn",
-          "Either input text or at least one attachment is required",
+          "A turn cannot be both a bounded context-recovery handoff and a live steer.",
         );
       }
-      yield* requireLiveSteerTarget(input);
-      yield* requireMatchingContextRecovery(input);
-      yield* Effect.annotateCurrentSpan({
-        "provider.operation": "send-turn",
-        "provider.thread_id": input.threadId,
-        "provider.interaction_mode": input.interactionMode,
-        "provider.attachment_count": input.attachments.length,
-      });
-      let metricProvider = "unknown";
-      let metricModel = input.modelSelection?.model;
-      return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.sendTurn",
-          allowRecovery: input.liveSteerTarget === undefined,
-          sourceMessageId: input.messageId ?? null,
-        });
-        const sendWithContextRecoveryCheck = Effect.fn("sendWithContextRecoveryCheck")(function* (
-          adapter: ProviderAdapterShape<ProviderAdapterError>,
-        ) {
-          // Recovery can persist a handoff marker while resolving the route.
-          // Re-read it immediately before every adapter attempt so the same
-          // raw request cannot cross that newly-established boundary.
-          yield* requireLiveSteerTarget(input);
-          const acceptedPendingContextRecovery = yield* requireMatchingContextRecovery(input);
-          const turn = yield* adapter.sendTurn(input);
-          return { acceptedPendingContextRecovery, turn } as const;
-        });
-        metricProvider = routed.adapter.provider;
-        metricModel = input.modelSelection?.model;
+
+      const liveSteerTarget = parsed.liveSteerTarget;
+      const nativeDispatchStarted =
+        liveSteerTarget === undefined ? undefined : yield* Deferred.make<void>();
+      const acknowledgeNativeDispatch =
+        nativeDispatchStarted === undefined
+          ? undefined
+          : Deferred.succeed(nativeDispatchStarted, undefined).pipe(
+              Effect.flatMap((firstAcknowledgement) =>
+                firstAcknowledgement ? (sendOptions?.onNativeDispatch ?? Effect.void) : Effect.void,
+              ),
+            );
+      const send = Effect.gen(function* () {
+        // A VM agent's thread gets its identity and collaborative-browser context
+        // (mutually exclusive with side chat). VmAgentStore is optional: absent in
+        // unit tests, where no thread is a VM agent anyway.
+        const vmAgentIdentity =
+          parsed.isSideChat === true
+            ? null
+            : yield* Option.match(yield* Effect.serviceOption(VmAgentStore), {
+                onNone: () => Effect.succeed(null),
+                onSome: (store) =>
+                  store.getByThreadId(parsed.threadId).pipe(
+                    Effect.map(Option.getOrNull),
+                    Effect.orElseSucceed(() => null),
+                  ),
+              });
+
+        const input = {
+          ...parsed,
+          ...(parsed.isSideChat === true
+            ? { input: withSideChatAgentContext(parsed.input) }
+            : vmAgentIdentity
+              ? { input: withVmAgentContext(parsed.input, vmAgentIdentity) }
+              : {}),
+          attachments: parsed.attachments ?? [],
+        };
+        if (!input.input && input.attachments.length === 0) {
+          return yield* toValidationError(
+            "ProviderService.sendTurn",
+            "Either input text or at least one attachment is required",
+          );
+        }
+        yield* requireLiveSteerTarget(input);
+        yield* requireMatchingContextRecovery(input);
         yield* Effect.annotateCurrentSpan({
-          "provider.kind": routed.adapter.provider,
-          ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
+          "provider.operation": "send-turn",
+          "provider.thread_id": input.threadId,
+          "provider.interaction_mode": input.interactionMode,
+          "provider.attachment_count": input.attachments.length,
         });
-        // A turn is the clearest sign a session is still alive. The MCP
-        // credential is minted once at session start and cannot be rotated into
-        // an already-spawned agent process, so we keep the existing token valid
-        // rather than issuing a new one: sessions that go a long time between
-        // browser tool calls used to lose the toolkit outright.
-        yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-        const accepted = yield* sendWithContextRecoveryCheck(routed.adapter).pipe(
-          Effect.catchIf(
-            (error): error is ProviderAdapterSessionNotFoundError =>
-              input.liveSteerTarget === undefined &&
-              error._tag === "ProviderAdapterSessionNotFoundError",
-            () =>
-              Effect.gen(function* () {
-                // After an app restart the adapter map is empty. Recovery may
-                // have just started a session that then vanished (instance
-                // rebuild, failed ACP resume), or hasSession raced a stop.
-                // Recreate once instead of failing the turn as unknown.
-                yield* Effect.logWarning("provider.sendTurn.session-missing; recovering", {
-                  threadId: input.threadId,
-                  provider: routed.adapter.provider,
-                });
-                const bindingOption = yield* directory.getBinding(input.threadId);
-                const binding = Option.getOrUndefined(bindingOption);
-                if (!binding) {
-                  return yield* new ProviderAdapterSessionNotFoundError({
-                    provider: routed.adapter.provider,
-                    threadId: input.threadId,
-                  });
-                }
-                const recovered = yield* recoverSessionForThread({
-                  binding,
-                  operation: "ProviderService.sendTurn",
-                  sourceMessageId: input.messageId ?? null,
-                });
-                return yield* sendWithContextRecoveryCheck(recovered.adapter);
-              }),
-          ),
-        );
-        const { acceptedPendingContextRecovery, turn } = accepted;
-        // The adapter has accepted the message. Everything below is bookkeeping:
-        // surfacing a persistence or telemetry failure to the caller would make
-        // the delivery reactor requeue an already-accepted steer and send it a
-        // second time. Log each failure independently and preserve the provider's
-        // successful acceptance result.
-        yield* directory
-          .upsert({
+        let metricProvider = "unknown";
+        let metricModel = input.modelSelection?.model;
+        return yield* Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
             threadId: input.threadId,
-            provider: routed.adapter.provider,
-            providerInstanceId: routed.instanceId,
-            status: "running",
-            ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-            runtimePayload: {
-              ...(input.modelSelection !== undefined
-                ? { modelSelection: input.modelSelection }
-                : {}),
-              ...(acceptedPendingContextRecovery !== undefined
-                ? { pendingContextRecovery: null }
-                : {}),
-              activeTurnId: turn.turnId,
-              lastRuntimeEvent: "provider.sendTurn",
-              lastRuntimeEventAt: yield* nowIso,
+            operation: "ProviderService.sendTurn",
+            allowRecovery: input.liveSteerTarget === undefined,
+            sourceMessageId: input.messageId ?? null,
+          });
+          const sendWithContextRecoveryCheck = Effect.fn("sendWithContextRecoveryCheck")(
+            function* (route: {
+              readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+              readonly instanceId: ProviderInstanceId;
+            }) {
+              const { adapter, instanceId } = route;
+              // Recovery can persist a handoff marker while resolving the route.
+              // Re-read it immediately before every adapter attempt so the same
+              // raw request cannot cross that newly-established boundary.
+              yield* requireLiveSteerTarget(input);
+              const acceptedPendingContextRecovery = yield* requireMatchingContextRecovery(input);
+              const bindingBeforeNativeDispatch = Option.getOrUndefined(
+                yield* directory.getBinding(input.threadId),
+              );
+              const bindingStatus = bindingBeforeNativeDispatch?.status;
+              if (
+                bindingBeforeNativeDispatch?.provider !== adapter.provider ||
+                bindingBeforeNativeDispatch.providerInstanceId !== instanceId ||
+                bindingStatus === undefined ||
+                bindingStatus === "stopped" ||
+                bindingStatus === "error"
+              ) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: adapter.provider,
+                  method: input.liveSteerTarget === undefined ? "session/prompt" : "turn/steer",
+                  detail: `Provider binding changed before native dispatch for thread '${input.threadId}'.`,
+                });
+              }
+              // A SessionNotFound result is known not to have crossed the native
+              // admission boundary. Recovery creates a new attempt, so rerun the
+              // caller's atomic admission check immediately before that attempt.
+              yield* sendOptions?.beforeNativeDispatch ?? Effect.void;
+              const admittedSessionGeneration =
+                readSessionGeneration(bindingBeforeNativeDispatch.runtimePayload) ?? null;
+              yield* Effect.sync(() =>
+                sendOptions?.onNativeDispatchRoute?.({
+                  providerInstanceId: instanceId,
+                  sessionGeneration: admittedSessionGeneration,
+                  messageDeliveryReceipts: adapter.capabilities.messageDeliveryReceipts === true,
+                }),
+              );
+              const turn = yield* adapter.sendTurn(
+                input,
+                acknowledgeNativeDispatch === undefined
+                  ? undefined
+                  : { onNativeDispatch: acknowledgeNativeDispatch },
+              );
+              if (
+                adapter.capabilities.messageDeliveryReceipts === true &&
+                input.messageId !== undefined
+              ) {
+                // Receipt-capable adapters make successful sendTurn resolution
+                // their native acceptance boundary. Publish the exact receipt
+                // into ProviderService's canonical stream before returning so a
+                // later registry rebuild cannot strand orchestration between an
+                // adapter-local queue and durable projection. Adapter-emitted
+                // copies are deduplicated by the exact route/message key above.
+                yield* publishRuntimeEvent({
+                  type: "message.delivered",
+                  eventId: EventId.make(
+                    `provider-service-delivered:${instanceId}:${input.threadId}:${input.messageId}`,
+                  ),
+                  provider: adapter.provider,
+                  providerInstanceId: instanceId,
+                  createdAt: yield* nowIso,
+                  threadId: input.threadId,
+                  turnId: turn.turnId,
+                  payload: { messageId: input.messageId },
+                  providerRefs: { providerTurnId: turn.turnId },
+                });
+              }
+              return {
+                acceptedPendingContextRecovery,
+                bindingBeforeNativeDispatch: {
+                  provider: adapter.provider,
+                  providerInstanceId: instanceId,
+                  status: bindingStatus,
+                  sessionGeneration: readSessionGeneration(
+                    bindingBeforeNativeDispatch.runtimePayload,
+                  ),
+                },
+                route,
+                turn,
+              } as const;
             },
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("provider.sendTurn.binding-update-failed-after-acceptance", {
-                threadId: input.threadId,
-                provider: routed.adapter.provider,
-                cause: Cause.pretty(cause),
-              }),
+          );
+          metricProvider = routed.adapter.provider;
+          metricModel = input.modelSelection?.model;
+          yield* Effect.annotateCurrentSpan({
+            "provider.kind": routed.adapter.provider,
+            ...(input.modelSelection?.model
+              ? { "provider.model": input.modelSelection.model }
+              : {}),
+          });
+          // A turn is the clearest sign a session is still alive. The MCP
+          // credential is minted once at session start and cannot be rotated into
+          // an already-spawned agent process, so we keep the existing token valid
+          // rather than issuing a new one: sessions that go a long time between
+          // browser tool calls used to lose the toolkit outright.
+          yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
+          const accepted = yield* sendWithContextRecoveryCheck({
+            adapter: routed.adapter,
+            instanceId: routed.instanceId,
+          }).pipe(
+            Effect.catchIf(
+              (error): error is ProviderAdapterSessionNotFoundError =>
+                input.liveSteerTarget === undefined &&
+                error._tag === "ProviderAdapterSessionNotFoundError",
+              () =>
+                Effect.gen(function* () {
+                  // After an app restart the adapter map is empty. Recovery may
+                  // have just started a session that then vanished (instance
+                  // rebuild, failed ACP resume), or hasSession raced a stop.
+                  // Recreate once instead of failing the turn as unknown.
+                  yield* Effect.logWarning("provider.sendTurn.session-missing; recovering", {
+                    threadId: input.threadId,
+                    provider: routed.adapter.provider,
+                  });
+                  const bindingOption = yield* directory.getBinding(input.threadId);
+                  const binding = Option.getOrUndefined(bindingOption);
+                  if (!binding) {
+                    return yield* new ProviderAdapterSessionNotFoundError({
+                      provider: routed.adapter.provider,
+                      threadId: input.threadId,
+                    });
+                  }
+                  const recovered = yield* recoverSessionForThread({
+                    binding,
+                    operation: "ProviderService.sendTurn",
+                    sourceMessageId: input.messageId ?? null,
+                  });
+                  const recoveredInstanceId = yield* requireBindingInstanceId(
+                    "ProviderService.sendTurn",
+                    recovered.session,
+                  );
+                  return yield* sendWithContextRecoveryCheck({
+                    adapter: recovered.adapter,
+                    instanceId: recoveredInstanceId,
+                  });
+                }),
             ),
           );
-        yield* analytics
-          .record("provider.turn.sent", {
-            provider: routed.adapter.provider,
-            model: input.modelSelection?.model,
-            interactionMode: input.interactionMode,
-            attachmentCount: input.attachments.length,
-            hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("provider.sendTurn.analytics-failed-after-acceptance", {
+          const {
+            acceptedPendingContextRecovery,
+            bindingBeforeNativeDispatch,
+            route: acceptedRoute,
+            turn,
+          } = accepted;
+          metricProvider = acceptedRoute.adapter.provider;
+          // The adapter has accepted the message. Everything below is bookkeeping:
+          // surfacing a persistence or telemetry failure to the caller would make
+          // the delivery reactor requeue an already-accepted steer and send it a
+          // second time. Log each failure independently and preserve the provider's
+          // successful acceptance result.
+          yield* directory
+            .upsertIfCurrent(
+              {
                 threadId: input.threadId,
-                provider: routed.adapter.provider,
-                cause: Cause.pretty(cause),
-              }),
-            ),
-          );
-        return turn;
-      }).pipe(
-        withMetrics({
-          counter: providerTurnsTotal,
-          timer: providerTurnDuration,
-          attributes: () =>
-            providerTurnMetricAttributes({
-              provider: metricProvider,
-              model: metricModel,
-              extra: {
-                operation: "send",
+                provider: acceptedRoute.adapter.provider,
+                providerInstanceId: acceptedRoute.instanceId,
+                status: "running",
+                ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+                runtimePayload: {
+                  ...(input.modelSelection !== undefined
+                    ? { modelSelection: input.modelSelection }
+                    : {}),
+                  ...(acceptedPendingContextRecovery !== undefined
+                    ? { pendingContextRecovery: null }
+                    : {}),
+                  activeTurnId: turn.turnId,
+                  lastRuntimeEvent: "provider.sendTurn",
+                  lastRuntimeEventAt: yield* nowIso,
+                },
               },
-            }),
-        }),
-      );
-    });
-    if (parsed.liveSteerTarget !== undefined) {
-      return yield* withLiveSteerLock(parsed.threadId, send);
-    }
-    if (parsed.contextRecovery === undefined) {
-      return yield* send;
-    }
-    const binding = Option.getOrUndefined(yield* directory.getBinding(parsed.threadId));
-    const isCodexContextRecovery =
-      binding?.provider === "codex" &&
-      binding.providerInstanceId === parsed.contextRecovery.providerInstanceId;
-    return yield* isCodexContextRecovery ? withContextRecoveryLock(parsed.threadId, send) : send;
-  });
+              {
+                provider: bindingBeforeNativeDispatch.provider,
+                providerInstanceId: bindingBeforeNativeDispatch.providerInstanceId,
+                status: bindingBeforeNativeDispatch.status,
+                sessionGeneration: bindingBeforeNativeDispatch.sessionGeneration,
+              },
+            )
+            .pipe(
+              Effect.flatMap((updated) =>
+                updated
+                  ? Effect.void
+                  : Effect.logWarning(
+                      "provider.sendTurn.binding-update-skipped-after-lifecycle-change",
+                      {
+                        threadId: input.threadId,
+                        provider: acceptedRoute.adapter.provider,
+                        providerInstanceId: acceptedRoute.instanceId,
+                      },
+                    ),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.sendTurn.binding-update-failed-after-acceptance", {
+                  threadId: input.threadId,
+                  provider: acceptedRoute.adapter.provider,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+          yield* analytics
+            .record("provider.turn.sent", {
+              provider: acceptedRoute.adapter.provider,
+              model: input.modelSelection?.model,
+              interactionMode: input.interactionMode,
+              attachmentCount: input.attachments.length,
+              hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider.sendTurn.analytics-failed-after-acceptance", {
+                  threadId: input.threadId,
+                  provider: acceptedRoute.adapter.provider,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+          return turn;
+        }).pipe(
+          withMetrics({
+            counter: providerTurnsTotal,
+            timer: providerTurnDuration,
+            attributes: () =>
+              providerTurnMetricAttributes({
+                provider: metricProvider,
+                model: metricModel,
+                extra: {
+                  operation: "send",
+                },
+              }),
+          }),
+        );
+      });
+      if (nativeDispatchStarted !== undefined && liveSteerTarget !== undefined) {
+        const sendFiber = yield* withLiveSteerLock(
+          parsed.threadId,
+          liveSteerTarget.providerInstanceId,
+          Effect.gen(function* () {
+            const fiber = yield* send.pipe(Effect.forkChild({ startImmediately: true }));
+            // Preserve same-provider FIFO only through native admission. The
+            // full prompt response can remain pending while the next correction
+            // enters that provider's same live turn.
+            yield* Effect.raceFirst(
+              Deferred.await(nativeDispatchStarted),
+              Fiber.await(fiber).pipe(Effect.asVoid),
+            );
+            return fiber;
+          }),
+        );
+        return yield* Fiber.join(sendFiber);
+      }
+      if (parsed.contextRecovery === undefined) {
+        return yield* send;
+      }
+      const binding = Option.getOrUndefined(yield* directory.getBinding(parsed.threadId));
+      const isCodexContextRecovery =
+        binding?.provider === "codex" &&
+        binding.providerInstanceId === parsed.contextRecovery.providerInstanceId;
+      return yield* isCodexContextRecovery ? withContextRecoveryLock(parsed.threadId, send) : send;
+    },
+  );
 
   const interruptTurn: ProviderServiceMethod<"interruptTurn"> = Effect.fn("interruptTurn")(
     function* (rawInput) {
@@ -1429,7 +1636,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         detail: `Provider '${routed.adapter.provider}' cannot promote queued turns.`,
       });
     }
-    return yield* promote(routed.threadId);
+    return yield* promote(routed.threadId, input.messageIds);
   });
 
   const stopTask: ProviderServiceMethod<"stopTask"> = Effect.fn("stopTask")(function* (rawInput) {
@@ -1543,46 +1750,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         payload: rawInput,
       });
       let metricProvider = "unknown";
-      return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
-          threadId: input.threadId,
-          operation: "ProviderService.stopSession",
-          allowRecovery: false,
-        });
-        metricProvider = routed.adapter.provider;
-        yield* Effect.annotateCurrentSpan({
-          "provider.operation": "stop-session",
-          "provider.kind": routed.adapter.provider,
-          "provider.thread_id": input.threadId,
-        });
-        if (routed.isActive) {
-          yield* routed.adapter.stopSession(routed.threadId);
-        }
-        yield* stopStaleSessionsForThread({
-          threadId: input.threadId,
-          currentInstanceId: routed.instanceId,
-        });
-        yield* clearMcpSession(input.threadId);
-        yield* directory.upsert({
-          threadId: input.threadId,
-          provider: routed.adapter.provider,
-          providerInstanceId: routed.instanceId,
-          status: "stopped",
-          runtimePayload: {
-            activeTurnId: null,
-          },
-        });
-        yield* analytics.record("provider.session.stopped", {
-          provider: routed.adapter.provider,
-        });
-      }).pipe(
-        withMetrics({
-          counter: providerSessionsTotal,
-          outcomeAttributes: () =>
-            providerMetricAttributes(metricProvider, {
-              operation: "stop",
-            }),
-        }),
+      return yield* withSessionLifecycleLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "ProviderService.stopSession",
+            allowRecovery: false,
+          });
+          metricProvider = routed.adapter.provider;
+          yield* Effect.annotateCurrentSpan({
+            "provider.operation": "stop-session",
+            "provider.kind": routed.adapter.provider,
+            "provider.thread_id": input.threadId,
+          });
+          if (routed.isActive) {
+            yield* routed.adapter.stopSession(routed.threadId);
+          }
+          yield* stopStaleSessionsForThread({
+            threadId: input.threadId,
+            currentInstanceId: routed.instanceId,
+          });
+          yield* clearMcpSession(input.threadId);
+          yield* directory.upsert({
+            threadId: input.threadId,
+            provider: routed.adapter.provider,
+            providerInstanceId: routed.instanceId,
+            status: "stopped",
+            runtimePayload: {
+              activeTurnId: null,
+            },
+          });
+          yield* analytics.record("provider.session.stopped", {
+            provider: routed.adapter.provider,
+          });
+        }).pipe(
+          withMetrics({
+            counter: providerSessionsTotal,
+            outcomeAttributes: () =>
+              providerMetricAttributes(metricProvider, {
+                operation: "stop",
+              }),
+          }),
+        ),
       );
     },
   );
@@ -1836,6 +2046,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       };
       yield* upsertSessionBinding(sessionWithInstance, input.targetThreadId, {
         ...(modelSelection ? { modelSelection } : {}),
+        sessionGeneration: NodeCrypto.randomUUID(),
         lastRuntimeEvent: "provider.forkSession",
         lastRuntimeEventAt: yield* nowIso,
       });

@@ -19,6 +19,7 @@ import {
   decodeExtNotificationRegistration,
   decodeExtRequestRegistration,
   runHandler,
+  toWireExtensionMethod,
 } from "./_internal/shared.ts";
 import * as AcpTerminal from "./terminal.ts";
 
@@ -372,8 +373,8 @@ export const make = Effect.fn("effect-acp/AcpAgent.make")(function* (
   return AcpAgent.of({
     raw: {
       notifications: transport.incoming,
-      request: transport.request,
-      notify: transport.notify,
+      request: (method, payload) => transport.request(toWireExtensionMethod(method), payload),
+      notify: (method, payload) => transport.notify(toWireExtensionMethod(method), payload),
     },
     client: {
       requestPermission: (payload) =>
@@ -431,8 +432,9 @@ export const make = Effect.fn("effect-acp/AcpAgent.make")(function* (
       sessionUpdate: (payload) => transport.notify(CLIENT_METHODS.session_update, payload),
       elicitationComplete: (payload) =>
         transport.notify(CLIENT_METHODS.session_elicitation_complete, payload),
-      extRequest: transport.request,
-      extNotification: transport.notify,
+      extRequest: (method, payload) => transport.request(toWireExtensionMethod(method), payload),
+      extNotification: (method, payload) =>
+        transport.notify(toWireExtensionMethod(method), payload),
     },
     handleInitialize: (handler) =>
       Effect.suspend(() => {

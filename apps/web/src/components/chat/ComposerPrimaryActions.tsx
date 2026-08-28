@@ -48,11 +48,13 @@ interface ComposerPrimaryActionsProps {
   isApplyingSettings?: boolean;
   isInterrupting?: boolean;
   hasQueuedSendNow?: boolean;
+  isPromotingQueued?: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPushToTalkStart?: () => void;
   onPushToTalkStop?: () => void;
   onApplySettings?: () => void;
   onRevertSettings?: () => void;
+  onPromoteQueued?: () => void;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -151,11 +153,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isApplyingSettings = false,
   isInterrupting = false,
   hasQueuedSendNow = false,
+  isPromotingQueued = false,
   preserveComposerFocusOnPointerDown = false,
   onPushToTalkStart = noop,
   onPushToTalkStop = noop,
   onApplySettings = noop,
   onRevertSettings = noop,
+  onPromoteQueued = noop,
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -294,6 +298,31 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <TooltipPopup side="top">{settingsUpdateLabel}</TooltipPopup>
     </Tooltip>
   ) : null;
+  const queuedPromotionLabel = isPromotingQueued
+    ? "Sending queued messages now"
+    : "Send queued now";
+  const queuedPromotionAction = hasQueuedSendNow ? (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="h-9 rounded-full px-3 sm:h-8"
+      {...pointerFocusProps}
+      disabled={
+        isPromotingQueued ||
+        isSendBusy ||
+        isSendDisabled ||
+        isConnecting ||
+        isEnvironmentUnavailable ||
+        isPreparingWorktree
+      }
+      onClick={onPromoteQueued}
+      aria-label={queuedPromotionLabel}
+    >
+      {isPromotingQueued ? <Spinner className="size-3.5" aria-hidden="true" /> : null}
+      <span>{isPromotingQueued ? "Sending queued…" : "Send queued now"}</span>
+    </Button>
+  ) : null;
 
   if (pendingAction) {
     return (
@@ -354,6 +383,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <div className="flex items-center justify-end gap-1.5">
         {settingsUpdateAction}
         {microphoneAction}
+        {queuedPromotionAction}
         <button
           type="button"
           className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
@@ -452,6 +482,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     <div className="flex items-center justify-end gap-1.5">
       {settingsUpdateAction}
       {microphoneAction}
+      {queuedPromotionAction}
 
       <button
         type="submit"
@@ -483,9 +514,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                     ? "Preparing worktree"
                     : isSendBusy
                       ? "Sending"
-                      : hasQueuedSendNow
-                        ? "Send all queued messages now"
-                        : "Send message"
+                      : "Send message"
         }
       >
         {stageBackdropVariant ? (

@@ -44,11 +44,32 @@ export function shouldAutomaticallyResumeOnStartup(input: {
 /**
  * Startup resume is intentionally conservative. Only turns explicitly
  * persisted as incomplete are offered; interrupted, errored, or still-running
- * work must not be restarted behind the user's back.
+ * work must not be restarted behind the user's back. Cross-client timestamps
+ * are deliberately absent here: the server revalidates supersession from the
+ * durable event sequence before native dispatch, while this client-side pass
+ * only filters the shell state it can authoritatively observe.
  */
 export function isStartupResumableThread(
-  thread: Pick<EnvironmentThreadShell, "latestTurn" | "session">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    | "archivedAt"
+    | "settledOverride"
+    | "latestTurn"
+    | "session"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "pendingWork"
+  >,
 ): boolean {
+  if (
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled" ||
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    (thread.pendingWork !== null && thread.pendingWork !== undefined)
+  ) {
+    return false;
+  }
   if (thread.latestTurn?.state !== "incomplete") {
     return false;
   }
@@ -56,12 +77,7 @@ export function isStartupResumableThread(
   if (!session || session.activeTurnId !== null) {
     return false;
   }
-  return (
-    session.status === "idle" ||
-    session.status === "ready" ||
-    session.status === "stopped" ||
-    session.status === "interrupted"
-  );
+  return session.status === "idle" || session.status === "ready" || session.status === "stopped";
 }
 
 export function deriveStartupResumableThreads(

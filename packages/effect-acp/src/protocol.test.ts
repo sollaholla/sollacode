@@ -40,6 +40,7 @@ const RequestPermissionRequest = jsonRpcRequest(
 );
 const RequestPermissionResponse = jsonRpcResponse(AcpSchema.RequestPermissionResponse);
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
+const WireExtRequest = jsonRpcRequest("_x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
 const decodeSessionCancelNotification = Schema.decodeEffect(
   Schema.fromJsonString(SessionCancelNotification),
@@ -297,6 +298,51 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
+  it.effect("reports a request only after its outgoing transport enqueue succeeds", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const loggerEntered = yield* Deferred.make<void>();
+      const releaseLogger = yield* Deferred.make<void>();
+      const requestEnqueued = yield* Deferred.make<AcpProtocol.AcpRequestEnqueuedEvent>();
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        logOutgoing: true,
+        logger: (event) =>
+          event.stage === "decoded"
+            ? Deferred.succeed(loggerEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseLogger)),
+              )
+            : Effect.void,
+        onRequestEnqueued: (event) => Deferred.succeed(requestEnqueued, event).pipe(Effect.asVoid),
+      });
+
+      const response = yield* transport
+        .request("x/test", { hello: "world" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(loggerEntered);
+      assert.isFalse(yield* Deferred.isDone(requestEnqueued));
+
+      yield* Deferred.succeed(releaseLogger, undefined);
+      assert.deepEqual(yield* Deferred.await(requestEnqueued), {
+        method: "x/test",
+        requestId: 1,
+        payload: { hello: "world" },
+      });
+
+      yield* Queue.take(output);
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtResponse, {
+          jsonrpc: "2.0",
+          id: 1,
+          result: { ok: true },
+        }),
+      );
+      assert.deepEqual(yield* Fiber.join(response), { ok: true });
+    }),
+  );
+
   it.effect("supports generic extension requests over the patched transport", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
@@ -392,24 +438,28 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
   it.effect("preserves numeric ids for inbound extension requests", () =>
     Effect.gen(function* () {
       const { stdio, input, output } = yield* makeInMemoryStdio();
+      const receivedMethod = yield* Deferred.make<string>();
       yield* AcpProtocol.makeAcpPatchedProtocol({
         stdio,
         serverRequestMethods: new Set(),
-        onExtRequest: () => Effect.succeed({ ok: true }),
+        onExtRequest: (method) =>
+          Deferred.succeed(receivedMethod, method).pipe(Effect.as({ ok: true })),
       });
 
       yield* Queue.offer(
         input,
-        yield* encodeJsonl(ExtRequest, {
+        yield* encodeJsonl(WireExtRequest, {
           jsonrpc: "2.0",
           id: 7,
-          method: "x/test",
+          method: "_x/test",
           params: {
             hello: "world",
           },
           headers: [],
         }),
       );
+
+      assert.equal(yield* Deferred.await(receivedMethod), "x/test");
 
       const outbound = yield* Queue.take(output);
       assert.deepEqual(yield* decodeExtResponse(outbound), {

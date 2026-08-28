@@ -245,7 +245,7 @@ import {
   nextProjectScriptId,
   projectScriptIdFromCommand,
 } from "~/projectScripts";
-import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
+import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import {
   formatProviderDriverKindLabel,
   getProviderModelCapabilities,
@@ -393,6 +393,7 @@ import {
   createLocalDispatchSnapshot,
   deriveActiveSessionProviderDriver,
   deriveComposerSendState,
+  deriveQueuedGrokMessageIds,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
@@ -407,6 +408,8 @@ import {
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
+  type QueuedMessagePromotionPhases,
+  runQueuedMessagePromotion,
   runResumeIncompleteTurn,
   cloneComposerImageForRetry,
   deriveLockedProvider,
@@ -418,6 +421,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  settleQueuedMessagePromotion,
   shouldWriteThreadErrorToCurrentServerThread,
   resolveVisibleServerThreadError,
   startNewThreadForProject,
@@ -1808,6 +1812,9 @@ function ChatViewContent(props: ChatViewProps) {
   const promoteQueuedThreadTurns = useAtomCommand(threadEnvironment.promoteQueuedTurns, {
     reportFailure: false,
   });
+  const queuedMessagePromotionPhasesRef = useRef<QueuedMessagePromotionPhases>({});
+  const [queuedMessagePromotionPhases, setQueuedMessagePromotionPhases] =
+    useState<QueuedMessagePromotionPhases>({});
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
     reportFailure: false,
   });
@@ -2238,6 +2245,13 @@ function ChatViewContent(props: ChatViewProps) {
   // depend on which route is mounted.
   const isServerThread = activeServerThread !== null;
   const activeThread = activeServerThread ?? localDraftThread;
+  const activeThreadKey = activeThread
+    ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
+    : null;
+  const activeQueuedMessagePromotionState = activeThreadKey
+    ? queuedMessagePromotionPhases[activeThreadKey]
+    : undefined;
+  const isPromotingQueuedMessages = activeQueuedMessagePromotionState !== undefined;
   const activeProviderAuthenticationPaused =
     activeThread?.session?.status === "error" &&
     isProviderAuthenticationFailure(activeThread.session.lastError ?? "");
@@ -2405,7 +2419,6 @@ function ChatViewContent(props: ChatViewProps) {
     sideChatChildShells,
     startupResumePendingByThreadKey,
   ]);
-  const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   /**
    * A waiting-on-you request the user tagged onto this message. Sending the
    * message is what closes it out, so it is read here rather than in the card.
@@ -3917,29 +3930,28 @@ function ChatViewContent(props: ChatViewProps) {
     () => derivePromotedQueuedMessageIds(threadActivities),
     [threadActivities],
   );
-  const hasQueuedGrokMessages = useMemo(
+  const queuedGrokMessageIds = useMemo(
     () =>
-      activeSessionProviderDriver === "grok" &&
-      phase === "running" &&
-      timelineMessages.some(
-        (message) =>
-          message.role === "user" &&
-          message.turnId === null &&
-          (activeWorkStartedAt === null || message.createdAt > activeWorkStartedAt) &&
-          !promotedQueuedGrokMessageIds.has(message.id) &&
-          !pendingMessageIds.has(message.id) &&
-          !deliveredMessageIds.has(message.id),
-      ),
+      deriveQueuedGrokMessageIds({
+        activeSessionProviderDriver,
+        phase,
+        messages: timelineMessages,
+        activeWorkStartedAt,
+        promotedMessageIds: promotedQueuedGrokMessageIds,
+        pendingMessageIds,
+        deliveredMessageIds,
+      }),
     [
-      deliveredMessageIds,
-      activeWorkStartedAt,
       activeSessionProviderDriver,
+      activeWorkStartedAt,
+      deliveredMessageIds,
       pendingMessageIds,
       phase,
       promotedQueuedGrokMessageIds,
       timelineMessages,
     ],
   );
+  const hasQueuedGrokMessages = queuedGrokMessageIds.length > 0;
   const newestUserMessageId = useMemo(() => {
     for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
       const message = timelineMessages[index];
@@ -4216,6 +4228,30 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeServerThread, draftId, routeThreadKey, routeThreadRef],
   );
+  useEffect(() => {
+    if (
+      !activeThread ||
+      !activeThreadKey ||
+      activeQueuedMessagePromotionState?.phase !== "awaiting-projection"
+    ) {
+      return;
+    }
+    const outcome = settleQueuedMessagePromotion({
+      phasesRef: queuedMessagePromotionPhasesRef,
+      setPhases: setQueuedMessagePromotionPhases,
+      threadKey: activeThreadKey,
+      activities: threadActivities,
+    });
+    if (outcome?.status === "failed") {
+      setThreadError(activeThread.id, outcome.detail);
+    }
+  }, [
+    activeQueuedMessagePromotionState?.phase,
+    activeThread,
+    activeThreadKey,
+    setThreadError,
+    threadActivities,
+  ]);
   const dismissThreadError = useCallback(() => {
     if (!activeThread) return;
     setThreadError(activeThread.id, null);
@@ -6506,6 +6542,51 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  const promoteQueuedMessagesNow = useCallback(async () => {
+    if (!activeThread || !activeThreadKey || !hasQueuedGrokMessages) return false;
+    const threadIdForPromotion = activeThread.id;
+    const requestId = newCommandId();
+
+    return runQueuedMessagePromotion({
+      phasesRef: queuedMessagePromotionPhasesRef,
+      setPhases: setQueuedMessagePromotionPhases,
+      threadKey: activeThreadKey,
+      messageIds: queuedGrokMessageIds,
+      requestId,
+      promote: async () => {
+        const result = await promoteQueuedThreadTurns({
+          environmentId,
+          input: {
+            commandId: requestId,
+            threadId: threadIdForPromotion,
+            messageIds: queuedGrokMessageIds,
+          },
+        });
+        if (result._tag === "Failure") {
+          if (isAtomCommandInterrupted(result)) return false;
+          throw squashAtomCommandFailure(result);
+        }
+        return true;
+      },
+      onStart: () => setThreadError(threadIdForPromotion, null),
+      onSuccess: () => setThreadError(threadIdForPromotion, null),
+      onError: (error) => {
+        setThreadError(
+          threadIdForPromotion,
+          error instanceof Error ? error.message : "Failed to send the queued Grok messages now.",
+        );
+      },
+    });
+  }, [
+    activeThread,
+    activeThreadKey,
+    environmentId,
+    hasQueuedGrokMessages,
+    promoteQueuedThreadTurns,
+    queuedGrokMessageIds,
+    setThreadError,
+  ]);
+
   const onSend = async (
     e?: { preventDefault: () => void },
     inputOrigin?: OrchestrationMessageInputOrigin,
@@ -6588,17 +6669,7 @@ function ChatViewContent(props: ChatViewProps) {
       sendCtx.previewAnnotations.length === 0 &&
       sendCtx.reviewComments.length === 0;
     if (composerIsEmpty && hasQueuedGrokMessages) {
-      const result = await promoteQueuedThreadTurns({
-        environmentId,
-        input: { threadId: activeThread.id },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThread.id,
-          error instanceof Error ? error.message : "Failed to send the queued Grok messages now.",
-        );
-      }
+      await promoteQueuedMessagesNow();
       return;
     }
     // Sending interrupts the turn that owns any background work, so those tasks
@@ -9108,6 +9179,7 @@ function ChatViewContent(props: ChatViewProps) {
                             isApplyingSettings={isApplyingComposerSettings}
                             isInterrupting={isInterrupting}
                             hasQueuedSendNow={hasQueuedGrokMessages}
+                            isPromotingQueued={isPromotingQueuedMessages}
                             environmentUnavailable={
                               canQueueLocalMessage ? null : activeEnvironmentUnavailableState
                             }
@@ -9152,6 +9224,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeProviderAccountSwitch={providerAccountSwitch}
                             onSwitchProviderAccount={requestProviderAccountSwitch}
                             onApplySettings={onApplyComposerSettings}
+                            onPromoteQueued={() => void promoteQueuedMessagesNow()}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}

@@ -33,6 +33,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { cursorPromptFinalizerOwnsActiveTurn, makeCursorAdapter } from "./CursorAdapter.ts";
 const decodeCursorSettings = Schema.decodeSync(CursorSettings);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
 class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()(
@@ -564,7 +565,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       assert.equal(racedSteerExit._tag, "Failure");
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       assert.equal(requests.filter((entry) => entry.method === "session/prompt").length, 1);
-      assert.notInclude(JSON.stringify(requests), "must not enter the stopped Cursor session");
+      assert.notInclude(encodeUnknownJson(requests), "must not enter the stopped Cursor session");
 
       yield* Fiber.join(stopFiber).pipe(Effect.timeout("5 seconds"));
       yield* Fiber.interrupt(firstTurnFiber);

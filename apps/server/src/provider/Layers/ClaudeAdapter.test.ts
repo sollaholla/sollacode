@@ -1652,7 +1652,7 @@ describe("ClaudeAdapterLive", () => {
       assert.isUndefined(queuedSteerFiber.pollUnsafe());
 
       yield* adapter.stopSession(session.threadId);
-      const queuedSteerExit = yield* Fiber.join(queuedSteerFiber).pipe(Effect.timeout("2 seconds"));
+      const queuedSteerExit = yield* Fiber.join(queuedSteerFiber);
       assert.equal(queuedSteerExit._tag, "Failure");
       for (let attempt = 0; attempt < 8; attempt += 1) {
         yield* Effect.yieldNow;
@@ -1661,6 +1661,101 @@ describe("ClaudeAdapterLive", () => {
         runtimeEvents.some(
           (event) =>
             event.type === "message.delivered" && event.payload.messageId === steerMessageId,
+        ),
+      );
+      yield* Fiber.interrupt(runtimeEventsFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resolves a receipt-bearing prompt only after the Claude SDK pulls it", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const promptIterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.isDefined(promptIterator);
+      if (promptIterator === undefined) return;
+
+      const messageId = MessageId.make("claude-synthetic-receipt-acceptance");
+      const receiptFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "message.delivered" && event.payload.messageId === messageId,
+        ),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          messageId,
+          input: "receipt-bearing synthetic prompt",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isUndefined(sendFiber.pollUnsafe());
+
+      const consumed = yield* Effect.promise(() => promptIterator.next());
+      assert.equal(consumed.done, false);
+      if (!consumed.done) {
+        assert.equal(promptMessageText(consumed.value), "receipt-bearing synthetic prompt");
+      }
+      assert.equal((yield* Fiber.join(receiptFiber)).length, 1);
+      assert.equal((yield* Fiber.join(sendFiber)).threadId, session.threadId);
+      yield* adapter.stopSession(session.threadId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("fails a receipt-bearing prompt when Claude stops before SDK pull", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const messageId = MessageId.make("claude-synthetic-stop-before-pull");
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId: session.threadId,
+          messageId,
+          input: "must not survive session teardown",
+          attachments: [],
+        })
+        .pipe(Effect.exit, Effect.forkChild);
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isUndefined(sendFiber.pollUnsafe());
+
+      yield* adapter.stopSession(session.threadId);
+      assert.equal((yield* Fiber.join(sendFiber))._tag, "Failure");
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.isFalse(
+        runtimeEvents.some(
+          (event) => event.type === "message.delivered" && event.payload.messageId === messageId,
         ),
       );
       yield* Fiber.interrupt(runtimeEventsFiber);

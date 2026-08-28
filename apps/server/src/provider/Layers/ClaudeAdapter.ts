@@ -150,7 +150,7 @@ type PromptQueueItem =
       readonly messageId?: MessageId;
       /** Exact running turn allowed to consume this queued follow-up. */
       readonly liveSteerTarget?: ProviderLiveSteerTarget;
-      /** Settled only when the SDK prompt iterator accepts or rejects this steer. */
+      /** Settled only when the SDK prompt iterator accepts or rejects this input. */
       readonly acceptance?: Deferred.Deferred<void, ProviderAdapterRequestError>;
     }
   | {
@@ -224,7 +224,7 @@ interface ClaudeTaskState {
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
-  readonly pendingLiveSteerAcceptances: Set<Deferred.Deferred<void, ProviderAdapterRequestError>>;
+  readonly pendingPromptAcceptances: Set<Deferred.Deferred<void, ProviderAdapterRequestError>>;
   readonly query: ClaudeQueryRuntime;
   readonly mcpProxy: ClaudeMcpSdkProxy | undefined;
   readonly tokenOptimizerProxy: ClaudeTokenOptimizerProxy | undefined;
@@ -3422,17 +3422,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
 
-    const stoppedSteerError = new ProviderAdapterRequestError({
+    const stoppedPromptError = new ProviderAdapterRequestError({
       provider: PROVIDER,
-      method: "turn/steer",
-      detail: `Claude session for thread '${context.session.threadId}' stopped before queued steering input reached the SDK.`,
+      method: "session/prompt",
+      detail: `Claude session for thread '${context.session.threadId}' stopped before queued input reached the SDK.`,
     });
     yield* Effect.forEach(
-      context.pendingLiveSteerAcceptances,
-      (acceptance) => Deferred.fail(acceptance, stoppedSteerError),
+      context.pendingPromptAcceptances,
+      (acceptance) => Deferred.fail(acceptance, stoppedPromptError),
       { discard: true },
     );
-    context.pendingLiveSteerAcceptances.clear();
+    context.pendingPromptAcceptances.clear();
     yield* Queue.shutdown(context.promptQueue);
 
     const streamFiber = context.streamFiber;
@@ -3633,7 +3633,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                   : Deferred.fail(acceptance, staleError).pipe(
                       Effect.tap(() =>
                         Effect.sync(() => {
-                          context?.pendingLiveSteerAcceptances.delete(acceptance);
+                          context?.pendingPromptAcceptances.delete(acceptance);
                         }),
                       ),
                     );
@@ -3668,7 +3668,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             if (item.acceptance !== undefined) {
               yield* Deferred.succeed(item.acceptance, undefined);
               const context = yield* Ref.get(contextRef);
-              context?.pendingLiveSteerAcceptances.delete(item.acceptance);
+              context?.pendingPromptAcceptances.delete(item.acceptance);
             }
           });
         }),
@@ -4444,7 +4444,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const context: ClaudeSessionContext = {
         session,
         promptQueue,
-        pendingLiveSteerAcceptances: new Set(),
+        pendingPromptAcceptances: new Set(),
         query: queryRuntime,
         mcpProxy,
         tokenOptimizerProxy,
@@ -4764,34 +4764,34 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // final queue boundary so a completed turn or successor cannot inherit a
     // steer that orchestration targeted at its predecessor.
     yield* requireExactLiveSteerTarget();
-    const liveSteerAcceptance =
-      input.liveSteerTarget !== undefined
+    const promptAcceptance =
+      input.liveSteerTarget !== undefined || input.messageId !== undefined
         ? yield* Deferred.make<void, ProviderAdapterRequestError>()
         : undefined;
-    if (liveSteerAcceptance !== undefined) {
-      context.pendingLiveSteerAcceptances.add(liveSteerAcceptance);
+    if (promptAcceptance !== undefined) {
+      context.pendingPromptAcceptances.add(promptAcceptance);
     }
     yield* Queue.offer(context.promptQueue, {
       type: "message",
       message,
       ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
       ...(input.liveSteerTarget !== undefined ? { liveSteerTarget: input.liveSteerTarget } : {}),
-      ...(liveSteerAcceptance !== undefined ? { acceptance: liveSteerAcceptance } : {}),
+      ...(promptAcceptance !== undefined ? { acceptance: promptAcceptance } : {}),
     }).pipe(
       Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
       Effect.tapError(() =>
         Effect.sync(() => {
-          if (liveSteerAcceptance !== undefined) {
-            context.pendingLiveSteerAcceptances.delete(liveSteerAcceptance);
+          if (promptAcceptance !== undefined) {
+            context.pendingPromptAcceptances.delete(promptAcceptance);
           }
         }),
       ),
     );
-    if (liveSteerAcceptance !== undefined) {
-      yield* Deferred.await(liveSteerAcceptance).pipe(
+    if (promptAcceptance !== undefined) {
+      yield* Deferred.await(promptAcceptance).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            context.pendingLiveSteerAcceptances.delete(liveSteerAcceptance);
+            context.pendingPromptAcceptances.delete(promptAcceptance);
           }),
         ),
       );
@@ -4944,6 +4944,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
       taskStop: true,
+      messageDeliveryReceipts: true,
     },
     startSession,
     forkSession,

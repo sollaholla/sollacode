@@ -3,6 +3,7 @@ import {
   MessageId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   type ServerProvider,
@@ -420,6 +421,50 @@ export function startupResumeSourceTurnId(input: {
   if (!value.startsWith(prefix)) return null;
   const sourceTurnId = value.slice(prefix.length);
   return sourceTurnId.length > 0 ? TurnId.make(sourceTurnId) : null;
+}
+
+/**
+ * Revalidates a boot-created startup resume at the last safe point before it
+ * can mint a synthetic user message. The boot scan and scheduler claim are
+ * separated by arbitrary user, provider, and projection activity, so creation
+ * eligibility is never sufficient on its own.
+ */
+export function shouldDispatchStartupResume(
+  thread: OrchestrationThreadShell,
+  input: {
+    readonly sourceTurnId: TurnId;
+    readonly sourceTurnState?: OrchestrationLatestTurn["state"];
+    readonly hasLaterRealUserTurn: boolean;
+  },
+): boolean {
+  if (
+    thread.archivedAt !== null ||
+    thread.settledOverride === "settled" ||
+    thread.hasPendingApprovals ||
+    thread.hasPendingUserInput ||
+    input.hasLaterRealUserTurn
+  ) {
+    return false;
+  }
+  const latestTurn = thread.latestTurn;
+  if (
+    latestTurn?.turnId !== input.sourceTurnId ||
+    (latestTurn.state !== "incomplete" &&
+      latestTurn.state !== "error" &&
+      latestTurn.state !== "completed") ||
+    input.sourceTurnState === "running" ||
+    input.sourceTurnState === "interrupted"
+  ) {
+    return false;
+  }
+  const session = thread.session;
+  if (session?.activeTurnId != null) return false;
+  return (
+    session?.status !== "starting" &&
+    session?.status !== "running" &&
+    session?.status !== "interrupted" &&
+    session?.status !== "error"
+  );
 }
 
 export function threadWorkObligationId(input: {

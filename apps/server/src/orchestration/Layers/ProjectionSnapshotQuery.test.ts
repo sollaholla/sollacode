@@ -2365,11 +2365,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
-  it.effect("does not treat a later startup-resume prompt as newer user intent", () =>
+  it.effect("preserves source-turn identity and ignores only synthetic resume intent", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
       const threadId = ThreadId.make("thread-turn-start-user-intent");
+      const sourceTurnId = TurnId.make("turn-start-user-intent");
       const sourceMessageId = MessageId.make("message-turn-start-user-intent");
       const startupMessageId = MessageId.make(
         `startup-auto-resume-message:${threadId}:turn-interrupted`,
@@ -2378,6 +2379,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`DELETE FROM orchestration_events`;
       yield* sql`DELETE FROM projection_turns`;
       yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          ${threadId}, ${sourceTurnId}, ${sourceMessageId}, NULL, 'incomplete',
+          '2026-08-25T23:32:41.000Z', '2026-08-25T23:32:41.000Z',
+          '2026-08-25T23:32:50.000Z', '[]'
+        )
+      `;
       yield* sql`
         INSERT INTO projection_thread_messages (
           message_id, thread_id, turn_id, role, text, input_origin,
@@ -2424,19 +2435,43 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (getThreadTurnStartContext === undefined) {
         return yield* Effect.die("getThreadTurnStartContext is not configured");
       }
+      const getThreadProviderTurnById = snapshotQuery.getThreadProviderTurnById;
+      const getThreadProviderTurnForMessage = snapshotQuery.getThreadProviderTurnForMessage;
+      if (
+        getThreadProviderTurnById === undefined ||
+        getThreadProviderTurnForMessage === undefined
+      ) {
+        return yield* Effect.die("provider turn identity queries are not configured");
+      }
+      assert.deepStrictEqual(
+        Option.getOrNull(yield* getThreadProviderTurnById(threadId, sourceTurnId)),
+        {
+          turnId: sourceTurnId,
+          state: "incomplete",
+          sourceMessageId,
+        },
+      );
+      assert.deepStrictEqual(
+        Option.getOrNull(yield* getThreadProviderTurnForMessage(threadId, sourceMessageId)),
+        {
+          turnId: sourceTurnId,
+          state: "incomplete",
+          sourceMessageId,
+        },
+      );
       const beforeRealUser = yield* getThreadTurnStartContext(threadId, sourceMessageId);
       assert.isTrue(Option.isSome(beforeRealUser));
       if (Option.isSome(beforeRealUser)) {
         assert.isFalse(beforeRealUser.value.hasLaterRealUserTurn);
       }
 
-      const laterUserMessageId = MessageId.make("message-turn-start-later-user-intent");
+      const laterUserMessageId = MessageId.make("vm-task:later-scheduled-user-intent");
       yield* sql`
         INSERT INTO projection_thread_messages (
           message_id, thread_id, turn_id, role, text, input_origin,
           is_streaming, created_at, updated_at
         ) VALUES (
-          ${laterUserMessageId}, ${threadId}, NULL, 'user', 'This replaces it', NULL,
+          ${laterUserMessageId}, ${threadId}, NULL, 'user', 'Run the scheduled task', 'agent-loop',
           0, '2026-08-25T23:34:00.000Z', '2026-08-25T23:34:00.000Z'
         )
       `;

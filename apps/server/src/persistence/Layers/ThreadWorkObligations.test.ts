@@ -6,6 +6,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -14,6 +15,7 @@ import { ThreadWorkObligationRepositoryLive } from "./ThreadWorkObligations.ts";
 import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  SYNTHETIC_DISPATCH_ADMITTED_REASON,
   ThreadWorkObligationRepository,
 } from "../Services/ThreadWorkObligations.ts";
 
@@ -24,6 +26,7 @@ const repositoryLayer = it.layer(
 const now = "2026-08-04T12:00:00.000Z";
 const later = "2026-08-04T12:01:00.000Z";
 const providerInstanceId = ProviderInstanceId.make("codex");
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const insertThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -294,8 +297,8 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       const stateOf = (obligationId: string) =>
         Effect.map(repository.getById(obligationId), (row) => Option.getOrThrow(row).state);
 
-      // A newer user send spares the queued delivery AND the live supervisor
-      // (whose scheduler fiber holds the runtime lease), while still clearing
+      // A newer user send spares the queued real delivery, but beats both an
+      // executing synthetic prompt that has not won native admission yet and
       // queued synthetic work.
       const supersedeThread = ThreadId.make("thread-work-mode-supersede");
       yield* insertThread(supersedeThread);
@@ -324,11 +327,43 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
           blockedReason: "superseded by user turn",
           mode: "user-supersede",
         }),
-        1,
+        2,
       );
       assert.strictEqual(yield* stateOf(`${supersedeThread}:user-delivery`), "pending");
-      assert.strictEqual(yield* stateOf(`${supersedeThread}:supervisor`), "executing");
+      assert.strictEqual(yield* stateOf(`${supersedeThread}:supervisor`), "cancelled");
       assert.strictEqual(yield* stateOf(`${supersedeThread}:queued-continuation`), "cancelled");
+
+      // A user send may also land after the scheduler claimed a synthetic
+      // resume but before its handler reached executing. Both continuation
+      // kinds must lose that race; an executing supervisor remains protected.
+      for (const kind of [
+        "agent-continuation",
+        "startup-resume",
+        "authentication-resume",
+      ] as const) {
+        const threadId = ThreadId.make(`thread-work-mode-claimed-${kind}`);
+        const obligationId = `${threadId}:claimed-resume`;
+        yield* insertThread(threadId);
+        yield* repository.insert({
+          ...base(threadId),
+          obligationId,
+          sourceTurnId: TurnId.make(`turn-${kind}`),
+          kind,
+          state: "claimed",
+          claimedAt: now,
+          leaseExpiresAt: later,
+        });
+        assert.strictEqual(
+          yield* repository.cancelByThread({
+            threadId,
+            updatedAt: later,
+            blockedReason: "superseded by user turn",
+            mode: "user-supersede",
+          }),
+          1,
+        );
+        assert.strictEqual(yield* stateOf(obligationId), "cancelled");
+      }
 
       // A sleeping retry was already surfaced as a failure; the newer message
       // replaces it even though the queued delivery survives.
@@ -424,6 +459,181 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       );
       assert.strictEqual(yield* stateOf(`${terminalThread}:user-delivery`), "cancelled");
       assert.strictEqual(yield* stateOf(`${terminalThread}:supervisor`), "cancelled");
+    }),
+  );
+
+  it.effect("atomically admits synthetic dispatch before a later real user turn", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadWorkObligationRepository;
+      const sql = yield* SqlClient.SqlClient;
+
+      const seed = (input: {
+        readonly suffix: string;
+        readonly laterMessageIds?: ReadonlyArray<string>;
+        readonly includeSourceEvent?: boolean;
+      }) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(`thread-work-admit-${input.suffix}`);
+          const sourceTurnId = TurnId.make(`turn-work-admit-${input.suffix}`);
+          const sourceMessageId = `message-work-admit-${input.suffix}`;
+          const obligationId = `work-admit-${input.suffix}`;
+          yield* insertThread(threadId);
+          yield* sql`
+            INSERT INTO projection_turns (
+              thread_id, turn_id, pending_message_id, assistant_message_id, state,
+              requested_at, started_at, completed_at, checkpoint_files_json
+            ) VALUES (
+              ${threadId}, ${sourceTurnId}, ${sourceMessageId}, ${`assistant-${input.suffix}`},
+              'completed', ${now}, ${now}, ${now}, '[]'
+            )
+          `;
+          if (input.includeSourceEvent !== false) {
+            yield* sql`
+              INSERT INTO orchestration_events (
+                event_id, aggregate_kind, stream_id, stream_version, event_type,
+                occurred_at, command_id, causation_event_id, correlation_id,
+                actor_kind, payload_json, metadata_json
+              ) VALUES (
+                ${`event-work-admit-source-${input.suffix}`}, 'thread', ${threadId}, 1,
+                'thread.turn-start-requested', ${now}, ${`command-source-${input.suffix}`},
+                NULL, NULL, 'user',
+                ${encodeUnknownJson({ threadId, messageId: sourceMessageId })}, '{}'
+              )
+            `;
+          }
+          for (const [index, messageId] of (input.laterMessageIds ?? []).entries()) {
+            yield* sql`
+              INSERT INTO orchestration_events (
+                event_id, aggregate_kind, stream_id, stream_version, event_type,
+                occurred_at, command_id, causation_event_id, correlation_id,
+                actor_kind, payload_json, metadata_json
+              ) VALUES (
+                ${`event-work-admit-later-${input.suffix}-${index}`}, 'thread', ${threadId},
+                ${index + 2}, 'thread.turn-start-requested', ${later},
+                ${`command-later-${input.suffix}-${index}`}, NULL, NULL, 'user',
+                ${encodeUnknownJson({ threadId, messageId })}, '{}'
+              )
+            `;
+          }
+          yield* repository.insert({
+            obligationId,
+            threadId,
+            sourceTurnId,
+            kind: "agent-continuation",
+            state: "executing",
+            providerInstanceId,
+            attempt: 1,
+            nextAttemptAt: null,
+            claimedAt: now,
+            leaseExpiresAt: later,
+            blockedReason: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          return { threadId, sourceTurnId, sourceMessageId, obligationId };
+        });
+
+      const admitted = yield* seed({ suffix: "wins" });
+      assert.isTrue(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: admitted.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.strictEqual(
+        Option.getOrThrow(yield* repository.getById(admitted.obligationId)).blockedReason,
+        SYNTHETIC_DISPATCH_ADMITTED_REASON,
+      );
+
+      // A definitely-undispatched provider retry must revalidate admission.
+      // The durable marker keeps a concurrent supersede sweep from mutating
+      // the executing owner, but it cannot authorize a second native attempt
+      // after newer user intent arrives.
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type,
+          occurred_at, command_id, causation_event_id, correlation_id,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          'event-work-admit-after-win', 'thread', ${admitted.threadId}, 2,
+          'thread.turn-start-requested', ${later}, 'command-after-win',
+          NULL, NULL, 'user',
+          ${encodeUnknownJson({ threadId: admitted.threadId, messageId: "message-after-win" })}, '{}'
+        )
+      `;
+      assert.isFalse(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: admitted.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: admitted.threadId,
+          updatedAt: later,
+          blockedReason: "superseded by user turn",
+          mode: "user-supersede",
+        }),
+        0,
+      );
+
+      const superseded = yield* seed({
+        suffix: "loses",
+        laterMessageIds: ["message-real-user-after-source"],
+      });
+      assert.isFalse(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: superseded.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: superseded.threadId,
+          updatedAt: later,
+          blockedReason: "superseded by user turn",
+          mode: "user-supersede",
+        }),
+        1,
+      );
+
+      // Synthetic descendants are part of the same autonomous chain, not new
+      // user intent, so they do not block the exact source obligation.
+      const syntheticOnly = yield* seed({
+        suffix: "synthetic-descendant",
+        laterMessageIds: [
+          `agent-auto-resume-message:thread-work-admit-synthetic-descendant:next`,
+          `startup-auto-resume-message:thread-work-admit-synthetic-descendant:next`,
+        ],
+      });
+      assert.isTrue(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: syntheticOnly.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+
+      const missingSource = yield* seed({ suffix: "missing-source", includeSourceEvent: false });
+      assert.isFalse(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: missingSource.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.strictEqual(
+        yield* repository.cancelByThread({
+          threadId: missingSource.threadId,
+          updatedAt: later,
+          blockedReason: "superseded by user turn",
+          mode: "user-supersede",
+        }),
+        1,
+      );
     }),
   );
 

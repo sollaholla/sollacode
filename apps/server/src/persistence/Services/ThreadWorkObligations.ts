@@ -1,5 +1,6 @@
 import {
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProviderInstanceId,
   ThreadId,
@@ -40,6 +41,13 @@ export const ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON =
 
 export const ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON =
   "steer delivery outcome unknown after restart";
+
+/**
+ * Durable admission marker for synthetic prompts that won the race against a
+ * later real user turn. A user-supersede sweep may cancel an executing
+ * synthetic obligation until this marker is written, but never after it.
+ */
+export const SYNTHETIC_DISPATCH_ADMITTED_REASON = "native synthetic dispatch admitted";
 
 export const ActiveThreadWorkState = Schema.Literals([
   "claimed",
@@ -155,6 +163,14 @@ export const HeartbeatThreadWorkClaimInput = Schema.Struct({
 });
 export type HeartbeatThreadWorkClaimInput = typeof HeartbeatThreadWorkClaimInput.Type;
 
+export const TryAdmitSyntheticDispatchInput = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  expectedAttempt: NonNegativeInt,
+  sourceMessageId: Schema.optional(MessageId),
+  updatedAt: IsoDateTime,
+});
+export type TryAdmitSyntheticDispatchInput = typeof TryAdmitSyntheticDispatchInput.Type;
+
 export const CancelThreadWorkByThreadInput = Schema.Struct({
   threadId: ThreadId,
   updatedAt: IsoDateTime,
@@ -264,6 +280,16 @@ export interface ThreadWorkObligationRepositoryShape {
 
   readonly heartbeatClaim: (
     input: HeartbeatThreadWorkClaimInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
+   * Atomically admit an executing synthetic prompt only when no later real
+   * user turn exists in the thread event stream. Once admitted, retries in the
+   * same claim must revalidate the event stream before a definitely-undispatched
+   * provider retry; restart recovery clears the marker.
+   */
+  readonly tryAdmitSyntheticDispatch: (
+    input: TryAdmitSyntheticDispatchInput,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   readonly cancelByThread: (

@@ -133,6 +133,10 @@ export interface GrokAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly instanceId?: ProviderInstanceId;
+  /** Test seam for holding an inbound queue snapshot before it mutates adapter state. */
+  readonly beforeQueueSnapshotCommit?: (
+    notification: XAiQueueChangedNotification,
+  ) => Effect.Effect<void>;
 }
 
 interface PendingApproval {
@@ -145,6 +149,12 @@ type PendingUserInputResolution =
 
 interface PendingUserInput {
   readonly resolution: Deferred.Deferred<PendingUserInputResolution>;
+}
+
+interface PendingMessageDelivery {
+  readonly turnId: TurnId;
+  /** Survives session teardown so a cancelled prompt cannot be falsely accepted. */
+  readonly consumed: Ref.Ref<boolean>;
 }
 
 interface GrokSessionContext {
@@ -166,9 +176,19 @@ interface GrokSessionContext {
    * continues it, and only the last remaining prompt settles the turn. */
   promptsInFlight: number;
   /** Messages admitted to Grok's native queue but not yet receipted to T3. */
-  pendingMessageDeliveries: Map<string, TurnId>;
+  pendingMessageDeliveries: Map<string, PendingMessageDelivery>;
   /** Latest native queue versions, used by Grok's compare-and-promote operation. */
   queuedPromptVersions: Map<string, number>;
+  /** Running native prompt from the latest authoritative queue snapshot. */
+  queueRunningPromptId: string | undefined;
+  /** Queue rows already proven absent, retained for idempotent client retries. */
+  confirmedQueuedPromotionIds: Set<string>;
+  /** Targeted prompt admissions that terminated before Grok accepted the row. */
+  failedQueuedPromptAdmissions: Map<string, string>;
+  /** Rows with an emitted interject awaiting authoritative absence proof. */
+  pendingQueuedPromotionInterjections: Set<string>;
+  /** Monotonic local order for authoritative native queue snapshots. */
+  queueSnapshotSequence: number;
   /** Completes whenever Grok publishes a fresh native queue snapshot. */
   queueChangedSignal: Deferred.Deferred<void>;
   currentModelId: string | undefined;
@@ -470,6 +490,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
+    const signalQueueOrLifecycleChange = (ctx: GrokSessionContext) =>
+      Effect.gen(function* () {
+        const nextSignal = yield* Deferred.make<void>();
+        const previousSignal = ctx.queueChangedSignal;
+        ctx.queueChangedSignal = nextSignal;
+        yield* Deferred.succeed(previousSignal, undefined).pipe(Effect.asVoid);
+      });
+
     const settlePromptInFlight = (
       threadId: ThreadId,
       turnId: TurnId,
@@ -548,6 +576,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   status: "ready",
                   updatedAt,
                 };
+                yield* signalQueueOrLifecycleChange(liveCtx);
               }
               return;
             }
@@ -578,6 +607,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           status: "ready",
           updatedAt,
         };
+        yield* signalQueueOrLifecycleChange(liveCtx);
         if (options?.emitTurnCompletion === false) {
           return;
         }
@@ -699,6 +729,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             return { completion, shouldStart: true } as const;
           });
           if (teardown.shouldStart) {
+            // Grok can acknowledge an interject long after it was dispatched.
+            // Teardown, not a short wall-clock timeout, is the failure boundary.
+            yield* signalQueueOrLifecycleChange(ctx);
             yield* Effect.gen(function* () {
               yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
               yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
@@ -846,19 +879,36 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               { discard: true },
             );
             yield* acp.handleExtNotification(
-              "_x.ai/queue/changed",
+              "x.ai/queue/changed",
               XAiQueueChangedNotification,
               (notification) =>
                 Effect.gen(function* () {
+                  if (options?.beforeQueueSnapshotCommit !== undefined) {
+                    yield* options.beforeQueueSnapshotCommit(notification);
+                  }
                   yield* logNative(input.threadId, "_x.ai/queue/changed", notification);
                   const liveCtx = sessions.get(input.threadId);
                   if (!liveCtx || liveCtx.acpSessionId !== notification.sessionId) return;
 
-                  liveCtx.queuedPromptVersions = new Map(
+                  const nextQueuedPromptVersions = new Map(
                     notification.entries.map((entry) => [entry.id, entry.version]),
                   );
-                  const previousQueueChangedSignal = liveCtx.queueChangedSignal;
-                  liveCtx.queueChangedSignal = yield* Deferred.make<void>();
+                  for (const messageId of liveCtx.queuedPromptVersions.keys()) {
+                    if (
+                      !nextQueuedPromptVersions.has(messageId) &&
+                      notification.runningPromptId === messageId
+                    ) {
+                      liveCtx.pendingQueuedPromotionInterjections.delete(messageId);
+                      liveCtx.confirmedQueuedPromotionIds.add(messageId);
+                    }
+                  }
+                  for (const messageId of nextQueuedPromptVersions.keys()) {
+                    liveCtx.confirmedQueuedPromotionIds.delete(messageId);
+                    liveCtx.failedQueuedPromptAdmissions.delete(messageId);
+                  }
+                  liveCtx.queuedPromptVersions = nextQueuedPromptVersions;
+                  liveCtx.queueRunningPromptId = notification.runningPromptId;
+                  liveCtx.queueSnapshotSequence += 1;
                   // `entries` are only waiting in Grok's native queue. They have
                   // not entered the model's active context yet, so treating
                   // them as delivered drops T3's durable recovery obligation
@@ -868,22 +918,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   const runningMessageId = notification.runningPromptId;
                   if (runningMessageId) {
                     const messageId = runningMessageId;
-                    const turnId = liveCtx.pendingMessageDeliveries.get(messageId);
-                    if (turnId !== undefined) {
+                    liveCtx.confirmedQueuedPromotionIds.add(messageId);
+                    liveCtx.failedQueuedPromptAdmissions.delete(messageId);
+                    liveCtx.pendingQueuedPromotionInterjections.delete(messageId);
+                    const pendingDelivery = liveCtx.pendingMessageDeliveries.get(messageId);
+                    if (pendingDelivery !== undefined) {
+                      yield* Ref.set(pendingDelivery.consumed, true);
                       liveCtx.pendingMessageDeliveries.delete(messageId);
                       yield* offerRuntimeEvent({
                         type: "message.delivered",
                         ...(yield* makeEventStamp()),
                         provider: PROVIDER,
                         threadId: input.threadId,
-                        turnId,
+                        turnId: pendingDelivery.turnId,
                         payload: { messageId: MessageId.make(messageId) },
                       });
                     }
                   }
-                  yield* Deferred.succeed(previousQueueChangedSignal, undefined).pipe(
-                    Effect.asVoid,
-                  );
+                  yield* signalQueueOrLifecycleChange(liveCtx);
                 }).pipe(
                   Effect.catch((cause) =>
                     Effect.logError("Failed to process Grok queue notification.", { cause }),
@@ -891,7 +943,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
             );
             yield* Effect.forEach(
-              ["x.ai/ask_user_question", "_x.ai/ask_user_question"] as const,
+              ["x.ai/ask_user_question"] as const,
               (method) =>
                 acp.handleExtRequest(method, XAiAskUserQuestionRequest, (params) =>
                   mapAcpCallbackFailure(
@@ -1088,6 +1140,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             promptsInFlight: 0,
             pendingMessageDeliveries: new Map(),
             queuedPromptVersions: new Map(),
+            queueRunningPromptId: undefined,
+            confirmedQueuedPromotionIds: new Set(),
+            failedQueuedPromptAdmissions: new Map(),
+            pendingQueuedPromotionInterjections: new Set(),
+            queueSnapshotSequence: 0,
             queueChangedSignal,
             currentModelId: boundModelId,
             currentEffort: boundSelection.reasoningEffort,
@@ -1307,7 +1364,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         }).pipe(Effect.scoped),
       );
 
-    const sendTurn: GrokAdapterShape["sendTurn"] = (input) =>
+    const sendTurn: GrokAdapterShape["sendTurn"] = (input, options) =>
       Effect.gen(function* () {
         const prepared = yield* withThreadLock(
           input.threadId,
@@ -1477,6 +1534,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               return {
                 acp: ctx.acp,
                 acpSessionId: ctx.acpSessionId,
+                sessionContext: ctx,
                 displayModel,
                 isSteering: steeringTurnId !== undefined,
                 messageId: input.messageId,
@@ -1504,55 +1562,23 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         const promptResultRef = yield* Ref.make<EffectAcpSchema.PromptResponse | undefined>(
           undefined,
         );
-
         const promptFailureMessageRef = yield* Ref.make<string | undefined>(undefined);
+        const promptConsumptionProven = yield* Ref.make(false);
+        const nativePromptDispatched = yield* Deferred.make<void>();
 
         return yield* Effect.gen(function* () {
-          const liveSteerTarget = input.liveSteerTarget;
-          const liveCtx = sessions.get(input.threadId);
-          if (
-            liveSteerTarget !== undefined &&
-            (liveSteerTarget.providerInstanceId !== boundInstanceId ||
-              liveCtx === undefined ||
-              liveCtx.acpSessionId !== prepared.acpSessionId ||
-              liveCtx.stopped ||
-              liveCtx.session.status !== "running" ||
-              liveCtx.activeTurnId !== liveSteerTarget.activeTurnId ||
-              liveCtx.session.activeTurnId !== liveSteerTarget.activeTurnId)
-          ) {
-            // Preparation reserved one prompt slot. If the same native
-            // session moved on meanwhile, release only that reservation and
-            // leave the successor's turn state untouched.
-            if (liveCtx?.acpSessionId === prepared.acpSessionId) {
-              yield* withThreadLock(
-                input.threadId,
-                Effect.sync(() => {
-                  const current = sessions.get(input.threadId);
-                  if (current?.acpSessionId === prepared.acpSessionId) {
-                    current.promptsInFlight = Math.max(0, current.promptsInFlight - 1);
-                  }
-                }),
-              );
-            }
-            yield* Ref.set(promptSettled, true);
-            return yield* new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: "turn/steer",
-              detail: `Live steer target '${liveSteerTarget.activeTurnId}' is no longer the active Grok turn for thread '${input.threadId}'.`,
-            });
-          }
-
-          if (prepared.messageId !== undefined) {
-            const liveCtx = sessions.get(input.threadId);
-            if (liveCtx?.acpSessionId === prepared.acpSessionId) {
-              liveCtx.pendingMessageDeliveries.set(prepared.messageId, prepared.turnId);
-            }
-          }
-          const result = yield* prepared.acp
-            .prompt({
-              ...(prepared.messageId !== undefined ? { messageId: prepared.messageId } : {}),
-              prompt: prepared.promptParts,
-            })
+          const promptRequest = prepared.acp
+            .prompt(
+              {
+                ...(prepared.messageId !== undefined ? { messageId: prepared.messageId } : {}),
+                prompt: prepared.promptParts,
+              },
+              {
+                onNativeDispatch: Deferred.succeed(nativePromptDispatched, undefined).pipe(
+                  Effect.andThen(options?.onNativeDispatch ?? Effect.void),
+                ),
+              },
+            )
             .pipe(
               Effect.tap((promptResult) =>
                 Effect.all([
@@ -1560,28 +1586,122 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   Ref.set(promptResultRef, promptResult),
                 ]),
               ),
-              Effect.tapError((error) =>
-                Ref.set(
-                  promptFailureMessageRef,
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error).message,
-                ).pipe(Effect.andThen(prepared.acp.drainEvents)),
-              ),
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  const mapped = mapAcpToAdapterError(
+                    PROVIDER,
+                    input.threadId,
+                    "session/prompt",
+                    error,
+                  );
+                  const consumed = yield* Ref.get(promptConsumptionProven);
+                  const deliveryError =
+                    prepared.isSteering && prepared.messageId !== undefined && !consumed
+                      ? new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "session/prompt",
+                          detail: "Grok ended the queued prompt before the model consumed it.",
+                          failureKind: "retryable-upstream",
+                          cause: mapped,
+                        })
+                      : mapped;
+                  yield* Ref.set(promptFailureMessageRef, deliveryError.message);
+                  const current = sessions.get(input.threadId);
+                  if (current?.acpSessionId === prepared.acpSessionId && !current.stopped) {
+                    yield* prepared.acp.drainEvents;
+                  }
+                  return yield* deliveryError;
+                }),
               ),
             );
+          // Stop/session replacement and prompt admission share this lock. A
+          // Stop that wins first marks the turn and rejects this prompt; a
+          // prompt that wins first reaches ACP before Stop can snapshot and
+          // cancel the session, so no queued follow-up can slip in afterwards.
+          const promptAdmission = yield* withThreadLock(
+            input.threadId,
+            Effect.gen(function* () {
+              const liveSteerTarget = input.liveSteerTarget;
+              const liveCtx = sessions.get(input.threadId);
+              const liveContextChanged =
+                liveCtx === undefined ||
+                liveCtx !== prepared.sessionContext ||
+                liveCtx.acpSessionId !== prepared.acpSessionId ||
+                liveCtx.stopped ||
+                liveCtx.interruptedTurnIds.has(prepared.turnId);
+              const liveSteerTargetChanged =
+                liveSteerTarget !== undefined &&
+                (liveSteerTarget.providerInstanceId !== boundInstanceId ||
+                  liveCtx === undefined ||
+                  liveCtx.session.status !== "running" ||
+                  liveCtx.activeTurnId !== liveSteerTarget.activeTurnId ||
+                  liveCtx.session.activeTurnId !== liveSteerTarget.activeTurnId);
+              if (liveContextChanged || liveSteerTargetChanged) {
+                // Preparation reserved one prompt slot. If the same native
+                // session moved on meanwhile, release only that reservation
+                // and leave the successor's turn state untouched.
+                if (liveCtx?.acpSessionId === prepared.acpSessionId) {
+                  liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
+                }
+                yield* Ref.set(promptSettled, true);
+                if (
+                  !prepared.isSteering &&
+                  liveCtx?.acpSessionId === prepared.acpSessionId &&
+                  liveCtx.interruptedTurnIds.has(prepared.turnId)
+                ) {
+                  return {
+                    _tag: "CancelledBeforeAdmission" as const,
+                    turn: {
+                      threadId: input.threadId,
+                      turnId: prepared.turnId,
+                      resumeCursor: liveCtx.session.resumeCursor,
+                    },
+                  };
+                }
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: prepared.isSteering ? "turn/steer" : "session/prompt",
+                  detail:
+                    liveSteerTarget !== undefined
+                      ? `Live steer target '${liveSteerTarget.activeTurnId}' is no longer the active Grok turn for thread '${input.threadId}'.`
+                      : `Grok session changed before prompt admission for thread '${input.threadId}'.`,
+                });
+              }
 
+              if (prepared.messageId !== undefined) {
+                liveCtx?.pendingMessageDeliveries.set(prepared.messageId, {
+                  turnId: prepared.turnId,
+                  consumed: promptConsumptionProven,
+                });
+                liveCtx?.failedQueuedPromptAdmissions.delete(prepared.messageId);
+                if (liveCtx !== undefined) {
+                  yield* signalQueueOrLifecycleChange(liveCtx);
+                }
+              }
+              const fiber = yield* promptRequest.pipe(Effect.forkChild({ startImmediately: true }));
+              yield* Effect.raceFirst(
+                Deferred.await(nativePromptDispatched),
+                Fiber.await(fiber).pipe(Effect.asVoid),
+              );
+              return { _tag: "Dispatched" as const, fiber };
+            }),
+          );
+          if (promptAdmission._tag === "CancelledBeforeAdmission") {
+            return promptAdmission.turn;
+          }
+          const result = yield* Fiber.join(promptAdmission.fiber);
+
+          const consumptionProven = yield* Ref.get(promptConsumptionProven);
+          const deliveryContext = sessions.get(input.threadId);
+          const deliveryContextStillLive =
+            deliveryContext === prepared.sessionContext &&
+            !deliveryContext.stopped &&
+            !deliveryContext.interruptedTurnIds.has(prepared.turnId);
           const cancelledBeforeModelConsumption =
-            result.stopReason === "cancelled" &&
             prepared.isSteering &&
             prepared.messageId !== undefined &&
-            (() => {
-              const liveCtx = sessions.get(input.threadId);
-              return (
-                liveCtx?.acpSessionId === prepared.acpSessionId &&
-                liveCtx.pendingMessageDeliveries.get(prepared.messageId) === prepared.turnId
-              );
-            })();
+            !consumptionProven &&
+            (result.stopReason === "cancelled" || !deliveryContextStillLive);
           if (cancelledBeforeModelConsumption) {
             const detail = "Grok cancelled the queued prompt before the model consumed it.";
             yield* Ref.set(promptRpcSucceeded, false);
@@ -1608,7 +1728,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // the delivery queue replay a prompt Grok already received.
           if (input.messageId !== undefined) {
             const liveCtx = sessions.get(input.threadId);
-            if (liveCtx?.pendingMessageDeliveries.delete(input.messageId)) {
+            const firstConsumptionProof = yield* Ref.modify(
+              promptConsumptionProven,
+              (proven) => [!proven, true] as const,
+            );
+            if (liveCtx?.acpSessionId === prepared.acpSessionId) {
+              liveCtx.pendingMessageDeliveries.delete(input.messageId);
+              liveCtx.failedQueuedPromptAdmissions.delete(input.messageId);
+              liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+              liveCtx.confirmedQueuedPromotionIds.add(input.messageId);
+              yield* signalQueueOrLifecycleChange(liveCtx);
+            }
+            if (firstConsumptionProof) {
               yield* offerRuntimeEvent({
                 type: "message.delivered",
                 ...(yield* makeEventStamp()),
@@ -1751,11 +1882,27 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             Effect.gen(function* () {
               if (prepared.messageId !== undefined) {
                 const liveCtx = sessions.get(input.threadId);
+                const pendingDelivery = liveCtx?.pendingMessageDeliveries.get(prepared.messageId);
                 if (
                   liveCtx?.acpSessionId === prepared.acpSessionId &&
-                  liveCtx.pendingMessageDeliveries.get(prepared.messageId) === prepared.turnId
+                  pendingDelivery?.turnId === prepared.turnId &&
+                  pendingDelivery.consumed === promptConsumptionProven
                 ) {
                   liveCtx.pendingMessageDeliveries.delete(prepared.messageId);
+                  const [consumed, rpcSucceeded, failureMessage] = yield* Effect.all([
+                    Ref.get(promptConsumptionProven),
+                    Ref.get(promptRpcSucceeded),
+                    Ref.get(promptFailureMessageRef),
+                  ]);
+                  if (!consumed && !rpcSucceeded && !liveCtx.stopped) {
+                    liveCtx.confirmedQueuedPromotionIds.delete(prepared.messageId);
+                    liveCtx.pendingQueuedPromotionInterjections.delete(prepared.messageId);
+                    liveCtx.failedQueuedPromptAdmissions.set(
+                      prepared.messageId,
+                      failureMessage ?? "Grok ended the queued prompt before accepting it.",
+                    );
+                  }
+                  yield* signalQueueOrLifecycleChange(liveCtx);
                 }
               }
               if (yield* Ref.get(promptSettled)) {
@@ -1824,80 +1971,307 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    const promoteQueuedTurn: NonNullable<GrokAdapterShape["promoteQueuedTurn"]> = (threadId) => {
-      const tryPromote = Effect.suspend(() =>
+    const promoteQueuedTurn: NonNullable<GrokAdapterShape["promoteQueuedTurn"]> = (
+      threadId,
+      targetMessageIds,
+    ) => {
+      const requestedMessageIds =
+        targetMessageIds === undefined
+          ? undefined
+          : [...new Set(targetMessageIds.map((messageId) => String(messageId)))];
+      const snapshotTargets = Effect.suspend(() =>
         withThreadLock(
           threadId,
           Effect.gen(function* () {
             const ctx = yield* requireSession(threadId);
-            const queuedPrompts = xAiQueueInterjectPayloads(
-              ctx.acpSessionId,
-              Array.from(ctx.queuedPromptVersions, ([id, version]) => ({ id, version })),
-            );
-            if (queuedPrompts.length === 0) {
-              return { _tag: "Waiting" as const, signal: ctx.queueChangedSignal };
+            const messageIds =
+              requestedMessageIds === undefined
+                ? Array.from(ctx.queuedPromptVersions.keys())
+                : requestedMessageIds.filter((messageId) =>
+                    ctx.queuedPromptVersions.has(messageId),
+                  );
+            if (requestedMessageIds !== undefined) {
+              const failedMessageId = requestedMessageIds.find((messageId) =>
+                ctx.failedQueuedPromptAdmissions.has(messageId),
+              );
+              if (failedMessageId !== undefined) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "x.ai/queue/interject",
+                  detail:
+                    ctx.failedQueuedPromptAdmissions.get(failedMessageId) ??
+                    `Grok ended queued prompt '${failedMessageId}' before accepting it.`,
+                  failureKind: "retryable-upstream",
+                });
+              }
+              const unknownMessageIds = requestedMessageIds.filter(
+                (messageId) =>
+                  !ctx.queuedPromptVersions.has(messageId) &&
+                  !ctx.confirmedQueuedPromotionIds.has(messageId),
+              );
+              if (unknownMessageIds.length > 0) {
+                const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
+                if (ctx.session.status !== "running" || !activeTurnId) {
+                  return yield* new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "x.ai/queue/interject",
+                    detail: "Grok no longer has a running turn to receive queued messages.",
+                    failureKind: "retryable-upstream",
+                  });
+                }
+                return { _tag: "Waiting" as const, signal: ctx.queueChangedSignal };
+              }
+              if (
+                requestedMessageIds.every((messageId) =>
+                  ctx.confirmedQueuedPromotionIds.has(messageId),
+                )
+              ) {
+                return {
+                  _tag: "Ready" as const,
+                  ctx,
+                  messageIds: [] as ReadonlyArray<string>,
+                  receiptMessageIds: requestedMessageIds,
+                };
+              }
             }
-
-            // One empty-composer Enter means "catch up now" in Solla. Promote
-            // every native row, oldest first, so a burst of corrections cannot
-            // remain minutes behind one full Grok reasoning cycle at a time.
-            yield* Effect.forEach(
-              queuedPrompts,
-              (payload) => {
-                ctx.queuedPromptVersions.delete(payload.id);
-                return ctx.acp.notify("x.ai/queue/interject", payload).pipe(
-                  Effect.tapError(() =>
-                    Effect.sync(() =>
-                      ctx.queuedPromptVersions.set(payload.id, payload.expectedVersion),
-                    ),
-                  ),
-                  Effect.mapError((error) =>
-                    mapAcpToAdapterError(PROVIDER, threadId, "x.ai/queue/interject", error),
-                  ),
-                );
-              },
-              { discard: true },
-            );
-            return {
-              _tag: "Promoted" as const,
-              messageIds: queuedPrompts.map((payload) => MessageId.make(payload.id)),
-            };
+            const activeTurnId = ctx.activeTurnId ?? ctx.session.activeTurnId;
+            if (messageIds.length > 0 && ctx.session.status === "running" && activeTurnId) {
+              return {
+                _tag: "Ready" as const,
+                ctx,
+                messageIds,
+                receiptMessageIds: requestedMessageIds ?? messageIds,
+              };
+            }
+            if (ctx.session.status !== "running" || !activeTurnId) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "x.ai/queue/interject",
+                detail: "Grok no longer has a running turn to receive queued messages.",
+                failureKind: "retryable-upstream",
+              });
+            }
+            return { _tag: "Waiting" as const, signal: ctx.queueChangedSignal };
           }),
         ),
       );
 
-      // The client can render a persisted follow-up before Grok publishes the
-      // corresponding queue snapshot. Wait on the notification itself instead
-      // of failing that fast second Enter. Multiple snapshots may arrive first
-      // (for example, the running prompt followed by the queued prompt), so
-      // continue until an actual waiting row appears or the bounded window ends.
-      const waitForQueuedPrompt = (): ReturnType<
-        NonNullable<GrokAdapterShape["promoteQueuedTurn"]>
+      const waitForTargets = (): Effect.Effect<
+        {
+          readonly _tag: "Ready";
+          readonly ctx: GrokSessionContext;
+          readonly messageIds: ReadonlyArray<string>;
+          readonly receiptMessageIds: ReadonlyArray<string>;
+        },
+        ProviderAdapterSessionNotFoundError | ProviderAdapterRequestError
       > =>
         Effect.suspend(() =>
-          tryPromote.pipe(
+          snapshotTargets.pipe(
             Effect.flatMap((result) =>
-              result._tag === "Promoted"
-                ? Effect.succeed(result.messageIds)
-                : Deferred.await(result.signal).pipe(Effect.andThen(waitForQueuedPrompt())),
+              result._tag === "Ready"
+                ? Effect.succeed(result)
+                : Deferred.await(result.signal).pipe(Effect.andThen(waitForTargets())),
             ),
           ),
         );
 
-      return waitForQueuedPrompt().pipe(
-        Effect.timeoutOption("1 second"),
-        Effect.flatMap(
-          Option.match({
-            onSome: Effect.succeed,
-            onNone: () =>
-              Effect.fail(
-                new ProviderAdapterRequestError({
+      const promoteMessage = Effect.fn("promoteGrokQueuedMessage")(function* (input: {
+        readonly ctx: GrokSessionContext;
+        readonly messageId: string;
+      }) {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const dispatched = yield* withThreadLock(
+            threadId,
+            Effect.gen(function* () {
+              const liveCtx = yield* requireSession(threadId);
+              if (liveCtx !== input.ctx) {
+                return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "x.ai/queue/interject",
-                  detail: "Grok no longer has any follow-ups waiting in its native queue.",
-                }),
-              ),
-          }),
+                  detail: "The Grok session changed before queued-message promotion completed.",
+                  failureKind: "retryable-upstream",
+                });
+              }
+              const activeTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+              if (
+                liveCtx.session.status !== "running" ||
+                !activeTurnId ||
+                !liveCtx.queueRunningPromptId
+              ) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "x.ai/queue/interject",
+                  detail: "Grok's running turn ended before queued-message promotion.",
+                  failureKind: "retryable-upstream",
+                });
+              }
+              const expectedVersion = liveCtx.queuedPromptVersions.get(input.messageId);
+              if (expectedVersion === undefined) {
+                if (
+                  liveCtx.confirmedQueuedPromotionIds.has(input.messageId) ||
+                  liveCtx.queueRunningPromptId === input.messageId
+                ) {
+                  liveCtx.confirmedQueuedPromotionIds.add(input.messageId);
+                  return { _tag: "Confirmed" as const };
+                }
+                const failedAdmission = liveCtx.failedQueuedPromptAdmissions.get(input.messageId);
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "x.ai/queue/interject",
+                  detail:
+                    failedAdmission ??
+                    `Queued Grok message '${input.messageId}' left the native queue before promotion could be confirmed.`,
+                  failureKind: "retryable-upstream",
+                });
+              }
+              const signal = liveCtx.queueChangedSignal;
+              const afterSequence = liveCtx.queueSnapshotSequence;
+              const [payload] = xAiQueueInterjectPayloads(liveCtx.acpSessionId, [
+                { id: input.messageId, version: expectedVersion },
+              ]);
+              if (payload === undefined) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "x.ai/queue/interject",
+                  detail: `Could not encode queued Grok message '${input.messageId}'.`,
+                });
+              }
+              liveCtx.pendingQueuedPromotionInterjections.add(input.messageId);
+              yield* liveCtx.acp.notify("x.ai/queue/interject", payload).pipe(
+                Effect.tapError(() =>
+                  Effect.sync(() => {
+                    liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                  }),
+                ),
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(PROVIDER, threadId, "x.ai/queue/interject", error),
+                ),
+              );
+              return { _tag: "Awaiting" as const, afterSequence, expectedVersion, signal };
+            }),
+          );
+          if (dispatched._tag === "Confirmed") return;
+
+          let signal = dispatched.signal;
+          while (true) {
+            yield* Deferred.await(signal);
+            const observation = yield* withThreadLock(
+              threadId,
+              Effect.gen(function* () {
+                const liveCtx = yield* requireSession(threadId);
+                if (liveCtx !== input.ctx) {
+                  input.ctx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                  return yield* new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "x.ai/queue/interject",
+                    detail: "The Grok session changed while confirming queued-message promotion.",
+                    failureKind: "retryable-upstream",
+                  });
+                }
+                if (liveCtx.queueSnapshotSequence > dispatched.afterSequence) {
+                  const currentVersion = liveCtx.queuedPromptVersions.get(input.messageId);
+                  if (currentVersion === undefined) {
+                    const failedAdmission = liveCtx.failedQueuedPromptAdmissions.get(
+                      input.messageId,
+                    );
+                    if (failedAdmission !== undefined) {
+                      liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                      return yield* new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: "x.ai/queue/interject",
+                        detail: failedAdmission,
+                        failureKind: "retryable-upstream",
+                      });
+                    }
+                    if (
+                      liveCtx.confirmedQueuedPromotionIds.has(input.messageId) ||
+                      liveCtx.queueRunningPromptId === input.messageId
+                    ) {
+                      liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                      liveCtx.confirmedQueuedPromotionIds.add(input.messageId);
+                      return { _tag: "Confirmed" as const };
+                    }
+                    const activeTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+                    if (
+                      liveCtx.session.status !== "running" ||
+                      !activeTurnId ||
+                      !liveCtx.queueRunningPromptId
+                    ) {
+                      liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                      return { _tag: "TurnEnded" as const };
+                    }
+                    return { _tag: "Waiting" as const, signal: liveCtx.queueChangedSignal };
+                  }
+                  const activeTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+                  if (
+                    liveCtx.session.status !== "running" ||
+                    !activeTurnId ||
+                    !liveCtx.queueRunningPromptId
+                  ) {
+                    liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                    return { _tag: "TurnEnded" as const };
+                  }
+                  if (currentVersion !== dispatched.expectedVersion) {
+                    liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                    return { _tag: "StaleVersion" as const };
+                  }
+                }
+                const activeTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+                if (liveCtx.session.status !== "running" || !activeTurnId) {
+                  liveCtx.pendingQueuedPromotionInterjections.delete(input.messageId);
+                  return { _tag: "TurnEnded" as const };
+                }
+                return { _tag: "Waiting" as const, signal: liveCtx.queueChangedSignal };
+              }),
+            );
+            if (observation._tag === "Waiting") {
+              signal = observation.signal;
+              continue;
+            }
+            if (observation._tag === "Confirmed") return;
+            if (observation._tag === "TurnEnded") {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "x.ai/queue/interject",
+                detail: `Grok's running turn ended before queued message '${input.messageId}' was promoted.`,
+                failureKind: "retryable-upstream",
+              });
+            }
+            break;
+          }
+        }
+        input.ctx.pendingQueuedPromotionInterjections.delete(input.messageId);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "x.ai/queue/interject",
+          detail: `Grok retained queued message '${input.messageId}' after promotion; its queue version stayed stale.`,
+          failureKind: "retryable-upstream",
+        });
+      });
+
+      const promoteAll = Effect.gen(function* () {
+        const targets = yield* waitForTargets();
+        // Promote and confirm one row at a time. Grok may publish one snapshot
+        // per interject, so batching notifications lets an early partial
+        // snapshot look like a failed or successful whole batch.
+        yield* Effect.forEach(
+          targets.messageIds,
+          (messageId) => promoteMessage({ ctx: targets.ctx, messageId }),
+          { discard: true },
+        );
+        return targets.receiptMessageIds.map((messageId) => MessageId.make(messageId));
+      });
+
+      return promoteAll.pipe(
+        Effect.catchTag(
+          "ProviderAdapterSessionNotFoundError",
+          () =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "x.ai/queue/interject",
+              detail: "The Grok session stopped before queued-message promotion completed.",
+              failureKind: "retryable-upstream",
+            }),
         ),
       );
     };
@@ -1980,6 +2354,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 status: "ready",
                 updatedAt,
               };
+              yield* signalQueueOrLifecycleChange(ctx);
             }
           }),
         );
@@ -2028,12 +2403,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           sessionId: ctx.acpSessionId,
           taskId: String(taskId),
         });
-        yield* ctx.acp.request(GROK_TASK_KILL_METHODS[0], payload).pipe(
-          Effect.catch(() => ctx.acp.request(GROK_TASK_KILL_METHODS[1], payload)),
-          Effect.mapError((error) =>
-            mapAcpToAdapterError(PROVIDER, threadId, GROK_TASK_KILL_METHODS[0], error),
-          ),
-        );
+        yield* ctx.acp
+          .request(GROK_TASK_KILL_METHODS[0], payload)
+          .pipe(
+            Effect.mapError((error) =>
+              mapAcpToAdapterError(PROVIDER, threadId, GROK_TASK_KILL_METHODS[0], error),
+            ),
+          );
       });
 
     const readThread: GrokAdapterShape["readThread"] = (threadId) =>
@@ -2093,7 +2469,11 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", taskStop: true },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        taskStop: true,
+        messageDeliveryReceipts: true,
+      },
       startSession,
       sendTurn,
       interruptTurn,

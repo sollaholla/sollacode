@@ -300,6 +300,17 @@ function retainProjectionActivitiesAfterRevert(
   );
 }
 
+function isTurnOutputActivity(activity: Pick<ProjectionThreadActivity, "kind">): boolean {
+  return (
+    activity.kind.startsWith("tool.") ||
+    activity.kind.startsWith("task.") ||
+    activity.kind.startsWith("reasoning.") ||
+    activity.kind.startsWith("turn.plan.") ||
+    activity.kind.startsWith("approval.") ||
+    activity.kind.startsWith("user-input.")
+  );
+}
+
 function retainProjectionProposedPlansAfterRevert(
   proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>,
   turns: ReadonlyArray<ProjectionTurn>,
@@ -425,6 +436,54 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
+
+    /**
+     * Read the immutable event-stream boundary for one exact user message.
+     * Client/provider clocks are not ordered with the server log, so neither
+     * message timestamps nor projection row order can decide whether newer
+     * user intent superseded a turn. Only the two resume prompt families are
+     * synthetic descendants; scheduled tasks, browser cleanup, and resolved
+     * blocker prompts still own the next work slot.
+     */
+    const getTurnStartCausality = Effect.fn("ProjectionPipeline.getTurnStartCausality")(
+      function* (input: { readonly threadId: ThreadId; readonly messageId: MessageId }) {
+        const rows = yield* sql<{
+          readonly sequence: number;
+          readonly hasLaterRealUserTurn: number;
+        }>`
+          SELECT
+            source.sequence AS sequence,
+            EXISTS (
+              SELECT 1
+              FROM orchestration_events AS later
+              WHERE later.aggregate_kind = 'thread'
+                AND later.stream_id = source.stream_id
+                AND later.event_type = 'thread.turn-start-requested'
+                AND later.sequence > source.sequence
+                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                  'agent-auto-resume-message:%'
+                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                  'startup-auto-resume-message:%'
+            ) AS "hasLaterRealUserTurn"
+          FROM orchestration_events AS source
+          WHERE source.aggregate_kind = 'thread'
+            AND source.stream_id = ${input.threadId}
+            AND source.event_type = 'thread.turn-start-requested'
+            AND json_extract(source.payload_json, '$.messageId') = ${input.messageId}
+          ORDER BY source.sequence DESC
+          LIMIT 1
+        `.pipe(
+          Effect.mapError(toPersistenceSqlError("ProjectionPipeline.getTurnStartCausality:query")),
+        );
+        const row = rows[0];
+        return row === undefined
+          ? null
+          : {
+              sequence: row.sequence,
+              hasLaterRealUserTurn: row.hasLaterRealUserTurn === 1,
+            };
+      },
+    );
 
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
@@ -1449,16 +1508,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             : null;
       if (owner === null) return;
 
-      const messages = yield* projectionThreadMessageRepository.listByThreadId({
-        threadId: input.threadId,
-      });
-      const producedOutput = messages.some(
-        (message) =>
-          message.role === "assistant" &&
-          message.turnId === input.turnId &&
-          !message.isStreaming &&
-          message.text.trim().length > 0,
-      );
+      const [messages, activities] = yield* Effect.all([
+        projectionThreadMessageRepository.listByThreadId({
+          threadId: input.threadId,
+        }),
+        projectionThreadActivityRepository.listByThreadId({
+          threadId: input.threadId,
+        }),
+      ]);
+      const producedOutput =
+        messages.some(
+          (message) =>
+            message.role === "assistant" &&
+            message.turnId === input.turnId &&
+            !message.isStreaming &&
+            (message.text.trim().length > 0 || (message.attachments?.length ?? 0) > 0),
+        ) ||
+        activities.some(
+          (activity) => activity.turnId === input.turnId && isTurnOutputActivity(activity),
+        );
       if (!producedOutput) return;
 
       const obligation = yield* threadWorkObligationRepository.getByKey({
@@ -2165,12 +2233,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // window, which permanently stalled agent threads: the gate has no
           // trigger after the assistant finalize, so one interleaved event
           // meant no continuation, ever.
-          session.value.updatedAt < turn.value.completedAt ||
-          (thread.value.latestUserMessageAt !== null &&
-            thread.value.latestUserMessageAt > turn.value.completedAt)
+          session.value.updatedAt < turn.value.completedAt
         ) {
           return;
         }
+
+        // A concrete source and its exact start event are required here. The
+        // live projector is processing that same durable log, so either one
+        // missing means projection catch-up is incomplete and must fail closed.
+        if (turn.value.pendingMessageId === null) return;
+        const sourceCausality = yield* getTurnStartCausality({
+          threadId: input.threadId,
+          messageId: turn.value.pendingMessageId,
+        });
+        if (sourceCausality === null || sourceCausality.hasLaterRealUserTurn) return;
 
         const messages = yield* projectionThreadMessageRepository.listByThreadId({
           threadId: input.threadId,
@@ -2186,46 +2262,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         if (isProviderAuthenticationFailure(assistantMessage.text)) return;
         if (!shouldAgentContinueAfterReply(assistantMessage.text)) return;
 
-        const sourceMessageIndex =
-          turn.value.pendingMessageId === null
-            ? -1
-            : messages.findIndex((message) => message.messageId === turn.value.pendingMessageId);
-        const sourceMessage = sourceMessageIndex < 0 ? undefined : messages[sourceMessageIndex];
-        if (turn.value.pendingMessageId !== null) {
-          if (
-            sourceMessage === undefined ||
-            sourceMessage.role !== "user" ||
-            sourceMessage.text.startsWith("Settings updated:")
-          ) {
-            return;
-          }
-        }
-        // A later queued turn may arrive after this turn's source but before
-        // this turn writes its assistant response. It is therefore invisible
-        // to the usual "messages after the assistant" check below. Apply the
-        // same priority rule from the immutable source boundary: a real user
-        // turn or browser cleanup owns the next work slot, while ordinary
-        // agent-loop messages remain eligible for normal continuation.
+        const sourceMessage = messages.find(
+          (message) => message.messageId === turn.value.pendingMessageId,
+        );
         if (
-          sourceMessageIndex >= 0 &&
-          messages
-            .slice(sourceMessageIndex + 1)
-            .some(
-              (message) =>
-                message.role === "user" &&
-                (message.inputOrigin !== "agent-loop" ||
-                  isBrowserTabCleanupMessageId(String(message.messageId))),
-            )
+          sourceMessage === undefined ||
+          sourceMessage.role !== "user" ||
+          sourceMessage.text.startsWith("Settings updated:")
         ) {
           return;
         }
-        // A real user message anywhere after the judged reply always outranks
-        // synthetic continuation — including on turn rows minted straight from
-        // an assistant message, which have no pending source pointer and used
-        // to skip this check entirely.
-        const assistantIndex = messages.findIndex(
-          (message) => message.messageId === assistantMessage.messageId,
-        );
         // A cleanup turn is housekeeping on behalf of the latest substantive
         // turn, not a fresh authorization to keep an Agent loop alive. Judge
         // both replies: the cleanup reply itself must be continuable (checked
@@ -2263,19 +2309,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             return;
           }
         }
-        if (
-          messages
-            .slice(assistantIndex + 1)
-            .some(
-              (message) =>
-                message.role === "user" &&
-                (message.inputOrigin !== "agent-loop" ||
-                  isBrowserTabCleanupMessageId(String(message.messageId))),
-            )
-        ) {
-          return;
-        }
-
         const kind = "agent-continuation" as const;
         const providerInstanceId =
           session.value.providerInstanceId ?? thread.value.modelSelection.instanceId;
@@ -2533,6 +2566,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           return;
         }
+        const sourceTurn = yield* projectionTurnRepository.getByTurnId({
+          threadId: event.payload.threadId,
+          turnId: event.payload.turnId,
+        });
+        if (Option.isNone(sourceTurn) || sourceTurn.value.pendingMessageId === null) return;
+        const sourceCausality = yield* getTurnStartCausality({
+          threadId: event.payload.threadId,
+          messageId: sourceTurn.value.pendingMessageId,
+        });
+        // Authentication recovery replays the failed source turn. If newer
+        // user intent already exists, that newer turn owns recovery instead;
+        // replacing it with an auth replay would run stale work after login.
+        if (sourceCausality === null || sourceCausality.hasLaterRealUserTurn) return;
         const thread = yield* projectionThreadRepository.getById({
           threadId: event.payload.threadId,
         });
@@ -3127,19 +3173,38 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 || thread_work_obligations.thread_id
                 || ':'
                 || thread_work_obligations.source_turn_id
-              AND EXISTS (
-                SELECT 1
-                FROM projection_thread_messages AS output
-                WHERE output.thread_id = resumed.thread_id
-                  AND output.turn_id = resumed.turn_id
-                  AND output.role = 'assistant'
-                  AND output.is_streaming = 0
-                  AND length(
-                    trim(
-                      output.text,
-                      ' ' || char(9) || char(10) || char(11) || char(12) || char(13)
+              AND (
+                EXISTS (
+                  SELECT 1
+                  FROM projection_thread_messages AS output
+                  WHERE output.thread_id = resumed.thread_id
+                    AND output.turn_id = resumed.turn_id
+                    AND output.role = 'assistant'
+                    AND output.is_streaming = 0
+                    AND (
+                      length(
+                        trim(
+                          output.text,
+                          ' ' || char(9) || char(10) || char(11) || char(12) || char(13)
+                        )
+                      ) > 0
+                      OR COALESCE(json_array_length(output.attachments_json), 0) > 0
                     )
-                  ) > 0
+                )
+                OR EXISTS (
+                  SELECT 1
+                  FROM projection_thread_activities AS output_activity
+                  WHERE output_activity.thread_id = resumed.thread_id
+                    AND output_activity.turn_id = resumed.turn_id
+                    AND (
+                      output_activity.kind LIKE 'tool.%'
+                      OR output_activity.kind LIKE 'task.%'
+                      OR output_activity.kind LIKE 'reasoning.%'
+                      OR output_activity.kind LIKE 'turn.plan.%'
+                      OR output_activity.kind LIKE 'approval.%'
+                      OR output_activity.kind LIKE 'user-input.%'
+                    )
+                )
               )
           )
         RETURNING thread_id AS "threadId"
@@ -3216,6 +3281,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly sourceMessageId: string | null;
           readonly sourceMessageText: string | null;
           readonly latestUserMessageAt: string | null;
+          readonly hasLaterRealUserTurn: number;
           readonly sessionStatus: string | null;
           readonly sessionUpdatedAt: string | null;
           readonly sessionLastError: string | null;
@@ -3223,6 +3289,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly providerInstanceId: string | null;
           readonly interactionMode: string;
           readonly turnRuntimeErrors: number;
+          readonly turnOutputActivities: number;
+          readonly assistantAttachmentCount: number;
         }>`
           SELECT
             threads.thread_id AS "threadId",
@@ -3235,11 +3303,46 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               WHERE failure.turn_id = turns.turn_id
                 AND failure.kind = 'runtime.error'
             ) AS "turnRuntimeErrors",
+            (
+              SELECT COUNT(*)
+              FROM projection_thread_activities output
+              WHERE output.turn_id = turns.turn_id
+                AND (
+                  output.kind LIKE 'tool.%'
+                  OR output.kind LIKE 'task.%'
+                  OR output.kind LIKE 'reasoning.%'
+                  OR output.kind LIKE 'turn.plan.%'
+                  OR output.kind LIKE 'approval.%'
+                  OR output.kind LIKE 'user-input.%'
+                )
+            ) AS "turnOutputActivities",
             assistant.text AS "assistantText",
+            COALESCE(json_array_length(assistant.attachments_json), 0)
+              AS "assistantAttachmentCount",
             assistant.updated_at AS "assistantUpdatedAt",
             source.message_id AS "sourceMessageId",
             source.text AS "sourceMessageText",
             threads.latest_user_message_at AS "latestUserMessageAt",
+            EXISTS (
+              SELECT 1
+              FROM orchestration_events AS later
+              WHERE later.aggregate_kind = 'thread'
+                AND later.stream_id = threads.thread_id
+                AND later.event_type = 'thread.turn-start-requested'
+                AND later.sequence > (
+                  SELECT MAX(source_start.sequence)
+                  FROM orchestration_events AS source_start
+                  WHERE source_start.aggregate_kind = 'thread'
+                    AND source_start.stream_id = threads.thread_id
+                    AND source_start.event_type = 'thread.turn-start-requested'
+                    AND json_extract(source_start.payload_json, '$.messageId') =
+                      turns.pending_message_id
+                )
+                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                  'agent-auto-resume-message:%'
+                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                  'startup-auto-resume-message:%'
+            ) AS "hasLaterRealUserTurn",
             sessions.status AS "sessionStatus",
             sessions.updated_at AS "sessionUpdatedAt",
             sessions.last_error AS "sessionLastError",
@@ -3290,6 +3393,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             isProviderAuthenticationFailure(row.assistantText ?? "") ||
             isProviderAuthenticationFailure(row.sessionLastError ?? "");
           const isAuthenticationPause =
+            row.interactionMode === "agent" &&
+            row.hasLaterRealUserTurn === 0 &&
             authenticationFailure &&
             (row.sessionStatus === "error" ||
               row.turnState === "incomplete" ||
@@ -3301,7 +3406,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             row.completedAt !== null &&
             row.sessionStatus === "ready" &&
             row.sessionUpdatedAt === row.completedAt &&
-            (row.latestUserMessageAt === null || row.latestUserMessageAt <= row.completedAt) &&
+            row.hasLaterRealUserTurn === 0 &&
             // Cleanup continuation is decided transactionally while the live
             // projection still has the substantive predecessor available.
             // Boot recovery intentionally fails closed here: synthesizing a
@@ -3334,11 +3439,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // message with no obligation of any kind ever created.
           const diedBeforeProducingOutput =
             row.turnState === "completed" &&
-            row.assistantText === null &&
+            (row.assistantText === null || row.assistantText.trim().length === 0) &&
+            row.assistantAttachmentCount === 0 &&
+            row.turnOutputActivities === 0 &&
             row.turnRuntimeErrors > 0;
           const isStartupResume =
             !authenticationFailure &&
             !isAgentContinuation &&
+            row.hasLaterRealUserTurn === 0 &&
             row.sessionFailureKind !== "local-control-timeout" &&
             (row.turnState === "incomplete" ||
               row.turnState === "error" ||
@@ -3347,12 +3455,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             // its loop; resuming it here contradicts the stop contract the
             // user saw (observed 2026-08-05: a restart resumed a signed-off
             // thread with no user input).
-            !(row.assistantText !== null && emittedAgentStop(row.assistantText)) &&
-            // A newer user message supersedes the dead turn; that send carries
-            // its own recovery obligation.
-            (row.latestUserMessageAt === null ||
-              settledAt === null ||
-              row.latestUserMessageAt <= settledAt);
+            !(row.assistantText !== null && emittedAgentStop(row.assistantText));
           if (!isAuthenticationPause && !isAgentContinuation && !isStartupResume) continue;
 
           const kind = isAuthenticationPause

@@ -181,6 +181,7 @@ const ProjectionThreadTurnStartContextRowSchema = Schema.Struct({
 const ProjectionProviderTurnForMessageRowSchema = Schema.Struct({
   turnId: TurnId,
   state: Schema.Literals(["running", "interrupted", "incomplete", "completed", "error"]),
+  sourceMessageId: Schema.optionalKey(Schema.NullOr(MessageId)),
 });
 const ProjectionActiveTurnDelegationRowSchema = Schema.Struct({
   delegationId: VmAgentDelegationId,
@@ -1261,7 +1262,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ON later_message.message_id = json_extract(later.payload_json, '$.messageId')
               AND later_message.thread_id = events.stream_id
               AND later_message.role = 'user'
-              AND COALESCE(later_message.input_origin, '') != 'agent-loop'
+              -- Scheduled tasks, browser cleanup, and resolved-blocker prompts
+              -- use the agent-loop origin but still own the next work slot.
+              -- Only the two synthetic resume families are not new intent.
+              AND later_message.message_id NOT LIKE 'agent-auto-resume-message:%'
               AND later_message.message_id NOT LIKE 'startup-auto-resume-message:%'
             WHERE later.aggregate_kind = 'thread'
               AND later.stream_id = events.stream_id
@@ -1291,7 +1295,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           turn_id AS "turnId",
-          state
+          state,
+          pending_message_id AS "sourceMessageId"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND pending_message_id = ${messageId}
@@ -1308,7 +1313,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           turn_id AS "turnId",
-          state
+          state,
+          pending_message_id AS "sourceMessageId"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND turn_id = ${turnId}

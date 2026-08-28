@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -164,6 +165,15 @@ export interface AcpSessionRuntimeOptions {
   };
 }
 
+export interface AcpSessionPromptOptions {
+  /** Runs after the matching native prompt request enters the ACP outgoing queue. */
+  readonly onNativeDispatch?: Effect.Effect<void>;
+}
+
+interface PendingNativePromptDispatch {
+  readonly onNativeDispatch: Effect.Effect<void>;
+}
+
 export interface AcpSessionRequestLogEvent {
   readonly method: string;
   readonly payload: unknown;
@@ -280,6 +290,7 @@ export class AcpSessionRuntime extends Context.Service<
      */
     readonly prompt: (
       payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
+      options?: AcpSessionPromptOptions,
     ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
     /**
      * Sends a real ACP `session/cancel` notification for the active session.
@@ -388,6 +399,9 @@ export const make = (
     const activePromptFibersRef = yield* Ref.make<
       ReadonlyArray<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
     >([]);
+    const pendingNativePromptDispatchesRef = yield* Ref.make<
+      ReadonlyMap<string, PendingNativePromptDispatch>
+    >(new Map());
     const sessionLoadGateRef = yield* Ref.make<Option.Option<SessionLoadGate>>(Option.none());
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
@@ -531,6 +545,42 @@ export const make = (
         .pipe(Effect.ignore);
     });
 
+    const resolveNativePromptDispatch = Effect.fn("AcpSessionRuntime.resolveNativePromptDispatch")(
+      function* (event: EffectAcpProtocol.AcpRequestEnqueuedEvent) {
+        if (
+          event.method !== "session/prompt" ||
+          !Predicate.hasProperty(event.payload, "messageId") ||
+          !Predicate.isString(event.payload.messageId)
+        ) {
+          return;
+        }
+        const messageId = event.payload.messageId;
+        const onNativeDispatch = yield* Ref.modify(pendingNativePromptDispatchesRef, (pending) => {
+          const registration = pending.get(messageId);
+          if (!registration) {
+            return [Effect.void, pending] as const;
+          }
+          const next = new Map(pending);
+          next.delete(messageId);
+          return [registration.onNativeDispatch, next] as const;
+        });
+        yield* onNativeDispatch;
+      },
+    );
+
+    const unregisterNativePromptDispatch = (
+      messageId: string,
+      registration: PendingNativePromptDispatch,
+    ) =>
+      Ref.update(pendingNativePromptDispatchesRef, (pending) => {
+        if (pending.get(messageId) !== registration) {
+          return pending;
+        }
+        const next = new Map(pending);
+        next.delete(messageId);
+        return next;
+      });
+
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
         ...(options.protocolLogging?.logIncoming !== undefined
@@ -540,6 +590,7 @@ export const make = (
           ? { logOutgoing: options.protocolLogging.logOutgoing }
           : {}),
         ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
+        onRequestEnqueued: resolveNativePromptDispatch,
       }),
     ).pipe(Effect.provideService(Scope.Scope, runtimeScope));
 
@@ -934,25 +985,55 @@ export const make = (
       }),
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
-      prompt: (payload) => {
+      prompt: (payload, promptOptions) => {
         const sendPrompt = Effect.gen(function* () {
           const started = yield* getStartedState;
           yield* closeActiveAssistantSegment({
             queue: eventQueue,
             assistantSegmentRef,
           });
+          let messageId = typeof payload.messageId === "string" ? payload.messageId : undefined;
+          if (messageId === undefined && promptOptions?.onNativeDispatch) {
+            messageId = yield* crypto.randomUUIDv4.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new EffectAcpErrors.AcpTransportError({
+                    detail: "Failed to generate an ACP prompt message identifier.",
+                    cause,
+                  }),
+              ),
+            );
+          }
           const requestPayload = {
             sessionId: started.sessionId,
             ...payload,
+            ...(messageId === undefined ? {} : { messageId }),
           } satisfies EffectAcpSchema.PromptRequest;
           const cancelledResponse = {
             stopReason: "cancelled",
           } satisfies EffectAcpSchema.PromptResponse;
-          const promptRpcFiber = yield* runLoggedRequest(
-            "session/prompt",
-            requestPayload,
-            acp.agent.prompt(requestPayload),
-          ).pipe(Effect.forkIn(runtimeScope));
+          const nativeDispatchRegistration = promptOptions?.onNativeDispatch
+            ? { onNativeDispatch: promptOptions.onNativeDispatch }
+            : undefined;
+          const promptRpc = Effect.gen(function* () {
+            if (nativeDispatchRegistration && messageId !== undefined) {
+              yield* Ref.update(pendingNativePromptDispatchesRef, (pending) =>
+                new Map(pending).set(messageId, nativeDispatchRegistration),
+              );
+            }
+            return yield* runLoggedRequest(
+              "session/prompt",
+              requestPayload,
+              acp.agent.prompt(requestPayload),
+            );
+          }).pipe(
+            Effect.ensuring(
+              nativeDispatchRegistration && messageId !== undefined
+                ? unregisterNativePromptDispatch(messageId, nativeDispatchRegistration)
+                : Effect.void,
+            ),
+          );
+          const promptRpcFiber = yield* promptRpc.pipe(Effect.forkIn(runtimeScope));
           yield* Ref.update(activePromptFibersRef, (fibers) => [...fibers, promptRpcFiber]);
           return yield* Fiber.join(promptRpcFiber).pipe(
             Effect.catchCause((cause) =>

@@ -13,6 +13,7 @@ import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts"
 import { ThreadPendingWorkSignalLive } from "./ThreadPendingWorkSignal.ts";
 import {
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
+  SYNTHETIC_DISPATCH_ADMITTED_REASON,
   CancelThreadWorkByThreadInput,
   ClaimThreadWorkInput,
   HeartbeatThreadWorkClaimInput,
@@ -27,6 +28,7 @@ import {
   ThreadWorkObligationRepository,
   ThreadWorkQueueSummary,
   TransitionThreadWorkInput,
+  TryAdmitSyntheticDispatchInput,
   type ThreadWorkObligationRepositoryShape,
 } from "../Services/ThreadWorkObligations.ts";
 
@@ -430,6 +432,50 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const tryAdmitSyntheticDispatchRow = SqlSchema.findOneOption({
+    Request: TryAdmitSyntheticDispatchInput,
+    Result: ReturnedId,
+    execute: (input) => sql`
+      UPDATE thread_work_obligations AS work
+      SET
+        blocked_reason = ${SYNTHETIC_DISPATCH_ADMITTED_REASON},
+        updated_at = ${input.updatedAt}
+      WHERE work.obligation_id = ${input.obligationId}
+        AND work.state = 'executing'
+        AND work.attempt = ${input.expectedAttempt}
+        AND work.kind IN ('agent-continuation', 'startup-resume', 'authentication-resume')
+        AND EXISTS (
+            SELECT 1
+            FROM orchestration_events AS source_event
+            WHERE source_event.aggregate_kind = 'thread'
+              AND source_event.stream_id = work.thread_id
+              AND source_event.event_type = 'thread.turn-start-requested'
+              AND json_extract(source_event.payload_json, '$.messageId') = COALESCE(
+                ${input.sourceMessageId ?? null},
+                (
+                  SELECT source_turn.pending_message_id
+                  FROM projection_turns AS source_turn
+                  WHERE source_turn.thread_id = work.thread_id
+                    AND source_turn.turn_id = work.source_turn_id
+                    AND source_turn.pending_message_id IS NOT NULL
+                  LIMIT 1
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM orchestration_events AS later
+                WHERE later.aggregate_kind = 'thread'
+                  AND later.stream_id = source_event.stream_id
+                  AND later.event_type = 'thread.turn-start-requested'
+                  AND later.sequence > source_event.sequence
+                  AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'agent-auto-resume-message:%'
+                  AND json_extract(later.payload_json, '$.messageId') NOT LIKE 'startup-auto-resume-message:%'
+              )
+        )
+      RETURNING obligation_id AS "obligationId"
+    `,
+  });
+
   const cancelRowsByThread = SqlSchema.findAll({
     Request: CancelThreadWorkByThreadInput,
     Result: ReturnedId,
@@ -452,12 +498,21 @@ const make = Effect.gen(function* () {
         AND (
           ${input.mode} <> 'user-supersede'
           OR state NOT IN ('claimed', 'executing')
-          -- A claimed-but-not-yet-running agent continuation is the one piece
-          -- of claimed work a user reply must beat: the handler's own CAS to
-          -- 'executing' fails on the cancelled row, so the synthetic prompt
-          -- is never dispatched over the user's message. Executing rows stay
-          -- exempt — cancelling live supervision mid-turn is the 0.1.55 wedge.
-          OR (kind = 'agent-continuation' AND state = 'claimed')
+          -- A claimed-but-not-yet-running synthetic resume is work a user
+          -- reply must beat: the handler's own CAS to 'executing' fails on the
+          -- cancelled row, so the synthetic prompt is never dispatched over
+          -- the user's message. Ordinary executing supervisors stay exempt —
+          -- cancelling live supervision mid-turn is the 0.1.55 wedge.
+          OR (
+            kind IN ('agent-continuation', 'startup-resume', 'authentication-resume')
+            AND (
+              state = 'claimed'
+              OR (
+                state = 'executing'
+                AND blocked_reason IS NOT ${SYNTHETIC_DISPATCH_ADMITTED_REASON}
+              )
+            )
+          )
         )
       RETURNING obligation_id AS "obligationId"
     `,
@@ -757,6 +812,11 @@ const make = Effect.gen(function* () {
         ),
     heartbeatClaim: (input) =>
       heartbeatClaimRow(input).pipe(mapError("heartbeatClaim"), Effect.map(Option.isSome)),
+    tryAdmitSyntheticDispatch: (input) =>
+      tryAdmitSyntheticDispatchRow(input).pipe(
+        mapError("tryAdmitSyntheticDispatch"),
+        Effect.map(Option.isSome),
+      ),
     cancelByThread: (input) =>
       sql
         .withTransaction(

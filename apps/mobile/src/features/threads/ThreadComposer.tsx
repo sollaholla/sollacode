@@ -68,7 +68,10 @@ import {
 } from "../../lib/providerOptions";
 import { useComposerPathSearch } from "../../state/use-composer-path-search";
 import { ComposerCommandPopover, type ComposerCommandItem } from "./ComposerCommandPopover";
-import { resolveThreadComposerPrimaryAction } from "./threadComposerPrimaryAction";
+import {
+  resolveThreadComposerPrimaryAction,
+  resolveThreadComposerSubmitAction,
+} from "./threadComposerPrimaryAction";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -101,6 +104,7 @@ export interface ThreadComposerProps {
   readonly serverConfig: T3ServerConfig | null;
   readonly queueCount: number;
   readonly hasQueuedSendNow: boolean;
+  readonly isPromotingQueuedMessages: boolean;
   readonly activeThreadBusy: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
@@ -111,6 +115,7 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onPromoteQueuedMessages: () => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -285,9 +290,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     connectionConnected: props.connectionState === "connected",
     hasContent,
     hasQueuedSendNow: props.hasQueuedSendNow,
+    isPromotingQueued: props.isPromotingQueuedMessages,
     queueCount: props.queueCount,
   });
-  const { canSend, sendLabel, showStopAction } = primaryAction;
+  const {
+    canPromoteQueued,
+    canSend,
+    queuedPromotionLabel,
+    sendLabel,
+    showQueuedPromotionAction,
+    showStopAction,
+  } = primaryAction;
 
   const onPressImage = useCallback(
     (uri: string) => {
@@ -512,9 +525,22 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [composerTrigger, pathSearch.entries, selectedProviderStatus]);
 
   // ── Handle command selection ──────────────────────────────
-  const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
+  const {
+    onChangeDraftMessage,
+    onUpdateInteractionMode,
+    draftMessage,
+    hasQueuedSendNow,
+    onPromoteQueuedMessages,
+    onSendMessage,
+  } = props;
 
   const handleSend = useCallback(async () => {
+    const submitAction = resolveThreadComposerSubmitAction({ hasContent, hasQueuedSendNow });
+    if (submitAction === "promote-queued") {
+      onPromoteQueuedMessages();
+      return;
+    }
+    if (submitAction === null) return;
     const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
     if (inFlightThreadIdsRef.current.has(threadKey)) return;
     inFlightThreadIdsRef.current.add(threadKey);
@@ -523,7 +549,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     } finally {
       inFlightThreadIdsRef.current.delete(threadKey);
     }
-  }, [onSendMessage, props.environmentId, props.selectedThread.id]);
+  }, [
+    hasContent,
+    hasQueuedSendNow,
+    onPromoteQueuedMessages,
+    onSendMessage,
+    props.environmentId,
+    props.selectedThread.id,
+  ]);
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;
@@ -824,7 +857,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             </View>
           ) : null}
           {!isExpanded ? (
-            <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(100)}>
+            <Animated.View
+              className="flex-row items-center gap-1.5"
+              entering={FadeIn.duration(180)}
+              exiting={FadeOut.duration(100)}
+            >
+              {showQueuedPromotionAction ? (
+                <ControlPill
+                  accessibilityLabel={queuedPromotionLabel}
+                  label={props.isPromotingQueuedMessages ? "Sending queued…" : "Send queued now"}
+                  variant="pill"
+                  disabled={!canPromoteQueued}
+                  onPress={props.onPromoteQueuedMessages}
+                />
+              ) : null}
               {showStopAction ? (
                 <ControlPill icon="stop.fill" variant="danger" onPress={props.onStopThread} />
               ) : (
@@ -847,6 +893,24 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 fadeOpaque={toolbarFadeOpaque}
                 fadeTransparent={toolbarFadeTransparent}
               >
+                {showQueuedPromotionAction ? (
+                  <ComposerToolbarButton
+                    accessibilityLabel={queuedPromotionLabel}
+                    label={props.isPromotingQueuedMessages ? "Sending queued…" : "Send queued now"}
+                    disabled={!canPromoteQueued}
+                    onPress={props.onPromoteQueuedMessages}
+                    showChevron={false}
+                  />
+                ) : null}
+                {showStopAction && showQueuedPromotionAction ? (
+                  <ComposerToolbarButton
+                    accessibilityLabel="Stop"
+                    icon="stop.fill"
+                    variant="danger"
+                    onPress={props.onStopThread}
+                    showChevron={false}
+                  />
+                ) : null}
                 <ComposerToolbarButton
                   accessibilityLabel="Add attachment"
                   icon="plus"
@@ -875,7 +939,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     label={configurationLabel}
                   />
                 </ControlPillMenu>
-                {showStopAction ? (
+                {showStopAction && !showQueuedPromotionAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"
                     icon="stop.fill"

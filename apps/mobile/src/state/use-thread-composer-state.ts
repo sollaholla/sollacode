@@ -14,6 +14,7 @@ import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { uuidv4 } from "../lib/uuid";
 import {
   convertPastedImagesToAttachments,
   pasteComposerClipboard,
@@ -41,7 +42,14 @@ import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
 import { composerFocusRequestsAtom, consumeComposerFocusRequest } from "./composer-focus-requests";
-import { queuedTurnMessageIds, requestQueuedTurnPromotion } from "./thread-queued-turn-promotion";
+import {
+  clearQueuedTurnPromotionRequest,
+  orderedQueuedTurnPromotionMessageIds,
+  queuedTurnMessageIds,
+  queuedTurnPromotionRequestsAtom,
+  queuedTurnPromotionOutcome,
+  requestQueuedTurnPromotion,
+} from "./thread-queued-turn-promotion";
 
 export function appendReviewCommentToDraft(input: {
   readonly environmentId: EnvironmentId;
@@ -79,6 +87,7 @@ export function useThreadComposerState() {
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
+  const queuedTurnPromotionRequests = useAtomValue(queuedTurnPromotionRequestsAtom);
   const composerFocusRequests = useAtomValue(composerFocusRequestsAtom);
 
   useEffect(() => {
@@ -153,10 +162,62 @@ export function useThreadComposerState() {
         : [],
     [activeWorkStartedAt, selectedThreadDetail],
   );
+  const localQueuedMessageIds = useMemo(
+    () => selectedThreadQueuedMessages.map((message) => message.messageId),
+    [selectedThreadQueuedMessages],
+  );
+  const serverProjectedMessageIds = useMemo(
+    () => selectedThreadDetail?.messages.map((message) => message.id) ?? [],
+    [selectedThreadDetail],
+  );
   const hasQueuedSendNow =
     activeThreadBusy &&
     selectedThread?.session?.providerName?.toLowerCase() === "grok" &&
     (selectedThreadQueueCount > 0 || serverQueuedMessageIds.length > 0);
+  const queuedSendNowMessageIds = useMemo(
+    () =>
+      orderedQueuedTurnPromotionMessageIds({
+        localMessages: selectedThreadQueuedMessages,
+        serverMessages: selectedThreadDetail?.messages ?? [],
+        serverQueuedMessageIds,
+      }),
+    [selectedThreadDetail, selectedThreadQueuedMessages, serverQueuedMessageIds],
+  );
+  const queuedTurnPromotionState =
+    selectedThreadKey !== null ? queuedTurnPromotionRequests[selectedThreadKey] : undefined;
+  const isPromotingQueuedMessages = queuedTurnPromotionState !== undefined;
+
+  useEffect(() => {
+    if (!selectedThreadShell || !selectedThreadDetail || !queuedTurnPromotionState) {
+      return;
+    }
+    const outcome = queuedTurnPromotionOutcome({
+      state: queuedTurnPromotionState,
+      projectedMessageIds: serverProjectedMessageIds,
+      activities: selectedThreadDetail.activities,
+    });
+    if (outcome === null) return;
+    clearQueuedTurnPromotionRequest(queuedTurnPromotionState);
+    if (outcome.status === "failed") {
+      setPendingConnectionError(outcome.detail);
+    }
+  }, [
+    queuedTurnPromotionState,
+    selectedThreadDetail,
+    selectedThreadShell,
+    serverProjectedMessageIds,
+  ]);
+
+  const onPromoteQueuedMessages = useCallback(() => {
+    if (!selectedThreadShell || !hasQueuedSendNow) return;
+    requestQueuedTurnPromotion({
+      commandId: CommandId.make(uuidv4()),
+      environmentId: selectedThreadShell.environmentId,
+      messageIds: queuedSendNowMessageIds,
+      serverProjectionRequiredMessageIds: localQueuedMessageIds,
+      threadId: selectedThreadShell.id,
+    });
+  }, [hasQueuedSendNow, localQueuedMessageIds, queuedSendNowMessageIds, selectedThreadShell]);
 
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -169,12 +230,7 @@ export function useThreadComposerState() {
     const text = draft.text.trim();
     const attachments = draft.attachments;
     if (text.length === 0 && attachments.length === 0) {
-      if (hasQueuedSendNow) {
-        requestQueuedTurnPromotion({
-          environmentId: selectedThreadShell.environmentId,
-          threadId: selectedThreadShell.id,
-        });
-      }
+      onPromoteQueuedMessages();
       return null;
     }
 
@@ -201,7 +257,7 @@ export function useThreadComposerState() {
       );
       return null;
     }
-  }, [hasQueuedSendNow, selectedThreadDetail, selectedThreadShell]);
+  }, [onPromoteQueuedMessages, selectedThreadDetail, selectedThreadShell]);
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -325,6 +381,7 @@ export function useThreadComposerState() {
     selectedThreadFeed,
     selectedThreadQueueCount: selectedThreadQueueCount + serverQueuedMessageIds.length,
     hasQueuedSendNow,
+    isPromotingQueuedMessages,
     composerFocusRequest,
     onConsumeComposerFocusRequest,
     activeWorkStartedAt,
@@ -340,6 +397,7 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    onPromoteQueuedMessages,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

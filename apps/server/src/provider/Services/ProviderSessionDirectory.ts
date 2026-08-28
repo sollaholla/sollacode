@@ -34,6 +34,13 @@ export interface ProviderRuntimeBindingWithMetadata extends ProviderRuntimeBindi
   readonly lastSeenAt: string;
 }
 
+export interface ProviderRuntimeBindingExpectation {
+  readonly provider: ProviderDriverKind;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly status: ProviderSessionRuntimeStatus;
+  readonly sessionGeneration: string | null;
+}
+
 export type ProviderSessionDirectoryReadError = ProviderSessionDirectoryPersistenceError;
 
 export type ProviderSessionDirectoryWriteError =
@@ -44,6 +51,11 @@ export interface ProviderSessionDirectoryShape {
   readonly upsert: (
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
+
+  readonly upsertIfCurrent: (
+    binding: ProviderRuntimeBinding,
+    expected: ProviderRuntimeBindingExpectation,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
 
   readonly getProvider: (
     threadId: ThreadId,

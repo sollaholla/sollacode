@@ -1013,6 +1013,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.queued-turn-promote-requested",
         payload: {
           threadId: command.threadId,
+          ...(command.messageIds !== undefined ? { messageIds: command.messageIds } : {}),
           createdAt: command.createdAt,
         },
       };

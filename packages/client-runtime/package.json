@@ -155,6 +155,10 @@
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"
     },
+    "./state/queued-turn-promotion": {
+      "types": "./src/state/queuedTurnPromotion.ts",
+      "default": "./src/state/queuedTurnPromotion.ts"
+    },
     "./state/thread-search": {
       "types": "./src/state/threadSearch.ts",
       "default": "./src/state/threadSearch.ts"

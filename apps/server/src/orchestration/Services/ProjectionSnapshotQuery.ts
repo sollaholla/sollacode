@@ -94,6 +94,8 @@ export interface ProjectionPersistedTurnStartContext {
 export interface ProjectionProviderTurnForMessage {
   readonly turnId: TurnId;
   readonly state: OrchestrationLatestTurn["state"];
+  /** Immutable user message that launched this turn, when the projection has one. */
+  readonly sourceMessageId?: MessageId | null;
 }
 
 /**

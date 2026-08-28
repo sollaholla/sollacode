@@ -31,8 +31,17 @@ const SessionCancelNotification = jsonRpcNotification(
   "session/cancel",
   AcpSchema.CancelNotification,
 );
-const ExtPingNotification = jsonRpcNotification("x/ping", Schema.Struct({ count: Schema.Number }));
-const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
+const ExtPingNotification = jsonRpcNotification("_x/ping", Schema.Struct({ count: Schema.Number }));
+const ExtRequest = jsonRpcRequest("_x/test", Schema.Struct({ hello: Schema.String }));
+const RawExtRequest = jsonRpcRequest("_x.ai/raw_request", Schema.Struct({ hello: Schema.String }));
+const RawExtNotification = jsonRpcNotification(
+  "_x.ai/interject",
+  Schema.Struct({ text: Schema.String }),
+);
+const ClientExtNotification = jsonRpcNotification(
+  "_x.ai/client_notification",
+  Schema.Struct({ count: Schema.Number }),
+);
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
 const decodeRequestPermissionRequest = Schema.decodeEffect(
   Schema.fromJsonString(RequestPermissionRequest),
@@ -166,7 +175,7 @@ it.effect("effect-acp agent handles core agent requests and outbound client requ
         input,
         yield* encodeJsonl(ExtPingNotification, {
           jsonrpc: "2.0",
-          method: "x/ping",
+          method: "_x/ping",
           params: { count: 2 },
         }),
       );
@@ -251,5 +260,49 @@ it.effect("effect-acp agent uses distinct ids for RPC calls and extension reques
       assert.equal(permission.outcome.outcome, "selected");
       assert.deepEqual(yield* Fiber.join(extFiber), { ok: true });
     }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+  }),
+);
+
+it.effect("effect-acp agent prefixes raw and client extension methods on the wire", () =>
+  Effect.gen(function* () {
+    const { stdio, input, output } = yield* makeInMemoryStdio();
+    const scope = yield* Scope.make();
+    const agent = yield* AcpAgent.make(stdio).pipe(Effect.provideService(Scope.Scope, scope));
+
+    yield* Effect.gen(function* () {
+      yield* agent.raw.notify("x.ai/interject", { text: "one more thing" });
+      const decodeRawNotification = Schema.decodeEffect(Schema.fromJsonString(RawExtNotification));
+      assert.deepEqual(yield* decodeRawNotification(yield* Queue.take(output)), {
+        jsonrpc: "2.0",
+        method: "_x.ai/interject",
+        params: { text: "one more thing" },
+      });
+
+      yield* agent.client.extNotification("x.ai/client_notification", { count: 2 });
+      const decodeClientNotification = Schema.decodeEffect(
+        Schema.fromJsonString(ClientExtNotification),
+      );
+      assert.deepEqual(yield* decodeClientNotification(yield* Queue.take(output)), {
+        jsonrpc: "2.0",
+        method: "_x.ai/client_notification",
+        params: { count: 2 },
+      });
+
+      const response = yield* agent.raw
+        .request("x.ai/raw_request", { hello: "world" })
+        .pipe(Effect.forkScoped);
+      const decodeRawRequest = Schema.decodeEffect(Schema.fromJsonString(RawExtRequest));
+      const request = yield* decodeRawRequest(yield* Queue.take(output));
+      assert.equal(request.method, "_x.ai/raw_request");
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtResponse, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: { ok: true },
+        }),
+      );
+      assert.deepEqual(yield* Fiber.join(response), { ok: true });
+    }).pipe(Effect.ensuring(Scope.close(scope, Exit.void)));
   }),
 );
