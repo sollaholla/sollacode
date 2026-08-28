@@ -2895,8 +2895,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* Effect.logInfo("Preview guest attached to a browser session.", {
       tabId,
       webContentsId,
-      storagePath: wc.session.storagePath,
-      isPersistent: wc.session.isPersistent(),
+      // Read defensively: this is diagnostics, and a guest whose session is
+      // not introspectable is not a reason to fail the attach it describes.
+      storagePath: wc.session?.storagePath ?? null,
+      isPersistent: wc.session?.isPersistent?.() ?? null,
     });
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
