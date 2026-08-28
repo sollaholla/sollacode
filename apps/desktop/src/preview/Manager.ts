@@ -6459,6 +6459,7 @@ export class PreviewManager extends Context.Service<
     readonly clearCookies: () => Effect.Effect<void, PreviewManagerError>;
     readonly clearCache: () => Effect.Effect<void, PreviewManagerError>;
     readonly getBrowserPartition: (scope?: string) => Effect.Effect<string, PreviewManagerError>;
+    readonly adoptLegacyBrowserProfile: (scope: string) => Effect.Effect<void, PreviewManagerError>;
     readonly setDownloadDirectory: (
       scope: string,
       directory: string,
@@ -6602,6 +6603,18 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           Effect.mapError((cause) => new PreviewOperationError({ operation: "clearCache", cause })),
         );
     }),
+    adoptLegacyBrowserProfile: Effect.fn("PreviewManager.adoptLegacyBrowserProfile")(
+      function* (scope) {
+        yield* browserSession
+          .adoptLegacyProfile(scope)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PreviewOperationError({ operation: "adoptLegacyBrowserProfile", cause }),
+            ),
+          );
+      },
+    ),
     getBrowserPartition: Effect.fn("PreviewManager.getBrowserPartition")(function* (scope) {
       return yield* browserSession
         .getPartition(scope)

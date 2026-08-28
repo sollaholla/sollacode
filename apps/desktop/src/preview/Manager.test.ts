@@ -114,6 +114,7 @@ const browserSessionLayer = Layer.succeed(
     },
     getPartition: () => Effect.succeed("persist:t3code-preview-test"),
     isPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
+    adoptLegacyProfile: () => Effect.void,
     getSession: () => Effect.die("unexpected getSession"),
     clearCookies: () => Effect.void,
     clearCache: () => Effect.void,

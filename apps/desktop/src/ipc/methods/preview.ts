@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as NodeURL from "node:url";
 
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
+import { previewBrowserProfileScope } from "../../preview/browserProfileScope.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
 import { PREVIEW_WEBVIEW_PREFERENCES } from "../../preview/WebviewPreferences.ts";
 import * as IpcChannels from "../channels.ts";
@@ -222,17 +223,17 @@ export const getPreviewConfig = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_GET_CONFIG_CHANNEL,
   payload: DesktopPreviewConfigInputSchema,
   result: DesktopPreviewWebviewConfigSchema,
-  handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({
-    environmentId,
-    threadId,
-    browserProfileThreadId,
-  }) {
+  handler: Effect.fn("desktop.ipc.preview.getConfig")(function* ({ environmentId }) {
     const manager = yield* PreviewManager.PreviewManager;
-    // Per-thread partitions: each conversation — and therefore each agent,
-    // which owns exactly one thread — keeps its own cookies, logins, and
-    // cache. Threadless callers fall back to the environment-wide profile.
-    const profileThreadId = browserProfileThreadId ?? threadId;
-    const scope = profileThreadId ? `${environmentId}:thread:${profileThreadId}` : environmentId;
+    // One browser profile per environment, shared by every thread and agent.
+    //
+    // These used to be per-thread, which meant each conversation opened an
+    // empty cookie jar: the user signed into YouTube in one thread and an
+    // agent in another read `LOGGED_IN: false` on the very same site, with no
+    // way to hand the session across. Sharing the profile is what makes "the
+    // agent sees what I see" true.
+    const scope = previewBrowserProfileScope(environmentId);
+    yield* manager.adoptLegacyBrowserProfile(scope);
     yield* manager.getBrowserSession(scope);
     return {
       partition: yield* manager.getBrowserPartition(scope),
@@ -248,16 +249,12 @@ export const setPreviewDownloadDirectory = DesktopIpc.makeIpcMethod({
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.preview.setDownloadDirectory")(function* ({
     environmentId,
-    threadId,
-    browserProfileThreadId,
     directory,
   }) {
     const manager = yield* PreviewManager.PreviewManager;
     // The same scope `getConfig` derives, so the directory lands on the very
-    // partition the thread's tabs actually download through.
-    const profileThreadId = browserProfileThreadId ?? threadId;
-    const scope = profileThreadId ? `${environmentId}:thread:${profileThreadId}` : environmentId;
-    yield* manager.setDownloadDirectory(scope, directory);
+    // partition the environment's tabs actually download through.
+    yield* manager.setDownloadDirectory(previewBrowserProfileScope(environmentId), directory);
   }),
 });
 
