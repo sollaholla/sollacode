@@ -44,6 +44,27 @@ describe("selectLegacyBrowserProfile", () => {
     expect(selectLegacyBrowserProfile([])).toBeNull();
   });
 
+  it("still adopts when the shared jar exists but is the staler one", () => {
+    // The environment-wide profile already existed as the old threadless
+    // fallback. Its Google session had expired months ago, so treating "the
+    // target exists" as done left every thread signed out — the exact bug.
+    expect(
+      selectLegacyBrowserProfile([
+        { directory: "t3code-preview-environment-wide", cookieBytes: 94_208 },
+        { directory: "t3code-preview-signed-in-today", cookieBytes: 163_840 },
+      ]),
+    ).toBe("t3code-preview-signed-in-today");
+  });
+
+  it("leaves the shared jar alone once it is already the richest", () => {
+    expect(
+      selectLegacyBrowserProfile([
+        { directory: "t3code-preview-shared", cookieBytes: 200_000 },
+        { directory: "t3code-preview-old", cookieBytes: 4_096 },
+      ]),
+    ).toBe("t3code-preview-shared");
+  });
+
   it("picks the same jar every run when two are the same size", () => {
     const profiles = [
       { directory: "t3code-preview-bbb", cookieBytes: 4_096 },

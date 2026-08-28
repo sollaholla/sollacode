@@ -393,8 +393,8 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     const partition = yield* getPartition(scope);
     yield* Effect.sync(() => {
       const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
-      const target = NodePath.join(partitionsDir, partition.slice("persist:".length));
-      if (NodeFS.existsSync(target)) return;
+      if (!NodeFS.existsSync(partitionsDir)) return;
+      const targetName = partition.slice("persist:".length);
       const profiles = NodeFS.readdirSync(partitionsDir, { withFileTypes: true }).flatMap(
         (entry) => {
           if (!entry.isDirectory() || !entry.name.startsWith(PARTITION_DIRECTORY_PREFIX)) return [];
@@ -405,8 +405,19 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           return [{ directory: entry.name, cookieBytes }];
         },
       );
+      // The target is one of the candidates. The environment-wide profile
+      // already existed as the old threadless fallback, and its sessions had
+      // long since expired — landing everyone on it read exactly like the bug
+      // it was meant to fix, so an existing target is not on its own a reason
+      // to stop.
       const adopted = selectLegacyBrowserProfile(profiles);
-      if (adopted === null) return;
+      if (adopted === null || adopted === targetName) return;
+      const target = NodePath.join(partitionsDir, targetName);
+      if (NodeFS.existsSync(target)) {
+        // Moved aside rather than removed: it is the user's browsing history,
+        // and a wrong pick here should be recoverable by hand.
+        NodeFS.renameSync(target, `${target}.superseded-${Date.now()}`);
+      }
       NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
     }).pipe(
       // A profile that cannot be adopted is not worth failing preview over:
