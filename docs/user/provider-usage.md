@@ -2,6 +2,8 @@
 
 Enable the provider usage pill in **Settings > General** to see account-level quota information
 above the composer. The same information appears on each provider in **Settings > Providers**.
+On a mouse-and-keyboard desktop, hover opens the details popup and clicking away dismisses it;
+it does not reopen when focus returns to the pill. Touch stays tap-to-toggle.
 Refresh acts on the selected provider instance, so separate work and personal accounts keep their
 own usage state.
 
