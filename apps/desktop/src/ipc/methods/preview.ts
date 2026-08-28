@@ -235,8 +235,12 @@ export const getPreviewConfig = DesktopIpc.makeIpcMethod({
     const scope = previewBrowserProfileScope(environmentId);
     yield* manager.adoptLegacyBrowserProfile(scope);
     yield* manager.getBrowserSession(scope);
+    const partition = yield* manager.getBrowserPartition(scope);
+    // Which jar a guest attached to is otherwise invisible from outside the
+    // process, and "the agent sees a logged-out page" is almost always this.
+    yield* Effect.logInfo("Resolved a preview browser profile.", { scope, partition });
     return {
-      partition: yield* manager.getBrowserPartition(scope),
+      partition,
       webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
       preloadUrl: NodeURL.pathToFileURL(`${__dirname}/preview-pick-preload.cjs`).href,
     };
