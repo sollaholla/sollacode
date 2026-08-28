@@ -8454,6 +8454,112 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
         }),
     );
 
+    // Observed 2026-08-28 on thread e526d4c2: Grok follow-ups during a live
+    // turn emit thread.turn-start-requested and are then delivered into that
+    // same turn. The restart scan treated those starts as later user intent
+    // and skipped startup-resume, so the user had to press Resume by hand.
+    it.effect(
+      "enqueues a startup resume when later starts were delivered into the incomplete turn",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = "thread-queued-followup-resume";
+          const turnId = "turn-queued-followup-resume";
+          const sourceMessageId = "message-queued-followup-source";
+          const followUpMessageId = "message-queued-followup-later";
+
+          yield* seedThread({
+            threadId,
+            turnId,
+            assistantMessageId: "assistant-queued-followup-resume",
+            turnState: "incomplete",
+            isStreaming: 0,
+            sessionStatus: "stopped",
+            activeTurnId: null,
+            completedAt: "2026-08-28T16:45:23.000Z",
+            assistantText: "Still placing the aisle board.",
+            pendingMessageId: sourceMessageId,
+          });
+
+          const insertEvent = (input: {
+            readonly eventId: string;
+            readonly streamVersion: number;
+            readonly eventType: string;
+            readonly occurredAt: string;
+            readonly payload: string;
+          }) =>
+            sql`
+            INSERT INTO orchestration_events (
+              event_id, aggregate_kind, stream_id, stream_version, event_type,
+              occurred_at, command_id, causation_event_id, correlation_id,
+              actor_kind, payload_json, metadata_json
+            ) VALUES (
+              ${input.eventId}, 'thread', ${threadId}, ${input.streamVersion},
+              ${input.eventType}, ${input.occurredAt}, ${`cmd-${input.eventId}`},
+              NULL, ${`cmd-${input.eventId}`}, 'client', ${input.payload}, '{}'
+            )
+          `;
+
+          yield* insertEvent({
+            eventId: "evt-queued-followup-source",
+            streamVersion: 1,
+            eventType: "thread.turn-start-requested",
+            occurredAt: "2026-08-28T16:38:19.000Z",
+            payload: JSON.stringify({
+              threadId,
+              messageId: sourceMessageId,
+              runtimeMode: "full-access",
+              createdAt: "2026-08-28T16:38:19.000Z",
+            }),
+          });
+          yield* insertEvent({
+            eventId: "evt-queued-followup-later-start",
+            streamVersion: 2,
+            eventType: "thread.turn-start-requested",
+            occurredAt: "2026-08-28T16:41:19.000Z",
+            payload: JSON.stringify({
+              threadId,
+              messageId: followUpMessageId,
+              runtimeMode: "full-access",
+              createdAt: "2026-08-28T16:41:19.000Z",
+            }),
+          });
+          yield* insertEvent({
+            eventId: "evt-queued-followup-delivered",
+            streamVersion: 3,
+            eventType: "thread.activity-appended",
+            occurredAt: "2026-08-28T16:41:33.000Z",
+            payload: JSON.stringify({
+              threadId,
+              activity: {
+                id: "activity-queued-followup-delivered",
+                tone: "info",
+                kind: "message.delivered",
+                summary: "Message delivered to the provider",
+                payload: { messageId: followUpMessageId },
+                turnId,
+                createdAt: "2026-08-28T16:41:33.000Z",
+              },
+            }),
+          });
+
+          yield* projectionPipeline.bootstrap;
+
+          const obligations = yield* sql<{
+            readonly sourceTurnId: string;
+            readonly kind: string;
+            readonly state: string;
+          }>`
+          SELECT source_turn_id AS "sourceTurnId", kind, state
+          FROM thread_work_obligations WHERE thread_id = ${threadId}
+        `;
+          assert.deepEqual(obligations, [
+            { sourceTurnId: turnId, kind: "startup-resume", state: "pending" },
+          ]);
+        }),
+    );
+
     // Reported 2026-08-15 (thread ed9e1e19): an in-place app update killed the
     // CLI 68s into a turn, before it emitted a single assistant token. The
     // shutdown settled the turn as "completed" — not "incomplete"/"error" —

@@ -11,7 +11,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { openRequestedPreviewTab } from "~/components/preview/openRequestedPreviewTab";
 import { isElectron } from "~/env";
@@ -39,8 +39,10 @@ function BoundHostedBrowserWebview(props: {
   readonly runtimeTabId: string;
   readonly syncGeneration: number;
   readonly zoomFactor: number;
+  readonly hostSize: { readonly width: number; readonly height: number };
 }) {
-  const { profileShell, runtimeTabId, snapshot, syncGeneration, threadRef, zoomFactor } = props;
+  const { hostSize, profileShell, runtimeTabId, snapshot, syncGeneration, threadRef, zoomFactor } =
+    props;
   const profileBindingRef = useRef(resolveHostedBrowserProfileBinding(null, profileShell));
   profileBindingRef.current = resolveHostedBrowserProfileBinding(
     profileBindingRef.current,
@@ -63,6 +65,7 @@ function BoundHostedBrowserWebview(props: {
       initialUrl={url}
       viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
       zoomFactor={zoomFactor}
+      hostSize={hostSize}
     />
   );
 }
@@ -72,6 +75,15 @@ export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const threadShells = useThreadShells();
   const openPreview = useAtomCommand(previewEnvironment.open);
+  const [hostSize, setHostSize] = useState(() => ({
+    width: typeof window === "undefined" ? 1280 : window.innerWidth,
+    height: typeof window === "undefined" ? 800 : window.innerHeight,
+  }));
+  useEffect(() => {
+    const update = () => setHostSize({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
   const profileShellByThreadKey = useMemo(
     () =>
       new Map(
@@ -174,6 +186,7 @@ export function ElectronBrowserHost() {
             runtimeTabId={runtimeTabId}
             syncGeneration={syncGeneration}
             zoomFactor={zoomFactor}
+            hostSize={hostSize}
           />
         ),
       )}

@@ -46,6 +46,16 @@ export const publishOrchestratorBubbleState = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const beginOrchestratorBubbleDrag = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.ORCHESTRATOR_BUBBLE_DRAG_START_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.orchestratorBubble.beginDrag")(function* () {
+    const bubble = yield* OrchestratorBubbleWindow.OrchestratorBubbleWindow;
+    yield* bubble.beginDrag;
+  }),
+});
+
 export const moveOrchestratorBubble = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.ORCHESTRATOR_BUBBLE_MOVE_CHANNEL,
   payload: OrchestratorBubblePositionSchema,

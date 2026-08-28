@@ -15,6 +15,7 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
+import { buildWorkspaceHtmlDocument } from "./workspaceHtmlArtifact";
 
 const commandError = (cause: Cause.Cause<unknown>, fallback: string) => {
   const squashed = Cause.squash(cause);
@@ -178,10 +179,16 @@ export function AgentArtifactPanel(props: { readonly workspace: VmAgentWorkspace
       latestRunStatusByTask.set(run.taskId, run.status);
     }
   }
+  const isHtmlDashboard = artifact?.definition.kind === "html";
   return (
     <WorkspacePanel
       title={artifact?.title ?? "Dashboard"}
-      description="A live structured view this agent owns and updates."
+      description={
+        isHtmlDashboard
+          ? "A live web view this agent owns and updates."
+          : "A live structured view this agent owns and updates."
+      }
+      fill={isHtmlDashboard}
     >
       {!artifact ? (
         <Empty text="This agent has not created an artifact yet." />
@@ -307,9 +314,24 @@ function ArtifactDefinition({ definition }: { readonly definition: VmAgentArtifa
           ))}
         </div>
       );
+    case "html":
+      return <WorkspaceHtmlPreview html={definition.html} css={definition.css} />;
     case "schedule":
       return null;
   }
+}
+
+function WorkspaceHtmlPreview(props: { readonly html: string; readonly css?: string | undefined }) {
+  const documentHtml = buildWorkspaceHtmlDocument(props);
+  return (
+    <iframe
+      title="Agent dashboard"
+      srcDoc={documentHtml}
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
+      className="min-h-[28rem] min-w-0 w-full flex-1 rounded-xl border-0 bg-background"
+    />
+  );
 }
 
 export function WorkspacePanel(props: {
@@ -317,10 +339,24 @@ export function WorkspacePanel(props: {
   readonly description: string;
   readonly action?: ReactNode;
   readonly children: ReactNode;
+  /** Fill the pane instead of the narrow structured-view column (HTML dashboards). */
+  readonly fill?: boolean;
 }) {
   return (
-    <div className="h-full min-w-0 overflow-x-hidden overflow-y-auto">
-      <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4">
+    <div
+      className={
+        props.fill
+          ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+          : "flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto"
+      }
+    >
+      <div
+        className={
+          props.fill
+            ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3 sm:p-4"
+            : "mx-auto flex min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4"
+        }
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">{props.title}</h2>

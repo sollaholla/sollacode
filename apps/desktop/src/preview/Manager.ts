@@ -34,6 +34,12 @@ import type {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
+import {
+  collectFrameIdsFromTree,
+  isPdfPreviewDocument,
+  mergeAccessibilityTrees,
+  visibleTextFromAccessibilityTree,
+} from "./previewSnapshotText.ts";
 import { BrowserWindow, type Session, clipboard, nativeImage, shell, webContents } from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -130,6 +136,7 @@ interface AutomationSnapshotPage {
   readonly title: string;
   readonly loading: boolean;
   readonly visibleText: string;
+  readonly documentKind?: "page" | "pdf";
   readonly viewportWidth: number;
   readonly viewportHeight: number;
   readonly interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
@@ -144,9 +151,18 @@ interface AutomationSnapshotPage {
 interface NavigationAttempt {
   readonly sequence: number;
   readonly url: string;
+  readonly webContentsId: number | null;
   readonly mainFrameStarted: boolean;
   readonly mainFrameCommitted: boolean;
 }
+
+type StageSnapshotSurface = <A, E, R>(
+  capture: Effect.Effect<A, E, R>,
+) => Effect.Effect<
+  A,
+  E | PreviewOperationError | PreviewTabNotFoundError | PreviewWebContentsNotFoundError,
+  R
+>;
 
 function describeNavigationLoadFailure(cause: unknown): {
   readonly code: number;
@@ -187,6 +203,7 @@ function isSameAutomationSnapshotPage(
     before.url !== after.url ||
     before.title !== after.title ||
     before.visibleText !== after.visibleText ||
+    before.documentKind !== after.documentKind ||
     before.viewportWidth !== after.viewportWidth ||
     before.viewportHeight !== after.viewportHeight
   ) {
@@ -379,6 +396,11 @@ const isRetryableAutomationSnapshotFailure = (error: unknown): boolean => {
     "PreviewWebContentsNotFoundError",
     "PreviewWebviewNotInitializedError",
   ].includes(String(error._tag));
+};
+
+const isReplacedGuestSnapshotFailure = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return false;
+  return String(error._tag) === "PreviewWebContentsNotFoundError";
 };
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
@@ -844,7 +866,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     { readonly semaphore: Semaphore.Semaphore; users: number }
   >();
   const tabLifecycleGenerations = new Map<string, number>();
-
   const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
     Effect.try({
       try: evaluate,
@@ -1924,11 +1945,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       automationForegroundWebContentsIds.delete(webContentsId);
       yield* markWebContentsUnavailable(webContentsId);
-      yield* Ref.update(controlEpochRef, (epochs) =>
-        replaceMap(epochs, (copy) => {
-          copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
-        }),
-      );
       const updatedAt = yield* currentIso;
       const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
         const current = tabs.get(tabId);
@@ -1949,6 +1965,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }),
         ] as const;
       });
+      if (Option.isSome(next)) {
+        yield* Ref.update(controlEpochRef, (epochs) =>
+          replaceMap(epochs, (copy) => {
+            copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
+          }),
+        );
+      }
       yield* Effect.all(
         [
           detachControlSession(webContentsId),
@@ -2046,10 +2069,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       sequence: number,
       failure?: unknown,
     ) {
-      if (wc.isDestroyed() || navigationAttemptsByTab.get(tabId)?.sequence !== sequence) {
+      const activeAttempt = navigationAttemptsByTab.get(tabId);
+      if (
+        wc.isDestroyed() ||
+        activeAttempt?.sequence !== sequence ||
+        activeAttempt.webContentsId !== wc.id
+      ) {
         return;
       }
-      const attemptState = navigationAttemptsByTab.get(tabId)!;
+      const attemptState = activeAttempt;
       const navStatus =
         failure === undefined
           ? computeNavStatus(wc)
@@ -2084,7 +2112,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           current.webContentsId !== wc.id ||
           current.navStatus.kind !== "Loading" ||
           current.navStatus.url !== url ||
-          navigationAttemptsByTab.get(tabId)?.sequence !== sequence
+          navigationAttemptsByTab.get(tabId)?.sequence !== sequence ||
+          navigationAttemptsByTab.get(tabId)?.webContentsId !== wc.id
         ) {
           return [Option.none<PreviewTabState>(), tabs] as const;
         }
@@ -2100,6 +2129,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
         if (
           navigationAttemptsByTab.get(tabId)?.sequence === sequence &&
+          navigationAttemptsByTab.get(tabId)?.webContentsId === wc.id &&
           (!current ||
             (current.webContentsId === wc.id &&
               (current.navStatus.kind !== "Loading" || current.navStatus.url !== url)))
@@ -2208,6 +2238,31 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const scope = yield* Scope.fork(parentScope, "sequential");
     const unavailable = yield* Deferred.make<void>();
     const webContentsId = wc.id;
+    let listenersActive = true;
+    let humanInputGeneration = 0;
+    const updateCurrentWebContents = Effect.fn("PreviewManager.updateCurrentWebContents")(
+      function* (
+        patch: Partial<PreviewTabState>,
+        predicate: (state: PreviewTabState) => boolean = () => true,
+      ) {
+        const updatedAt = yield* currentIso;
+        const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+          const current = tabs.get(tabId);
+          if (current?.webContentsId !== webContentsId || !predicate(current)) {
+            return [Option.none<PreviewTabState>(), tabs] as const;
+          }
+          const state: PreviewTabState = { ...current, ...patch, updatedAt };
+          return [
+            Option.some(state),
+            replaceMap(tabs, (copy) => {
+              copy.set(tabId, state);
+            }),
+          ] as const;
+        });
+        if (Option.isSome(next)) yield* emit(tabId, next.value);
+        return next;
+      },
+    );
     const syncState = Effect.fn("PreviewManager.syncWebContentsState")(function* (
       preserveLoadFailure: boolean,
     ) {
@@ -2223,11 +2278,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const updatedAt = yield* currentIso;
       const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
         const current = tabs.get(tabId);
-        if (!current) return [Option.none<PreviewTabState>(), tabs] as const;
-        const pendingNavigation =
+        if (!current || current.webContentsId !== webContentsId) {
+          return [Option.none<PreviewTabState>(), tabs] as const;
+        }
+        const candidateNavigation =
           current.navStatus.kind === "Loading" ? navigationAttemptsByTab.get(tabId) : undefined;
-        const lifecycleCanSettlePendingNavigation =
-          pendingNavigation?.mainFrameCommitted === true && computedNavStatus.kind === "Success";
+        const pendingNavigation =
+          candidateNavigation?.webContentsId === webContentsId ? candidateNavigation : undefined;
+        // Gmail and similar apps keep `isLoading()` true after the main frame
+        // commits (inbox sync, long poll). Requiring Success here froze the
+        // chrome and agent on the pre-redirect URL (accounts.google.com)
+        // while the guest was already showing the committed page.
+        const lifecycleCanSettlePendingNavigation = pendingNavigation?.mainFrameCommitted === true;
         // Electron emits did-stop-loading after did-fail-load. At that point the
         // failed guest is no longer "loading", but it has not successfully
         // navigated anywhere. Keep the failure until a new load actually starts.
@@ -2263,11 +2325,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* emit(tabId, next.value);
       }
     });
-    const sync = () => runFork(syncState(true));
+    const sync = () => {
+      if (listenersActive) runFork(syncState(true));
+    };
     const navigationCommitted = (_event: Electron.Event, _url: string): void => {
+      if (!listenersActive) return;
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       const attempt = navigationAttemptsByTab.get(tabId);
-      if (attempt?.mainFrameStarted) {
+      if (attempt?.webContentsId === webContentsId && attempt.mainFrameStarted) {
         navigationAttemptsByTab.set(tabId, { ...attempt, mainFrameCommitted: true });
       }
       runFork(syncState(false));
@@ -2277,10 +2342,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       _url: string,
       isMainFrame: boolean,
     ): void => {
-      if (!isMainFrame) return;
+      if (!listenersActive || !isMainFrame) return;
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       const attempt = navigationAttemptsByTab.get(tabId);
-      if (attempt?.mainFrameStarted) {
+      if (attempt?.webContentsId === webContentsId && attempt.mainFrameStarted) {
         navigationAttemptsByTab.set(tabId, { ...attempt, mainFrameCommitted: true });
       }
       runFork(syncState(false));
@@ -2291,10 +2356,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       _isInPlace: boolean,
       isMainFrame: boolean,
     ): void => {
-      if (!isMainFrame) return;
+      if (!listenersActive || !isMainFrame) return;
       invalidatePlaywrightExecutionContext(tabId, webContentsId);
       const attempt = navigationAttemptsByTab.get(tabId);
-      if (attempt?.url === url) {
+      if (attempt?.webContentsId === webContentsId && attempt.url === url) {
         navigationAttemptsByTab.set(tabId, { ...attempt, mainFrameStarted: true });
       }
     };
@@ -2305,13 +2370,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       validatedUrl: string,
       isMainFrame: boolean,
     ): void => {
-      if (code === -3 || !isMainFrame || wc.isDestroyed()) return;
+      if (!listenersActive || code === -3 || !isMainFrame || wc.isDestroyed()) return;
       runFork(
         Effect.gen(function* () {
           const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+          if (current?.webContentsId !== webContentsId) return;
           const pendingNavigation = navigationAttemptsByTab.get(tabId);
           const matchedNavigationStarted =
             current?.navStatus.kind === "Loading" &&
+            pendingNavigation?.webContentsId === webContentsId &&
             pendingNavigation?.url === current.navStatus.url &&
             pendingNavigation.mainFrameStarted;
           if (
@@ -2322,16 +2389,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ) {
             return;
           }
-          yield* update(tabId, {
-            navStatus: {
-              kind: "LoadFailed",
-              url: validatedUrl || wc.getURL(),
-              title: wc.getTitle(),
-              code,
-              description,
-            },
+          const updatedAt = yield* currentIso;
+          const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+            const latest = tabs.get(tabId);
+            if (latest?.webContentsId !== webContentsId) {
+              return [Option.none<PreviewTabState>(), tabs] as const;
+            }
+            const state: PreviewTabState = {
+              ...latest,
+              navStatus: {
+                kind: "LoadFailed",
+                url: validatedUrl || wc.getURL(),
+                title: wc.getTitle(),
+                code,
+                description,
+              },
+              updatedAt,
+            };
+            return [
+              Option.some(state),
+              replaceMap(tabs, (copy) => {
+                copy.set(tabId, state);
+              }),
+            ] as const;
           });
-          if (navigationAttemptsByTab.get(tabId) === pendingNavigation) {
+          if (Option.isSome(next)) yield* emit(tabId, next.value);
+          if (Option.isSome(next) && navigationAttemptsByTab.get(tabId) === pendingNavigation) {
             navigationAttemptsByTab.delete(tabId);
           }
         }),
@@ -2340,9 +2423,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const handleHumanInput = Effect.fn("PreviewManager.handleHumanInput")(function* (
       rawSignal?: unknown,
     ) {
+      if (!listenersActive) return;
+      const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (current?.webContentsId !== webContentsId) return;
       if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
         return;
       }
+      const marked = yield* updateCurrentWebContents({ controller: "human" });
+      if (Option.isNone(marked)) return;
+      const generation = ++humanInputGeneration;
       // Anything reaching here is the human, typing or clicking inside a guest.
       // The main window's `before-input-event` cannot see that, so without this
       // the deferral gate goes blind exactly when it matters most: once an agent
@@ -2360,15 +2449,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           copy.set(tabId, (epochs.get(tabId) ?? 0) + 1);
         }),
       );
-      yield* update(tabId, { controller: "human" });
       yield* Effect.sleep(750);
-      const tabs = yield* SynchronizedRef.get(tabsRef);
-      if (tabs.get(tabId)?.controller === "human") {
-        yield* update(tabId, { controller: "none" });
-      }
+      if (!listenersActive || humanInputGeneration !== generation) return;
+      yield* updateCurrentWebContents(
+        { controller: "none" },
+        (state) => state.controller === "human",
+      );
     });
     const humanInput = (_event: unknown, rawSignal?: unknown): void => {
-      runFork(handleHumanInput(rawSignal));
+      if (listenersActive) runFork(handleHumanInput(rawSignal));
     };
     const forwardShortcut = Effect.fn("PreviewManager.forwardShortcut")(function* (
       input: Electron.Input,
@@ -2432,6 +2521,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     });
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
+      if (!listenersActive) return;
       if (shouldForwardAppShortcut(input)) {
         event.preventDefault();
         runFork(forwardShortcut(input));
@@ -2453,12 +2543,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // for; only the reclaimed key-down is suppressed above.
     };
     const destroyed = (): void => {
-      runFork(handleWebContentsDestroyed(tabId, webContentsId));
+      if (listenersActive) runFork(handleWebContentsDestroyed(tabId, webContentsId));
     };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
       scope,
       attempt({ operation: "detachListeners", tabId, webContentsId }, () => {
+        listenersActive = false;
         if (wc.isDestroyed()) return;
         wc.off("did-navigate", navigationCommitted);
         wc.off("did-navigate-in-page", inPageNavigationCommitted);
@@ -2484,6 +2575,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("destroyed", destroyed);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.setWindowOpenHandler(({ url, disposition, features, frameName, postBody }) => {
+          if (!listenersActive) return { action: "deny" };
           // A Chromium `new-window` request needs a real child window. OAuth
           // SDKs commonly open an unnamed/_blank child and retain its
           // WindowProxy so the provider can message the opener and close the
@@ -2844,24 +2936,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const registeredAt = yield* currentIso;
     const registrationBarrier = yield* automationForegroundMutationMutex.withPermit(
       Effect.gen(function* () {
-        if (replacedWebContentsId !== null) {
-          // Replacement teardown belongs to the same closed barrier as new
-          // guest publication. Otherwise a concurrent fleet renewal can
-          // re-activate the old guest after cleanup and strand that debugger
-          // session once the tab points at its replacement.
-          invalidatePlaywrightExecutionContext(tabId, replacedWebContentsId);
-          automationForegroundWebContentsIds.delete(replacedWebContentsId);
-          yield* markWebContentsUnavailable(replacedWebContentsId);
-          yield* Effect.all(
-            [
-              detachControlSession(replacedWebContentsId),
-              detachListeners(replacedWebContentsId),
-              clearWebContentsDiagnostics(replacedWebContentsId),
-              cancelPickElement(tabId),
-            ],
-            { concurrency: 4, discard: true },
-          );
-        }
         const registered = yield* SynchronizedRef.modifyEffect(tabsRef, (tabs) =>
           Effect.gen(function* () {
             const current = tabs.get(tabId);
@@ -2883,6 +2957,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const next: PreviewTabState = {
               ...current,
               webContentsId,
+              snapshotStageId: replacedWebContentsId === null ? current.snapshotStageId : null,
+              controller: replacedWebContentsId === null ? current.controller : "none",
               navStatus: pendingUrl === null ? computeNavStatus(wc) : current.navStatus,
               canGoBack: wc.navigationHistory.canGoBack(),
               canGoForward: wc.navigationHistory.canGoForward(),
@@ -2900,6 +2976,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ] as const;
           }),
         );
+        if (Option.isSome(registered) && replacedWebContentsId !== null) {
+          // Publish the successor before retiring its predecessor. If the new
+          // guest dies during the publication check, the old guest remains
+          // authoritative and attached instead of leaving the tab stranded.
+          // Both operations stay inside the foreground mutation barrier, so a
+          // fleet renewal cannot re-activate the predecessor between them.
+          invalidatePlaywrightExecutionContext(tabId, replacedWebContentsId);
+          automationForegroundWebContentsIds.delete(replacedWebContentsId);
+          yield* markWebContentsUnavailable(replacedWebContentsId);
+          yield* Effect.all(
+            [
+              detachControlSession(replacedWebContentsId),
+              detachListeners(replacedWebContentsId),
+              clearWebContentsDiagnostics(replacedWebContentsId),
+              cancelPickElement(tabId),
+            ],
+            { concurrency: 4, discard: true },
+          );
+        }
         const activation =
           Option.isSome(registered) && automationForegroundActive
             ? yield* Effect.exit(
@@ -2950,6 +3045,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       navigationAttemptsByTab.set(tabId, {
         sequence,
         url: pendingUrl,
+        webContentsId: wc.id,
         mainFrameStarted: false,
         mainFrameCommitted: false,
       });
@@ -3015,6 +3111,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         stableLeaseId,
         PreviewActivityConsumer.Ui,
       );
+      if (leaseId.startsWith("snapshot-stage:")) {
+        const stageId = leaseId.slice("snapshot-stage:".length);
+        const latestTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        const request = (yield* Ref.get(snapshotStageRequestsRef)).get(stageId);
+        if (latestTab?.snapshotStageId !== stageId || request?.tabId !== tabId) {
+          // A renderer receipt can arrive after the stage timed out and its
+          // cleanup released the lease. Reject that stale generation so it
+          // cannot resurrect a permanent Ui lease for a background guest.
+          activityLeases.release(tabId, stableLeaseId);
+          yield* recordActivityLeaseMetrics();
+          return;
+        }
+        yield* Deferred.succeed(request.ready, undefined);
+      }
       if (leaseId === "visible-surface" && leaseAcquired && tab.webContentsId !== null) {
         const wc = webContents.fromId(tab.webContentsId);
         if (wc && !wc.isDestroyed()) {
@@ -3035,15 +3145,33 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ).pipe(Effect.ignore);
         }
       }
-      const stageId = tab.snapshotStageId;
-      if (stageId !== null && leaseId === `snapshot-stage:${stageId}`) {
-        const request = (yield* Ref.get(snapshotStageRequestsRef)).get(stageId);
-        if (request?.tabId === tabId) {
-          yield* Deferred.succeed(request.ready, undefined);
-        }
-      }
     } else {
       activityLeases.release(tabId, stableLeaseId);
+      if (leaseId === "visible-surface" && mainWindowFocused) {
+        const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        const focused = yield* attempt(
+          {
+            operation: "setUiActivity.getFocusedWebContents",
+            tabId,
+            ...(tab?.webContentsId != null ? { webContentsId: tab.webContentsId } : {}),
+          },
+          () => webContents.getFocusedWebContents(),
+        ).pipe(Effect.orElseSucceed(() => null));
+        if (focused && focused.id === tab?.webContentsId) {
+          userFocusIntent = "app";
+          const mainWindow = yield* Ref.get(mainWindowRef);
+          if (Option.isSome(mainWindow) && !mainWindow.value.webContents.isDestroyed()) {
+            yield* attempt(
+              {
+                operation: "setUiActivity.restoreAppFocus",
+                tabId,
+                webContentsId: focused.id,
+              },
+              () => mainWindow.value.webContents.focus(),
+            ).pipe(Effect.ignore);
+          }
+        }
+      }
     }
     yield* recordActivityLeaseMetrics();
   });
@@ -3053,12 +3181,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       normalizePreviewUrl(rawUrl),
     );
     const sequence = yield* nextCounter(navigationSequenceRef);
-    navigationAttemptsByTab.set(tabId, {
-      sequence,
-      url,
-      mainFrameStarted: false,
-      mainFrameCommitted: false,
-    });
     const updatedAt = yield* currentIso;
     const pending = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
       const current = tabs.get(tabId);
@@ -3088,6 +3210,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           copy.set(tabId, next);
         }),
       ] as const;
+    });
+    navigationAttemptsByTab.set(tabId, {
+      sequence,
+      url,
+      webContentsId: pending.webContentsId,
+      mainFrameStarted: false,
+      mainFrameCommitted: false,
     });
     yield* emit(tabId, pending);
     if (pending.webContentsId == null) return;
@@ -4195,6 +4324,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const automationStatus = Effect.fn("PreviewManager.automationStatus")(function* (tabId: string) {
     const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    const downloadApprovalRequired = (tab?.pendingDownloadApprovals.length ?? 0) > 0;
     if (!tab || tab.webContentsId == null) {
       const navStatus = tab?.navStatus;
       return {
@@ -4207,6 +4337,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...(navStatus?.kind === "LoadFailed"
           ? { loadFailure: { code: navStatus.code, description: navStatus.description } }
           : {}),
+        ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
     const wc = webContents.fromId(tab.webContentsId);
@@ -4224,6 +4355,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           code: tab.navStatus.code,
           description: tab.navStatus.description,
         },
+        ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
     if (wc && !wc.isDestroyed() && tab.navStatus.kind === "Loading") {
@@ -4238,6 +4370,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         url: tab.navStatus.url,
         title: tab.navStatus.title || null,
         loading: true,
+        ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
       };
     }
     return !wc || wc.isDestroyed()
@@ -4248,6 +4381,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           url: null,
           title: null,
           loading: false,
+          ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
         }
       : {
           available: foregroundReady,
@@ -4256,11 +4390,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           url: wc.getURL() || null,
           title: wc.getTitle() || null,
           loading: wc.isLoading(),
+          ...(downloadApprovalRequired ? { downloadApprovalRequired: true } : {}),
         };
   });
 
   const captureAutomationSnapshot = Effect.fn("PreviewManager.captureAutomationSnapshot")(
-    function* (tabId: string, wc: Electron.WebContents) {
+    function* (
+      tabId: string,
+      wc: Electron.WebContents,
+      stageSnapshotSurface: StageSnapshotSurface | null,
+    ) {
       const send: SendCommand = (method, commandParams) =>
         attemptPromiseWithin(
           {
@@ -4271,10 +4410,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           () => wc.debugger.sendCommand(method, commandParams),
           AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
         );
-      yield* Effect.all([send("Runtime.enable"), send("Accessibility.enable")], {
-        concurrency: 2,
-        discard: true,
-      });
+      yield* Effect.all(
+        [send("Page.enable"), send("Runtime.enable"), send("Accessibility.enable")],
+        {
+          concurrency: 3,
+          discard: true,
+        },
+      );
       const readPage = Effect.fn("PreviewManager.readAutomationSnapshotPage")(function* () {
         const navigationGeneration = playwrightExecutionContextGenerations.get(tabId) ?? 0;
         const snapshotPage = yield* evaluateWithDebugger<
@@ -4337,6 +4479,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             title: document.title,
             loading: document.readyState !== "complete",
             visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
+            documentKind: (document.contentType || "").toLowerCase().includes("pdf") ||
+              /\\.pdf(?:$|[?#])/i.test(location.pathname) ||
+              /\\.pdf\\b/i.test(document.title)
+              ? "pdf"
+              : "page",
             viewportWidth: window.innerWidth,
             viewportHeight: window.innerHeight,
             interactiveElements: elements,
@@ -4445,33 +4592,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           );
         }).pipe(Effect.ensuring(cleanup));
       });
-      const nativeScreenshot = activityLeases.has(tabId, PreviewActivityConsumer.Ui)
-        ? capturePresentedFrame()
-        : Effect.fail(
-            new PreviewOperationError({
-              operation: "automationSnapshot.presentationFrame",
-              tabId,
-              webContentsId: wc.id,
-              cause: new Error("The preview has no visible compositor surface."),
-            }),
-          );
+      const nativeScreenshot = () =>
+        Effect.suspend(() =>
+          activityLeases.has(tabId, PreviewActivityConsumer.Ui)
+            ? capturePresentedFrame()
+            : Effect.fail(
+                new PreviewOperationError({
+                  operation: "automationSnapshot.presentationFrame",
+                  tabId,
+                  webContentsId: wc.id,
+                  cause: new Error("The preview has no visible compositor surface."),
+                }),
+              ),
+        );
       const captureDebuggerScreenshot = (fromSurface: boolean) => {
-        const scale =
-          page.viewportWidth > MAX_AUTOMATION_SCREENSHOT_WIDTH
-            ? MAX_AUTOMATION_SCREENSHOT_WIDTH / page.viewportWidth
-            : 1;
         return send("Page.captureScreenshot", {
           format: "jpeg",
           quality: AUTOMATION_SNAPSHOT_JPEG_QUALITY,
           fromSurface,
           captureBeyondViewport: false,
-          clip: {
-            x: 0,
-            y: 0,
-            width: Math.max(1, page.viewportWidth),
-            height: Math.max(1, page.viewportHeight),
-            scale,
-          },
         }).pipe(
           Effect.flatMap((result) => {
             const data =
@@ -4491,12 +4630,39 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 }),
               );
             }
-            return Effect.succeed({
-              mimeType: "image/jpeg" as const,
-              data,
-              width: Math.max(1, Math.round(page.viewportWidth * scale)),
-              height: Math.max(1, Math.round(page.viewportHeight * scale)),
-            });
+            return attempt(
+              {
+                operation: "automationSnapshot.Page.captureScreenshot.decode",
+                tabId,
+                webContentsId: wc.id,
+              },
+              () => {
+                const image = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
+                const sourceSize = image.getSize();
+                if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+                  throw new Error("Chromium returned an empty debugger screenshot.");
+                }
+                if (sourceSize.width <= MAX_AUTOMATION_SCREENSHOT_WIDTH) {
+                  // Page.captureScreenshot already produced the requested JPEG.
+                  // Preserve those exact bytes instead of applying a second
+                  // lossy encode that blurs small text and wastes CPU.
+                  return {
+                    mimeType: "image/jpeg" as const,
+                    data,
+                    width: sourceSize.width,
+                    height: sourceSize.height,
+                  };
+                }
+                const resized = image.resize({ width: MAX_AUTOMATION_SCREENSHOT_WIDTH });
+                const size = resized.getSize();
+                return {
+                  mimeType: "image/jpeg" as const,
+                  data: resized.toJPEG(AUTOMATION_SNAPSHOT_JPEG_QUALITY).toString("base64"),
+                  width: size.width,
+                  height: size.height,
+                };
+              },
+            );
           }),
         );
       };
@@ -4574,12 +4740,45 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }).pipe(Effect.ensuring(cleanup));
         },
       );
-      const captureSameRendererScreenshot = () =>
-        nativeScreenshot.pipe(
+      const debuggerScreenshot = () =>
+        captureDebuggerScreenshot(true).pipe(Effect.catch(() => captureDebuggerScreenshot(false)));
+      const debuggerScreenshotWithScreencast = () =>
+        debuggerScreenshot().pipe(Effect.catch(() => captureDebuggerScreencast()));
+      const captureHiddenFallback = (debuggerCause: unknown) =>
+        stageSnapshotSurface!(
+          nativeScreenshot().pipe(
+            Effect.tap(() =>
+              Effect.logWarning(
+                "Live renderer capture was unavailable; a staged native frame succeeded.",
+                { tabId, debuggerCause },
+              ),
+            ),
+            Effect.catch((nativeCause) =>
+              captureDebuggerScreenshot(false).pipe(
+                Effect.catch((viewCause) =>
+                  captureDebuggerScreencast().pipe(
+                    Effect.tap(() =>
+                      Effect.logWarning(
+                        "Direct and native capture were unavailable; a live screencast frame succeeded.",
+                        { tabId, debuggerCause, nativeCause, viewCause },
+                      ),
+                    ),
+                  ),
+                ),
+                Effect.tapError((screencastCause) =>
+                  Effect.logWarning(
+                    "Preview screenshot capture was unavailable from the hidden live guest.",
+                    { tabId, debuggerCause, nativeCause, screencastCause },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      const captureVisibleScreenshot = () =>
+        nativeScreenshot().pipe(
           Effect.catch((nativeCause) =>
-            captureDebuggerScreenshot(true).pipe(
-              Effect.catch(() => captureDebuggerScreenshot(false)),
-              Effect.catch(() => captureDebuggerScreencast()),
+            debuggerScreenshotWithScreencast().pipe(
               Effect.tap(() =>
                 Effect.logWarning(
                   "Native preview capture was unavailable; a live background frame succeeded.",
@@ -4594,19 +4793,46 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ),
             ),
           ),
+        );
+      const captureSameRendererScreenshot = () =>
+        (stageSnapshotSurface === null
+          ? captureVisibleScreenshot()
+          : captureDebuggerScreenshot(true).pipe(Effect.catch(captureHiddenFallback))
+        ).pipe(
           // A picture is one field of a snapshot. Failing the whole call for
           // it throws away the live URL, text, accessibility tree and
           // diagnostics. Never re-load the URL in a second renderer as a
           // fallback: cookies alone do not reproduce in-memory auth or
           // sessionStorage, so those pixels can lie about the live tab.
+          // A replaced guest is different: the rest of the snapshot is also
+          // from the predecessor, so retry the whole operation against the
+          // successor instead of mixing its pixels with the old DOM.
           Effect.catch((cause) =>
-            Effect.succeed({
-              screenshotError: describeScreenshotFailure(cause),
-            } as const),
+            isReplacedGuestSnapshotFailure(cause)
+              ? Effect.fail(cause)
+              : Effect.succeed({
+                  screenshotError: describeScreenshotFailure(cause),
+                } as const),
           ),
         );
+      const captureFrameAccessibility = (frameId?: string) =>
+        send("Accessibility.getFullAXTree", frameId === undefined ? undefined : { frameId }).pipe(
+          Effect.catch(() => Effect.succeed({ nodes: [] })),
+        );
       const captureAccessibility = () =>
-        send("Accessibility.getFullAXTree").pipe(
+        Effect.gen(function* () {
+          // Chromium's PDF viewer (and other plugins) keep the page text in a
+          // child frame. Main-frame getFullAXTree is then just an empty iframe.
+          const frameTreeResult = yield* send("Page.getFrameTree").pipe(
+            Effect.catch(() => Effect.succeed({})),
+          );
+          const frameIds = collectFrameIdsFromTree(frameTreeResult).slice(0, 16);
+          const trees =
+            frameIds.length === 0
+              ? [yield* captureFrameAccessibility()]
+              : yield* Effect.forEach(frameIds, (frameId) => captureFrameAccessibility(frameId));
+          return mergeAccessibilityTrees(trees);
+        }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning(
               "Preview accessibility capture was unavailable; returning the DOM snapshot.",
@@ -4644,6 +4870,60 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         );
       }
       page = bracket.closingPage;
+      const accessibilityTree = remainedUnstable ? { nodes: [] } : bracket.accessibility;
+      const axText = visibleTextFromAccessibilityTree(accessibilityTree, MAX_VISIBLE_TEXT_LENGTH);
+      const pdfDocument =
+        page.documentKind === "pdf" || isPdfPreviewDocument({ url: page.url, title: page.title });
+      if (axText.length > 0 && (pdfDocument || page.visibleText.trim().length === 0)) {
+        page = {
+          ...page,
+          visibleText: axText,
+          documentKind: pdfDocument ? "pdf" : page.documentKind,
+        };
+      } else if (pdfDocument && page.documentKind !== "pdf") {
+        page = { ...page, documentKind: "pdf" };
+      }
+      if (!remainedUnstable) {
+        const updatedAt = yield* currentIso;
+        const reconciledNavigation = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+          const current = tabs.get(tabId);
+          if (current?.webContentsId !== wc.id) {
+            return [Option.none<PreviewTabState>(), tabs] as const;
+          }
+          const pendingNavigation = navigationAttemptsByTab.get(tabId);
+          if (
+            current.navStatus.kind === "Loading" &&
+            pendingNavigation?.webContentsId === wc.id &&
+            pendingNavigation.url === current.navStatus.url &&
+            page.url !== pendingNavigation.url
+          ) {
+            // A snapshot of the previous page is not a lifecycle receipt for
+            // a just-dispatched navigation. Keep the optimistic target until
+            // that guest starts or settles its own main-frame load.
+            return [Option.none<PreviewTabState>(), tabs] as const;
+          }
+          const navStatus: PreviewNavStatus = page.loading
+            ? { kind: "Loading", url: page.url, title: page.title }
+            : { kind: "Success", url: page.url, title: page.title };
+          if (
+            current.navStatus.kind === navStatus.kind &&
+            current.navStatus.url === navStatus.url &&
+            current.navStatus.title === navStatus.title
+          ) {
+            return [Option.none<PreviewTabState>(), tabs] as const;
+          }
+          const state: PreviewTabState = { ...current, navStatus, updatedAt };
+          return [
+            Option.some(state),
+            replaceMap(tabs, (copy) => {
+              copy.set(tabId, state);
+            }),
+          ] as const;
+        });
+        if (Option.isSome(reconciledNavigation)) {
+          yield* emit(tabId, reconciledNavigation.value);
+        }
+      }
       const screenshot = remainedUnstable
         ? ({
             screenshotError:
@@ -4687,16 +4967,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     },
   );
 
-  const withSnapshotSurface = <A, E, R>(
+  const withStagedSnapshotSurface = <A, E, R>(
     tabId: string,
     wc: Electron.WebContents,
-    capture: (staged: boolean) => Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E | PreviewOperationError, R> =>
+    capture: Effect.Effect<A, E, R>,
+  ): Effect.Effect<
+    A,
+    E | PreviewOperationError | PreviewTabNotFoundError | PreviewWebContentsNotFoundError,
+    R
+  > =>
     Effect.gen(function* () {
-      if (mainWindowFocused && activityLeases.has(tabId, PreviewActivityConsumer.Ui)) {
-        return yield* capture(false);
-      }
-
       const sequence = yield* nextCounter(snapshotStageSequenceRef);
       const stageId = `${wc.id}:${sequence}`;
       const ready = yield* Deferred.make<void>();
@@ -4715,13 +4995,47 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }),
         );
         const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-        if (current?.snapshotStageId === stageId) {
-          yield* update(tabId, { snapshotStageId: null });
+        if (current?.webContentsId === wc.id && current.snapshotStageId === stageId) {
+          const updatedAt = yield* currentIso;
+          const cleared = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+            const latest = tabs.get(tabId);
+            if (latest?.webContentsId !== wc.id || latest.snapshotStageId !== stageId) {
+              return [Option.none<PreviewTabState>(), tabs] as const;
+            }
+            const state: PreviewTabState = { ...latest, snapshotStageId: null, updatedAt };
+            return [
+              Option.some(state),
+              replaceMap(tabs, (copy) => {
+                copy.set(tabId, state);
+              }),
+            ] as const;
+          });
+          if (Option.isSome(cleared)) yield* emit(tabId, cleared.value);
         }
       });
 
       return yield* Effect.gen(function* () {
-        yield* update(tabId, { snapshotStageId: stageId });
+        const updatedAt = yield* currentIso;
+        const staged = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+          const current = tabs.get(tabId);
+          if (current?.webContentsId !== wc.id) {
+            return [Option.none<PreviewTabState>(), tabs] as const;
+          }
+          const state: PreviewTabState = { ...current, snapshotStageId: stageId, updatedAt };
+          return [
+            Option.some(state),
+            replaceMap(tabs, (copy) => {
+              copy.set(tabId, state);
+            }),
+          ] as const;
+        });
+        if (Option.isNone(staged)) {
+          return yield* new PreviewWebContentsNotFoundError({
+            tabId,
+            webContentsId: wc.id,
+          });
+        }
+        yield* emit(tabId, staged.value);
         yield* Deferred.await(ready).pipe(
           Effect.timeout(AUTOMATION_SNAPSHOT_STAGE_TIMEOUT),
           Effect.mapError(
@@ -4734,10 +5048,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               }),
           ),
         );
+        yield* ensureCurrentWebContents(tabId, wc);
         // The renderer receipt proves the guest is attached at compositor-
         // eligible geometry. The staged capture then subscribes before its
         // invalidate call and waits for an actual presentation callback.
-        return yield* capture(true);
+        return yield* capture;
       }).pipe(Effect.ensuring(cleanup));
     });
 
@@ -4750,9 +5065,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // so retry the whole operation and resolve WebContents again instead of
       // retrying capturePage alone against a stale guest.
       const wc = yield* requireWebContents(tabId);
-      return yield* withControlSession(tabId, wc, "snapshot", () =>
-        withSnapshotSurface(tabId, wc, () => captureAutomationSnapshot(tabId, wc)),
-      );
+      return yield* withControlSession(tabId, wc, "snapshot", () => {
+        const stageSnapshotSurface: StageSnapshotSurface | null =
+          mainWindowFocused && activityLeases.has(tabId, PreviewActivityConsumer.Ui)
+            ? null
+            : (capture) => withStagedSnapshotSurface(tabId, wc, capture);
+        return captureAutomationSnapshot(tabId, wc, stageSnapshotSurface);
+      });
     }).pipe(
       Effect.retry({
         times: AUTOMATION_SNAPSHOT_RETRIES,
@@ -5650,25 +5969,47 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!initial) return yield* new PreviewTabNotFoundError({ tabId });
       const known = new Set(initial.downloads.map((download) => download.path));
       const startedAtMs = yield* Clock.currentTimeMillis;
+      // Empty pending at t=0 is the gap between click and the hold appearing,
+      // not a denial. Wait until a hold shows, a file lands, or the bound runs
+      // out — otherwise click-then-wait looks like "settled, nothing happened"
+      // and the agent fetches again.
+      let seenHold = initial.pendingDownloadApprovals.length > 0;
 
       while (true) {
         const tab = yield* readTab;
         if (!tab) return yield* new PreviewTabNotFoundError({ tabId });
+        if (tab.pendingDownloadApprovals.length > 0) seenHold = true;
         const arrived = tab.downloads.filter((download) => !known.has(download.path));
-        // A refusal settles the hold without producing a file, so "no holds
-        // left" ends the wait just as much as a file landing does.
-        if (arrived.length > 0 || tab.pendingDownloadApprovals.length === 0) {
+        if (arrived.length > 0) {
           return {
             tabId,
             settled: true,
+            outcome: "downloaded" as const,
             downloads: arrived,
             pendingDownloadApprovals: [...tab.pendingDownloadApprovals],
           };
         }
+        if (seenHold && tab.pendingDownloadApprovals.length === 0) {
+          return {
+            tabId,
+            settled: true,
+            outcome: "denied" as const,
+            downloads: [],
+            pendingDownloadApprovals: [],
+          };
+        }
         if ((yield* Clock.currentTimeMillis) - startedAtMs >= deadlineMs) {
+          const waiting = tab.pendingDownloadApprovals.length > 0 || seenHold;
           return {
             tabId,
             settled: false,
+            outcome: waiting ? ("waiting" as const) : ("none" as const),
+            ...(waiting
+              ? {
+                  message:
+                    "The user still has to Allow or Deny this download. Do not retry the fetch. End the turn now; in Agent mode emit AGENT_STOP.",
+                }
+              : {}),
             downloads: [],
             pendingDownloadApprovals: [...tab.pendingDownloadApprovals],
           };

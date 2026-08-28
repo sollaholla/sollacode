@@ -438,6 +438,12 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 kind: "pending",
                 approval: { id, domain, fileName },
               });
+              if (Notification.isSupported()) {
+                new Notification({
+                  title: "Download needs approval",
+                  body: `${domain.length > 0 ? domain : "This page"} wants to save ${fileName}. Allow or deny it in Solla Code.`,
+                }).show();
+              }
               item.once("done", (_doneEvent, state) => {
                 if (!heldDownloads.has(id)) return;
                 if (state !== "completed") {

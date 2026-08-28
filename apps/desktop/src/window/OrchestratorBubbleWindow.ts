@@ -47,6 +47,11 @@ export class OrchestratorBubbleWindow extends Context.Service<
     readonly publishState: (state: DesktopOrchestratorBubbleState) => Effect.Effect<void>;
     /** Move the window while dragging (absolute screen coordinates). */
     readonly move: (position: OrchestratorBubblePosition) => Effect.Effect<void>;
+    /**
+     * Latch the cursor-to-window grab offset from the OS cursor, so Windows
+     * DPI and `window.screenX` cannot freeze or jump the orb.
+     */
+    readonly beginDrag: Effect.Effect<void>;
     /** Persist the current window position as the resting spot. */
     readonly persistPosition: Effect.Effect<void>;
     readonly destroy: Effect.Effect<void>;
@@ -56,6 +61,17 @@ export class OrchestratorBubbleWindow extends Context.Service<
 const { logInfo, logWarning } = makeComponentLogger("orchestrator-bubble");
 
 /** A saved spot is only trusted while the orb still lands on a live display. */
+/** Cursor minus grab offset, rounded — Electron rejects float positions. */
+export function resolveBubbleDragPosition(
+  cursor: OrchestratorBubblePosition,
+  grabOffset: OrchestratorBubblePosition,
+): OrchestratorBubblePosition {
+  return {
+    x: Math.round(cursor.x - grabOffset.x),
+    y: Math.round(cursor.y - grabOffset.y),
+  };
+}
+
 export function resolveInitialBubblePosition(
   persisted: OrchestratorBubblePosition | null,
   displays: ReadonlyArray<Pick<Electron.Rectangle, "x" | "y" | "width" | "height">>,
@@ -82,6 +98,7 @@ export const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(context);
 
   const windowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  const dragGrabRef = yield* Ref.make<Option.Option<OrchestratorBubblePosition>>(Option.none());
   const latchedStateRef = yield* Ref.make<DesktopOrchestratorBubbleState>({
     status: "idle",
     micLevel: 0,
@@ -145,11 +162,12 @@ export const make = Effect.gen(function* () {
         fullscreenable: false,
         skipTaskbar: true,
         autoHideMenuBar: true,
-        // Never steal keyboard focus from whatever the user is doing; clicks
-        // still arrive. `acceptFirstMouse` lets the first click through when
-        // the app is in the background on macOS.
-        focusable: false,
+        // macOS panel + focusable:false still receives clicks via
+        // acceptFirstMouse. Windows silently drops pointer-move (and capture)
+        // on unfocusable transparent windows, so the orb cannot be dragged.
+        focusable: environment.platform !== "darwin",
         acceptFirstMouse: true,
+        backgroundColor: "#00000000",
         ...(environment.platform === "darwin" ? { type: "panel" as const } : {}),
         webPreferences: {
           preload: environment.preloadPath,
@@ -261,20 +279,39 @@ export const make = Effect.gen(function* () {
           yield* sendLatchedState(window.value);
         }
       }),
+    beginDrag: liveWindow.pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Ref.set(dragGrabRef, Option.none()),
+          onSome: (window) =>
+            Effect.sync(() => {
+              const cursor = Electron.screen.getCursorScreenPoint();
+              const [wx, wy] = window.getPosition();
+              return { x: cursor.x - (wx ?? 0), y: cursor.y - (wy ?? 0) };
+            }).pipe(Effect.flatMap((grab) => Ref.set(dragGrabRef, Option.some(grab)))),
+        }),
+      ),
+    ),
     move: (position) =>
       liveWindow.pipe(
         Effect.flatMap(
           Option.match({
             onNone: () => Effect.void,
             onSome: (window) =>
-              Effect.sync(() => {
-                // setPosition with rounded ints; Electron throws on floats.
-                window.setPosition(Math.round(position.x), Math.round(position.y), false);
+              Effect.gen(function* () {
+                const grab = yield* Ref.get(dragGrabRef);
+                const next = Option.match(grab, {
+                  onNone: () => ({ x: Math.round(position.x), y: Math.round(position.y) }),
+                  onSome: (offset) =>
+                    resolveBubbleDragPosition(Electron.screen.getCursorScreenPoint(), offset),
+                });
+                window.setPosition(next.x, next.y, false);
               }),
           }),
         ),
       ),
     persistPosition: Effect.gen(function* () {
+      yield* Ref.set(dragGrabRef, Option.none());
       const window = yield* liveWindow;
       if (Option.isNone(window)) return;
       const [x, y] = window.value.getPosition();

@@ -349,6 +349,17 @@ export const VmAgentArtifactDefinition = Schema.Union([
       }),
     ).check(Schema.isMaxLength(100)),
   }),
+  Schema.Struct({
+    kind: Schema.Literal("html"),
+    html: TrimmedNonEmptyString.check(Schema.isMaxLength(250_000)).annotate({
+      description:
+        "HTML for this agent's Dashboard. A complete document is used as-is; a fragment is wrapped. Classic JS in the document runs in the same opaque sandbox as a thread web artifact.",
+    }),
+    css: Schema.optional(Schema.String.check(Schema.isMaxLength(100_000))).annotate({
+      description:
+        "Optional CSS injected into the document. Inline styles and <style> in html also work.",
+    }),
+  }),
 ]);
 export type VmAgentArtifactDefinition = typeof VmAgentArtifactDefinition.Type;
 

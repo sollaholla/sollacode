@@ -22,8 +22,10 @@ import {
   agentAutoResumeIds,
   agentContinuationSourceTurnId,
   agentContinuationShouldAwaitBackgroundTask,
+  agentLoopSignedOffSinceUserIntent,
   BACKGROUND_TASK_CONTINUATION_GRACE_MS,
   isControlOnlyAgentTurn,
+  isSyntheticAgentLoopUserMessage,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   outstandingBackgroundTasks,
   threadLostBackgroundTaskAtRestart,
@@ -140,6 +142,97 @@ describe("server-owned Agent continuation", () => {
     );
     expect(
       shouldAutoContinueAgentThread(shell({ hasPendingUserInput: true }), assistantEvent()),
+    ).toBe(false);
+  });
+
+  it("treats AGENT_STOP as signed off even when a later fragment follows", () => {
+    expect(
+      isSyntheticAgentLoopUserMessage({
+        role: "user",
+        id: "agent-auto-resume-message:thread-agent:turn-1",
+        inputOrigin: "agent-loop",
+      }),
+    ).toBe(true);
+    expect(
+      isSyntheticAgentLoopUserMessage({
+        role: "user",
+        id: "user-typed",
+        inputOrigin: "typed",
+      }),
+    ).toBe(false);
+    expect(
+      isSyntheticAgentLoopUserMessage({
+        role: "user",
+        id: "startup-auto-resume-message:thread-agent:turn-1",
+        text: "Please resume your current task using the context provided and pick up exactly where you left off.",
+      }),
+    ).toBe(true);
+    expect(
+      agentLoopSignedOffSinceUserIntent([
+        { role: "user", text: "Why is this looping?", id: "user-1", inputOrigin: "typed" },
+        {
+          role: "assistant",
+          text: "Because AGENT_STOP was ignored.\n\nAGENT_STOP",
+          id: "assistant-stop",
+        },
+        {
+          role: "user",
+          text: "Please resume your current task using the context provided and pick up exactly where you left off.",
+          id: "startup-auto-resume-message:thread-agent:turn-1",
+        },
+        {
+          role: "assistant",
+          text: "I'll pick up where I left off.",
+          id: "assistant-after-startup",
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      agentLoopSignedOffSinceUserIntent([
+        { role: "user", text: "Please fix the loop.", id: "user-1", inputOrigin: "typed" },
+        {
+          role: "assistant",
+          text: "All requested work is finished.\n\nAGENT_STOP",
+          id: "assistant-stop",
+        },
+        {
+          role: "assistant",
+          text: "I'll confirm the terminal state once, then stop.",
+          id: "assistant-fragment",
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      agentLoopSignedOffSinceUserIntent([
+        { role: "user", text: "Please fix the loop.", id: "user-1", inputOrigin: "typed" },
+        {
+          role: "assistant",
+          text: "All requested work is finished.\n\nAGENT_STOP",
+          id: "assistant-stop",
+        },
+        {
+          role: "user",
+          text: AGENT_CONTINUE_PROMPT,
+          id: "agent-auto-resume-message:thread-agent:turn-1",
+          inputOrigin: "agent-loop",
+        },
+        {
+          role: "assistant",
+          text: "I'll confirm the terminal state once, then stop.",
+          id: "assistant-fragment",
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      agentLoopSignedOffSinceUserIntent([
+        {
+          role: "assistant",
+          text: "Earlier work is finished.\n\nAGENT_STOP",
+          id: "old-stop",
+        },
+        { role: "user", text: "Why is this looping?", id: "user-2", inputOrigin: "typed" },
+        { role: "assistant", text: "Because AGENT_STOP was ignored.", id: "assistant-new" },
+      ]),
     ).toBe(false);
   });
 

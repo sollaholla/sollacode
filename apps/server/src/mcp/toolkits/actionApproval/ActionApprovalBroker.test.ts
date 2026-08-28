@@ -42,6 +42,30 @@ it.effect("delivers one response to its owning thread and absorbs duplicate subm
   }).pipe(Effect.provide(ActionApprovalBroker.layer)),
 );
 
+it.effect("reuses one open fingerprint so a retry does not mint a second request", () =>
+  Effect.gen(function* () {
+    const broker = yield* ActionApprovalBroker.ActionApprovalBroker;
+    yield* broker.rememberOpen({
+      threadId,
+      requestId,
+      fingerprint: "send_email\nSend email to pat@example.com\npreview",
+    });
+    expect(
+      yield* broker.findOpen({
+        threadId,
+        fingerprint: "send_email\nSend email to pat@example.com\npreview",
+      }),
+    ).toBe(requestId);
+    yield* broker.retire({ threadId, requestId });
+    expect(
+      yield* broker.findOpen({
+        threadId,
+        fingerprint: "send_email\nSend email to pat@example.com\npreview",
+      }),
+    ).toBeNull();
+  }).pipe(Effect.provide(ActionApprovalBroker.layer)),
+);
+
 it.effect("retires an abandoned request so a late phone response cannot reach the provider", () =>
   Effect.gen(function* () {
     const broker = yield* ActionApprovalBroker.ActionApprovalBroker;

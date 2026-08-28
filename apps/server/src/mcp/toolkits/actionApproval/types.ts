@@ -32,6 +32,7 @@ export const ActionApprovalResult = Schema.Struct({
   status: Schema.Literals(["approved", "pending", "approval_unavailable"]),
   approvalMode: Schema.Literals(["user", "agent", "none"]),
   requestId: Schema.optional(ApprovalRequestId),
+  message: Schema.optional(Schema.String),
 });
 export type ActionApprovalResult = typeof ActionApprovalResult.Type;
 

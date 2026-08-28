@@ -37,12 +37,114 @@ describe("right-panel artifact access", () => {
     activeTerminalId: "term-1",
   };
 
-  it("hides the artifact shelf only while an artifact tab is active", () => {
-    const surfaces = [terminalSurface, artifactSurface];
+  it("shows the artifact shelf only on the empty surface picker", () => {
+    expect(shouldShowArtifactShelf(artifactSurface.id)).toBe(false);
+    expect(shouldShowArtifactShelf(terminalSurface.id)).toBe(false);
+    expect(shouldShowArtifactShelf(null)).toBe(true);
+  });
 
-    expect(shouldShowArtifactShelf(surfaces, artifactSurface.id)).toBe(false);
-    expect(shouldShowArtifactShelf(surfaces, terminalSurface.id)).toBe(true);
-    expect(shouldShowArtifactShelf([terminalSurface], null)).toBe(true);
+  it("places the artifact shelf above the empty surface picker", () => {
+    const markup = renderToStaticMarkup(
+      <RightPanelEmptyState
+        onAddBrowser={vi.fn()}
+        onAddTerminal={vi.fn()}
+        onAddFiles={vi.fn()}
+        onAddDiff={vi.fn()}
+        onAddSideChat={vi.fn()}
+        browserAvailable
+        diffAvailable
+        filesAvailable
+        sideChatAvailable
+        artifactShelf={<div data-testid="artifact-shelf">Artifacts</div>}
+      />,
+    );
+
+    expect(markup.indexOf('data-testid="artifact-shelf"')).toBeGreaterThan(-1);
+    expect(markup.indexOf('data-testid="artifact-shelf"')).toBeLessThan(
+      markup.indexOf("Open a surface"),
+    );
+  });
+
+  it("wires the artifact shelf into the empty surface picker", () => {
+    const markup = renderToStaticMarkup(
+      <RightPanelTabs
+        mode="inline"
+        surfaces={[]}
+        activeSurfaceId={null}
+        pendingSurfaceIds={new Set()}
+        previewSessions={{}}
+        floatingPreviewTabIds={undefined}
+        terminalLabelsById={new Map()}
+        sideChatStatusByThreadId={new Map()}
+        onActivate={vi.fn()}
+        onCloseSurface={vi.fn()}
+        onCloseOtherSurfaces={vi.fn()}
+        onCloseSurfacesToRight={vi.fn()}
+        onCloseAllSurfaces={vi.fn()}
+        onRenameSurface={vi.fn()}
+        onReorderSurface={vi.fn()}
+        onCopyFilePath={vi.fn()}
+        onCopySideChatId={vi.fn()}
+        onAddBrowser={vi.fn()}
+        onAddTerminal={vi.fn()}
+        onAddDiff={vi.fn()}
+        onAddFiles={vi.fn()}
+        onAddSideChat={vi.fn()}
+        browserAvailable
+        diffAvailable
+        filesAvailable
+        sideChatAvailable
+        artifactShelf={<div data-testid="artifact-shelf">Artifacts</div>}
+      >
+        <div data-testid="selected-tab">should not render</div>
+      </RightPanelTabs>,
+    );
+
+    expect(markup).toContain('data-testid="artifact-shelf"');
+    expect(markup.indexOf('data-testid="artifact-shelf"')).toBeLessThan(
+      markup.indexOf("Open a surface"),
+    );
+    expect(markup).not.toContain('data-testid="selected-tab"');
+  });
+
+  it("keeps the artifact shelf out of a selected tab", () => {
+    const markup = renderToStaticMarkup(
+      <RightPanelTabs
+        mode="inline"
+        surfaces={[terminalSurface]}
+        activeSurfaceId={terminalSurface.id}
+        pendingSurfaceIds={new Set()}
+        previewSessions={{}}
+        floatingPreviewTabIds={undefined}
+        terminalLabelsById={new Map()}
+        sideChatStatusByThreadId={new Map()}
+        onActivate={vi.fn()}
+        onCloseSurface={vi.fn()}
+        onCloseOtherSurfaces={vi.fn()}
+        onCloseSurfacesToRight={vi.fn()}
+        onCloseAllSurfaces={vi.fn()}
+        onRenameSurface={vi.fn()}
+        onReorderSurface={vi.fn()}
+        onCopyFilePath={vi.fn()}
+        onCopySideChatId={vi.fn()}
+        onAddBrowser={vi.fn()}
+        onAddTerminal={vi.fn()}
+        onAddDiff={vi.fn()}
+        onAddFiles={vi.fn()}
+        onAddSideChat={vi.fn()}
+        browserAvailable
+        diffAvailable
+        filesAvailable
+        sideChatAvailable
+        artifactShelf={<div data-testid="artifact-shelf">Artifacts</div>}
+      >
+        <div data-testid="selected-tab">Terminal body</div>
+      </RightPanelTabs>,
+    );
+
+    expect(markup).toContain('data-testid="selected-tab"');
+    expect(markup).not.toContain('data-testid="artifact-shelf"');
+    expect(markup).not.toContain("Open a surface");
   });
 
   it("adds an Artifacts picker to the new-surface menu when choices are available", () => {

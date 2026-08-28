@@ -23,6 +23,7 @@ import {
   PreviewAutomationResizeResult,
   PreviewAutomationStatus,
   PreviewAutomationUploadInput,
+  PreviewAutomationWaitForDownloadResult,
 } from "./previewAutomation.ts";
 import { WsPreviewCloseRpc } from "./rpc.ts";
 
@@ -43,6 +44,9 @@ const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
 const decodeUploadInput = Schema.decodeUnknownSync(PreviewAutomationUploadInput);
+const decodeWaitForDownloadResult = Schema.decodeUnknownSync(
+  PreviewAutomationWaitForDownloadResult,
+);
 
 describe("preview close RPC compatibility", () => {
   it("proves a legacy Schema.Void client erases the authoritative result", () => {
@@ -392,6 +396,31 @@ describe("PreviewAutomationError", () => {
       expect(error.message).toBe("Preview automation type requires an editable focused element.");
     }
   });
+
+  it("tells an agent not to reuse another agent's dedicated tab", () => {
+    const error = decodeAutomationError({
+      _tag: "PreviewAutomationForeignAgentTabError",
+      operation: "snapshot",
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerSessionId: "provider-session-1",
+      providerInstanceId: "codex",
+      clientId: "client-1",
+      connectionId: "connection-1",
+      requestId: "request-1",
+      tabId: "tab_70d23993-1e1d-4caf-b190-0265822665c4",
+      timeoutMs: 1_000,
+      remoteTag: "PreviewAutomationForeignAgentTabError",
+      remoteMessageLength: 80,
+      cause: {},
+    });
+
+    expect(error._tag).toBe("PreviewAutomationForeignAgentTabError");
+    expect(error.message).toContain("another agent's dedicated browser");
+    expect(error.message).toContain("Use this agent's own tabs only");
+    expect(error.message).toContain("Do not reuse tab IDs from other agents");
+    expect(error.message).toContain("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+  });
 });
 
 describe("PreviewAutomationStatus", () => {
@@ -487,6 +516,40 @@ describe("PreviewAutomationStatus", () => {
       kind: "bot-detection",
       code: "600010",
     });
+  });
+
+  it("accepts a download-approval flag while remaining compatible with old hosts", () => {
+    const base = {
+      available: true,
+      visible: true,
+      tabId: "preview-t",
+      url: "https://example.com/file",
+      title: "File",
+      loading: false,
+    };
+    expect(decodeAutomationStatus(base)).toEqual(base);
+    expect(
+      decodeAutomationStatus({ ...base, downloadApprovalRequired: true }).downloadApprovalRequired,
+    ).toBe(true);
+  });
+
+  it("accepts a wait-for-download waiting message while remaining compatible with old hosts", () => {
+    const base = {
+      tabId: "preview-t",
+      settled: false,
+      downloads: [],
+      pendingDownloadApprovals: [
+        { id: "download-approval-1", domain: "grok.com", fileName: "a.bin" },
+      ],
+    };
+    expect(decodeWaitForDownloadResult(base)).toEqual(base);
+    expect(
+      decodeWaitForDownloadResult({
+        ...base,
+        outcome: "waiting",
+        message: "Do not retry the fetch. End the turn now; in Agent mode emit AGENT_STOP.",
+      }).message,
+    ).toContain("AGENT_STOP");
   });
 });
 

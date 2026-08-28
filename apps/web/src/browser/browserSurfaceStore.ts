@@ -132,6 +132,19 @@ const rectEquals = (left: BrowserSurfaceRect | null, right: BrowserSurfaceRect):
   left.width === right.width &&
   left.height === right.height;
 
+/**
+ * A visible slot can report 0×0 for a layout frame. Publishing that would
+ * hide the interactive guest and let a floating thumbnail steal it, which
+ * scales Gmail in and out of the panel.
+ */
+export function shouldDeferVisibleBrowserSurfaceMeasurement(input: {
+  readonly slotVisible: boolean;
+  readonly width: number;
+  readonly height: number;
+}): boolean {
+  return input.slotVisible && !(input.width > 0 && input.height > 0);
+}
+
 export const useBrowserSurfaceStore = create<BrowserSurfaceStoreState>()((set) => ({
   byTabId: {},
   claim: (tabId, owner, fitSourceContent) =>

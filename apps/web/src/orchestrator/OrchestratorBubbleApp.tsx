@@ -117,6 +117,9 @@ export function OrchestratorBubbleApp() {
       startScreenY: event.screenY,
       moved: false,
     };
+    // Main process latches the OS cursor vs window origin. Renderer screenX
+    // on Windows unfocusable/DPI windows does not track setPosition.
+    void window.desktopBridge?.orchestratorBubble?.beginDrag?.().catch(() => undefined);
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -173,6 +176,7 @@ export function OrchestratorBubbleApp() {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       style={{
         width: "100vw",
         height: "100vh",

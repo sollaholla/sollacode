@@ -36,6 +36,15 @@ describe("buildVmAgentContext", () => {
     expect(context).toContain("selection-required");
     expect(context).toContain("preview_close");
     expect(context).toContain("Never close a reused tab merely as cleanup");
+    expect(context).toContain("Never pass tab IDs from another named agent");
+    expect(context).toContain("Use this agent's own tabs");
+  });
+
+  it("tells the agent its dashboard can be an HTML/CSS web surface", () => {
+    const context = buildVmAgentContext(agent);
+    expect(context).toContain("html` dashboard");
+    expect(context).toContain("optional CSS");
+    expect(context).toContain("opaque sandbox");
   });
 
   it("keeps waiting-on-you requests out of the independent notification channel", () => {

@@ -17,7 +17,7 @@ Opening an agent goes directly to its conversation. The header keeps only contex
 - **Chat** is the agent's single persistent conversation and primary workspace. A follow-up waits behind active work; it does not create a parallel session.
 - **Activity** is on demand under the agent tools menu. It contains bounded handoff history, questions, results, follow-ups, and cancellation controls. New delegation starts in Chat.
 - **Scheduled work** is on demand under agent tools. It contains durable prompts that run manually, once, or at a minute interval. **Build with AI** turns a plain-language request into a title, self-contained prompt, schedule, completion criteria, and notification policy using the configured **Utility AI model**. It does not silently fall back to Codex merely because the agent has a Codex-compatible workspace.
-- **Dashboard** appears only when the agent owns a meaningful structured view such as metrics, a checklist, a table, a timeline, or cards. The default schedule view is omitted because it duplicates Scheduled work.
+- **Dashboard** appears only when the agent owns a meaningful view such as metrics, a checklist, a table, a timeline, cards, or an HTML/CSS web surface. The default schedule view is omitted because it duplicates Scheduled work.
 - Waiting-on-you requests and independent alerts share one compact stack at the live end of Chat. The newest card stays visible and hovering or focusing it reveals one more card, so attention never becomes a wall across the workspace. Waiting-on-you cards keep their Open, Follow up, resolve, and dismiss actions there. Follow up references that request in the composer for a correction without resolving it. Completions, failures, and direct informational messages raise an unread bell on the agent row; opening that agent scrolls the newest alert into view and marks it read only once its card is visible. There is no separate inbox to manage.
 - **Browser** is a contextual side-panel control. It appears when the agent has browser tabs, a remote window, or an open browser panel instead of occupying a permanent peer tab.
 
@@ -53,8 +53,10 @@ Preview guests stay mounted and unthrottled while their owning window, thread, o
 background, so timer- and animation-frame-based authentication can finish without the user focusing
 each surface. Desktop guest lifetime is independent of transient server tab metadata: reconnecting
 the preview stream does not recreate the Chromium guest or change its browser profile. Background
-guests retain a compositor-visible edge at imperceptible opacity, so a newly opened page starts
-loading before its thread or tab is selected. Selecting a tab changes only its presentation, and
+guests retain their full last-known geometry behind the opaque app shell at compositor-active
+opacity, so a newly opened page starts loading before its thread or tab is selected without being
+clipped, resized, or stacked over chat and files. A native snapshot fallback briefly raises the
+same geometry into the compositor; selecting a tab changes only its presentation, and
 automation preserves the fill-the-panel viewport unless the user or tool explicitly resizes it.
 When preview automation connects or begins an MCP operation, Solla Code makes every registered
 preview tab foreground-equivalent before running that operation and renews the fleet-wide lease
@@ -65,11 +67,14 @@ if the page changes while its pixels and semantic state are being read, Solla Co
 capture once and otherwise returns the latest text and controls without a misleading stale image.
 
 Before an agent has selected a tab, its preview tools bind to the visible interactive Browser
-surface in the same environment, even when another thread owns that tab. Opening a new tab from
-that state keeps it in the visible browser's profile, so the user's authenticated session does not
-silently become an empty thread-local session. An explicitly selected tab stays pinned to its real
-owner for the rest of that tool sequence. When no browser surface is visible, automation falls back
-to the requesting thread's isolated browser profile.
+surface in the same environment when that surface belongs to the same browser profile or to an
+ordinary user thread. They do not reuse another custom agent's dedicated browser. An explicit `tabId` from another
+agent is rejected with an error telling the caller to use this agent's own tabs and not reuse
+other agents' tab IDs. Opening a new tab from a valid visible user surface keeps it in that
+browser's profile, so the user's authenticated session does not silently become an empty
+thread-local session. An explicitly selected tab stays pinned only when it belongs to this
+agent's profile. When no reusable browser surface is visible, automation falls back to the
+requesting thread's isolated browser profile.
 
 Custom agents and their delegated workers use this built-in collaborative browser as their browser-
 control surface. Computer control, Chrome or browser-extension control, and standalone browser
@@ -159,8 +164,13 @@ The Agents list shows a numbered notification bubble for each agent's unread, un
 
 ## Artifact safety
 
-Artifacts are declarative data, not agent-authored HTML or JavaScript. The UI only renders the supported schedule, metrics, checklist, table, timeline, and cards shapes. This keeps artifacts portable across local, remote, and tunnel connections without running arbitrary code.
+The Dashboard can be a structured view (schedule, metrics, checklist, table, timeline, or cards) or
+an HTML/CSS web surface. Structured views stay data-only. An `html` artifact renders in the same
+opaque iframe sandbox as a [thread web artifact](./thread-artifacts.md): scripts may run inside the
+frame, but popups, downloads, forms, same-origin privilege, and top-level navigation stay blocked.
+Keep the page self-contained — inline CSS, or pass it in the optional `css` field; do not depend on
+workspace files or remote assets that the sandbox cannot load.
 
 This custom-agent **Dashboard** is not a [thread artifact](./thread-artifacts.md). A thread
-artifact is a revisioned file bundle published by any chat and may contain an isolated web preview;
-the custom-agent artifact is one declarative workspace view owned by that named agent.
+artifact is a revisioned file bundle published by any chat. The custom-agent artifact is one
+workspace view owned by that named agent, including an HTML dashboard when the agent needs a real UI.

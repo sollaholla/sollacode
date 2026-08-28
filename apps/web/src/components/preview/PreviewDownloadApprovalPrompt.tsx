@@ -5,6 +5,60 @@ import { DownloadIcon } from "lucide-react";
 
 import { Button } from "../ui/button";
 
+export type PreviewDownloadApprovalDecision = "allow-domain" | "allow-once" | "deny";
+
+export function answerPreviewDownloadApproval(
+  id: string,
+  decision: PreviewDownloadApprovalDecision,
+): void {
+  void window.desktopBridge?.preview
+    ?.answerPreviewDownloadApproval(id, decision)
+    .catch((error: unknown) => {
+      console.error("Could not answer the download request.", error);
+    });
+}
+
+export function previewDownloadApprovalSource(approval: PreviewDownloadApproval): string {
+  return approval.domain.length > 0 ? approval.domain : "This page";
+}
+
+/** Allow / Deny controls shared by the browser overlay and the composer banner. */
+export function PreviewDownloadApprovalActions(props: {
+  readonly approval: PreviewDownloadApproval;
+  readonly size?: "xs" | "sm";
+}) {
+  const size = props.size ?? "sm";
+  const compact = size === "sm";
+  return (
+    <>
+      <Button
+        size={size}
+        variant="ghost"
+        className={compact ? "h-7 px-2 text-xs" : undefined}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "deny")}
+      >
+        Deny
+      </Button>
+      <Button
+        size={size}
+        variant="outline"
+        className={compact ? "h-7 px-2 text-xs" : undefined}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "allow-once")}
+      >
+        Allow once
+      </Button>
+      <Button
+        size={size}
+        className={compact ? "h-7 px-2 text-xs" : undefined}
+        disabled={props.approval.domain.length === 0}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "allow-domain")}
+      >
+        Allow for this domain
+      </Button>
+    </>
+  );
+}
+
 /**
  * Asks before a site writes a file into the user's workspace.
  *
@@ -22,14 +76,6 @@ export function PreviewDownloadApprovalPrompt(props: {
   const pending = props.approvals ?? [];
   if (pending.length === 0) return null;
 
-  const answer = (id: string, decision: "allow-domain" | "allow-once" | "deny") => {
-    void window.desktopBridge?.preview
-      ?.answerPreviewDownloadApproval(id, decision)
-      .catch((error: unknown) => {
-        console.error("Could not answer the download request.", error);
-      });
-  };
-
   return (
     <div
       className="pointer-events-none absolute inset-x-0 top-0 z-50 flex flex-col items-center gap-2 p-3"
@@ -46,37 +92,13 @@ export function PreviewDownloadApprovalPrompt(props: {
               <p className="truncate text-xs font-medium text-foreground">
                 {/* The domain leads: it is the thing being trusted, and the
                     thing an "Allow for this domain" answer is about. */}
-                {approval.domain.length > 0 ? approval.domain : "This page"} wants to download a
-                file
+                {previewDownloadApprovalSource(approval)} wants to download a file
               </p>
               <p className="truncate text-[11px] text-muted-foreground">{approval.fileName}</p>
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-1.5">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-xs"
-              onClick={() => answer(approval.id, "deny")}
-            >
-              Deny
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-xs"
-              onClick={() => answer(approval.id, "allow-once")}
-            >
-              Allow once
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 px-2 text-xs"
-              disabled={approval.domain.length === 0}
-              onClick={() => answer(approval.id, "allow-domain")}
-            >
-              Allow for this domain
-            </Button>
+            <PreviewDownloadApprovalActions approval={approval} />
           </div>
         </div>
       ))}

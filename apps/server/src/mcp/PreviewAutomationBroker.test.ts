@@ -4,8 +4,10 @@ import {
   EnvironmentId,
   PREVIEW_AUTOMATION_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
+  PreviewAutomationForeignAgentTabError,
   PreviewAutomationHumanVerificationRequiredError,
   PreviewAutomationInvalidSelectorError,
+  previewForeignAgentTabErrorMessage,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationTargetNotEditableError,
@@ -502,6 +504,55 @@ it.effect("classifies a remote non-editable target without collapsing it to exec
     }),
   );
 });
+
+it.effect(
+  "rejects another agent's dedicated tab with an instruction to use this agent's tabs",
+  () => {
+    const foreignTabId = PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+    const remoteMessage = previewForeignAgentTabErrorMessage(foreignTabId, "snapshot");
+    const remoteError = {
+      _tag: "PreviewAutomationForeignAgentTabError",
+      message: remoteMessage,
+      detail: { tabId: foreignTabId },
+    } as const;
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const requests = requestsFrom(yield* broker.connect(makeHost()));
+        yield* Stream.runForEach(requests, (request) =>
+          broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: false,
+            error: remoteError,
+          }),
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const error = yield* broker
+          .invoke<void>({
+            scope,
+            operation: "snapshot",
+            input: {},
+            tabId: foreignTabId,
+          })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(PreviewAutomationForeignAgentTabError);
+        expect(error.message).toBe(remoteMessage);
+        expect(error.message).toContain("Use this agent's own tabs only");
+        expect(error.message).toContain("Do not reuse tab IDs from other agents");
+        expect(error).toMatchObject({
+          operation: "snapshot",
+          tabId: foreignTabId,
+          remoteTag: "PreviewAutomationForeignAgentTabError",
+        });
+      }),
+    );
+  },
+);
 
 it.effect("preserves a remote human-verification gate", () => {
   const verification = {

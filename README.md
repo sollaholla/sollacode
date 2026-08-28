@@ -192,13 +192,13 @@ Collaboration is bounded by the environment. A root agent can delegate to a comp
 
 Thread artifacts are named, revisioned bundles owned by a thread. Web bundles render inside an opaque sandbox that blocks popups, downloads, forms, same-origin privilege, and top-level navigation. Mobile WebViews accept only the selected host's signed asset subtree.
 
-This is separate from a custom agent's declarative Artifact view, which renders a safe schedule, metrics, checklist, table, timeline, or cards model. Read [Thread artifacts](./docs/user/thread-artifacts.md) and [Artifact architecture](./docs/architecture/thread-artifacts.md).
+This is separate from a custom agent's Artifact Dashboard, which can be a structured schedule, metrics, checklist, table, timeline, or cards model, or an HTML/CSS web view in the same sandbox as a thread web artifact. Read [Thread artifacts](./docs/user/thread-artifacts.md) and [Artifact architecture](./docs/architecture/thread-artifacts.md).
 
 ### Provider status, approvals, and failover
 
 Provider adapters normalize native events into one typed orchestration model. Health, authentication, model availability, quota signals, approval requests, structured input, interruptions, and completion remain associated with their provider instance, session, and turn.
 
-Automatic failover responds only to explicit account-limit events. It chooses another configured and eligible provider, preserves a compact handoff, and records when no target is available. Read [Provider failover](./docs/user/provider-failover.md), [Provider account switching](./docs/user/provider-account-switching.md), and [Provider architecture](./docs/architecture/providers.md).
+Automatic failover responds only to explicit account-limit events. It first uses another remaining model on the same instance when one still has quota, then walks other configured and eligible providers, preserves a compact handoff, and records when no target is available. Read [Provider failover](./docs/user/provider-failover.md), [Provider account switching](./docs/user/provider-account-switching.md), and [Provider architecture](./docs/architecture/providers.md).
 
 ## Architecture
 

@@ -3,12 +3,37 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   acquireBrowserSurface,
   resolveBrowserSurfacePanelRect,
+  shouldDeferVisibleBrowserSurfaceMeasurement,
   useBrowserSurfaceStore,
 } from "./browserSurfaceStore";
 
 describe("browserSurfaceStore", () => {
   beforeEach(() => {
     useBrowserSurfaceStore.setState({ byTabId: {} });
+  });
+
+  it("defers a visible slot that has not been laid out yet", () => {
+    expect(
+      shouldDeferVisibleBrowserSurfaceMeasurement({
+        slotVisible: true,
+        width: 0,
+        height: 640,
+      }),
+    ).toBe(true);
+    expect(
+      shouldDeferVisibleBrowserSurfaceMeasurement({
+        slotVisible: true,
+        width: 900,
+        height: 640,
+      }),
+    ).toBe(false);
+    expect(
+      shouldDeferVisibleBrowserSurfaceMeasurement({
+        slotVisible: false,
+        width: 0,
+        height: 0,
+      }),
+    ).toBe(false);
   });
 
   it("freezes the source content dimensions for a fitted presentation", () => {

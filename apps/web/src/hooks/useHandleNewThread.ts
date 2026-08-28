@@ -4,7 +4,11 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { DEFAULT_RUNTIME_MODE, type ScopedProjectRef } from "@t3tools/contracts";
+import {
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type ScopedProjectRef,
+} from "@t3tools/contracts";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
@@ -64,11 +68,13 @@ export function useNewThreadHandler() {
         setModelSelection,
       } = useComposerDraftStore.getState();
       const currentRouteTarget = getCurrentRouteTarget();
-      // A new thread carries the user's *working mode* from the thread being
-      // viewed: model (including options like reasoning effort and context
-      // window), permission mode, and interaction mode. Branch, worktree, and
-      // env mode never carry implicitly — those come from the configured
-      // defaults unless the caller passes them explicitly.
+      // A new thread carries the viewed chat's model (including options like
+      // reasoning effort and context window) and permission mode. Interaction
+      // mode does not: new chats always start in Build. Carrying Agent from
+      // the thread being viewed made "New thread" land in Agent whenever the
+      // current chat was one. Branch, worktree, and env mode never carry
+      // implicitly — those come from the configured defaults unless the
+      // caller passes them explicitly.
       const carrySourceShell =
         currentRouteTarget?.kind === "server"
           ? readThreadShell(currentRouteTarget.threadRef)
@@ -94,11 +100,6 @@ export function useNewThreadHandler() {
         carrySourceComposer?.runtimeMode ??
         carrySourceShell?.runtimeMode ??
         carrySourceDraft?.runtimeMode ??
-        null;
-      const carryInteractionMode =
-        carrySourceComposer?.interactionMode ??
-        carrySourceShell?.interactionMode ??
-        carrySourceDraft?.interactionMode ??
         null;
       const project = projects.find(
         (candidate) =>
@@ -169,7 +170,7 @@ export function useNewThreadHandler() {
             setDraftThreadContext(reusableStoredDraftThread.draftId, {
               ...workspaceContext,
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
-              ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             });
             if (carryModelSelection) {
               // The carried selection is a complete snapshot of the viewed
@@ -193,7 +194,7 @@ export function useNewThreadHandler() {
               threadId: reusableStoredDraftThread.threadId,
               ...workspaceContext,
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
-              ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             },
           );
           if (
@@ -260,7 +261,7 @@ export function useNewThreadHandler() {
               newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
             }),
           runtimeMode: carryRuntimeMode ?? DEFAULT_RUNTIME_MODE,
-          ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         });
         applyStickyState(draftId);
         if (carryModelSelection) {

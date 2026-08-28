@@ -53,6 +53,7 @@ function ScreenRotationIcon() {
 }
 
 interface Props {
+  readonly active: boolean;
   readonly setting: Exclude<PreviewViewportSetting, { readonly _tag: "fill" }>;
   readonly width: number;
   readonly aspectRatio: number | null;
@@ -61,6 +62,7 @@ interface Props {
 }
 
 export function BrowserDeviceToolbar({
+  active,
   setting,
   width,
   aspectRatio,
@@ -176,6 +178,8 @@ export function BrowserDeviceToolbar({
       style={{ width, height: BROWSER_DEVICE_TOOLBAR_HEIGHT }}
       role="toolbar"
       aria-label="Browser device toolbar"
+      aria-hidden={active ? undefined : true}
+      inert={active ? undefined : true}
       data-browser-device-toolbar
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;

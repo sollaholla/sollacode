@@ -1,5 +1,6 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  AGENTS_PROJECT_ID,
   EnvironmentId,
   PreviewTabId,
   ThreadId,
@@ -11,7 +12,13 @@ import type { BrowserSurfacePresentation } from "~/browser/browserSurfaceStore";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import type { ThreadPreviewState } from "~/previewStateStore";
 
-import { resolvePreviewAutomationThreadTarget } from "./previewAutomationThreadTarget";
+import {
+  canReusePreviewAutomationBrowser,
+  isExclusiveAgentBrowserProfile,
+  previewAutomationBrowserProfileRoot,
+  resolvePreviewAutomationThreadTarget,
+  type PreviewAutomationThreadProfile,
+} from "./previewAutomationThreadTarget";
 
 const environmentId = EnvironmentId.make("environment-1");
 const requestThreadRef = scopeThreadRef(environmentId, ThreadId.make("thread-request"));
@@ -75,7 +82,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: visibleState },
         presentationsByRuntimeTabId: {},
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: PreviewTabId.make("tab-visible"),
+    });
   });
 
   it("defaults a fresh agent to the visible interactive browser in its environment", () => {
@@ -97,7 +107,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation({ updatedAt: 2 }),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("keeps targeting a visible hosted guest while server metadata reconnects", () => {
@@ -117,7 +130,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation(),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("prefers the interactive panel over a newer visible thumbnail", () => {
@@ -140,7 +156,10 @@ describe("resolvePreviewAutomationThreadTarget", () => {
             presentation({ interactive: false, updatedAt: 2 }),
         },
       }),
-    ).toEqual(visibleThreadRef);
+    ).toEqual({
+      threadRef: visibleThreadRef,
+      tabId: undefined,
+    });
   });
 
   it("falls back to the requesting thread when no browser is presented", () => {
@@ -152,6 +171,110 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         previewByThreadKey: {},
         presentationsByRuntimeTabId: {},
       }),
-    ).toEqual(requestThreadRef);
+    ).toEqual({
+      threadRef: requestThreadRef,
+      tabId: undefined,
+    });
+  });
+});
+
+const agentHome = (threadId: string): PreviewAutomationThreadProfile => ({
+  profileRootThreadId: ThreadId.make(threadId),
+  exclusiveAgentBrowser: true,
+});
+
+describe("canReusePreviewAutomationBrowser", () => {
+  it("keeps a custom agent's dedicated browser private from sibling agents", () => {
+    expect(isExclusiveAgentBrowserProfile(AGENTS_PROJECT_ID, null)).toBe(true);
+    expect(
+      previewAutomationBrowserProfileRoot(ThreadId.make("agent-a"), ThreadId.make("agent-a")),
+    ).toEqual(ThreadId.make("agent-a"));
+    expect(
+      canReusePreviewAutomationBrowser({
+        requestThreadId: ThreadId.make("agent-work"),
+        ownerThreadId: ThreadId.make("agent-channel"),
+        profiles: {
+          "agent-work": agentHome("agent-work"),
+          "agent-channel": agentHome("agent-channel"),
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("lets a delegated project thread keep using its creating agent's profile", () => {
+    expect(
+      canReusePreviewAutomationBrowser({
+        requestThreadId: ThreadId.make("project-thread"),
+        ownerThreadId: ThreadId.make("agent-work"),
+        profiles: {
+          "project-thread": {
+            profileRootThreadId: ThreadId.make("agent-work"),
+            exclusiveAgentBrowser: false,
+          },
+          "agent-work": agentHome("agent-work"),
+        },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("resolvePreviewAutomationThreadTarget agent isolation", () => {
+  const workAgentRef = scopeThreadRef(environmentId, ThreadId.make("agent-work"));
+  const channelRef = scopeThreadRef(environmentId, ThreadId.make("agent-channel"));
+  const profiles = {
+    "agent-work": agentHome("agent-work"),
+    "agent-channel": agentHome("agent-channel"),
+  };
+
+  it("ignores an explicit tab from another custom agent's dedicated browser", () => {
+    const channelState = state("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+    const workAgentState = state("tab-work-gmail");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef: workAgentRef,
+        requestedTabId: PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4"),
+        previewByThreadKey: {
+          [scopedThreadKey(workAgentRef)]: workAgentState,
+          [scopedThreadKey(channelRef)]: channelState,
+        },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(workAgentRef, workAgentState.serverEpoch, "tab-work-gmail")]: presentation({
+            interactive: true,
+            updatedAt: 2,
+          }),
+          [previewRuntimeTabId(
+            channelRef,
+            channelState.serverEpoch,
+            "tab_70d23993-1e1d-4caf-b190-0265822665c4",
+          )]: presentation({ interactive: true, updatedAt: 1 }),
+        },
+        profiles,
+      }),
+    ).toEqual({
+      threadRef: workAgentRef,
+      tabId: undefined,
+      foreignAgentTabId: PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4"),
+    });
+  });
+
+  it("does not default a custom agent onto another agent's visible browser", () => {
+    const channelState = state("tab-channel-gmail");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef: workAgentRef,
+        requestedTabId: undefined,
+        previewByThreadKey: { [scopedThreadKey(channelRef)]: channelState },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(channelRef, channelState.serverEpoch, "tab-channel-gmail")]:
+            presentation(),
+        },
+        profiles,
+      }),
+    ).toEqual({
+      threadRef: workAgentRef,
+      tabId: undefined,
+    });
   });
 });

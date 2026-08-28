@@ -19,7 +19,13 @@ describe("T3 browser control policy", () => {
     expect(T3_BROWSER_CONTROL_POLICY).toContain(
       "do not substitute another browser-control surface",
     );
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("another named agent's dedicated browser");
     expect(T3_BROWSER_CONTROL_POLICY).not.toContain("user explicitly requests");
     expect(T3_BROWSER_CONTROL_POLICY).not.toContain("Only consider another");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("downloadApprovalRequired");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("preview_wait_for_download");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("PDF viewers");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("preview_resize");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("320×200");
   });
 });

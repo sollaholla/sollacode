@@ -14,6 +14,7 @@ import {
   PreviewAutomationHumanVerificationHostError,
   PreviewAutomationNavigationLoadFailedHostError,
   PreviewAutomationRecordingNotActiveError,
+  PreviewAutomationForeignAgentTabHostError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
 } from "./previewAutomationErrors";
@@ -542,6 +543,38 @@ describe("previewAutomationRequestConsumer", () => {
         threadId: "thread-1",
         tabId: "tab-1",
         bridgeAvailable: false,
+      },
+    });
+  });
+
+  it("rejects another agent's dedicated tab with an instruction to use this agent's tabs", () => {
+    const foreignTabId = PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+    const error = new PreviewAutomationForeignAgentTabHostError({
+      requestId: "request-gmail",
+      operation: "snapshot",
+      environmentId,
+      threadId,
+      tabId: foreignTabId,
+    });
+
+    expect(
+      serializePreviewAutomationError(error, {
+        requestId: "request-gmail",
+        operation: "snapshot",
+        environmentId,
+        threadId,
+        tabId: foreignTabId,
+      }),
+    ).toEqual({
+      _tag: "PreviewAutomationForeignAgentTabError",
+      message:
+        "Tab tab_70d23993-1e1d-4caf-b190-0265822665c4 belongs to another agent's dedicated browser and cannot be used for snapshot. Use this agent's own tabs only. Do not reuse tab IDs from other agents. Omit tabId to use this agent's current tab, or call preview_open without that tabId (reuseExistingTab: false creates a new tab in this agent's browser).",
+      detail: {
+        requestId: "request-gmail",
+        operation: "snapshot",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        tabId: "tab_70d23993-1e1d-4caf-b190-0265822665c4",
       },
     });
   });

@@ -46,7 +46,9 @@ open. Solla Code records for the full time the shortcut is physically held and b
 cooldown only after the key is released. It then transcribes the recording locally. With automatic
 voice sending off, the text is inserted into the draft and a one-line result chip appears above the
 composer; hover or focus expands the full transcript, **Send** submits it, and the close button
-dismisses the chip. With automatic sending on, the completed transcript is sent immediately. The
+dismisses the chip. If you leave that chat before transcription finishes, a notification in the
+upper-right shows a preview of the transcript with **Send**, so you can submit it without going
+back. With automatic sending on, the completed transcript is sent immediately. The
 microphone button beside the composer provides the same behavior. Sent voice messages show a
 **Transcribed** badge at the bottom-left of the user bubble.
 

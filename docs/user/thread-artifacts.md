@@ -6,13 +6,13 @@ the thread and environment that created them.
 
 ## Opening artifacts
 
-On web and desktop, open the right drawer. **Surfaces** stay first and **Artifacts** appear directly
-below them. The surface add menu also includes an **Artifacts** submenu. Selecting an artifact opens
-its current revision, and the artifact shelf stays out of the way until that artifact surface is
-closed or another surface becomes active. On mobile, choose **Artifacts** from the thread header.
+On web and desktop, open the right drawer. When no surface tab is selected, **Artifacts** appear
+expanded at the top of the empty picker, above the surface choices. Selecting an artifact opens its
+current revision, and the list hides while any tab is active. The surface add menu still includes an
+**Artifacts** submenu. On mobile, choose **Artifacts** from the thread header.
 Links shaped like `/<environment>/<thread>?artifact=<artifact>` open the same artifact directly on
-web. The artifact toolbar's **Link** action updates that address through in-app navigation, so the
-conversation and its running surfaces stay mounted.
+web. Opening one of those addresses uses in-app navigation, so the conversation and its running
+surfaces stay mounted.
 
 Connected devices request a fresh signed asset URL from the selected host. This means a phone using
 the mobile app or the browser through a LAN, relay, or Tailscale connection can render the artifact
@@ -31,5 +31,5 @@ SVG icons are loaded as images from signed host resources; clients never inject 
 the application document.
 
 Thread artifacts are different from the custom-agent **Artifact** tab. That older surface is one
-declarative schedule, metrics, checklist, table, timeline, or cards view owned by a named VM agent;
+schedule, metrics, checklist, table, timeline, cards, or HTML dashboard owned by a named VM agent;
 a thread artifact is a revisioned file bundle owned by any thread.

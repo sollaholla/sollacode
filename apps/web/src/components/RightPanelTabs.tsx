@@ -135,7 +135,7 @@ interface RightPanelTabsProps {
    * without this the panel can read as an unescapable takeover.
    */
   onCloseSheet?: () => void;
-  /** Thread artifacts live below the general-purpose surface tab strip. */
+  /** Thread artifacts shown at the top of the empty surface picker. */
   artifactShelf?: ReactNode;
   /** Artifact choices shown in the new-surface menu. */
   artifactMenu?: ReactNode;
@@ -336,11 +336,8 @@ export function rightPanelNewSurfaceKinds(
   ];
 }
 
-export function shouldShowArtifactShelf(
-  surfaces: readonly RightPanelSurface[],
-  activeSurfaceId: string | null,
-): boolean {
-  return surfaces.find((surface) => surface.id === activeSurfaceId)?.kind !== "artifact";
+export function shouldShowArtifactShelf(activeSurfaceId: string | null): boolean {
+  return activeSurfaceId === null;
 }
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
@@ -382,6 +379,7 @@ export function RightPanelEmptyState(props: {
   filesAvailable: boolean;
   sideChatAvailable: boolean;
   browserOnly?: boolean;
+  artifactShelf?: ReactNode;
 }) {
   const allActions = [
     {
@@ -430,55 +428,58 @@ export function RightPanelEmptyState(props: {
     : allActions;
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-      <div className="w-full max-w-xl">
-        <div className="mb-5 text-center">
-          <h3 className="text-sm font-medium text-foreground">Open a surface</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Choose what to show in the right panel.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-          {actions.map((action) => {
-            const Icon = action.icon;
-            const content = (
-              <>
-                <Icon className="mb-3 size-5" />
-                <span className="text-sm font-medium">{action.label}</span>
-                <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  {action.description}
-                </span>
-              </>
-            );
-            if (action.available) {
-              return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {props.artifactShelf}
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+        <div className="w-full max-w-xl">
+          <div className="mb-5 text-center">
+            <h3 className="text-sm font-medium text-foreground">Open a surface</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Choose what to show in the right panel.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+            {actions.map((action) => {
+              const Icon = action.icon;
+              const content = (
+                <>
+                  <Icon className="mb-3 size-5" />
+                  <span className="text-sm font-medium">{action.label}</span>
+                  <span className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    {action.description}
+                  </span>
+                </>
+              );
+              if (action.available) {
+                return (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={action.onClick}
+                    className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                  >
+                    {content}
+                  </button>
+                );
+              }
+              const disabledCard = (
                 <button
-                  key={action.label}
                   type="button"
-                  onClick={action.onClick}
-                  className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                  className="flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left opacity-40 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                  aria-disabled="true"
                 >
                   {content}
                 </button>
               );
-            }
-            const disabledCard = (
-              <button
-                type="button"
-                className="flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left opacity-40 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
-                aria-disabled="true"
-              >
-                {content}
-              </button>
-            );
-            return (
-              <DisabledReasonTooltip
-                key={action.label}
-                reason={action.disabledReason}
-                trigger={disabledCard}
-              />
-            );
-          })}
+              return (
+                <DisabledReasonTooltip
+                  key={action.label}
+                  reason={action.disabledReason}
+                  trigger={disabledCard}
+                />
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -1175,12 +1176,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             filesAvailable={props.filesAvailable}
             sideChatAvailable={props.sideChatAvailable}
             browserOnly={props.browserOnly === true}
+            artifactShelf={
+              shouldShowArtifactShelf(props.activeSurfaceId) ? props.artifactShelf : null
+            }
           />
         ) : (
           props.children
         )}
       </div>
-      {shouldShowArtifactShelf(props.surfaces, props.activeSurfaceId) ? props.artifactShelf : null}
     </PreviewPanelShell>
   );
 }

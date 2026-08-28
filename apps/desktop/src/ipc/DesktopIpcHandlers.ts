@@ -49,6 +49,7 @@ import {
 import { transcribeVoice } from "./methods/voiceTranscription.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import {
+  beginOrchestratorBubbleDrag,
   endOrchestratorBubbleDrag,
   moveOrchestratorBubble,
   openOrchestratorFromBubble,
@@ -137,6 +138,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(startFileDrag);
   yield* ipc.handle(setOrchestratorBubbleVisible);
   yield* ipc.handle(publishOrchestratorBubbleState);
+  yield* ipc.handle(beginOrchestratorBubbleDrag);
   yield* ipc.handle(moveOrchestratorBubble);
   yield* ipc.handle(endOrchestratorBubbleDrag);
   yield* ipc.handle(openOrchestratorFromBubble);

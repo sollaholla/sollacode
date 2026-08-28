@@ -2,6 +2,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ActionApprovalBroker from "./ActionApprovalBroker.ts";
 import * as ActionApprovalPrompt from "./prompt.ts";
 import { ActionApprovalError, ActionApprovalInput, ActionApprovalResult } from "./types.ts";
 
@@ -15,6 +16,7 @@ export const ActionApprovalTool = Tool.make("request_action_approval", {
     McpInvocationContext.McpInvocationContext,
     ProjectionSnapshotQuery,
     ActionApprovalPrompt.ActionApprovalPrompt,
+    ActionApprovalBroker.ActionApprovalBroker,
   ],
 })
   .annotate(Tool.Title, "Request action approval")

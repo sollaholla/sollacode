@@ -27,13 +27,8 @@ const mocks = vi.hoisted(() => ({
   listData: null as unknown,
   listRefresh: vi.fn(),
   listToken: Symbol.for("artifact-list-query"),
-  navigate: vi.fn(),
   restore: vi.fn(async () => ({ _tag: "Success" as const })),
   restoreToken: Symbol.for("artifact-restore-command"),
-}));
-
-vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => mocks.navigate,
 }));
 
 vi.mock("~/assets/assetUrls", () => ({
@@ -192,7 +187,6 @@ beforeEach(() => {
   mocks.deleteArtifact.mockClear();
   mocks.detailRefresh.mockClear();
   mocks.listRefresh.mockClear();
-  mocks.navigate.mockClear();
   mocks.restore.mockClear();
   mocks.listData = { threadId: threadRef.threadId, artifacts: [summary] };
   mocks.detailData = detail;
@@ -226,9 +220,13 @@ describe("ThreadArtifactSurface UI", () => {
     expect(container.querySelector('[data-testid="rendered-artifact-markdown"]')?.textContent).toBe(
       "# Rendered release notes",
     );
-    expect(buttonNamed("Link")).toBeTruthy();
     expect(buttonNamed("Archive")).toBeTruthy();
     expect(buttonNamed("Delete")).toBeTruthy();
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Link",
+      ),
+    ).toBe(false);
   });
 
   it("confirms deletion, routes the mutation, and closes the deleted surface", async () => {

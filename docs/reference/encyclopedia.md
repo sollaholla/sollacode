@@ -133,8 +133,9 @@ A durable prompt owned by one custom agent. Tasks may be manual, one-time, or re
 
 #### Agent artifact
 
-The custom agent's single declarative output surface. It is limited to schedule, metrics, checklist,
-table, timeline, or cards data and cannot execute arbitrary UI code. It is not a thread artifact.
+The custom agent's single output surface. It may be schedule, metrics, checklist, table, timeline,
+or cards data, or an HTML/CSS web view rendered in the same opaque sandbox as a thread web artifact.
+It is not a thread artifact.
 
 #### Agent delegation
 

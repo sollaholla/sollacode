@@ -16,7 +16,6 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 
 import ChatMarkdown from "~/components/ChatMarkdown";
 
@@ -36,21 +35,8 @@ import {
   DialogPopup,
   DialogTitle,
 } from "~/components/ui/dialog";
-import { buildThreadRouteParams } from "~/threadRoutes";
 
 type ArtifactSurface = Extract<RightPanelSurface, { kind: "artifact" }>;
-
-export function ArtifactDeepLinkButton(props: { readonly onNavigate: () => void }) {
-  return (
-    <button
-      type="button"
-      className="inline-flex min-h-11 items-center rounded-md px-3 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      onClick={props.onNavigate}
-    >
-      Link
-    </button>
-  );
-}
 
 export function artifactFrameSandbox(kind: ThreadArtifactKind): string {
   return kind === "web" ? "allow-scripts" : "";
@@ -215,7 +201,6 @@ export function ThreadArtifactSurface(props: {
   readonly threadRef: ScopedThreadRef;
   readonly surface: ArtifactSurface;
 }) {
-  const navigate = useNavigate();
   const artifactId = ThreadArtifactId.make(props.surface.resourceId);
   const [mutating, setMutating] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -370,16 +355,6 @@ export function ThreadArtifactSurface(props: {
         </div>
         {artifact?.archivedAt ? <Badge variant="secondary">Archived</Badge> : null}
         <div className="flex min-w-0 flex-1 flex-wrap justify-end gap-1 min-[520px]:flex-none">
-          <ArtifactDeepLinkButton
-            onNavigate={() =>
-              void navigate({
-                to: "/$environmentId/$threadId",
-                params: buildThreadRouteParams(props.threadRef),
-                search: { artifact: artifactId },
-                replace: true,
-              })
-            }
-          />
           {artifact ? (
             <Button
               type="button"

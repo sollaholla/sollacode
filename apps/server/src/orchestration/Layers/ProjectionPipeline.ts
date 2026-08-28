@@ -79,6 +79,7 @@ import {
 import {
   activeTurnWorkSourceId,
   agentContinuationSourceTurnId,
+  agentLoopSignedOffSinceUserIntent,
   isAgentAutoResumeMessageId,
   isVmAgentTaskPromptMessageId,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
@@ -464,8 +465,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   'agent-auto-resume-message:%'
                 AND json_extract(later.payload_json, '$.messageId') NOT LIKE
                   'startup-auto-resume-message:%'
+                -- Grok follow-ups emit turn-start-requested then get delivered
+                -- into the in-flight turn. That is not newer intent that
+                -- supersedes a restart resume (observed 2026-08-28 on
+                -- e526d4c2: queued aisle-board notes blocked auto-resume).
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM orchestration_events AS absorbed
+                  WHERE absorbed.aggregate_kind = 'thread'
+                    AND absorbed.stream_id = later.stream_id
+                    AND absorbed.event_type = 'thread.activity-appended'
+                    AND json_extract(absorbed.payload_json, '$.activity.kind') =
+                      'message.delivered'
+                    AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                      json_extract(later.payload_json, '$.messageId')
+                    AND json_extract(absorbed.payload_json, '$.activity.turnId') =
+                      source_turn.turn_id
+                )
             ) AS "hasLaterRealUserTurn"
           FROM orchestration_events AS source
+          LEFT JOIN projection_turns AS source_turn
+            ON source_turn.thread_id = source.stream_id
+            AND source_turn.pending_message_id =
+              json_extract(source.payload_json, '$.messageId')
           WHERE source.aggregate_kind = 'thread'
             AND source.stream_id = ${input.threadId}
             AND source.event_type = 'thread.turn-start-requested'
@@ -2260,6 +2282,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         if (assistantMessage === undefined || assistantMessage.isStreaming) return;
 
         if (isProviderAuthenticationFailure(assistantMessage.text)) return;
+        // A later fragment on the same turn must not hide an earlier AGENT_STOP.
+        if (agentLoopSignedOffSinceUserIntent(messages)) return;
         if (!shouldAgentContinueAfterReply(assistantMessage.text)) return;
 
         const sourceMessage = messages.find(
@@ -3342,6 +3366,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   'agent-auto-resume-message:%'
                 AND json_extract(later.payload_json, '$.messageId') NOT LIKE
                   'startup-auto-resume-message:%'
+                -- Follow-ups delivered into this turn are not a later user
+                -- turn. Counting them skipped restart auto-resume (e526d4c2).
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM orchestration_events AS absorbed
+                  WHERE absorbed.aggregate_kind = 'thread'
+                    AND absorbed.stream_id = later.stream_id
+                    AND absorbed.event_type = 'thread.activity-appended'
+                    AND json_extract(absorbed.payload_json, '$.activity.kind') =
+                      'message.delivered'
+                    AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                      json_extract(later.payload_json, '$.messageId')
+                    AND json_extract(absorbed.payload_json, '$.activity.turnId') =
+                      turns.turn_id
+                )
             ) AS "hasLaterRealUserTurn",
             sessions.status AS "sessionStatus",
             sessions.updated_at AS "sessionUpdatedAt",
@@ -3457,6 +3496,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             // thread with no user input).
             !(row.assistantText !== null && emittedAgentStop(row.assistantText));
           if (!isAuthenticationPause && !isAgentContinuation && !isStartupResume) continue;
+
+          if (isStartupResume || isAgentContinuation) {
+            const messages = yield* projectionThreadMessageRepository.listByThreadId({
+              threadId: ThreadId.make(row.threadId),
+            });
+            // Pointer-only AGENT_STOP checks miss a later fragment on the same
+            // turn, and a Mac `--auto-resume` install then shows "Auto-resuming
+            // thread…" on a chat that just signed off.
+            if (agentLoopSignedOffSinceUserIntent(messages)) continue;
+          }
 
           const kind = isAuthenticationPause
             ? ("authentication-resume" as const)

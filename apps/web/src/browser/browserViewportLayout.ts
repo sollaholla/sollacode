@@ -21,6 +21,66 @@ export interface BrowserViewportLayout {
 
 export const BROWSER_DEVICE_TOOLBAR_HEIGHT = 32;
 export const BROWSER_VIEWPORT_RESIZE_RAIL_SIZE = 10;
+/** Logical CSS size used when fill mode is smaller than a desktop web layout. */
+export const DEFAULT_FILL_CSS_VIEWPORT = { width: 1280, height: 800 } as const;
+
+export function isUsableFillCssViewport(size: {
+  readonly width: number;
+  readonly height: number;
+}): boolean {
+  return (
+    size.width >= DEFAULT_FILL_CSS_VIEWPORT.width && size.height >= DEFAULT_FILL_CSS_VIEWPORT.height
+  );
+}
+
+/**
+ * CSS viewport for fill mode. A typical right-panel slot (~900×640) or the
+ * floating 320×200 mini-player must not become the page's innerWidth: Gmail
+ * and similar UIs collapse around their desktop breakpoints, then animate
+ * back when the slot recovers. Slots below a desktop logical size keep
+ * 1280×800 and scale visually; a panel that is already that large still fills.
+ */
+export function resolveFillCssViewport(input: {
+  readonly presented: { readonly width: number; readonly height: number } | null;
+  readonly fitSourceContent: boolean;
+  readonly sourceContent: {
+    readonly width: number;
+    readonly height: number;
+    readonly scale: number;
+  } | null;
+  readonly zoomFactor?: number;
+}): Exclude<PreviewViewportSetting, { readonly _tag: "fill" }> {
+  const zoomFactor = input.zoomFactor ?? 1;
+  const thumbnail =
+    input.fitSourceContent || input.presented === null || !isUsableFillCssViewport(input.presented);
+  if (!thumbnail && input.presented) {
+    return resolveFittedBrowserViewport(
+      { _tag: "fill" },
+      { width: input.presented.width, height: input.presented.height, scale: 1 },
+      zoomFactor,
+    );
+  }
+  if (input.sourceContent) {
+    const logical = {
+      width: Math.max(
+        1,
+        Math.round(input.sourceContent.width / input.sourceContent.scale / zoomFactor),
+      ),
+      height: Math.max(
+        1,
+        Math.round(input.sourceContent.height / input.sourceContent.scale / zoomFactor),
+      ),
+    };
+    if (isUsableFillCssViewport(logical)) {
+      return { _tag: "freeform", ...logical };
+    }
+  }
+  return {
+    _tag: "freeform",
+    width: DEFAULT_FILL_CSS_VIEWPORT.width,
+    height: DEFAULT_FILL_CSS_VIEWPORT.height,
+  };
+}
 
 export type BrowserViewportResizeDirection =
   | "north"

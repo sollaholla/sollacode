@@ -54,9 +54,14 @@ never passed to the desktop's local file explorer.
 ## Interaction and access
 
 Build, Plan, Agent, and the access picker work for Claude, Codex, Cursor, and
-Grok. Plan mode researches and proposes an approach without implementing.
-Switch back to Build, or press **Implement** on the proposed plan, to apply it.
-Agent mode keeps working until it finishes or hits a blocker. Grok has no
+Grok. New chats start in **Build**. They keep the current chat's model and
+access level, not Agent or Plan. Changing provider or model while a turn is
+running stops that turn and starts the next one on the new selection — you do
+not have to press **Stop** first. Claude's in-session model switch is not used
+for a live turn because it would keep talking on the previous model. Plan mode researches and proposes an approach
+without implementing. Switch back to Build, or press **Implement** on the
+proposed plan, to apply it. Agent mode keeps working until it finishes or hits
+a blocker. Grok has no
 separate AI reviewer, so **Auto** auto-accepts file edits the same way
 **Auto-accept edits** does; commands still ask unless the chat is in
 **Full access**.
@@ -70,7 +75,22 @@ continue, or type corrections in the composer; the agent receives that feedback,
 proposal, and asks again. The approval covers only the proposal shown in the card.
 
 In Agent mode these action-approval requests are approved automatically. Other interaction modes
-keep the explicit approval step.
+keep the explicit approval step. Sending the request pauses the agent until you answer; a second
+identical request reuses the same card instead of stacking another.
+
+## Browser download approval
+
+When a preview browser tries to save a file from a site that is not yet trusted, Solla Code holds
+the bytes and asks you to **Allow once**, **Allow for this domain**, or **Deny**. The same answers
+appear as a composer banner (reachable even if the browser is a floating thumbnail), as an overlay
+on the browser pane, and as a desktop notification. The agent waits on your choice and does not
+retry the download.
+
+## Voice transcription while away
+
+If dictation finishes after you leave the conversation, the stacked toast above the composer shows a
+preview of the transcript, lets you expand the full text, and includes **Send**. Returning to the
+conversation puts the transcript in the draft so you can edit it and send from the composer.
 
 ## Responsive controls
 

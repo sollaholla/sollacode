@@ -30,3 +30,11 @@ export function isActionApprovalQuestion(
 ): boolean {
   return question?.id === ACTION_APPROVAL_QUESTION_ID;
 }
+
+export function actionApprovalFingerprint(input: {
+  readonly actionKind: string;
+  readonly summary: string;
+  readonly preview: string;
+}): string {
+  return `${input.actionKind}\n${input.summary}\n${input.preview}`;
+}
