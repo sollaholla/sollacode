@@ -2889,6 +2889,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
     }
+    // Which cookie jar a guest actually attached to. The partition handed out
+    // by `getConfig` is only a request; this is what Chromium gave the guest,
+    // and a mismatch is what "the agent sees a logged-out page" looks like.
+    yield* Effect.logInfo("Preview guest attached to a browser session.", {
+      tabId,
+      webContentsId,
+      storagePath: wc.session.storagePath,
+      isPersistent: wc.session.isPersistent(),
+    });
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
     if (tab.webContentsId === webContentsId && attached.has(webContentsId)) {
