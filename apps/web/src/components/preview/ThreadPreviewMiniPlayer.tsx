@@ -11,6 +11,9 @@ import { toastManager } from "~/components/ui/toast";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
+import { usePrimaryEnvironmentId } from "~/state/environments";
+import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
+import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
 
 import { previewBridge } from "./previewBridge";
 import {
@@ -61,6 +64,14 @@ export function ThreadPreviewMiniPlayer({
     selectThreadPreviewMiniPlayer(state.byThreadKey, threadRef),
   );
   const previewState = useThreadPreviewState(threadRef);
+  // Same rule as the panel: a thumbnail of a guest this machine does not
+  // host has to come from the machine that does, or mounting it here would
+  // open the very second browser the panel now avoids.
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const surfaceMode = resolvePreviewSurfaceMode({
+    environmentLocal:
+      primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
+  });
   const snapshot = previewState.sessions[tabId] ?? null;
   const runtimeTabId = previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId);
   const desktopOverlay = previewState.desktopByTabId[tabId] ?? null;
@@ -255,18 +266,28 @@ export function ThreadPreviewMiniPlayer({
             presented non-interactively: floating, this is a thumbnail you move,
             so a click must never land in the page. Interactivity is what
             "Open" promotes you to. */}
-        <BrowserSurfaceSlot
-          tabId={runtimeTabId}
-          visible={Boolean(desktopOverlay?.hasWebContents)}
-          audible={false}
-          cornerRadius={12}
-          fitSourceContent
-          interactive={false}
-          layoutVersion={position ? `${position.x}:${position.y}` : `initial:${bottomInset}`}
-          className="absolute inset-0"
-        />
+        {surfaceMode === "local-guest" ? (
+          <BrowserSurfaceSlot
+            tabId={runtimeTabId}
+            visible={Boolean(desktopOverlay?.hasWebContents)}
+            audible={false}
+            cornerRadius={12}
+            fitSourceContent
+            interactive={false}
+            layoutVersion={position ? `${position.x}:${position.y}` : `initial:${bottomInset}`}
+            className="absolute inset-0"
+          />
+        ) : (
+          <PreviewRemoteSurface
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            tabId={tabId}
+            visible
+            className="absolute inset-0 z-30 overflow-hidden rounded-xl"
+          />
+        )}
         <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border/80" />
-        {!desktopOverlay?.hasWebContents ? (
+        {surfaceMode === "local-guest" && !desktopOverlay?.hasWebContents ? (
           <div className="pointer-events-none absolute inset-0 z-[31] flex items-center justify-center rounded-xl bg-muted text-xs text-muted-foreground">
             Reconnecting preview…
           </div>
