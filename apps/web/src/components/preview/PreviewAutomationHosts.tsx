@@ -931,6 +931,10 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const ready = await requireReadyTab();
             return await ready.bridge.pickElement(ready.runtimeTabId);
           }
+          case "frame": {
+            const ready = await requireReadyTab();
+            return await ready.bridge.automation.frame(ready.runtimeTabId);
+          }
           case "snapshot": {
             const ready = await requireReadyTab();
             const snapshot = await ready.bridge.automation.snapshot(ready.runtimeTabId);

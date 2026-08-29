@@ -74,6 +74,7 @@ import {
   PreviewAutomationPressInput,
   PreviewAutomationResponse,
   PreviewAutomationScrollInput,
+  PreviewAutomationFrame,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
   PreviewAutomationStreamEvent,
@@ -1492,6 +1493,8 @@ export interface DesktopPreviewBridge {
     /** Keep every preview guest running as foreground while an agent is actively using it. */
     renewForeground: () => Promise<void>;
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
+    /** The picture alone, without the DOM and accessibility reads. */
+    frame: (tabId: string) => Promise<PreviewAutomationFrame>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput, expiresAt?: number) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput, expiresAt?: number) => Promise<void>;

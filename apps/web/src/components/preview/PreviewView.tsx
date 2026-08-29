@@ -86,9 +86,10 @@ const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 /**
  * While the picker is open the person is hovering and drawing inside the guest
  * page, so the mirror has to keep up with a pointer rather than with reading.
- * Paid only for the duration of a pick.
+ * Paid only for the duration of a pick, and only affordable at all because a
+ * frame no longer drags a DOM and accessibility read behind it.
  */
-const PICKING_FRAME_INTERVAL_MS = 400;
+const PICKING_FRAME_INTERVAL_MS = 300;
 
 /**
  * Single-tab preview surface: chrome row on top, one webview below, empty

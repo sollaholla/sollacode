@@ -3,6 +3,7 @@ import {
   ProviderInstanceId,
   type AuthSessionId,
   type EnvironmentId,
+  type PreviewAutomationFrame,
   type PreviewAutomationSnapshot,
   type PreviewAutomationOperation,
   type PreviewAnnotationPayload,
@@ -24,66 +25,113 @@ type RemotePreviewInvoker = Pick<
   "invoke"
 >;
 
-export function captureRemotePreviewSnapshot(input: {
+interface RemoteCaptureInput {
   readonly broker: RemotePreviewInvoker;
   readonly environmentId: EnvironmentId;
   readonly sessionId: AuthSessionId;
   readonly request: PreviewRemoteSnapshotInput;
   readonly issuedAt: number;
-}): Effect.Effect<
-  PreviewRemoteSnapshotResult,
-  import("@t3tools/contracts").PreviewAutomationError
-> {
+}
+
+const viewerScope = (
+  input: RemoteCaptureInput,
+): PreviewAutomationBroker.PreviewAutomationInvokeInput["scope"] => ({
+  environmentId: input.environmentId,
+  threadId: input.request.threadId,
+  providerSessionId: `mobile-browser:${input.sessionId}:${input.request.threadId}`,
+  providerInstanceId: ProviderInstanceId.make("mobileBrowser"),
+  capabilities: new Set(["preview"]),
+  issuedAt: input.issuedAt,
+});
+
+/**
+ * A snapshot walks the DOM twice and reads the accessibility tree so its text
+ * agrees with its image. A viewer showing only the page needs none of that and
+ * was paying for all of it on every frame, on the guest's machine, which is
+ * what held the mirror to a browsing cadence. Ask for the picture alone unless
+ * the caller wants the diagnostics that only a snapshot carries.
+ */
+export function captureRemotePreviewSnapshot(
+  input: RemoteCaptureInput,
+): Effect.Effect<PreviewRemoteSnapshotResult, import("@t3tools/contracts").PreviewAutomationError> {
+  const capturedAt = DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt));
+  const fromSnapshot = (): Effect.Effect<
+    PreviewRemoteSnapshotResult,
+    import("@t3tools/contracts").PreviewAutomationError
+  > =>
+    input.broker
+      .invoke<PreviewAutomationSnapshot>({
+        scope: viewerScope(input),
+        operation: "snapshot",
+        input: {},
+        tabId: input.request.tabId,
+        timeoutMs: 10_000,
+      })
+      .pipe(
+        // This feed exists to show the tab, so a snapshot with no picture is
+        // nothing to show. Failing lets the viewer keep its last good frame and
+        // say why, rather than going blank. Agents are handed the snapshot
+        // itself, with `screenshotError` explaining the gap.
+        Effect.flatMap((snapshot) =>
+          snapshot.screenshot === undefined
+            ? Effect.fail(
+                new PreviewAutomationScreenshotUnavailableError({
+                  environmentId: input.environmentId,
+                  threadId: input.request.threadId,
+                  tabId: input.request.tabId,
+                  reason: snapshot.screenshotError ?? "No reason was reported.",
+                }),
+              )
+            : Effect.succeed({
+                tabId: input.request.tabId,
+                url: snapshot.url,
+                title: snapshot.title,
+                loading: snapshot.loading,
+                capturedAt,
+                screenshot: snapshot.screenshot,
+                // Carried so a viewer can aim input at the page rather than at
+                // the picture of it. Older hosts omit it and stay view-only.
+                ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
+                // The host gathered these for this frame either way; they only
+                // travel when something is going to show them.
+                ...(input.request.includeDiagnostics === true
+                  ? {
+                      consoleEntries: snapshot.consoleEntries,
+                      networkEntries: snapshot.networkEntries,
+                    }
+                  : {}),
+              } satisfies PreviewRemoteSnapshotResult),
+        ),
+      );
+
+  if (input.request.includeDiagnostics === true) return fromSnapshot();
+
   return input.broker
-    .invoke<PreviewAutomationSnapshot>({
-      scope: {
-        environmentId: input.environmentId,
-        threadId: input.request.threadId,
-        providerSessionId: `mobile-browser:${input.sessionId}:${input.request.threadId}`,
-        providerInstanceId: ProviderInstanceId.make("mobileBrowser"),
-        capabilities: new Set(["preview"]),
-        issuedAt: input.issuedAt,
-      },
-      operation: "snapshot",
+    .invoke<PreviewAutomationFrame>({
+      scope: viewerScope(input),
+      operation: "frame",
       input: {},
       tabId: input.request.tabId,
       timeoutMs: 10_000,
     })
     .pipe(
-      // This feed exists to show the tab, so a snapshot with no picture is
-      // nothing to show. Failing lets the phone keep its last good frame and
-      // say why, rather than going blank. Agents are handed the snapshot
-      // itself, with `screenshotError` explaining the gap.
-      Effect.flatMap((snapshot) =>
-        snapshot.screenshot === undefined
-          ? Effect.fail(
-              new PreviewAutomationScreenshotUnavailableError({
-                environmentId: input.environmentId,
-                threadId: input.request.threadId,
-                tabId: input.request.tabId,
-                reason: snapshot.screenshotError ?? "No reason was reported.",
-              }),
-            )
-          : Effect.succeed({
-              tabId: input.request.tabId,
-              url: snapshot.url,
-              title: snapshot.title,
-              loading: snapshot.loading,
-              capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
-              screenshot: snapshot.screenshot,
-              // Carried so a viewer can aim input at the page rather than at
-              // the picture of it. Older hosts omit it and stay view-only.
-              ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
-              // The host gathered these for this frame either way; they only
-              // travel when something is going to show them.
-              ...(input.request.includeDiagnostics === true
-                ? {
-                    consoleEntries: snapshot.consoleEntries,
-                    networkEntries: snapshot.networkEntries,
-                  }
-                : {}),
-            }),
+      Effect.map(
+        (frame) =>
+          ({
+            tabId: input.request.tabId,
+            url: frame.url,
+            title: frame.title,
+            loading: frame.loading,
+            capturedAt,
+            screenshot: frame.screenshot,
+            ...(frame.viewport === undefined ? {} : { viewport: frame.viewport }),
+          }) satisfies PreviewRemoteSnapshotResult,
       ),
+      // A host predating the frame operation is never offered for it. Its
+      // snapshot still contains everything a frame does, so fall back rather
+      // than leave an older desktop unable to be mirrored at all.
+      Effect.catchTag("PreviewAutomationNoAvailableHostError", () => fromSnapshot()),
+      Effect.catchTag("PreviewAutomationUnsupportedClientError", () => fromSnapshot()),
     );
 }
 

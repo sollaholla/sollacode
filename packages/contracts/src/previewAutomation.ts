@@ -52,6 +52,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "close",
   "waitForDownload",
   "pickElement",
+  "frame",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -866,6 +867,35 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
+
+/**
+ * Just the picture and where it points.
+ *
+ * A snapshot walks the DOM twice and reads the accessibility tree to keep its
+ * text consistent with its image. A viewer mirroring a guest wants none of
+ * that and was paying for all of it on every frame — which is what held the
+ * mirror to a browsing cadence. This is the same guest, captured renderer-side
+ * so it works whether or not the host is showing the tab.
+ */
+export const PreviewAutomationFrame = Schema.Struct({
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  screenshot: Schema.Struct({
+    mimeType: Schema.Literal("image/jpeg"),
+    data: Schema.String,
+    width: Schema.Int,
+    height: Schema.Int,
+  }),
+  /** CSS pixels, so a viewer can map a point in the picture onto the page. */
+  viewport: Schema.optional(
+    Schema.Struct({
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
+});
+export type PreviewAutomationFrame = typeof PreviewAutomationFrame.Type;
 
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,

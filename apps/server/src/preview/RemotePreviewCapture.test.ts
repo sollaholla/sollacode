@@ -3,6 +3,9 @@ import {
   EnvironmentId,
   PreviewTabId,
   ThreadId,
+  PreviewAutomationNoAvailableHostError,
+  type PreviewAutomationError,
+  ProviderInstanceId,
   type PreviewAutomationSnapshot,
   type PreviewRemoteInputAction,
 } from "@t3tools/contracts";
@@ -10,6 +13,9 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import type { PreviewAutomationInvokeInput } from "../mcp/PreviewAutomationBroker.ts";
+import type * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+
+type RemotePreviewInvokeFn = PreviewAutomationBroker.PreviewAutomationBroker["Service"]["invoke"];
 import {
   applyRemotePreviewInput,
   captureRemotePreviewSnapshot,
@@ -54,8 +60,11 @@ describe("captureRemotePreviewSnapshot", () => {
         issuedAt: Date.parse("2026-08-26T00:00:00.000Z"),
       });
 
+      // Only one request, and the cheap one: building the snapshot fallback
+      // must not also dispatch it.
+      expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({
-        operation: "snapshot",
+        operation: "frame",
         tabId: "tab-mobile-preview",
         timeoutMs: 10_000,
         scope: {
@@ -222,6 +231,68 @@ describe("requestRemotePreviewPick", () => {
         issuedAt: Date.parse("2026-08-29T00:00:00.000Z"),
       });
       expect(annotation).toBeNull();
+    }),
+  );
+});
+
+describe("captureRemotePreviewSnapshot host compatibility", () => {
+  const capture = (
+    invoke: (
+      request: PreviewAutomationInvokeInput,
+    ) => Effect.Effect<unknown, PreviewAutomationError>,
+    includeDiagnostics?: boolean,
+  ) =>
+    captureRemotePreviewSnapshot({
+      broker: { invoke: invoke as RemotePreviewInvokeFn },
+      environmentId: EnvironmentId.make("environment-mobile-preview"),
+      sessionId: AuthSessionId.make("session-mobile-preview"),
+      request: {
+        threadId: ThreadId.make("thread-mobile-preview"),
+        tabId: PreviewTabId.make("tab-mobile-preview"),
+        ...(includeDiagnostics === undefined ? {} : { includeDiagnostics }),
+      },
+      issuedAt: Date.parse("2026-08-26T00:00:00.000Z"),
+    });
+
+  it.effect("falls back to a snapshot on a host that has no frame operation", () =>
+    Effect.gen(function* () {
+      const operations: string[] = [];
+      const result = yield* capture((request) => {
+        operations.push(request.operation);
+        return request.operation === "frame"
+          ? Effect.fail(
+              // What the broker raises when no connected host advertises the
+              // operation — an older desktop, exactly the case being covered.
+              new PreviewAutomationNoAvailableHostError({
+                operation: "frame",
+                environmentId: EnvironmentId.make("environment-mobile-preview"),
+                threadId: ThreadId.make("thread-mobile-preview"),
+                providerSessionId: "session-mobile-preview",
+                providerInstanceId: ProviderInstanceId.make("mobileBrowser"),
+              }),
+            )
+          : Effect.succeed(snapshot);
+      });
+
+      expect(operations).toEqual(["frame", "snapshot"]);
+      expect(result.screenshot.data).toBe("frame");
+    }),
+  );
+
+  it.effect("asks for a snapshot when the caller wants diagnostics too", () =>
+    Effect.gen(function* () {
+      const operations: string[] = [];
+      const result = yield* capture((request) => {
+        operations.push(request.operation);
+        return Effect.succeed({
+          ...snapshot,
+          consoleEntries: [{ level: "error", text: "boom", timestamp: "2026-08-26T00:00:00.000Z" }],
+        });
+      }, true);
+
+      // A frame cannot answer for console output, so the cheap path is skipped.
+      expect(operations).toEqual(["snapshot"]);
+      expect(result.consoleEntries).toHaveLength(1);
     }),
   );
 });
