@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseDevToolsActivePort } from "./DevToolsEndpoint.ts";
+import {
+  devToolsActivePortCandidates,
+  parseDevToolsActivePort,
+  recordDevToolsUserDataDirectory,
+} from "./DevToolsEndpoint.ts";
 
 describe("parseDevToolsActivePort", () => {
   it("reads the bound port and the browser target path", () => {
@@ -18,5 +22,26 @@ describe("parseDevToolsActivePort", () => {
     for (const contents of ["0\n/devtools/browser/x", "", "not-a-port", "-1", "70000"]) {
       expect(parseDevToolsActivePort(contents)).toBeNull();
     }
+  });
+});
+
+describe("devToolsActivePortCandidates", () => {
+  it("looks only in the current directory when nothing was recorded", () => {
+    expect(devToolsActivePortCandidates("/data/current")).toEqual(["/data/current"]);
+  });
+
+  it("prefers the directory Chromium started with once they diverge", () => {
+    // Observed on a real run: Chromium wrote the file to the launch directory
+    // while the app reported a relocated one, and DevTools looked unavailable.
+    recordDevToolsUserDataDirectory("/data/launch");
+    expect(devToolsActivePortCandidates("/data/current")).toEqual([
+      "/data/launch",
+      "/data/current",
+    ]);
+  });
+
+  it("does not look in the same directory twice", () => {
+    recordDevToolsUserDataDirectory("/data/same");
+    expect(devToolsActivePortCandidates("/data/same")).toEqual(["/data/same"]);
   });
 });

@@ -654,9 +654,18 @@ export function removePreviewThread(ref: ScopedThreadRef): void {
   changedPreviewThreadKeys.delete(threadKey);
 }
 
+/**
+ * Whether this runtime can show a browser preview at all.
+ *
+ * It used to mean "does this client have a desktop bridge", because a guest
+ * was an Electron `<webview>` and a client without one had nothing to render.
+ * A client with no guest of its own now mirrors the machine that is hosting
+ * it, so the browser is available here too — what a plain browser lacks is a
+ * guest of its own, not a way to see one.
+ */
 export function isPreviewSupportedInRuntime(): boolean {
   if (typeof window === "undefined") return false;
-  return Boolean(window.desktopBridge?.preview);
+  return true;
 }
 
 export function resetPreviewStateForTests(): void {

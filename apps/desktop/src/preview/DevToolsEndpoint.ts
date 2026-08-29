@@ -28,3 +28,33 @@ export function parseDevToolsActivePort(contents: string): DevToolsActivePort | 
       browserTargetPath === undefined || browserTargetPath.length === 0 ? null : browserTargetPath,
   };
 }
+
+/**
+ * The directory Chromium wrote `DevToolsActivePort` into.
+ *
+ * It writes the file into the user-data directory it was started with, which
+ * is not necessarily the one the app reports later: this app's user data is
+ * relocated after Chromium initialises, so reading `app.getPath("userData")`
+ * at the time of the request looks in a directory the file was never written
+ * to. Recorded beside the switch that opens the endpoint, which is the last
+ * moment the two are known to agree.
+ */
+let startupUserDataDirectory: string | null = null;
+
+export function recordDevToolsUserDataDirectory(directory: string): void {
+  startupUserDataDirectory = directory;
+}
+
+/**
+ * Directories to look in, most trustworthy first. Both are tried because the
+ * relocation above is a property of how the app boots rather than something
+ * this module can verify, and a wrong guess here reads as "no DevTools" for a
+ * feature that is otherwise working.
+ */
+export function devToolsActivePortCandidates(
+  currentUserDataDirectory: string,
+): ReadonlyArray<string> {
+  return startupUserDataDirectory === null || startupUserDataDirectory === currentUserDataDirectory
+    ? [currentUserDataDirectory]
+    : [startupUserDataDirectory, currentUserDataDirectory];
+}
