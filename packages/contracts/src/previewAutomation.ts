@@ -49,6 +49,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "upload",
   "close",
   "waitForDownload",
+  "pickElement",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);

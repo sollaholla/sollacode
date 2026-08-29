@@ -10,7 +10,11 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import type { PreviewAutomationInvokeInput } from "../mcp/PreviewAutomationBroker.ts";
-import { applyRemotePreviewInput, captureRemotePreviewSnapshot } from "./RemotePreviewCapture.ts";
+import {
+  applyRemotePreviewInput,
+  captureRemotePreviewSnapshot,
+  requestRemotePreviewPick,
+} from "./RemotePreviewCapture.ts";
 
 const snapshot: PreviewAutomationSnapshot = {
   url: "https://example.com/",
@@ -170,6 +174,54 @@ describe("applyRemotePreviewInput", () => {
         operation: "navigate",
         input: { url: "https://example.com/next" },
       });
+    }),
+  );
+});
+
+describe("requestRemotePreviewPick", () => {
+  it.effect("waits on a person rather than a request round trip", () =>
+    Effect.gen(function* () {
+      const requests: PreviewAutomationInvokeInput[] = [];
+      const annotation = yield* requestRemotePreviewPick({
+        broker: {
+          invoke: <A = unknown>(request: PreviewAutomationInvokeInput) => {
+            requests.push(request);
+            return Effect.succeed({ id: "annotation-1" } as A);
+          },
+        },
+        environmentId: EnvironmentId.make("environment-remote-viewer"),
+        sessionId: AuthSessionId.make("session-remote-viewer"),
+        request: {
+          threadId: ThreadId.make("thread-remote-viewer"),
+          tabId: PreviewTabId.make("tab-remote-viewer"),
+        },
+        issuedAt: Date.parse("2026-08-29T00:00:00.000Z"),
+      });
+
+      expect(requests[0]).toMatchObject({
+        operation: "pickElement",
+        tabId: "tab-remote-viewer",
+      });
+      // Someone is selecting elements and typing a comment; a browsing-length
+      // timeout would abandon them mid-annotation.
+      expect(requests[0]?.timeoutMs).toBeGreaterThanOrEqual(120_000);
+      expect(annotation).toMatchObject({ id: "annotation-1" });
+    }),
+  );
+
+  it.effect("reports a closed picker as nothing picked, not a failure", () =>
+    Effect.gen(function* () {
+      const annotation = yield* requestRemotePreviewPick({
+        broker: { invoke: <A = unknown>() => Effect.succeed(null as A) },
+        environmentId: EnvironmentId.make("environment-remote-viewer"),
+        sessionId: AuthSessionId.make("session-remote-viewer"),
+        request: {
+          threadId: ThreadId.make("thread-remote-viewer"),
+          tabId: PreviewTabId.make("tab-remote-viewer"),
+        },
+        issuedAt: Date.parse("2026-08-29T00:00:00.000Z"),
+      });
+      expect(annotation).toBeNull();
     }),
   );
 });

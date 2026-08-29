@@ -126,6 +126,7 @@ import * as PreviewManager from "./preview/Manager.ts";
 import {
   applyRemotePreviewInput,
   captureRemotePreviewSnapshot,
+  requestRemotePreviewPick,
 } from "./preview/RemotePreviewCapture.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -2705,6 +2706,22 @@ const makeWsRpcLayer = (
               const environmentId = yield* serverEnvironment.getEnvironmentId;
               const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
               return yield* applyRemotePreviewInput({
+                broker: previewAutomationBroker,
+                environmentId,
+                sessionId: currentSessionId,
+                request: input,
+                issuedAt,
+              });
+            }),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewRemotePick]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewRemotePick,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+              return yield* requestRemotePreviewPick({
                 broker: previewAutomationBroker,
                 environmentId,
                 sessionId: currentSessionId,

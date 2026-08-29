@@ -56,9 +56,19 @@ export function PreviewRemoteSurface(props: {
   readonly tabId: string;
   readonly visible: boolean;
   readonly interactive?: boolean;
+  /** Overrides the browsing cadence while a live overlay is being driven. */
+  readonly cadenceMs?: number | undefined;
   readonly className?: string;
 }) {
-  const { environmentId, threadId, tabId, visible, interactive = true, className } = props;
+  const {
+    environmentId,
+    threadId,
+    tabId,
+    visible,
+    interactive = true,
+    cadenceMs = REMOTE_FRAME_INTERVAL_MS,
+    className,
+  } = props;
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
   const [stale, setStale] = useState(false);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -101,14 +111,14 @@ export function PreviewRemoteSurface(props: {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       await capture();
-      if (active) timer = setTimeout(() => void tick(), REMOTE_FRAME_INTERVAL_MS);
+      if (active) timer = setTimeout(() => void tick(), cadenceMs);
     };
     void tick();
     return () => {
       active = false;
       if (timer !== null) clearTimeout(timer);
     };
-  }, [capture, visible]);
+  }, [cadenceMs, capture, visible]);
 
   const send = useCallback(
     async (action: PreviewRemoteInputAction) => {

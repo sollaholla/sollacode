@@ -922,6 +922,15 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               colorScheme: input.colorScheme,
             } satisfies PreviewAutomationSetColorSchemeResult;
           }
+          case "pickElement": {
+            // The picker's overlay is injected into the guest page itself, so
+            // it rides the mirror like any other pixels and the viewer's
+            // forwarded input drives it. Only starting the session needed a
+            // way in from off-machine. Resolves when the person submits or
+            // cancels, which is why the caller allows a human-length wait.
+            const ready = await requireReadyTab();
+            return await ready.bridge.pickElement(ready.runtimeTabId);
+          }
           case "snapshot": {
             const ready = await requireReadyTab();
             const snapshot = await ready.bridge.automation.snapshot(ready.runtimeTabId);
