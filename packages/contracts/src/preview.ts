@@ -200,10 +200,37 @@ export const PreviewListResult = Schema.Struct({
 });
 export type PreviewListResult = typeof PreviewListResult.Type;
 
+export const PreviewAutomationConsoleEntry = Schema.Struct({
+  level: Schema.String,
+  text: Schema.String,
+  timestamp: Schema.String,
+  source: Schema.optional(Schema.String),
+});
+export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
+
+export const PreviewAutomationNetworkEntry = Schema.Struct({
+  url: Schema.String,
+  method: Schema.String,
+  status: Schema.NullOr(Schema.Number),
+  failed: Schema.Boolean,
+  errorText: Schema.optional(Schema.String),
+  /** True when Cloudflare marked an HTML response as a Challenge Page. */
+  cfMitigated: Schema.optional(Schema.Boolean),
+  timestamp: Schema.String,
+});
+export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
+
 /** Requests a bounded rendered frame from the desktop host that owns a tab. */
 export const PreviewRemoteSnapshotInput = Schema.Struct({
   threadId: ThreadId,
   tabId: PreviewTabId,
+  /**
+   * Also return the console and network the host already gathered for this
+   * frame. Off by default: a viewer showing only the page should not carry
+   * diagnostics it will not display, and the host collects them either way, so
+   * asking costs no extra work on the guest's machine — only bytes.
+   */
+  includeDiagnostics: Schema.optional(Schema.Boolean),
 });
 export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
 
@@ -235,6 +262,10 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
       height: Schema.Int,
     }),
   ),
+  /** Present only when asked for. The page's console, oldest first. */
+  consoleEntries: Schema.optional(Schema.Array(PreviewAutomationConsoleEntry)),
+  /** Present only when asked for. Requests the page made, oldest first. */
+  networkEntries: Schema.optional(Schema.Array(PreviewAutomationNetworkEntry)),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
 

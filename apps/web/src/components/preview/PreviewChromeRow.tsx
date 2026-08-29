@@ -4,6 +4,7 @@ import {
   Camera,
   ExternalLink,
   MousePointerClick,
+  TerminalIcon,
   PictureInPicture2,
   RotateCw,
   Share2Icon,
@@ -53,6 +54,12 @@ interface Props {
    */
   onPickElement?: (() => void) | undefined;
   pickActive?: boolean | undefined;
+  /**
+   * Opens the guest's console. Provided only where DevTools cannot be: a guest
+   * on another machine, or a browser with no desktop bridge at all.
+   */
+  onToggleConsole?: (() => void) | undefined;
+  consoleOpen?: boolean | undefined;
   pickDisabled?: boolean | undefined;
   /** Optional reason string surfaced in the disabled tooltip. */
   pickDisabledReason?: string | undefined;
@@ -89,6 +96,8 @@ export function PreviewChromeRow({
   pictureInPictureDisabled,
   onPickElement,
   pickActive,
+  onToggleConsole,
+  consoleOpen,
   pickDisabled,
   pickDisabledReason,
   trailingActions,
@@ -275,6 +284,27 @@ export function PreviewChromeRow({
                 : pickActive
                   ? "Cancel annotation (Esc)"
                   : "Annotate elements, regions, and drawings"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
+        {onToggleConsole ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant={consoleOpen ? "secondary" : "ghost"}
+                  size="icon-xs"
+                  onClick={onToggleConsole}
+                  aria-label={consoleOpen ? "Hide console" : "Show console"}
+                  aria-pressed={consoleOpen ? "true" : "false"}
+                  type="button"
+                />
+              }
+            >
+              <TerminalIcon className={cn(consoleOpen && "text-primary")} />
+            </TooltipTrigger>
+            <TooltipPopup>
+              {consoleOpen ? "Hide console" : "Console and failed requests"}
             </TooltipPopup>
           </Tooltip>
         ) : null}

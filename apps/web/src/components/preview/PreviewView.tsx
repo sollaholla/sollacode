@@ -97,6 +97,9 @@ const PICKING_FRAME_INTERVAL_MS = 400;
 export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, visible }: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
+  // DevTools is a window on the host, not pixels in the page, so it cannot
+  // travel. The console behind it can.
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [checkingVerification, setCheckingVerification] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
   const pickActiveRef = useRef(false);
@@ -811,6 +814,12 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onPictureInPicture={previewBridge && tabId ? handlePictureInPicture : undefined}
         pictureInPicture={miniPlayer?.tabId === tabId}
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
+        onToggleConsole={
+          surfaceMode === "remote-mirror" && tabId
+            ? () => setConsoleOpen((open) => !open)
+            : undefined
+        }
+        consoleOpen={consoleOpen}
         onPickElement={
           // Pickable either through this machine's own guest or, with none, on
           // the machine hosting it. Gating on the bridge alone hid the button
@@ -863,6 +872,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             // The picker's overlay is a live UI the person is drawing in, so
             // it needs frames at something other than a browsing cadence.
             cadenceMs={pickActive ? PICKING_FRAME_INTERVAL_MS : undefined}
+            showConsole={consoleOpen}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}
