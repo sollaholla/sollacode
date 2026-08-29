@@ -124,7 +124,7 @@ export class BrowserSession extends Context.Service<
   BrowserSession,
   {
     readonly getPartition: (
-      scope?: string,
+      scope: string,
     ) => Effect.Effect<string, BrowserSessionPartitionDerivationError>;
     readonly isPartition: (partition: string) => boolean;
     /**
@@ -134,7 +134,7 @@ export class BrowserSession extends Context.Service<
     readonly adoptLegacyProfile: (
       scope: string,
     ) => Effect.Effect<void, BrowserSessionPartitionDerivationError>;
-    readonly getSession: (scope?: string) => Effect.Effect<Session, BrowserSessionGetSessionError>;
+    readonly getSession: (scope: string) => Effect.Effect<Session, BrowserSessionGetSessionError>;
     /**
      * Where downloads made in this scope's tabs are written.
      *
@@ -357,7 +357,12 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   const sessionsRef = yield* SynchronizedRef.make<ReadonlyMap<string, Session>>(new Map());
   let adoptedSharedProfile = false;
 
-  const getPartition = Effect.fn("BrowserSession.getPartition")(function* (scope = "shared") {
+  // No default scope. A caller that lost its environment id used to fall
+  // through to a `"shared"` scope, which silently minted a *second*, empty
+  // profile: the user stayed signed in on their own tabs while agent tabs
+  // attached to the empty jar and read every site as logged out. Requiring the
+  // scope turns that into a compile error instead of a phantom profile.
+  const getPartition = Effect.fn("BrowserSession.getPartition")(function* (scope: string) {
     const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(scope)).pipe(
       Effect.mapError(
         (cause) =>
@@ -447,7 +452,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       ),
     );
 
-  const getSession = Effect.fn("BrowserSession.getSession")(function* (scope = "shared") {
+  const getSession = Effect.fn("BrowserSession.getSession")(function* (scope: string) {
     const partition = yield* getPartition(scope);
     return yield* SynchronizedRef.modifyEffect(sessionsRef, (sessions) => {
       const existing = sessions.get(partition);

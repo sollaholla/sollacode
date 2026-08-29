@@ -84,7 +84,16 @@ if (disabledCaptureFeatureList) {
 // that was never created. It then wrote every cookie in plaintext and
 // discarded the stored ones on load, which read as the browser being signed
 // out of every site in every tab and every agent.
+//
+// The rename has to be pinned in place: `userData` and `sessionData` default
+// to `appData/<app name>`, so renaming alone relocates every cache, profile
+// and cookie jar to an empty directory and loses exactly the logins this was
+// meant to keep. Capture the pre-rename locations and set them back.
+const desktopUserDataPath = Electron.app.getPath("userData");
+const desktopSessionDataPath = Electron.app.getPath("sessionData");
 Electron.app.setName(DESKTOP_PRODUCT_NAME);
+Electron.app.setPath("userData", desktopUserDataPath);
+Electron.app.setPath("sessionData", desktopSessionDataPath);
 
 // Custom schemes must be registered before Electron becomes ready. Marking
 // them standard and CORS-capable gives renderer assets a real same-origin
