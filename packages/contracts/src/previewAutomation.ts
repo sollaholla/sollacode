@@ -860,6 +860,21 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   ),
   /** Why there is no screenshot, when there is none. */
   screenshotError: Schema.optional(Schema.String),
+  /**
+   * The guest's viewport in CSS pixels.
+   *
+   * The screenshot above is in device pixels, so it alone cannot say where a
+   * point in the picture falls on the page. Coordinate input is specified in
+   * CSS pixels, so anyone mapping a place in the frame back onto the page —
+   * a remote viewer forwarding a click, for instance — needs both. Optional
+   * for hosts predating it.
+   */
+  viewport: Schema.optional(
+    Schema.Struct({
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
   /** Optional for compatibility with hosts predating challenge handoff. */
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });

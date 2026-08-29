@@ -4977,12 +4977,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         navigationGeneration: _navigationGeneration,
         navigationGenerationAfterRead: _navigationGenerationAfterRead,
         structuralElements: _structuralElements,
-        viewportWidth: _viewportWidth,
-        viewportHeight: _viewportHeight,
+        viewportWidth,
+        viewportHeight,
         ...snapshotPage
       } = page;
       return {
         ...snapshotPage,
+        // The picture is in device pixels; this is what lets a caller map a
+        // point in it back onto the page.
+        ...(Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight)
+          ? { viewport: { width: Math.round(viewportWidth), height: Math.round(viewportHeight) } }
+          : {}),
         accessibilityTree: accessibility,
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
         networkEntries: [...(browserDiagnostics?.networkEntries ?? [])],

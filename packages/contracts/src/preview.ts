@@ -223,8 +223,72 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /**
+   * The guest's viewport in CSS pixels, when the host reports it. The
+   * screenshot is in device pixels, so a viewer cannot turn a point in the
+   * picture into a point on the page without this. Absent from older hosts,
+   * which is what makes a mirror view-only rather than wrongly aimed.
+   */
+  viewport: Schema.optional(
+    Schema.Struct({
+      width: Schema.Int,
+      height: Schema.Int,
+    }),
+  ),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
+
+/**
+ * One thing a person did to a mirrored guest.
+ *
+ * Deliberately the small set a viewer can express — a point in the frame, a
+ * wheel, a key, some text, a step through history — rather than a general
+ * remote-execution surface. Each maps onto an automation operation the host
+ * already performs for agents, so nothing new runs on the guest's machine.
+ * Coordinates are CSS pixels on the page, which the viewer derives from the
+ * viewport reported alongside the frame.
+ */
+export const PreviewRemoteInputAction = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("click"),
+    x: Schema.Finite,
+    y: Schema.Finite,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("scroll"),
+    deltaX: Schema.Finite,
+    deltaY: Schema.Finite,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("type"),
+    text: Schema.String.check(Schema.isMaxLength(4_096)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("press"),
+    key: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+    modifiers: Schema.optional(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("history"),
+    direction: Schema.Literals(["back", "forward"]),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("navigate"),
+    url: Url,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("reload"),
+  }),
+]);
+export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;
+
+/** Applies one viewer action to the guest on whichever machine is hosting it. */
+export const PreviewRemoteInputInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  action: PreviewRemoteInputAction,
+});
+export type PreviewRemoteInputInput = typeof PreviewRemoteInputInput.Type;
 
 /** Authoritative tab set committed by a close operation. */
 export const PreviewCloseResult = Schema.Struct({
