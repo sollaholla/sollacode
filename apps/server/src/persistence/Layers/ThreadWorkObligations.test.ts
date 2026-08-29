@@ -471,6 +471,7 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         readonly suffix: string;
         readonly laterMessageIds?: ReadonlyArray<string>;
         readonly includeSourceEvent?: boolean;
+        readonly kind?: "agent-continuation" | "active-turn-recovery";
       }) =>
         Effect.gen(function* () {
           const threadId = ThreadId.make(`thread-work-admit-${input.suffix}`);
@@ -519,7 +520,7 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
             obligationId,
             threadId,
             sourceTurnId,
-            kind: "agent-continuation",
+            kind: input.kind ?? "agent-continuation",
             state: "executing",
             providerInstanceId,
             attempt: 1,
@@ -537,6 +538,34 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
       assert.isTrue(
         yield* repository.tryAdmitSyntheticDispatch({
           obligationId: admitted.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+
+      // A user message whose provider turn already started and then failed is
+      // re-dispatched by an active-turn-recovery obligation, which the reactor
+      // routes through this same admission. Excluded from the kind list it
+      // could never be admitted, so the recovery was retired as "a later user
+      // turn won" with no later user turn in the stream, and the message was
+      // silently unrecoverable (thread 92806586, 2026-08-29).
+      const recovery = yield* seed({ suffix: "recovery", kind: "active-turn-recovery" });
+      assert.isTrue(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: recovery.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      // The guard itself still applies to it: newer user intent wins.
+      const supersededRecovery = yield* seed({
+        suffix: "recovery-superseded",
+        kind: "active-turn-recovery",
+        laterMessageIds: ["message-typed-after"],
+      });
+      assert.isFalse(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: supersededRecovery.obligationId,
           expectedAttempt: 1,
           updatedAt: later,
         }),

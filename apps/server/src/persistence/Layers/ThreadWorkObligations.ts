@@ -443,7 +443,22 @@ const make = Effect.gen(function* () {
       WHERE work.obligation_id = ${input.obligationId}
         AND work.state = 'executing'
         AND work.attempt = ${input.expectedAttempt}
-        AND work.kind IN ('agent-continuation', 'startup-resume', 'authentication-resume')
+        -- active-turn-recovery belongs here too. It re-dispatches a real user
+        -- message whose provider turn already started, and the reactor routes
+        -- that through this same admission: isResumeWork is true as soon as the
+        -- source turn has a provider turn id. Leaving its kind out meant the
+        -- UPDATE never matched, admission always came back false, and the
+        -- recovery was retired as "a later user turn won" with no later user
+        -- turn anywhere in the stream. Every user message whose turn started
+        -- and then failed was silently unrecoverable: observed 2026-08-29 on
+        -- thread 92806586, where a provider bridge restarted 35 minutes and
+        -- 121 tool calls into a turn and nothing resumed it.
+        AND work.kind IN (
+          'agent-continuation',
+          'startup-resume',
+          'authentication-resume',
+          'active-turn-recovery'
+        )
         AND EXISTS (
             SELECT 1
             FROM orchestration_events AS source_event
