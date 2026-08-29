@@ -23,8 +23,8 @@ export function PreviewRemoteDevTools(props: {
 
   // A sandbox allowing the scripts and storage DevTools needs is one the frame
   // can lift, so it would assert a boundary that is not there. The real one is
-  // the proxy: loopback on the far side, a session ticket on this one, and a
-  // target the host chose rather than the caller.
+  // the proxy: loopback on the far side, this origin's own session on the near
+  // one, and a target the host chose rather than the caller.
   return (
     // eslint-disable-next-line react/iframe-missing-sandbox -- see above
     <iframe

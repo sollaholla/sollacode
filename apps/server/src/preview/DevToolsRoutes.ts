@@ -15,8 +15,10 @@
  * decision a request gets to make.
  */
 import { AuthOrchestrationOperateScope, PreviewTabId, ThreadId } from "@t3tools/contracts";
+import { DEVTOOLS_ROUTE_PREFIX } from "@t3tools/shared/preview";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import {
   HttpClient,
   HttpRouter,
@@ -37,12 +39,11 @@ import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { resolveRemotePreviewDevTools } from "./RemotePreviewCapture.ts";
 import { devToolsAssetUrl, devToolsCdpUrl } from "./DevToolsProxy.ts";
 
-export const DEVTOOLS_ROUTE_PREFIX = "/preview/devtools";
-
 /**
- * Neither an iframe nor a WebSocket can carry an Authorization header, so both
- * of these routes accept the same short-lived ticket the RPC socket already
- * uses, falling back to header auth for callers that can send one.
+ * Neither a framed document nor a WebSocket can carry an Authorization header,
+ * so both halves of DevTools authenticate the way a browser does on its own:
+ * with the session cookie it already holds for this origin. Callers that can
+ * send a header or a ticket still may — this accepts whichever arrives.
  */
 const authenticateDevToolsRequest = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
@@ -61,117 +62,139 @@ const authenticateDevToolsRequest = Effect.gen(function* () {
   return session;
 });
 
-const requireTarget = (request: HttpServerRequest.HttpServerRequest) => {
+/** The one path under this prefix that is a socket rather than a file. */
+const CDP_ASSET_PATH = "/cdp";
+
+/**
+ * Which guest a request is for, and which file of the frontend it wants.
+ *
+ * Both ride in the path rather than the query because Chromium's frontend
+ * references its own assets relatively: the query string is gone by the time
+ * the page asks for its first script, and with it any way to know whose
+ * DevTools this is. A path prefix is inherited by every sub-resource, so the
+ * rule that a caller names a thread and a tab survives the whole page load.
+ */
+const parseDevToolsRequest = (request: HttpServerRequest.HttpServerRequest) => {
   const url = new URL(request.url, "http://localhost");
-  const threadId = url.searchParams.get("threadId");
-  const tabId = url.searchParams.get("tabId");
-  return threadId === null || tabId === null
-    ? null
-    : { threadId: ThreadId.make(threadId), tabId: PreviewTabId.make(tabId) };
+  const [, rawThreadId, rawTabId, ...assetSegments] = url.pathname
+    .slice(DEVTOOLS_ROUTE_PREFIX.length)
+    .split("/");
+  if (!rawThreadId || !rawTabId || assetSegments.length === 0) return null;
+  let threadId: string;
+  let tabId: string;
+  try {
+    threadId = decodeURIComponent(rawThreadId);
+    tabId = decodeURIComponent(rawTabId);
+  } catch {
+    return null;
+  }
+  return {
+    target: { threadId: ThreadId.make(threadId), tabId: PreviewTabId.make(tabId) },
+    // Left percent-encoded: the traversal guard downstream reads it that way.
+    assetPath: `/${assetSegments.join("/")}`,
+  };
 };
 
 /**
- * Streams CDP between the viewer's DevTools frontend and the guest.
+ * How long an asset request may reuse the port a previous one resolved.
  *
- * Nothing is interpreted on the way through. The protocol is Chromium's and
- * changes with it, so a proxy that understood messages would be a proxy that
- * broke on upgrade; the security boundary is which socket this opens, decided
- * before the first frame, not what travels over it.
+ * Loading the frontend is roughly 150 requests in a burst, and asking the host
+ * which port its debugger is on once per request saturates the broker's queue
+ * for that host — every one of them then times out and the frontend never
+ * boots. The port belongs to the machine rather than to the guest, so it is
+ * safe to reuse; the socket still resolves fresh, because the target it names
+ * changes whenever the guest navigates.
+ *
+ * Nothing races to fill this: the browser cannot ask for an asset until the
+ * document naming it has been served, and that request warms the entry.
  */
-export const devtoolsSocketRouteLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    return HttpRouter.add(
-      "GET",
-      `${DEVTOOLS_ROUTE_PREFIX}/cdp`,
-      Effect.gen(function* () {
-        const session = yield* authenticateDevToolsRequest;
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const target = requireTarget(request);
-        if (target === null) {
-          return HttpServerResponse.text("A thread and tab are required.", { status: 400 });
-        }
-        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-        const environmentId = yield* serverEnvironment.getEnvironmentId;
-        const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-        const endpoint = yield* resolveRemotePreviewDevTools({
-          broker,
-          environmentId,
-          sessionId: session.sessionId,
-          request: target,
-          issuedAt,
-        });
-        const cdpUrl = devToolsCdpUrl(endpoint);
-        if (cdpUrl === null) {
-          return HttpServerResponse.text("This guest reported no usable DevTools target.", {
-            status: 502,
-          });
-        }
-
-        const inbound = yield* request.upgrade;
-        const outbound = yield* Socket.makeWebSocket(cdpUrl);
-        const toGuest = yield* outbound.writer;
-        const toViewer = yield* inbound.writer;
-        yield* Effect.all(
-          [
-            inbound.runRaw((message) => toGuest(message)),
-            outbound.runRaw((message) => toViewer(message)),
-          ],
-          { concurrency: 2 },
-        );
-        return HttpServerResponse.empty();
-      }).pipe(
-        Effect.catchTags({
-          EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
-          EnvironmentInternalError: HttpServerRespondable.toResponse,
-          EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
-        }),
-        Effect.tapError((cause) => Effect.logWarning("devtools socket route failed", { cause })),
-        Effect.orElseSucceed(() =>
-          HttpServerResponse.text("DevTools is unavailable for this guest.", { status: 502 }),
-        ),
-        // Satisfied at the handler, where the outbound socket is opened. Left
-        // to the caller it becomes a requirement of the whole server, whose
-        // type would then carry a detail of how one route reaches loopback.
-        Effect.provide(Socket.layerWebSocketConstructorGlobal),
-      ),
-    );
-  }),
-);
+const ASSET_PORT_CACHE_MS = 60_000;
+/** Bounded so a long-lived server cannot accumulate one entry per guest seen. */
+const ASSET_PORT_CACHE_LIMIT = 64;
 
 /**
- * Serves Chromium's own DevTools frontend through this server.
+ * Serves Chromium's own DevTools frontend, and streams CDP to the guest.
  *
- * Fetching it from the browser that owns the guest keeps the frontend and the
- * protocol it speaks on the same version, which a bundled copy would not
- * survive an upgrade of.
+ * One route because the frontend's own relative asset paths put both under the
+ * same prefix; the socket is simply the one path below it that upgrades.
+ *
+ * The frontend is fetched from the browser that owns the guest rather than
+ * bundled, which keeps it and the protocol it speaks on the same version. What
+ * travels over the socket is never interpreted: the protocol is Chromium's and
+ * changes with it, so a proxy that understood messages would be a proxy that
+ * broke on upgrade. The security boundary is which socket this opens, decided
+ * before the first frame.
  */
-export const devtoolsAssetRouteLayer = Layer.unwrap(
+export const devtoolsRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const assetPorts = yield* Ref.make(
+      new Map<string, { readonly port: number; readonly expiresAt: number }>(),
+    );
     return HttpRouter.add(
       "GET",
       `${DEVTOOLS_ROUTE_PREFIX}/*`,
       Effect.gen(function* () {
         const session = yield* authenticateDevToolsRequest;
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const target = requireTarget(request);
-        if (target === null) {
+        const parsed = parseDevToolsRequest(request);
+        if (parsed === null) {
           return HttpServerResponse.text("A thread and tab are required.", { status: 400 });
         }
         const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
         const environmentId = yield* serverEnvironment.getEnvironmentId;
         const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
-        const endpoint = yield* resolveRemotePreviewDevTools({
+        const cacheKey = `${environmentId}|${parsed.target.threadId}|${parsed.target.tabId}`;
+        const resolveEndpoint = resolveRemotePreviewDevTools({
           broker,
           environmentId,
           sessionId: session.sessionId,
-          request: target,
+          request: parsed.target,
           issuedAt,
         });
-        const url = new URL(request.url, "http://localhost");
-        const assetPath = url.pathname.slice(DEVTOOLS_ROUTE_PREFIX.length);
-        const assetUrl = devToolsAssetUrl(endpoint.port, `/devtools${assetPath}`);
+
+        if (parsed.assetPath === CDP_ASSET_PATH) {
+          const endpoint = yield* resolveEndpoint;
+          const cdpUrl = devToolsCdpUrl(endpoint);
+          if (cdpUrl === null) {
+            return HttpServerResponse.text("This guest reported no usable DevTools target.", {
+              status: 502,
+            });
+          }
+          const inbound = yield* request.upgrade;
+          const outbound = yield* Socket.makeWebSocket(cdpUrl);
+          const toGuest = yield* outbound.writer;
+          const toViewer = yield* inbound.writer;
+          yield* Effect.all(
+            [
+              inbound.runRaw((message) => toGuest(message)),
+              outbound.runRaw((message) => toViewer(message)),
+            ],
+            { concurrency: 2 },
+          );
+          return HttpServerResponse.empty();
+        }
+
+        const cached = yield* Ref.get(assetPorts).pipe(
+          Effect.map((ports) => {
+            const entry = ports.get(cacheKey);
+            return entry !== undefined && entry.expiresAt > issuedAt ? entry.port : null;
+          }),
+        );
+        let port = cached;
+        if (port === null) {
+          port = (yield* resolveEndpoint).port;
+          const resolved = port;
+          yield* Ref.update(assetPorts, (ports) => {
+            const next = ports.size >= ASSET_PORT_CACHE_LIMIT ? new Map() : new Map(ports);
+            return next.set(cacheKey, {
+              port: resolved,
+              expiresAt: issuedAt + ASSET_PORT_CACHE_MS,
+            });
+          });
+        }
+
+        const assetUrl = devToolsAssetUrl(port, `/devtools${parsed.assetPath}`);
         if (assetUrl === null) {
           return HttpServerResponse.text("Not found.", { status: 404 });
         }
@@ -190,10 +213,14 @@ export const devtoolsAssetRouteLayer = Layer.unwrap(
           EnvironmentInternalError: HttpServerRespondable.toResponse,
           EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
         }),
-        Effect.tapError((cause) => Effect.logWarning("devtools asset route failed", { cause })),
+        Effect.tapError((cause) => Effect.logWarning("devtools route failed", { cause })),
         Effect.orElseSucceed(() =>
           HttpServerResponse.text("DevTools is unavailable for this guest.", { status: 502 }),
         ),
+        // Satisfied at the handler, where the outbound socket is opened. Left
+        // to the caller it becomes a requirement of the whole server, whose
+        // type would then carry a detail of how one route reaches loopback.
+        Effect.provide(Socket.layerWebSocketConstructorGlobal),
       ),
     );
   }),

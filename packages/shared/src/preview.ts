@@ -6,6 +6,16 @@
 
 import * as Schema from "effect/Schema";
 
+/**
+ * Where this server proxies Chromium's DevTools frontend and its CDP socket.
+ *
+ * Three places have to agree on this: the server route that serves it, the web
+ * client that builds the URL, and the dev proxy list that forwards it to the
+ * backend instead of answering with the SPA's index.html. Spelling it once is
+ * the only way the three cannot drift.
+ */
+export const DEVTOOLS_ROUTE_PREFIX = "/preview/devtools" as const;
+
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
 
 /** Internal — used by `lsof` parsing where the host string is wire-formatted. */
