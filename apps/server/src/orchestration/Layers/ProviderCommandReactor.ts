@@ -395,6 +395,40 @@ function actionApprovalContinuationMessage(input: {
   }
 }
 
+/**
+ * An answer the provider can no longer be told about, written as the user's
+ * own words.
+ *
+ * The question was asked, the person answered it, and the only thing that went
+ * wrong is that the callback it was meant to resolve is gone — the session
+ * ended, or the app restarted. Recording that as a failure and stopping threw
+ * away the one part a human actually produced, and left the card sitting there
+ * unanswerable. Delivered as an ordinary message it reaches the agent by the
+ * route that always works.
+ */
+function unroutableUserInputMessage(input: {
+  readonly answers: Readonly<Record<string, unknown>>;
+}): string {
+  const rendered = Object.entries(input.answers)
+    .map(([question, answer]) => {
+      const value =
+        typeof answer === "string"
+          ? answer
+          : answer === null || answer === undefined
+            ? ""
+            : JSON.stringify(answer);
+      const trimmedQuestion = question.trim();
+      const trimmedValue = value.trim();
+      if (trimmedQuestion.length === 0) return trimmedValue;
+      // A single unlabelled answer reads better as plain speech than as a
+      // transcript of a form.
+      return trimmedValue.length === 0 ? trimmedQuestion : `${trimmedQuestion}\n${trimmedValue}`;
+    })
+    .filter((entry) => entry.length > 0);
+  const body = rendered.length > 0 ? rendered.join("\n\n") : "(no answer was recorded)";
+  return `Answering the question you asked:\n\n${body}`;
+}
+
 function buildGeneratedWorktreeBranchName(raw: string): string {
   const normalized = raw
     .trim()
@@ -2277,6 +2311,59 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
      * path uses for exactly this situation — which leaves the thread resumable
      * instead of latched terminal by the continuation gate.
      */
+    /**
+     * Hand an unroutable answer to the thread as the user's own message.
+     *
+     * Resolves the request first so the card stops asking — an answered
+     * question whose callback is gone must not stay open, or the person is
+     * left with a submit button that can never succeed.
+     */
+    const deliverUnroutableUserInputAnswers = Effect.fnUntraced(function* (input: {
+      readonly threadId: ThreadId;
+      readonly requestId: string;
+      readonly answers: Readonly<Record<string, unknown>>;
+      readonly createdAt: string;
+    }) {
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread) return;
+      const resolved = {
+        requestId: input.requestId,
+        resolvedKind: "user-input.resolved" as const,
+      };
+      if (!hasResolvedProviderRequest(thread.activities, resolved)) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(`server:user-input-unroutable:${input.requestId}`),
+          threadId: input.threadId,
+          activity: {
+            id: EventId.make(`user-input-unroutable:${input.requestId}`),
+            tone: "info",
+            kind: "user-input.resolved",
+            summary: "Answer delivered as a message",
+            payload: { requestId: input.requestId, answers: input.answers },
+            turnId: null,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        });
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`server:user-input-unroutable-turn:${input.requestId}`),
+        threadId: input.threadId,
+        message: {
+          messageId: MessageId.make(`user-input-response:${input.requestId}`),
+          role: "user",
+          text: unroutableUserInputMessage({ answers: input.answers }),
+          attachments: [],
+        },
+        modelSelection: thread.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        createdAt: input.createdAt,
+      });
+    });
+
     const settleThreadAfterStaleRequest = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
       readonly requestId: string;
@@ -2471,14 +2558,13 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         }
         const hasSession = thread.session && thread.session.status !== "stopped";
         if (!hasSession) {
-          return yield* appendProviderFailureActivity({
+          // There is no session to route this into, but the answer is still
+          // the user's and the turn.start below brings a session back with it.
+          return yield* deliverUnroutableUserInputAnswers({
             threadId: event.payload.threadId,
-            kind: "provider.user-input.respond.failed",
-            summary: "Provider user input response failed",
-            detail: "No active provider session is bound to this thread.",
-            turnId: null,
-            createdAt: event.payload.createdAt,
             requestId: event.payload.requestId,
+            answers: event.payload.answers,
+            createdAt: event.payload.createdAt,
           });
         }
 
@@ -2510,18 +2596,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                 ) {
                   return;
                 }
-                yield* appendProviderFailureActivity({
-                  threadId: event.payload.threadId,
-                  kind: "provider.user-input.respond.failed",
-                  summary: "Provider user input response failed",
-                  detail: stalePendingRequestDetail("user-input", event.payload.requestId),
-                  turnId: null,
-                  createdAt: event.payload.createdAt,
-                  requestId: event.payload.requestId,
-                });
+                // Settle first: the callbacks are gone, so the session that
+                // owned them has to be retired before a new turn can carry the
+                // answer. Then deliver it rather than dropping it — a stale
+                // request is the one case where the person has already done
+                // their part and only the plumbing expired.
                 yield* settleThreadAfterStaleRequest({
                   threadId: event.payload.threadId,
                   ...resolvedRequest,
+                  createdAt: event.payload.createdAt,
+                });
+                yield* deliverUnroutableUserInputAnswers({
+                  threadId: event.payload.threadId,
+                  requestId: event.payload.requestId,
+                  answers: event.payload.answers,
                   createdAt: event.payload.createdAt,
                 });
               });

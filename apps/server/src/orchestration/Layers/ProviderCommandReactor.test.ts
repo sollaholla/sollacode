@@ -9054,7 +9054,7 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
-  it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
+  it("delivers a non-resumable user-input answer as a message instead of losing it", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     harness.respondToUserInput.mockImplementation(() =>
@@ -9136,7 +9136,11 @@ describe("ProviderCommandReactor", () => {
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       if (!thread) return false;
       return thread.activities.some(
-        (activity) => activity.kind === "provider.user-input.respond.failed",
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId === "user-input-request-1",
       );
     });
 
@@ -9144,15 +9148,9 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread).toBeDefined();
 
-    const failureActivity = thread?.activities.find(
-      (activity) => activity.kind === "provider.user-input.respond.failed",
-    );
-    expect(failureActivity).toBeDefined();
-    expect(failureActivity?.payload).toMatchObject({
-      requestId: "user-input-request-1",
-      detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
-    });
-
+    // The person already answered; only the callback expired. Surfacing that
+    // as a failure threw their words away and left the card open with a submit
+    // button that could never succeed.
     const resolvedActivity = thread?.activities.find(
       (activity) =>
         activity.kind === "user-input.resolved" &&
@@ -9160,23 +9158,113 @@ describe("ProviderCommandReactor", () => {
         activity.payload !== null &&
         (activity.payload as Record<string, unknown>).requestId === "user-input-request-1",
     );
-    expect(resolvedActivity).toBeUndefined();
+    expect(resolvedActivity).toBeDefined();
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.user-input.respond.failed"),
+    ).toBe(false);
 
-    // The callback is gone, so the session it belonged to has to be released.
-    // Left running, the turn never settles and the thread stays permanently
-    // busy: no typing, no retry, no way back short of restarting the app.
+    const deliveredMessage = thread?.messages.find(
+      (message) => message.id === "user-input-response:user-input-request-1",
+    );
+    expect(deliveredMessage?.role).toBe("user");
+    expect(deliveredMessage?.text).toContain("workspace-write");
+
+    // The dead session still has to be released — left running, the turn never
+    // settles and the thread stays permanently busy. What must NOT happen is
+    // the thread being left stopped with the answer stranded: the delivered
+    // message carries it into a fresh turn, so the thread ends up working
+    // again rather than parked.
     await waitFor(async () => {
       const settled = await harness.readModel();
       const settledThread = settled.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      return settledThread?.session?.status === "stopped";
+      return settledThread?.session?.status !== "stopped";
     });
 
     const settledModel = await harness.readModel();
     const settledThread = settledModel.threads.find(
       (entry) => entry.id === ThreadId.make("thread-1"),
     );
-    expect(settledThread?.session?.status).toBe("stopped");
-    expect(settledThread?.session?.activeTurnId ?? null).toBeNull();
+    expect(settledThread?.session?.status).not.toBe("stopped");
+  });
+
+  it("delivers an answer as a message when no session is bound to the thread", async () => {
+    // The failure a person actually meets: the conversation ended, or the app
+    // restarted, and the card is still on screen. Answering it reported
+    // "No active provider session is bound to this thread" — a detail the
+    // pending-input projection does not treat as resolving, so the card and
+    // its submit button stayed forever and the answer was lost.
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-user-input-requested-no-session"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-user-input-requested-no-session"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "Agent asked a question",
+          payload: {
+            requestId: "user-input-request-no-session",
+            questions: [
+              {
+                id: "budget",
+                header: "Budget",
+                question: "What monthly budget should I assume?",
+                options: [{ label: "60", description: "Sixty per month" }],
+              },
+            ],
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.user-input.respond",
+        commandId: CommandId.make("cmd-user-input-respond-no-session"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("user-input-request-no-session"),
+        answers: { budget: "60 per month" },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return (
+        thread?.messages.some(
+          (message) => message.id === "user-input-response:user-input-request-no-session",
+        ) === true
+      );
+    });
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    const delivered = thread?.messages.find(
+      (message) => message.id === "user-input-response:user-input-request-no-session",
+    );
+    expect(delivered?.role).toBe("user");
+    expect(delivered?.text).toContain("60 per month");
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "user-input.resolved" &&
+          typeof activity.payload === "object" &&
+          activity.payload !== null &&
+          (activity.payload as Record<string, unknown>).requestId ===
+            "user-input-request-no-session",
+      ),
+    ).toBe(true);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.user-input.respond.failed"),
+    ).toBe(false);
   });
 
   it("treats a late duplicate user-input response as a quiet no-op", async () => {
