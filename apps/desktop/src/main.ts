@@ -65,35 +65,24 @@ import * as DesktopLanDiscovery from "./network/DesktopLanDiscovery.ts";
 // This must happen synchronously during module initialization. Windows shell
 // environment discovery is asynchronous and can otherwise cross Electron's
 // ready boundary before the capture backend override is registered.
-// Must match CFBundleName in the packaged Info.plist; Chromium builds the
-// cookie-encryption Keychain service name from it.
-const DESKTOP_PRODUCT_NAME = "Solla Code";
-
 const disabledCaptureFeatureList = disabledCaptureFeatures(Effect.runSync(HostProcessPlatform));
 if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
 
-// Align `app.getName()` with the macOS bundle name, before ready.
+// Do not rename the app here.
 //
-// Chromium keys its cookie store on a Keychain item named after the bundle
-// (`Solla Code Safe Storage`), but Electron's `safeStorage` derives its name
-// from `app.getName()`, which comes from the packaged `package.json` — here
-// `solla-code`. The two disagreed, so anything that encrypted minted
-// `solla-code Safe Storage` while the cookie store went on looking for a key
-// that was never created. It then wrote every cookie in plaintext and
-// discarded the stored ones on load, which read as the browser being signed
-// out of every site in every tab and every agent.
+// `app.getName()` looks like a cosmetic label, but Electron derives two
+// durable things from it: `userData`/`sessionData` (`appData/<name>`), and the
+// keyring entry `safeStorage` encrypts with. Renaming relocated every profile
+// and cache to an empty directory, and left `connection-catalog.json` — written
+// under the old name's key — undecryptable, so the app started with no
+// connections and therefore no projects and no threads at all.
 //
-// The rename has to be pinned in place: `userData` and `sessionData` default
-// to `appData/<app name>`, so renaming alone relocates every cache, profile
-// and cookie jar to an empty directory and loses exactly the logins this was
-// meant to keep. Capture the pre-rename locations and set them back.
-const desktopUserDataPath = Electron.app.getPath("userData");
-const desktopSessionDataPath = Electron.app.getPath("sessionData");
-Electron.app.setName(DESKTOP_PRODUCT_NAME);
-Electron.app.setPath("userData", desktopUserDataPath);
-Electron.app.setPath("sessionData", desktopSessionDataPath);
+// Chromium's cookie store does key on the bundle name, which is the mismatch
+// this rename was reaching for, but the cost is losing the user's workspace.
+// Any future fix there must not move `userData` or change the `safeStorage`
+// key.
 
 // Custom schemes must be registered before Electron becomes ready. Marking
 // them standard and CORS-capable gives renderer assets a real same-origin
