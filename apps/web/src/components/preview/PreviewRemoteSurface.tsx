@@ -23,6 +23,12 @@ import { mapRemotePointerToViewport } from "./remotePointerMapping";
  * machine can survive being asked.
  */
 const REMOTE_FRAME_INTERVAL_MS = 1_000;
+/**
+ * Ticks a frame may survive its own capture failing before it is dropped.
+ * Long enough to ride out a navigation at the default cadence, short enough
+ * that a picture of the wrong guest cannot sit there looking authoritative.
+ */
+const MAX_STALE_FRAME_TICKS = 5;
 
 /**
  * Keys that mean something to a page but produce no text. Anything else of
@@ -75,6 +81,15 @@ export function PreviewRemoteSurface(props: {
   } = props;
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
   const [stale, setStale] = useState(false);
+  /**
+   * Consecutive failed captures. Holding the last good frame is right for a
+   * page mid-navigation, which recovers in one or two ticks; it is wrong once
+   * the host has stopped answering for this tab, because the picture on screen
+   * then belongs to a guest the viewer is no longer connected to and there is
+   * nothing to say so. Showing the wrong page confidently is worse than
+   * showing none.
+   */
+  const consecutiveFailuresRef = useRef(0);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const captureRemoteSnapshot = useAtomCommand(previewEnvironment.remoteSnapshot, {
     reportFailure: false,
@@ -90,6 +105,7 @@ export function PreviewRemoteSurface(props: {
   useEffect(() => {
     setFrame((current) => (current?.tabId === tabId ? current : null));
     setStale(false);
+    consecutiveFailuresRef.current = 0;
   }, [tabId]);
 
   const capture = useCallback(async () => {
@@ -105,10 +121,16 @@ export function PreviewRemoteSurface(props: {
     if (tabIdRef.current !== requested) return;
     if (result._tag === "Failure") {
       // A dropped frame is usually a page mid-navigation, not a dead host.
-      // Keep the last good one on screen and mark it rather than going blank.
+      // Keep the last good one on screen and mark it rather than going blank —
+      // but only for as long as that stays a fair guess. Past the bound the
+      // frame is dropped, because a stale picture of another page reads as the
+      // live one.
+      consecutiveFailuresRef.current += 1;
       setStale(true);
+      if (consecutiveFailuresRef.current >= MAX_STALE_FRAME_TICKS) setFrame(null);
       return;
     }
+    consecutiveFailuresRef.current = 0;
     setFrame(result.value);
     setStale(false);
   }, [captureRemoteSnapshot, environmentId, showConsole, threadId]);
