@@ -10,12 +10,13 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLinkIcon, LoaderCircleIcon, ShieldAlertIcon } from "lucide-react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
 import { ensureLocalApi } from "~/localApi";
+import { readPreparedConnection } from "~/state/session";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
@@ -50,6 +51,8 @@ import { PreviewUnreachable } from "./PreviewUnreachable";
 import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { PreviewRemoteDevTools } from "./PreviewRemoteDevTools";
+import { devToolsFrontendUrl, devToolsTicketFromSocketUrl } from "./devToolsFrontendUrl";
 import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
 import { isElectron } from "~/env";
 import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
@@ -100,7 +103,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const [pickActive, setPickActive] = useState(false);
   // DevTools is a window on the host, not pixels in the page, so it cannot
   // travel. The console behind it can.
-  const [consoleOpen, setConsoleOpen] = useState(false);
+  // Real DevTools, proxied from the machine hosting the guest. Only offered
+  // where there is no local guest to open Chromium's own on.
+  const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [checkingVerification, setCheckingVerification] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
   const pickActiveRef = useRef(false);
@@ -156,6 +161,23 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     environmentLocal:
       primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
   });
+  // Resolved here so the panel can fall back to the console when there is no
+  // way to reach real DevTools — a connection with no ticket cannot carry
+  // authentication on an iframe or a socket.
+  const devToolsFrontend = useMemo(() => {
+    if (!tabId) return null;
+    const connection = readPreparedConnection(threadRef.environmentId);
+    if (!connection) return null;
+    const ticket = devToolsTicketFromSocketUrl(connection.socketUrl);
+    return ticket === null
+      ? null
+      : devToolsFrontendUrl({
+          httpBaseUrl: connection.httpBaseUrl,
+          threadId: threadRef.threadId,
+          tabId,
+          ticket,
+        });
+  }, [tabId, threadRef]);
   const showEmptyState = shouldShowPreviewEmptyState(snapshot);
   const controller = desktopOverlay?.controller ?? "none";
   const loadProgress = useLoadingProgress(loading);
@@ -817,10 +839,10 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
         onToggleConsole={
           surfaceMode === "remote-mirror" && tabId
-            ? () => setConsoleOpen((open) => !open)
+            ? () => setDevToolsOpen((open) => !open)
             : undefined
         }
-        consoleOpen={consoleOpen}
+        consoleOpen={devToolsOpen}
         onPickElement={
           // Pickable either through this machine's own guest or, with none, on
           // the machine hosting it. Gating on the bridge alone hid the button
@@ -864,18 +886,25 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           />
         ) : null}
         {tabId && snapshot && !showEmptyState && surfaceMode === "remote-mirror" ? (
-          <PreviewRemoteSurface
-            key={tabId}
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            tabId={tabId}
-            visible={visible && !isUnreachable}
-            // The picker's overlay is a live UI the person is drawing in, so
-            // it needs frames at something other than a browsing cadence.
-            cadenceMs={pickActive ? PICKING_FRAME_INTERVAL_MS : undefined}
-            showConsole={consoleOpen}
-            className="absolute inset-0 h-full w-full"
-          />
+          <div className="absolute inset-0 flex flex-col">
+            <PreviewRemoteSurface
+              key={tabId}
+              environmentId={threadRef.environmentId}
+              threadId={threadRef.threadId}
+              tabId={tabId}
+              visible={visible && !isUnreachable}
+              // The picker's overlay is a live UI the person is drawing in, so
+              // it needs frames at something other than a browsing cadence.
+              cadenceMs={pickActive ? PICKING_FRAME_INTERVAL_MS : undefined}
+              // Without a reachable DevTools, the console it would have been
+              // opened for is still worth showing.
+              showConsole={devToolsOpen && devToolsFrontend === null}
+              className="min-h-0 flex-1"
+            />
+            {devToolsOpen && devToolsFrontend !== null ? (
+              <PreviewRemoteDevTools frontendUrl={devToolsFrontend} className="h-1/2 shrink-0" />
+            ) : null}
+          </div>
         ) : null}
         {showEmptyState ? (
           <PreviewEmptyState

@@ -55,8 +55,9 @@ interface Props {
   onPickElement?: (() => void) | undefined;
   pickActive?: boolean | undefined;
   /**
-   * Opens the guest's console. Provided only where DevTools cannot be: a guest
-   * on another machine, or a browser with no desktop bridge at all.
+   * Opens DevTools for the guest. Provided only where Chromium's own cannot
+   * be opened: a guest on another machine, or a browser with no desktop bridge
+   * at all.
    */
   onToggleConsole?: (() => void) | undefined;
   consoleOpen?: boolean | undefined;
@@ -295,7 +296,7 @@ export function PreviewChromeRow({
                   variant={consoleOpen ? "secondary" : "ghost"}
                   size="icon-xs"
                   onClick={onToggleConsole}
-                  aria-label={consoleOpen ? "Hide console" : "Show console"}
+                  aria-label={consoleOpen ? "Hide DevTools" : "Open DevTools"}
                   aria-pressed={consoleOpen ? "true" : "false"}
                   type="button"
                 />
@@ -303,9 +304,7 @@ export function PreviewChromeRow({
             >
               <TerminalIcon className={cn(consoleOpen && "text-primary")} />
             </TooltipTrigger>
-            <TooltipPopup>
-              {consoleOpen ? "Hide console" : "Console and failed requests"}
-            </TooltipPopup>
+            <TooltipPopup>{consoleOpen ? "Hide DevTools" : "Open DevTools"}</TooltipPopup>
           </Tooltip>
         ) : null}
         {onCapture ? (

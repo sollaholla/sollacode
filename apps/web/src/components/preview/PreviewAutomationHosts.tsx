@@ -931,6 +931,12 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const ready = await requireReadyTab();
             return await ready.bridge.pickElement(ready.runtimeTabId);
           }
+          case "devtools": {
+            // Only ever answered by the machine actually running the guest,
+            // which is the machine whose loopback endpoint this describes.
+            const ready = await requireReadyTab();
+            return await ready.bridge.automation.devtools(ready.runtimeTabId);
+          }
           case "frame": {
             const ready = await requireReadyTab();
             return await ready.bridge.automation.frame(ready.runtimeTabId);

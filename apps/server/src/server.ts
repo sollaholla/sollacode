@@ -19,6 +19,7 @@ import {
   httpCompressionLayer,
 } from "./http.ts";
 import { fixPath } from "./os-jank.ts";
+import { devtoolsAssetRouteLayer, devtoolsSocketRouteLayer } from "./preview/DevToolsRoutes.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -461,6 +462,10 @@ export const makeRoutesLayer = Layer.mergeAll(
     orchestratorRealtimeTokenRouteLayer,
     orchestratorRunCommandRouteLayer,
     assetRouteLayer,
+    // Both sit ahead of the static handler so the DevTools prefix is not
+    // mistaken for an app route.
+    devtoolsSocketRouteLayer,
+    devtoolsAssetRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
