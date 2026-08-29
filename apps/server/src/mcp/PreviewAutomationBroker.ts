@@ -66,6 +66,7 @@ interface ClientConnection {
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
+  readonly environmentLocal: boolean;
   readonly focused: boolean;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
@@ -362,6 +363,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       connectionId,
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
+      environmentLocal: host.environmentLocal ?? false,
       focused: false,
       focusOrder: 0,
       queue,
@@ -493,6 +495,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                 .sort(
                   (left, right) =>
                     right.supportedOperations.size - left.supportedOperations.size ||
+                    // Above focus deliberately. Whichever host runs the request
+                    // renders the guest, so this is the difference between an
+                    // agent browsing as the machine that owns the environment —
+                    // and its logins — and browsing as whichever screen the user
+                    // last looked at. Focus only breaks ties among equals.
+                    Number(right.environmentLocal) - Number(left.environmentLocal) ||
                     Number(right.focused) - Number(left.focused) ||
                     right.focusOrder - left.focusOrder,
                 )[0];

@@ -46,7 +46,7 @@ import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import { useEnvironments } from "~/state/environments";
+import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -330,13 +330,20 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   );
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
+  // The primary connection is this desktop's own backend, so an environment
+  // reached that way lives on this machine — and a guest rendered here uses the
+  // browser profile the person sitting at it signed in with. Every other target
+  // is somebody else's machine over the network.
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environmentLocal = primaryEnvironmentId === environmentId;
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      environmentLocal,
     }),
-    [automationClientId, environmentId],
+    [automationClientId, environmentId, environmentLocal],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
