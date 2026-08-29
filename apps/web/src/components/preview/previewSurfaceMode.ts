@@ -15,13 +15,19 @@ export type PreviewSurfaceMode = "local-guest" | "remote-mirror";
  * therefore showing a second, divergent browser: same URL, different cookies,
  * and nothing the agent does ever appears in it. Mirror the real guest instead.
  *
- * Only a positive mismatch switches to the mirror. `environmentLocal` is null
- * while the primary environment is still resolving, and null for clients that
- * have no primary environment at all; both keep the existing local surface
- * rather than inferring a remote host from an absence.
+ * A client that cannot host a guest at all mirrors unconditionally. Guests are
+ * Electron `<webview>`s and the host that renders them is mounted only there,
+ * so in a regular browser the local surface is not a worse picture of the page
+ * — it is no picture at all.
+ *
+ * Beyond that, only a positive mismatch switches to the mirror. `environmentLocal`
+ * is null while the primary environment is still resolving; that keeps the
+ * existing local surface rather than inferring a remote host from an absence.
  */
 export function resolvePreviewSurfaceMode(input: {
+  readonly canRenderLocalGuest: boolean;
   readonly environmentLocal: boolean | null;
 }): PreviewSurfaceMode {
+  if (!input.canRenderLocalGuest) return "remote-mirror";
   return input.environmentLocal === false ? "remote-mirror" : "local-guest";
 }

@@ -51,6 +51,7 @@ import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
+import { isElectron } from "~/env";
 import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { useLoadingProgress } from "./useLoadingProgress";
@@ -140,6 +141,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   // instead of opening a second browser with different logins.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const surfaceMode = resolvePreviewSurfaceMode({
+    canRenderLocalGuest: isElectron,
     environmentLocal:
       primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
   });

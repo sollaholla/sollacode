@@ -13,6 +13,7 @@ import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/prev
 import { useRightPanelStore } from "~/rightPanelStore";
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
+import { isElectron } from "~/env";
 import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
 
 import { previewBridge } from "./previewBridge";
@@ -69,6 +70,7 @@ export function ThreadPreviewMiniPlayer({
   // open the very second browser the panel now avoids.
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const surfaceMode = resolvePreviewSurfaceMode({
+    canRenderLocalGuest: isElectron,
     environmentLocal:
       primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
   });

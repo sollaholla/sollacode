@@ -85,6 +85,15 @@ vi.mock("~/previewStateStore", () => ({
 }));
 
 let primaryEnvironmentId: string | null = "environment-1";
+// These cases cover the Electron surface; a plain browser has no guest to
+// render and is covered by the mirror case below.
+let electron = true;
+
+vi.mock("~/env", () => ({
+  get isElectron() {
+    return electron;
+  },
+}));
 
 vi.mock("~/state/environments", () => ({
   useEnvironment: () => ({ label: "WSL" }),
@@ -242,6 +251,7 @@ describe("PreviewView navigation", () => {
     mocks.surfaceProps.length = 0;
     mocks.mirrorProps.length = 0;
     primaryEnvironmentId = "environment-1";
+    electron = true;
   });
 
   it.each([
@@ -377,6 +387,17 @@ describe("PreviewView navigation", () => {
       visible: true,
     });
     // Acquiring a local surface is what creates the divergent guest.
+    expect(mocks.surfaceProps).toHaveLength(0);
+  });
+
+  it("mirrors in a plain browser, where no guest can be rendered at all", () => {
+    // The Electron-only browser host is what paints a guest; without it the
+    // local surface shows nothing rather than something wrong.
+    electron = false;
+
+    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
+
+    expect(mocks.mirrorProps.at(-1)).toMatchObject({ tabId: "tab-1", visible: true });
     expect(mocks.surfaceProps).toHaveLength(0);
   });
 });
