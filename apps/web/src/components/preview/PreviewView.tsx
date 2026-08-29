@@ -20,7 +20,11 @@ import {
   useThreadPreviewState,
 } from "~/previewStateStore";
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
-import { useEnvironment, useEnvironmentHttpBaseUrl } from "~/state/environments";
+import {
+  useEnvironment,
+  useEnvironmentHttpBaseUrl,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { useThreadShell } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -44,6 +48,8 @@ import { PreviewUnreachable } from "./PreviewUnreachable";
 import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
+import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { useLoadingProgress } from "./useLoadingProgress";
 import { usePreviewSession } from "./usePreviewSession";
@@ -126,6 +132,15 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const canGoForward = desktopOverlay?.canGoForward ?? snapshot?.canGoForward ?? false;
   const refreshDisabled = navStatus._tag === "Idle";
   const isUnreachable = navStatus._tag === "LoadFailed";
+  // The broker runs a thread's guest on the machine that owns its
+  // environment, so that is the only client whose own guest is the one the
+  // agent is driving. Everywhere else, render frames from that machine
+  // instead of opening a second browser with different logins.
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const surfaceMode = resolvePreviewSurfaceMode({
+    environmentLocal:
+      primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
+  });
   const showEmptyState = shouldShowPreviewEmptyState(snapshot);
   const controller = desktopOverlay?.controller ?? "none";
   const loadProgress = useLoadingProgress(loading);
@@ -727,12 +742,22 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {runtimeTabId && snapshot && !showEmptyState ? (
+        {runtimeTabId && snapshot && !showEmptyState && surfaceMode === "local-guest" ? (
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
             visible={visible && !isUnreachable}
             audible={visible && !isUnreachable}
+            className="absolute inset-0 h-full w-full"
+          />
+        ) : null}
+        {tabId && snapshot && !showEmptyState && surfaceMode === "remote-mirror" ? (
+          <PreviewRemoteSurface
+            key={tabId}
+            environmentId={threadRef.environmentId}
+            threadId={threadRef.threadId}
+            tabId={tabId}
+            visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}
