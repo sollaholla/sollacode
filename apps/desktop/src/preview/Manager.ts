@@ -26,6 +26,7 @@ import type {
   PreviewAutomationPressInput,
   PreviewAutomationNetworkEntry,
   PreviewAutomationScrollInput,
+  PreviewAutomationFrame,
   PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
   PreviewAutomationUploadInput,
@@ -5122,6 +5123,76 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * The picture and nothing else.
+   *
+   * Deliberately not a trimmed snapshot: it skips the DOM reads and the
+   * accessibility tree that exist to keep a snapshot's *text* consistent with
+   * its image, because there is no text here to be inconsistent with. Captured
+   * with `fromSurface: false` so it comes from the renderer rather than the
+   * compositor, and so does not require this machine to be showing the tab —
+   * the mirroring case is precisely the one where it is not.
+   */
+  const automationFrame = Effect.fn("PreviewManager.automationFrame")(function* (tabId: string) {
+    const wc = yield* requireWebContents(tabId);
+    return yield* withControlSession(tabId, wc, "frame", (send) =>
+      Effect.gen(function* () {
+        const captured = yield* send("Page.captureScreenshot", {
+          format: "jpeg",
+          quality: AUTOMATION_SNAPSHOT_JPEG_QUALITY,
+          fromSurface: false,
+          captureBeyondViewport: false,
+        });
+        const data =
+          typeof captured === "object" &&
+          captured !== null &&
+          "data" in captured &&
+          typeof captured.data === "string"
+            ? captured.data
+            : null;
+        if (data === null) {
+          return yield* Effect.fail(
+            new PreviewOperationError({
+              operation: "automationFrame.Page.captureScreenshot",
+              tabId,
+              webContentsId: wc.id,
+              cause: new Error("The renderer returned no image data."),
+            }),
+          );
+        }
+        const metrics = yield* send("Page.getLayoutMetrics").pipe(
+          Effect.catch(() => Effect.succeed({})),
+        );
+        const cssViewport =
+          typeof metrics === "object" && metrics !== null && "cssLayoutViewport" in metrics
+            ? (metrics.cssLayoutViewport as Record<string, unknown>)
+            : {};
+        const width = cssViewport["clientWidth"];
+        const height = cssViewport["clientHeight"];
+        const viewport =
+          typeof width === "number" && typeof height === "number" && width > 0 && height > 0
+            ? { width: Math.round(width), height: Math.round(height) }
+            : undefined;
+        return {
+          url: wc.getURL(),
+          title: wc.getTitle(),
+          loading: wc.isLoading(),
+          screenshot: {
+            mimeType: "image/jpeg" as const,
+            data,
+            // The capture is the layout viewport at a uniform scale, so these
+            // carry its shape rather than a guess at the device pixel ratio.
+            // Consumers letterbox by this ratio and scale by the CSS viewport
+            // below, both of which this states exactly.
+            width: viewport?.width ?? 0,
+            height: viewport?.height ?? 0,
+          },
+          ...(viewport === undefined ? {} : { viewport }),
+        } satisfies PreviewAutomationFrame;
+      }),
+    );
+  });
+
   const resolveClickPoint = Effect.fn("PreviewManager.resolveClickPoint")(function* (
     tabId: string,
     send: SendCommand,
@@ -6162,6 +6233,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationEvaluate,
     automationPress,
     automationScroll,
+    automationFrame,
     automationSnapshot,
     automationStatus,
     automationType,
@@ -6536,6 +6608,9 @@ export class PreviewManager extends Context.Service<
     readonly automationSnapshot: (
       tabId: string,
     ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;
+    readonly automationFrame: (
+      tabId: string,
+    ) => Effect.Effect<PreviewAutomationFrame, PreviewManagerError>;
     readonly automationClick: (
       tabId: string,
       input: PreviewAutomationClickInput,
@@ -6678,6 +6753,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     stopRecording: operations.stopRecording,
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
+    automationFrame: operations.automationFrame,
     automationSnapshot: operations.automationSnapshot,
     automationClick: operations.automationClick,
     automationType: operations.automationType,

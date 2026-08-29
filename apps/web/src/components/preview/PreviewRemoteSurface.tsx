@@ -17,12 +17,12 @@ import { PreviewRemoteConsole } from "./PreviewRemoteConsole";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
 
 /**
- * Matches the cadence the mobile browser view has shipped with. Every frame
- * costs the host a full automation snapshot — a DOM and accessibility read it
- * then throws away — so this deliberately does not poll faster than the
- * existing consumer until that capture has a frame-only path.
+ * A frame now costs the host one renderer-side capture rather than a full
+ * snapshot's two DOM reads and an accessibility tree, so the cadence is set by
+ * what is reasonable to send over a network rather than by what the guest's
+ * machine can survive being asked.
  */
-const REMOTE_FRAME_INTERVAL_MS = 2_500;
+const REMOTE_FRAME_INTERVAL_MS = 1_000;
 
 /**
  * Keys that mean something to a page but produce no text. Anything else of
