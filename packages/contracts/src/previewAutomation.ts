@@ -3,6 +3,8 @@ import { Schema } from "effect";
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
+  PreviewAutomationConsoleEntry,
+  PreviewAutomationNetworkEntry,
   PreviewRenderedViewportSize,
   PreviewTabId,
   PreviewViewportPresetId,
@@ -785,25 +787,9 @@ export const PreviewAutomationElement = Schema.Struct({
 });
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
-export const PreviewAutomationConsoleEntry = Schema.Struct({
-  level: Schema.String,
-  text: Schema.String,
-  timestamp: Schema.String,
-  source: Schema.optional(Schema.String),
-});
-export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
-
-export const PreviewAutomationNetworkEntry = Schema.Struct({
-  url: Schema.String,
-  method: Schema.String,
-  status: Schema.NullOr(Schema.Number),
-  failed: Schema.Boolean,
-  errorText: Schema.optional(Schema.String),
-  /** True when Cloudflare marked an HTML response as a Challenge Page. */
-  cfMitigated: Schema.optional(Schema.Boolean),
-  timestamp: Schema.String,
-});
-export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
+// Defined alongside the preview session types so the remote snapshot can carry
+// them without this module and that one importing each other.
+export { PreviewAutomationConsoleEntry, PreviewAutomationNetworkEntry } from "./preview.ts";
 
 export const PreviewAutomationActionEvent = Schema.Struct({
   id: Schema.String,

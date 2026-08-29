@@ -13,6 +13,7 @@ import { cn } from "~/lib/utils";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { PreviewRemoteConsole } from "./PreviewRemoteConsole";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
 
 /**
@@ -58,6 +59,8 @@ export function PreviewRemoteSurface(props: {
   readonly interactive?: boolean;
   /** Overrides the browsing cadence while a live overlay is being driven. */
   readonly cadenceMs?: number | undefined;
+  /** Shows the guest's console and failed requests beneath the frame. */
+  readonly showConsole?: boolean | undefined;
   readonly className?: string;
 }) {
   const {
@@ -67,6 +70,7 @@ export function PreviewRemoteSurface(props: {
     visible,
     interactive = true,
     cadenceMs = REMOTE_FRAME_INTERVAL_MS,
+    showConsole = false,
     className,
   } = props;
   const [frame, setFrame] = useState<PreviewRemoteSnapshotResult | null>(null);
@@ -92,7 +96,11 @@ export function PreviewRemoteSurface(props: {
     const requested = tabIdRef.current;
     const result = await captureRemoteSnapshot({
       environmentId,
-      input: { threadId, tabId: PreviewTabId.make(requested) },
+      input: {
+        threadId,
+        tabId: PreviewTabId.make(requested),
+        ...(showConsole ? { includeDiagnostics: true } : {}),
+      },
     });
     if (tabIdRef.current !== requested) return;
     if (result._tag === "Failure") {
@@ -103,7 +111,7 @@ export function PreviewRemoteSurface(props: {
     }
     setFrame(result.value);
     setStale(false);
-  }, [captureRemoteSnapshot, environmentId, threadId]);
+  }, [captureRemoteSnapshot, environmentId, showConsole, threadId]);
 
   useEffect(() => {
     if (!visible) return;
@@ -193,28 +201,37 @@ export function PreviewRemoteSurface(props: {
   );
 
   return (
-    <div className={cn("flex items-center justify-center overflow-hidden bg-muted/30", className)}>
-      {frame ? (
-        <img
-          ref={imageRef}
-          src={`data:${frame.screenshot.mimeType};base64,${frame.screenshot.data}`}
-          alt={frame.title === "" ? frame.url : frame.title}
-          className={cn(
-            "h-full w-full object-contain transition-opacity",
-            stale && "opacity-60",
-            aimable && "cursor-pointer focus:outline-none",
-          )}
-          draggable={false}
-          tabIndex={aimable ? 0 : undefined}
-          onClick={aimable ? handleClick : undefined}
-          onWheel={aimable ? handleWheel : undefined}
-          onKeyDown={aimable ? handleKeyDown : undefined}
+    <div className={cn("flex flex-col overflow-hidden bg-muted/30", className)}>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+        {frame ? (
+          <img
+            ref={imageRef}
+            src={`data:${frame.screenshot.mimeType};base64,${frame.screenshot.data}`}
+            alt={frame.title === "" ? frame.url : frame.title}
+            className={cn(
+              "h-full w-full object-contain transition-opacity",
+              stale && "opacity-60",
+              aimable && "cursor-pointer focus:outline-none",
+            )}
+            draggable={false}
+            tabIndex={aimable ? 0 : undefined}
+            onClick={aimable ? handleClick : undefined}
+            onWheel={aimable ? handleWheel : undefined}
+            onKeyDown={aimable ? handleKeyDown : undefined}
+          />
+        ) : (
+          <p className="px-6 text-center text-sm text-muted-foreground">
+            Waiting for a frame from the machine running this environment…
+          </p>
+        )}
+      </div>
+      {showConsole ? (
+        <PreviewRemoteConsole
+          consoleEntries={frame?.consoleEntries}
+          networkEntries={frame?.networkEntries}
+          className="max-h-56 shrink-0"
         />
-      ) : (
-        <p className="px-6 text-center text-sm text-muted-foreground">
-          Waiting for a frame from the machine running this environment…
-        </p>
-      )}
+      ) : null}
     </div>
   );
 }

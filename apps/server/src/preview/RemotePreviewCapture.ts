@@ -74,6 +74,14 @@ export function captureRemotePreviewSnapshot(input: {
               // Carried so a viewer can aim input at the page rather than at
               // the picture of it. Older hosts omit it and stay view-only.
               ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
+              // The host gathered these for this frame either way; they only
+              // travel when something is going to show them.
+              ...(input.request.includeDiagnostics === true
+                ? {
+                    consoleEntries: snapshot.consoleEntries,
+                    networkEntries: snapshot.networkEntries,
+                  }
+                : {}),
             }),
       ),
     );
