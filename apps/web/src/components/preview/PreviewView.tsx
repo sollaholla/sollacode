@@ -4,6 +4,8 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
+  PreviewTabId,
+  type PreviewRemoteInputAction,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -157,8 +159,39 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
 
+  const sendRemoteInput = useAtomCommand(previewEnvironment.remoteInput, {
+    reportFailure: false,
+  });
+  // Chrome-row controls drive this machine's own guest through the bridge.
+  // When the guest is on another machine there is nothing here to drive, so
+  // the same intent goes to the host that has it.
+  const sendGuestAction = useCallback(
+    async (action: PreviewRemoteInputAction) => {
+      if (!tabId) return;
+      await sendRemoteInput({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId), action },
+      });
+    },
+    [sendRemoteInput, tabId, threadRef],
+  );
+
   const navigateToResolvedUrl = useCallback(
     async (resolvedUrl: string) => {
+      if (surfaceMode === "remote-mirror" && tabId) {
+        // No guest of ours to drive. Send it to the machine hosting the real
+        // one, the same way the mirror sends everything else.
+        await sendRemoteInput({
+          environmentId: threadRef.environmentId,
+          input: {
+            threadId: threadRef.threadId,
+            tabId: PreviewTabId.make(tabId),
+            action: { kind: "navigate", url: resolvedUrl },
+          },
+        });
+        rememberPreviewUrl(threadRef, resolvedUrl);
+        return;
+      }
       if (runtimeTabId && previewBridge) {
         // Drive the webview imperatively; `usePreviewBridge` mirrors the
         // resolved URL back to the server so other clients stay in sync.
@@ -172,7 +205,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         });
       }
     },
-    [open, runtimeTabId, threadRef],
+    [open, runtimeTabId, sendRemoteInput, surfaceMode, tabId, threadRef],
   );
 
   const handleSubmitUrl = useCallback(
@@ -199,8 +232,12 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
 
   const handleRefresh = useCallback(() => {
     if (humanVerification) return;
+    if (surfaceMode === "remote-mirror") {
+      void sendGuestAction({ kind: "reload" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
-  }, [humanVerification, runtimeTabId]);
+  }, [humanVerification, runtimeTabId, sendGuestAction, surfaceMode]);
 
   const handleCheckHumanVerification = useCallback(async () => {
     const bridge = previewBridge;
@@ -317,12 +354,20 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
+    if (surfaceMode === "remote-mirror") {
+      void sendGuestAction({ kind: "history", direction: "back" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [runtimeTabId, sendGuestAction, surfaceMode]);
 
   const handleForward = useCallback(() => {
+    if (surfaceMode === "remote-mirror") {
+      void sendGuestAction({ kind: "history", direction: "forward" });
+      return;
+    }
     if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
-  }, [runtimeTabId]);
+  }, [runtimeTabId, sendGuestAction, surfaceMode]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!localApi || !url) return;

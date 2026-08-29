@@ -283,6 +283,9 @@ export function ThreadPreviewMiniPlayer({
             threadId={threadRef.threadId}
             tabId={tabId}
             visible
+            // Floating, this is a thumbnail you drag; a click must not land in
+            // the page, exactly as for the local surface beside it.
+            interactive={false}
             className="absolute inset-0 z-30 overflow-hidden rounded-xl"
           />
         )}

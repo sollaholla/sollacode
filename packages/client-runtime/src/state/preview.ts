@@ -90,6 +90,19 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    remoteInput: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:remote-input",
+      tag: WS_METHODS.previewRemoteInput,
+      scheduler: automationScheduler,
+      // Strictly ordered per tab. Input dispatched concurrently arrives
+      // reordered, and a guest that receives a keystroke before the click that
+      // focused it does the wrong thing with both.
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.tabId]),
+      },
+    }),
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,
