@@ -26,6 +26,7 @@ import type {
   PreviewAutomationPressInput,
   PreviewAutomationNetworkEntry,
   PreviewAutomationScrollInput,
+  PreviewAutomationDevTools,
   PreviewAutomationFrame,
   PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
@@ -43,7 +44,15 @@ import {
   mergeAccessibilityTrees,
   visibleTextFromAccessibilityTree,
 } from "./previewSnapshotText.ts";
-import { BrowserWindow, type Session, clipboard, nativeImage, shell, webContents } from "electron";
+import {
+  BrowserWindow,
+  type Session,
+  app,
+  clipboard,
+  nativeImage,
+  shell,
+  webContents,
+} from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -69,6 +78,7 @@ import { PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
 import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
+import { parseDevToolsActivePort } from "./DevToolsEndpoint.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
@@ -5216,6 +5226,85 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  /**
+   * Where this machine's DevTools endpoint is, and which target on it is this
+   * guest.
+   *
+   * The target id comes from the guest's own debugger session rather than by
+   * matching URLs in the endpoint's target list: two tabs can sit on the same
+   * URL, and a mistake here would hand a caller DevTools for the wrong page —
+   * or for one of the app's own windows, which are targets on that endpoint
+   * too. Whoever proxies this treats the id as the only target it may reach.
+   */
+  /**
+   * Chromium writes the port it bound to once, at startup. A build launched
+   * without the switch has no file, and DevTools is simply unavailable rather
+   * than aimed at whatever else might be listening on a guessed port.
+   */
+  const readDevToolsEndpoint = Effect.gen(function* () {
+    const activePortFile = path.join(app.getPath("userData"), "DevToolsActivePort");
+    const contents = yield* fileSystem.readFileString(activePortFile).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PreviewOperationError({
+            operation: "devtools.readActivePort",
+            artifactPath: activePortFile,
+            cause,
+          }),
+      ),
+    );
+    const endpoint = parseDevToolsActivePort(contents);
+    return endpoint === null
+      ? yield* Effect.fail(
+          new PreviewOperationError({
+            operation: "devtools.readActivePort",
+            artifactPath: activePortFile,
+            cause: new Error("This build did not open a DevTools endpoint."),
+          }),
+        )
+      : endpoint;
+  });
+
+  /**
+   * Where this machine's DevTools endpoint is, and which target on it is this
+   * guest.
+   *
+   * The target id comes from the guest's own debugger session rather than by
+   * matching URLs against the endpoint's target list: two tabs can sit on the
+   * same URL, and the endpoint also exposes the app's own windows, so a
+   * mistake here would hand a caller DevTools for the wrong page entirely.
+   * Whoever proxies this treats the returned id as the only target it may
+   * reach.
+   */
+  const automationDevTools = Effect.fn("PreviewManager.automationDevTools")(function* (
+    tabId: string,
+  ) {
+    const endpoint = yield* readDevToolsEndpoint;
+    const wc = yield* requireWebContents(tabId);
+    const targetId = yield* withControlSession(tabId, wc, "devtools", (send) =>
+      send("Target.getTargetInfo").pipe(
+        Effect.flatMap((info) => {
+          const targetInfo =
+            typeof info === "object" && info !== null && "targetInfo" in info
+              ? (info.targetInfo as Record<string, unknown>)
+              : {};
+          const id = targetInfo["targetId"];
+          return typeof id === "string" && id.length > 0
+            ? Effect.succeed(id)
+            : Effect.fail(
+                new PreviewOperationError({
+                  operation: "automationDevTools.Target.getTargetInfo",
+                  tabId,
+                  webContentsId: wc.id,
+                  cause: new Error("The guest reported no target id."),
+                }),
+              );
+        }),
+      ),
+    );
+    return { port: endpoint.port, targetId } satisfies PreviewAutomationDevTools;
+  });
+
   const resolveClickPoint = Effect.fn("PreviewManager.resolveClickPoint")(function* (
     tabId: string,
     send: SendCommand,
@@ -6369,6 +6458,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationEvaluate,
     automationPress,
     automationScroll,
+    automationDevTools,
     automationFrame,
     automationSnapshot,
     automationStatus,
@@ -6753,6 +6843,9 @@ export class PreviewManager extends Context.Service<
     readonly automationFrame: (
       tabId: string,
     ) => Effect.Effect<PreviewAutomationFrame, PreviewManagerError>;
+    readonly automationDevTools: (
+      tabId: string,
+    ) => Effect.Effect<PreviewAutomationDevTools, PreviewManagerError>;
     readonly automationClick: (
       tabId: string,
       input: PreviewAutomationClickInput,
@@ -6899,6 +6992,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     stopRecording: operations.stopRecording,
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
+    automationDevTools: operations.automationDevTools,
     automationFrame: operations.automationFrame,
     automationSnapshot: operations.automationSnapshot,
     automationClick: operations.automationClick,

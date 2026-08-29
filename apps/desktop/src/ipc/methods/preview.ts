@@ -24,6 +24,7 @@ import {
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationPayloadSchema,
   PreviewAutomationWaitForDownloadResult,
+  PreviewAutomationDevTools,
   PreviewAutomationFrame,
   PreviewAutomationSnapshot,
 } from "@t3tools/contracts";
@@ -357,6 +358,16 @@ export const automationStatus = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationDevTools = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_DEVTOOLS_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: PreviewAutomationDevTools,
+  handler: Effect.fn("desktop.ipc.preview.automationDevTools")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.automationDevTools(tabId);
+  }),
+});
+
 export const automationFrame = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_FRAME_CHANNEL,
   payload: DesktopPreviewTabInputSchema,
@@ -578,6 +589,7 @@ export const methods = [
   closePictureInPicture,
   automationRenewForeground,
   automationStatus,
+  automationDevTools,
   automationFrame,
   automationSnapshot,
   automationClick,

@@ -3,6 +3,7 @@ import {
   ProviderInstanceId,
   type AuthSessionId,
   type EnvironmentId,
+  type PreviewAutomationDevTools,
   type PreviewAutomationFrame,
   type PreviewAutomationSnapshot,
   type PreviewAutomationOperation,
@@ -240,4 +241,35 @@ export function requestRemotePreviewPick(input: {
       timeoutMs: REMOTE_PICK_TIMEOUT_MS,
     })
     .pipe(Effect.map((annotation) => annotation ?? null));
+}
+
+/**
+ * Asks the machine hosting a guest where its DevTools target is.
+ *
+ * Answered only by that machine, so the loopback port it names is one this
+ * server can actually reach. The caller never chooses a target: it names a
+ * thread and a tab, and the host says which target that is — which is what
+ * keeps the app's own windows, exposed on the same endpoint, out of reach.
+ */
+export function resolveRemotePreviewDevTools(input: {
+  readonly broker: RemotePreviewInvoker;
+  readonly environmentId: EnvironmentId;
+  readonly sessionId: AuthSessionId;
+  readonly request: PreviewRemotePickInput;
+  readonly issuedAt: number;
+}): Effect.Effect<PreviewAutomationDevTools, import("@t3tools/contracts").PreviewAutomationError> {
+  return input.broker.invoke<PreviewAutomationDevTools>({
+    scope: {
+      environmentId: input.environmentId,
+      threadId: input.request.threadId,
+      providerSessionId: `remote-viewer:${input.sessionId}:${input.request.threadId}`,
+      providerInstanceId: ProviderInstanceId.make("remoteViewer"),
+      capabilities: new Set(["preview"]),
+      issuedAt: input.issuedAt,
+    },
+    operation: "devtools",
+    input: {},
+    tabId: input.request.tabId,
+    timeoutMs: 10_000,
+  });
 }

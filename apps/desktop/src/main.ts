@@ -70,6 +70,16 @@ if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
 
+// DevTools for a guest rendered here but watched from somewhere else.
+//
+// Port 0 lets the OS pick a free one, which Chromium then writes to
+// `DevToolsActivePort`. It is bound to loopback and never advertised past it:
+// the only thing that reaches it is this machine's own server, which has
+// authenticated the caller and checked that the target being asked for is a
+// preview guest rather than one of the app's own windows.
+Electron.app.commandLine.appendSwitch("remote-debugging-port", "0");
+Electron.app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+
 // Do not rename the app here.
 //
 // `app.getName()` looks like a cosmetic label, but Electron derives two

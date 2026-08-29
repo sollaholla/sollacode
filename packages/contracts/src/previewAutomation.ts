@@ -54,6 +54,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "pickElement",
   "frame",
   "selectOption",
+  "devtools",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -982,6 +983,21 @@ export const PreviewAutomationFrame = Schema.Struct({
   ),
 });
 export type PreviewAutomationFrame = typeof PreviewAutomationFrame.Type;
+
+/**
+ * Where a guest's DevTools target lives on the machine hosting it.
+ *
+ * The port is bound to loopback, so this is useful only to something running
+ * beside the guest — the environment's own server, which by then has
+ * authenticated the caller. `targetId` names this guest and nothing else: the
+ * same endpoint also exposes the app's own windows, and vouching for exactly
+ * one target is what stops a proxy from reaching them.
+ */
+export const PreviewAutomationDevTools = Schema.Struct({
+  port: Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(65_535)),
+  targetId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+});
+export type PreviewAutomationDevTools = typeof PreviewAutomationDevTools.Type;
 
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
