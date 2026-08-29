@@ -153,8 +153,13 @@ describe("startup resumable threads", () => {
     expect(isStartupResumableThread(makeThread("approval", { hasPendingApprovals: true }))).toBe(
       false,
     );
+    // A question left open across a restart must NOT keep vetoing. Its
+    // callback lived in the previous process; the thread it belongs to has an
+    // incomplete turn and an idle session, so nothing can answer it and
+    // nothing else will ever resume the thread. Blocking here parked it
+    // permanently under a "waiting on you" label.
     expect(isStartupResumableThread(makeThread("question", { hasPendingUserInput: true }))).toBe(
-      false,
+      true,
     );
     expect(
       isStartupResumableThread(
