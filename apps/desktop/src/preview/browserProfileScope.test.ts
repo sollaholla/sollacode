@@ -12,6 +12,17 @@ describe("previewBrowserProfileScope", () => {
   it("keeps separate environments on separate profiles", () => {
     expect(previewBrowserProfileScope("primary")).not.toBe(previewBrowserProfileScope("remote-vm"));
   });
+
+  it("refuses a missing environment id instead of resolving a second profile", () => {
+    // Falling back here is what put agent tabs on an empty jar while the user
+    // stayed signed in on their own: the page reads as logged out, and the
+    // profile that has the session is never opened.
+    expect(() => previewBrowserProfileScope(undefined as unknown as string)).toThrow(
+      /environment id/,
+    );
+    expect(() => previewBrowserProfileScope("")).toThrow(/environment id/);
+    expect(() => previewBrowserProfileScope("   ")).toThrow(/environment id/);
+  });
 });
 
 describe("selectLegacyBrowserProfile", () => {
@@ -71,6 +82,6 @@ describe("selectLegacyBrowserProfile", () => {
       { directory: "t3code-preview-aaa", cookieBytes: 4_096 },
     ];
     expect(selectLegacyBrowserProfile(profiles)).toBe("t3code-preview-aaa");
-    expect(selectLegacyBrowserProfile([...profiles].reverse())).toBe("t3code-preview-aaa");
+    expect(selectLegacyBrowserProfile(profiles.toReversed())).toBe("t3code-preview-aaa");
   });
 });

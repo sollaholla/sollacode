@@ -10,6 +10,16 @@
  * different machine's browser, and its cookies are not the user's to reuse.
  */
 export function previewBrowserProfileScope(environmentId: string): string {
+  // A blank or missing id must not resolve to a profile. It used to reach a
+  // default scope one layer down and open a second, empty jar, which is
+  // indistinguishable from the browser being signed out of every site — the
+  // exact symptom this scope exists to prevent. Fail where it is wrong.
+  if (typeof environmentId !== "string" || environmentId.trim() === "") {
+    throw new Error(
+      "A preview browser profile needs an environment id; got " +
+        (typeof environmentId === "string" ? JSON.stringify(environmentId) : typeof environmentId),
+    );
+  }
   return environmentId;
 }
 

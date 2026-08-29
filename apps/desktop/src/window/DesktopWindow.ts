@@ -306,7 +306,9 @@ export const make = Effect.gen(function* () {
     Electron.BrowserWindow,
     DesktopWindowError
   > {
-    yield* previewManager.getBrowserSession();
+    // No browser session is warmed here. It has no environment to scope to, so
+    // it only ever created an unscoped profile that no guest attaches to; the
+    // real one is created by `preview.getConfig`, before any guest attaches.
     const applicationUrl = withStartupAutoResumeRequest(getDesktopUrl(environment.isDevelopment));
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
