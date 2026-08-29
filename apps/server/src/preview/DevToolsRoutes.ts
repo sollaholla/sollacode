@@ -126,6 +126,7 @@ export const devtoolsSocketRouteLayer = Layer.unwrap(
           EnvironmentInternalError: HttpServerRespondable.toResponse,
           EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
         }),
+        Effect.tapError((cause) => Effect.logWarning("devtools socket route failed", { cause })),
         Effect.orElseSucceed(() =>
           HttpServerResponse.text("DevTools is unavailable for this guest.", { status: 502 }),
         ),
@@ -189,6 +190,7 @@ export const devtoolsAssetRouteLayer = Layer.unwrap(
           EnvironmentInternalError: HttpServerRespondable.toResponse,
           EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
         }),
+        Effect.tapError((cause) => Effect.logWarning("devtools asset route failed", { cause })),
         Effect.orElseSucceed(() =>
           HttpServerResponse.text("DevTools is unavailable for this guest.", { status: 502 }),
         ),

@@ -55,6 +55,7 @@ import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
+import { recordDevToolsUserDataDirectory } from "./preview/DevToolsEndpoint.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts";
@@ -79,6 +80,10 @@ if (disabledCaptureFeatureList) {
 // preview guest rather than one of the app's own windows.
 Electron.app.commandLine.appendSwitch("remote-debugging-port", "0");
 Electron.app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+// Chromium writes the port it bound into whichever user-data directory it
+// started with. This app moves that directory afterwards, so record it here,
+// while the two still agree.
+recordDevToolsUserDataDirectory(Electron.app.getPath("userData"));
 
 // Do not rename the app here.
 //
