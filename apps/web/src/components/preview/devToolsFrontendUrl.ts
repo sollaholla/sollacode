@@ -8,26 +8,34 @@
  * The frontend takes its socket as `ws=host/path` with no scheme, which is why
  * this strips one off rather than passing a whole URL through.
  */
+import { DEVTOOLS_ROUTE_PREFIX } from "@t3tools/shared/preview";
+
 /**
- * The ticket the RPC socket is already using.
+ * Whether the session cookie will reach this server from this page.
  *
- * Reusing it avoids minting a second credential for the same session, and it
- * is the only kind an iframe or a WebSocket can carry at all.
+ * Neither a framed document nor a WebSocket can carry an Authorization header,
+ * so the cookie is the only credential either half of DevTools has. The cookie
+ * is host-scoped and set without a Domain, which is a narrower rule than same
+ * origin in one direction and wider in another: the port is irrelevant, but a
+ * different host — or an http target framed by an https page, which the browser
+ * blocks as mixed content — gets nothing.
  */
-export function devToolsTicketFromSocketUrl(socketUrl: string): string | null {
+function carriesSessionCookie(base: URL, pageOrigin: string | null): boolean {
+  if (pageOrigin === null) return false;
+  let page: URL;
   try {
-    const ticket = new URL(socketUrl).searchParams.get("wsTicket");
-    return ticket !== null && ticket.length > 0 ? ticket : null;
+    page = new URL(pageOrigin);
   } catch {
-    return null;
+    return false;
   }
+  return base.hostname === page.hostname && base.protocol === page.protocol;
 }
 
 export function devToolsFrontendUrl(input: {
   readonly httpBaseUrl: string;
   readonly threadId: string;
   readonly tabId: string;
-  readonly ticket: string;
+  readonly pageOrigin: string | null;
 }): string | null {
   let base: URL;
   try {
@@ -37,19 +45,18 @@ export function devToolsFrontendUrl(input: {
   }
   if (base.protocol !== "http:" && base.protocol !== "https:") return null;
 
-  const target = new URLSearchParams({
-    threadId: input.threadId,
-    tabId: input.tabId,
-    wsTicket: input.ticket,
-  });
+  // Somewhere the cookie cannot follow would load an iframe that 401s, so
+  // report no DevTools rather than showing one that cannot connect.
+  if (!carriesSessionCookie(base, input.pageOrigin)) return null;
+
+  // The guest rides in the path, not the query: Chromium's frontend references
+  // its own assets relatively, so a query string is gone by the second request
+  // while a path prefix is inherited by every one of them.
+  const root = `${base.pathname.replace(/\/$/, "")}${DEVTOOLS_ROUTE_PREFIX}/${encodeURIComponent(input.threadId)}/${encodeURIComponent(input.tabId)}`;
+
+  const frontend = new URL(`${base.origin}${root}/inspector.html`);
   // `host` carries the port; the frontend derives ws:// or wss:// from how it
   // was itself served, which is why the scheme is deliberately absent here.
-  const socket = `${base.host}${base.pathname.replace(/\/$/, "")}/preview/devtools/cdp?${target.toString()}`;
-
-  const frontend = new URL(
-    `${base.origin}${base.pathname.replace(/\/$/, "")}/preview/devtools/inspector.html`,
-  );
-  frontend.search = target.toString();
-  frontend.searchParams.set("ws", socket);
+  frontend.searchParams.set("ws", `${base.host}${root}/cdp`);
   return frontend.toString();
 }

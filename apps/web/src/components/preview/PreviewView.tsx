@@ -52,7 +52,7 @@ import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { PreviewRemoteDevTools } from "./PreviewRemoteDevTools";
-import { devToolsFrontendUrl, devToolsTicketFromSocketUrl } from "./devToolsFrontendUrl";
+import { devToolsFrontendUrl } from "./devToolsFrontendUrl";
 import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
 import { isElectron } from "~/env";
 import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
@@ -162,21 +162,19 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
   });
   // Resolved here so the panel can fall back to the console when there is no
-  // way to reach real DevTools — a connection with no ticket cannot carry
-  // authentication on an iframe or a socket.
+  // way to reach real DevTools — an environment served from somewhere other
+  // than this page's own origin leaves the frontend with no credential to
+  // present.
   const devToolsFrontend = useMemo(() => {
     if (!tabId) return null;
     const connection = readPreparedConnection(threadRef.environmentId);
     if (!connection) return null;
-    const ticket = devToolsTicketFromSocketUrl(connection.socketUrl);
-    return ticket === null
-      ? null
-      : devToolsFrontendUrl({
-          httpBaseUrl: connection.httpBaseUrl,
-          threadId: threadRef.threadId,
-          tabId,
-          ticket,
-        });
+    return devToolsFrontendUrl({
+      httpBaseUrl: connection.httpBaseUrl,
+      threadId: threadRef.threadId,
+      tabId,
+      pageOrigin: typeof window === "undefined" ? null : window.location.origin,
+    });
   }, [tabId, threadRef]);
   const showEmptyState = shouldShowPreviewEmptyState(snapshot);
   const controller = desktopOverlay?.controller ?? "none";
