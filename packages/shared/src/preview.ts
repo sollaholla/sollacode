@@ -34,6 +34,50 @@ export function isLoopbackHost(host: string): boolean {
   return false;
 }
 
+const IPV4_HOST = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+const normalizeHostname = (host: string): string => host.toLowerCase().replace(/^\[|\]$/g, "");
+
+const parseIpv4Address = (host: string): readonly number[] | null => {
+  const match = IPV4_HOST.exec(normalizeHostname(host));
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every((part) => part >= 0 && part <= 255) ? parts : null;
+};
+
+/**
+ * True when a host is only meaningful inside someone's own network.
+ *
+ * Two callers need the same answer and must not drift: the resolver decides
+ * whether a guest can be reached at the environment's address at all, and the
+ * URL bar decides whether an address it is showing names a machine rather than
+ * a site. A public host that happened to match would be relabelled wrongly.
+ */
+export function isPrivateNetworkHost(host: string): boolean {
+  const normalized = normalizeHostname(host);
+  if (isLoopbackHost(normalized) || normalized === "localhost" || normalized.endsWith(".local")) {
+    return true;
+  }
+  if (normalized.endsWith(".ts.net")) return true;
+  const parts = parseIpv4Address(normalized);
+  if (parts) {
+    return (
+      parts[0] === 10 ||
+      (parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127) ||
+      (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
+      (parts[0] === 192 && parts[1] === 168) ||
+      (parts[0] === 169 && parts[1] === 254)
+    );
+  }
+  const firstIpv6Token = normalized.split(":", 1)[0] ?? "";
+  if (!normalized.includes(":") || !/^[\da-f]{1,4}$/u.test(firstIpv6Token)) return false;
+  const firstIpv6Hextet = Number.parseInt(firstIpv6Token, 16);
+  return (
+    Number.isInteger(firstIpv6Hextet) &&
+    ((firstIpv6Hextet & 0xfe00) === 0xfc00 || (firstIpv6Hextet & 0xffc0) === 0xfe80)
+  );
+}
+
 /** True when a raw URL string looks like a loopback dev URL we can preview. */
 export function isPreviewableUrl(rawUrl: string): boolean {
   try {
