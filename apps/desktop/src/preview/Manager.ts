@@ -347,6 +347,31 @@ export function isDeliberateUserInputEvent(type: string | undefined): boolean {
   }
 }
 
+/**
+ * Page-side source for confirming inserted text actually reached the guest.
+ *
+ * Read back as `(element, inserted) => boolean`, evaluated inside the page so
+ * the field's contents never leave the guest — only the verdict comes back.
+ *
+ * Two normalisations, both load-bearing for rich-text editors:
+ *
+ * - `innerText`, not `textContent`, for anything that is not an `<input>` or
+ *   `<textarea>`. `Input.insertText` turns a newline into DOM structure — a
+ *   `<br>` or a block split — so `textContent` reports `line oneline two` for
+ *   text typed as `line one\nline two` and the match fails on text that did
+ *   land. `innerText` renders that structure back as newlines.
+ * - `\u00a0` to a space, because contenteditable stores typed spaces as
+ *   non-breaking ones, and CRLF to LF.
+ */
+export const PREVIEW_TYPED_TEXT_LANDED_JS = `((element, inserted) => {
+  const normalize = (text) => text.replace(/\\r\\n?/g, "\\n").replace(/\\u00a0/g, " ");
+  const raw =
+    element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+      ? element.value
+      : (element.innerText ?? element.textContent);
+  return typeof raw === "string" && normalize(raw).includes(normalize(inserted));
+})`;
+
 /** Modifier keys alone say nothing about where someone means to type. */
 const BARE_MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
 
@@ -5554,8 +5579,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           `(() => {
             const element = document.activeElement;
             if (!element) return false;
-            const value = "value" in element ? element.value : element.textContent;
-            return typeof value === "string" && value.includes(${insertedJson});
+            return ${PREVIEW_TYPED_TEXT_LANDED_JS}(element, ${insertedJson});
           })()`,
           { returnByValue: true },
         );
@@ -5565,7 +5589,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             tabId,
             webContentsId: wc.id,
             cause: new Error(
-              "Typed text did not reach the preview page; the guest never took keyboard focus.",
+              "Typed text was not found in the focused element after insertion; the guest never took keyboard focus, or the field rejected the text.",
             ),
           });
         }

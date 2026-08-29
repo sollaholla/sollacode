@@ -6269,3 +6269,59 @@ describe("describeScreenshotFailure", () => {
     );
   });
 });
+
+describe("PREVIEW_TYPED_TEXT_LANDED_JS", () => {
+  class FakeInput {
+    value: string;
+    constructor(value: string) {
+      this.value = value;
+    }
+  }
+  class FakeTextArea {
+    value: string;
+    constructor(value: string) {
+      this.value = value;
+    }
+  }
+
+  /** Run the page-side source exactly as the guest would, with DOM stand-ins. */
+  const landed = (element: unknown, inserted: string): boolean =>
+    (
+      new Function(
+        "HTMLInputElement",
+        "HTMLTextAreaElement",
+        `return ${PreviewManager.PREVIEW_TYPED_TEXT_LANDED_JS};`,
+      ) as (input: unknown, textarea: unknown) => (element: unknown, inserted: string) => boolean
+    )(FakeInput, FakeTextArea)(element, inserted);
+
+  it("accepts multi-line text a contenteditable stored as line breaks", () => {
+    // Chromium turns the newline into a <br>, so textContent has no newline at
+    // all. Reading textContent used to fail text that had plainly landed.
+    expect(
+      landed(
+        { innerText: "line one\nline two", textContent: "line oneline two" },
+        "line one\nline two",
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts spaces a contenteditable stored as non-breaking", () => {
+    expect(landed({ innerText: "hello world" }, "hello world")).toBe(true);
+  });
+
+  it("accepts a field that normalised CRLF to LF", () => {
+    expect(landed(new FakeTextArea("line one\nline two"), "line one\r\nline two")).toBe(true);
+  });
+
+  it("still reports text that never reached the guest", () => {
+    expect(landed({ innerText: "", textContent: "" }, "line one\nline two")).toBe(false);
+  });
+
+  it("reads an input's value rather than its text content", () => {
+    expect(landed(new FakeInput("typed"), "typed")).toBe(true);
+  });
+
+  it("reports an element that exposes no readable text", () => {
+    expect(landed({}, "typed")).toBe(false);
+  });
+});
