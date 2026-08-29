@@ -88,6 +88,31 @@ describe("resolvePreviewAutomationThreadTarget", () => {
     });
   });
 
+  it("never answers a named tab with a different guest", () => {
+    // A mirror viewer on another machine asks its host for one specific tab.
+    // When the host has no session for it, substituting the guest it happens
+    // to be showing sends back a picture of the wrong page under the viewer's
+    // correct address bar — observed 2026-08-29 with Windows mirroring a Mac,
+    // which rendered the Mac's own window. Hand the named tab back and let the
+    // caller's session sync resolve or fail it.
+    const visibleState = state("tab-visible");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef,
+        requestedTabId: PreviewTabId.make("tab-not-on-this-host"),
+        previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: visibleState },
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(visibleThreadRef, visibleState.serverEpoch, "tab-visible")]:
+            presentation(),
+        },
+      }),
+    ).toEqual({
+      threadRef: requestThreadRef,
+      tabId: PreviewTabId.make("tab-not-on-this-host"),
+    });
+  });
+
   it("defaults a fresh agent to the visible interactive browser in its environment", () => {
     const visibleState = state("tab-visible");
     const foreignState = state("tab-foreign");
