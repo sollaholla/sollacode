@@ -53,6 +53,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "waitForDownload",
   "pickElement",
   "frame",
+  "selectOption",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -648,6 +649,68 @@ export const PreviewAutomationUploadResult = Schema.Struct({
 });
 export type PreviewAutomationUploadResult = typeof PreviewAutomationUploadResult.Type;
 
+/**
+ * Choosing from a `<select>`.
+ *
+ * Clicking one opens a menu Chromium draws outside the page: it is in no DOM,
+ * no screenshot, and no CDP input queue, so an agent that clicks gets a
+ * success, an unchanged snapshot, and a menu left sitting over the user's
+ * screen. Choosing by value/label/index sets the selection and fires the
+ * page's own `input` and `change` handlers without a popup ever existing.
+ */
+export const PreviewAutomationSelectOptionInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  selector: Schema.optional(LegacySelector).annotate({
+    description: "Legacy CSS selector for the <select>. Prefer locator.",
+  }),
+  locator: Schema.optional(Locator).annotate({
+    description:
+      "Playwright selector for the <select>, for example role=combobox[name='Fruit'] or #country.",
+  }),
+  value: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(1024)).annotate({
+      description: "Choose the option whose value attribute equals this.",
+    }),
+  ),
+  label: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(1024)).annotate({
+      description: "Choose the option whose visible text equals this.",
+    }),
+  ),
+  index: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description: "Choose the option at this zero-based position.",
+    }),
+  ),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter(
+      (input) =>
+        !(input.selector !== undefined && input.locator !== undefined) ||
+        "Provide at most one of selector or locator.",
+    ),
+  )
+  .check(
+    Schema.makeFilter(
+      (input) =>
+        [input.value, input.label, input.index].filter((choice) => choice !== undefined).length ===
+          1 || "Provide exactly one of value, label, or index.",
+    ),
+  )
+  .annotate({
+    description:
+      "Selects an option in a <select> and fires the page's change handlers, without opening the native dropdown.",
+  });
+export type PreviewAutomationSelectOptionInput = typeof PreviewAutomationSelectOptionInput.Type;
+
+export const PreviewAutomationSelectOptionResult = Schema.Struct({
+  value: Schema.String,
+  label: Schema.String,
+  index: Schema.Int,
+});
+export type PreviewAutomationSelectOptionResult = typeof PreviewAutomationSelectOptionResult.Type;
+
 export const PreviewAutomationPressInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   key: Schema.String.check(Schema.isTrimmed())
@@ -785,6 +848,29 @@ export const PreviewAutomationElement = Schema.Struct({
   y: Schema.Number,
   width: Schema.Number,
   height: Schema.Number,
+  /**
+   * What the control currently holds. Without it a snapshot says a field
+   * exists but not what is in it, so an agent cannot tell a form it already
+   * filled from an empty one.
+   */
+  value: Schema.optional(Schema.String),
+  /** Present for checkboxes and radios. */
+  checked: Schema.optional(Schema.Boolean),
+  /**
+   * Present for a `<select>`. Its options are otherwise unreachable: they
+   * render in a native menu that no screenshot or DOM query can see, and
+   * flattening them into `name` loses which one is selected and what each is
+   * worth. Pair with the `selectOption` operation.
+   */
+  options: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        label: Schema.String,
+        value: Schema.String,
+        selected: Schema.Boolean,
+      }),
+    ),
+  ),
 });
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
@@ -1184,9 +1270,17 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     ...PreviewAutomationRemoteDiagnosticFields,
     selectorKind: Schema.optional(Schema.Literals(["focused-element", "locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    /** The target opens a menu Chromium draws outside the page. */
+    nativeMenu: Schema.optional(Schema.Boolean),
   },
 ) {
   override get message(): string {
+    if (this.nativeMenu === true) {
+      // Say what to call instead. A click here reports success and leaves a
+      // menu open over the user's screen that no snapshot can see, so an agent
+      // told only "not editable" retries the thing that caused it.
+      return `Preview automation ${this.operation} cannot drive a <select>: it opens a menu the browser draws outside the page, which no snapshot or screenshot can see and no key press can dismiss. Use preview_select_option with value, label, or index instead; preview_snapshot lists the options.`;
+    }
     if (this.selectorKind === "focused-element") {
       return `Preview automation ${this.operation} requires an editable focused element.`;
     }

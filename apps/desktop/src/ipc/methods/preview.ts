@@ -7,6 +7,7 @@ import {
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
   DesktopPreviewAutomationTypeInputSchema,
+  DesktopPreviewAutomationSelectOptionInputSchema,
   DesktopPreviewAutomationUploadInputSchema,
   DesktopPreviewAutomationWaitForDownloadInputSchema,
   DesktopPreviewAutomationWaitForInputSchema,
@@ -463,6 +464,20 @@ export const automationUpload = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const automationSelectOption = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_SELECT_OPTION_CHANNEL,
+  payload: DesktopPreviewAutomationSelectOptionInputSchema,
+  result: Schema.Struct({
+    value: Schema.String,
+    label: Schema.String,
+    index: Schema.Int,
+  }),
+  handler: Effect.fn("desktop.ipc.preview.automationSelectOption")(function* ({ tabId, input }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.automationSelectOption(tabId, input);
+  }),
+});
+
 export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
@@ -568,6 +583,7 @@ export const methods = [
   automationClick,
   automationType,
   automationUpload,
+  automationSelectOption,
   automationPress,
   automationScroll,
   automationEvaluate,
