@@ -86,6 +86,7 @@ import { ThreadWorkScheduler } from "../Services/ThreadWorkScheduler.ts";
 import { makeThreadWorkSchedulerLive } from "./ThreadWorkScheduler.ts";
 import {
   activeTurnWorkSourceId,
+  BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX,
   agentAutoResumeIds,
   startupAutoResumeIds,
   threadWorkObligationId,
@@ -1628,6 +1629,178 @@ describe("ProviderCommandReactor", () => {
     expect(cleanup?.blockedReason).toContain("signed off with Agent stop");
     expect(harness.startSession).not.toHaveBeenCalled();
     expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A thread whose newest assistant message ended the Agent loop, with one
+   * message queued behind it that was never delivered. Signing off ends the
+   * agent's own loop; it does not un-send work already waiting.
+   */
+  const signedOffThreadWithQueuedMessage = async (options: {
+    readonly slug: string;
+    readonly queuedMessageId: MessageId;
+    readonly queuedText: string;
+    readonly queuedInputOrigin?: "agent-loop" | undefined;
+  }) => {
+    const harness = await createHarness({ startReactor: false });
+    const threadId = ThreadId.make("thread-1");
+    const sourceTurnId = asTurnId(`turn-${options.slug}`);
+    const sourceMessageId = asMessageId(`user-${options.slug}`);
+    const assistantMessageId = asMessageId(`assistant-${options.slug}`);
+    const session = (status: "running" | "ready", activeTurnId: TurnId | null) => ({
+      threadId,
+      status,
+      providerName: "codex" as const,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "approval-required" as const,
+      activeTurnId,
+      lastError: null,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.interaction-mode.set",
+        commandId: CommandId.make(`cmd-${options.slug}-agent-mode`),
+        threadId,
+        interactionMode: "agent",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${options.slug}-source-turn`),
+        threadId,
+        message: {
+          messageId: sourceMessageId,
+          role: "user",
+          text: "Do the work and stop when you are blocked.",
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${options.slug}-running`),
+        threadId,
+        session: session("running", sourceTurnId),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make(`cmd-${options.slug}-assistant-delta`),
+        threadId,
+        messageId: assistantMessageId,
+        delta: "Blocked on you, so I have stopped.\n\nAGENT_STOP",
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(`cmd-${options.slug}-assistant-complete`),
+        threadId,
+        messageId: assistantMessageId,
+        turnId: sourceTurnId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make(`cmd-${options.slug}-ready`),
+        threadId,
+        session: session("ready", null),
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-${options.slug}-queued`),
+        threadId,
+        message: {
+          messageId: options.queuedMessageId,
+          role: "user",
+          text: options.queuedText,
+          ...(options.queuedInputOrigin === undefined
+            ? {}
+            : { inputOrigin: options.queuedInputOrigin }),
+          attachments: [],
+        },
+        interactionMode: "agent",
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    await harness.startReactor();
+    return { harness, threadId };
+  };
+
+  it("delivers a message sent while the agent was signing off", async () => {
+    // Typed at 00:08:34 while the running turn signed off at 00:08:36: the
+    // sign-off was newer than the message, so the gate cancelled the message's
+    // own delivery and it sat queued forever (thread 66e462cc, 2026-08-29).
+    const queuedMessageId = asMessageId("user-typed-during-signoff");
+    const { harness, threadId } = await signedOffThreadWithQueuedMessage({
+      slug: "typed-during-signoff",
+      queuedMessageId,
+      queuedText: "Also, all threads vanished on the Mac.",
+    });
+
+    const deliveryKey = {
+      threadId,
+      sourceTurnId: activeTurnWorkSourceId(queuedMessageId),
+      kind: "active-turn-recovery" as const,
+    };
+    const readDelivery = () =>
+      Effect.runPromise(
+        harness.threadWorkObligations.getByKey(deliveryKey).pipe(Effect.map(Option.getOrUndefined)),
+      );
+    // A typed send is a direct steer candidate, so the provider call happens
+    // off this obligation; what matters here is that the delivery settles
+    // rather than being retired by the sign-off.
+    await waitFor(async () => (await readDelivery())?.state === "completed");
+
+    const delivery = await readDelivery();
+    expect(delivery?.state).toBe("completed");
+    expect(delivery?.blockedReason).toBeNull();
+  });
+
+  it("delivers a resolved blocker to the thread that stopped for it", async () => {
+    // The blocker is why the agent signed off, so this notice always arrives
+    // into a signed-off thread. Suppressing it stranded the work it unparks
+    // (thread ce4c14c6, queued 20:58:57, cancelled 273ms later).
+    const queuedMessageId = asMessageId(
+      `${BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX}0f0d2c5e-8f4a-4d9a-9f2c-3a1b6d7e8c90`,
+    );
+    const { harness, threadId } = await signedOffThreadWithQueuedMessage({
+      slug: "blocker-resolved",
+      queuedMessageId,
+      queuedText: 'The user resolved the request "Sign in to VEERA Gmail".',
+      queuedInputOrigin: "agent-loop",
+    });
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const delivery = await Effect.runPromise(
+      harness.threadWorkObligations
+        .getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(queuedMessageId),
+          kind: "active-turn-recovery",
+        })
+        .pipe(Effect.map(Option.getOrUndefined)),
+    );
+    expect(delivery?.state).not.toBe("cancelled");
   });
 
   it("recovers an already-projected Agent continuation after a server restart", async () => {

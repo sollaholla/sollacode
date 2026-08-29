@@ -3365,10 +3365,19 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (thread.settledOverride === "settled") {
           return { state: "cancelled" as const, reason: "thread was settled" };
         }
-        if (agentLoopSignedOffSinceUserIntent(thread.messages)) {
-          return { state: "cancelled" as const, reason: STARTUP_RESUME_SIGNED_OFF_REASON };
-        }
-
+        // No AGENT_STOP gate here, deliberately. Signing off ends the agent's
+        // own loop; it does not un-send a message that is already queued. This
+        // handler only ever DELIVERS a message that exists in the thread, so
+        // cancelling here loses it outright — it stays "queued" in the UI and
+        // never runs. Two ways that bit, both seen in production 2026-08-29:
+        // a message typed while the agent was wrapping up (thread 66e462cc,
+        // typed 00:08:34, that same turn signed off 00:08:36), and every
+        // blocker-resolution notice, since a blocker leaves the thread signed
+        // off by construction (thread ce4c14c6, queued 20:58:57, cancelled
+        // 273ms later, never resumed). The sign-off gate belongs where a
+        // resume is MINTED — executeStartupResume and executeAgentContinuation
+        // both still refuse to invent one — not where queued work is handed
+        // over.
         const sourceMessage = thread.messages.find((message) => message.id === messageId);
         const recoveryVerdict = classifyTurnStartRecovery({
           sourceMessage,
