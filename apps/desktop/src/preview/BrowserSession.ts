@@ -410,6 +410,25 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     );
   });
 
+  /**
+   * Size of a profile's cookie database, wherever Chromium put it.
+   *
+   * The jar sits at the profile root on some Chromium versions and under
+   * `Network/` on others. Measuring only the root reads every candidate as
+   * empty on the layouts that use the subdirectory, so the one-time adoption
+   * quietly picks nothing — which lands the user on a fresh profile and reads
+   * as the update having signed them out of every site.
+   */
+  const cookieJarBytes = (partitionsDir: string, directory: string): number => {
+    for (const relative of [["Cookies"], ["Network", "Cookies"]]) {
+      const size = NodeFS.statSync(NodePath.join(partitionsDir, directory, ...relative), {
+        throwIfNoEntry: false,
+      })?.size;
+      if (size !== undefined && size > 0) return size;
+    }
+    return 0;
+  };
+
   const adoptOnDisk = (partition: string) =>
     Effect.sync(() => {
       const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
@@ -418,11 +437,9 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       const profiles = NodeFS.readdirSync(partitionsDir, { withFileTypes: true }).flatMap(
         (entry) => {
           if (!entry.isDirectory() || !entry.name.startsWith(PARTITION_DIRECTORY_PREFIX)) return [];
-          const cookieBytes =
-            NodeFS.statSync(NodePath.join(partitionsDir, entry.name, "Cookies"), {
-              throwIfNoEntry: false,
-            })?.size ?? 0;
-          return [{ directory: entry.name, cookieBytes }];
+          return [
+            { directory: entry.name, cookieBytes: cookieJarBytes(partitionsDir, entry.name) },
+          ];
         },
       );
       // The target is one of the candidates. The environment-wide profile
