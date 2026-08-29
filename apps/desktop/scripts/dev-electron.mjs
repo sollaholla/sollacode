@@ -1,4 +1,5 @@
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -30,6 +31,23 @@ const watchedDirectories = [
   { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
   { directory: "../server/dist", files: new Set(["bin.mjs"]) },
 ];
+/**
+ * Which dev stack this supervisor belongs to.
+ *
+ * One checkout can run several: a scratch instance on its own home dir and
+ * port beside the one someone is actually working in. Scoping by checkout —
+ * which `--t3code-dev-root` alone does — makes each new stack kill the other's
+ * app on startup, and the survivor's supervisor relaunch it, which is both a
+ * Dock full of apps and, for the stack that lost, a web server left answering
+ * with no backend behind it. The port and home directory are what actually
+ * separate them.
+ */
+const instanceId = NodeCrypto.createHash("sha1")
+  .update(`${devServerUrl}\u0000${process.env.T3CODE_HOME ?? ""}`)
+  .digest("hex")
+  .slice(0, 12);
+/** On the child's command line, because `pkill -f` can only see argv. */
+const instanceFlag = `--t3code-dev-instance=${instanceId}`;
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
@@ -72,9 +90,8 @@ function cleanupStaleDevApps() {
     return;
   }
 
-  NodeChildProcess.spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], {
-    stdio: "ignore",
-  });
+  // Only this stack's own leftovers. Never the checkout's.
+  NodeChildProcess.spawnSync("pkill", ["-f", "--", instanceFlag], { stdio: "ignore" });
 }
 
 function startApp() {
@@ -85,9 +102,11 @@ function startApp() {
   const electronArgs = remoteDebuggingPort
     ? [`--remote-debugging-port=${remoteDebuggingPort}`]
     : [];
+  // After the entry path, so it reaches the app as an argument rather than
+  // being parsed as a Chromium switch.
   const launchArgs = devProtocolClient
-    ? electronArgs
-    : [...electronArgs, `--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"];
+    ? [...electronArgs, instanceFlag]
+    : [...electronArgs, `--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs", instanceFlag];
   const electronCommand = resolveElectronLaunchCommand(launchArgs);
   const app = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
     cwd: desktopDir,
