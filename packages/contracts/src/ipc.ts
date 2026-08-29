@@ -79,6 +79,8 @@ import {
   PreviewAutomationStatus,
   PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
+  PreviewAutomationSelectOptionInput,
+  PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadInput,
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForDownloadInput,
@@ -1092,6 +1094,11 @@ export const DesktopPreviewAutomationUploadInputSchema = Schema.Struct({
   input: PreviewAutomationUploadInput,
 });
 
+export const DesktopPreviewAutomationSelectOptionInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationSelectOptionInput,
+});
+
 export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationPressInput,
@@ -1502,6 +1509,11 @@ export interface DesktopPreviewBridge {
       tabId: string,
       input: PreviewAutomationUploadInput,
     ) => Promise<PreviewAutomationUploadResult>;
+    /** Chooses in a `<select>` without opening the menu Chromium draws outside the page. */
+    selectOption: (
+      tabId: string,
+      input: PreviewAutomationSelectOptionInput,
+    ) => Promise<PreviewAutomationSelectOptionResult>;
     press: (tabId: string, input: PreviewAutomationPressInput, expiresAt?: number) => Promise<void>;
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;

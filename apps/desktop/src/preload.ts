@@ -292,6 +292,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         }),
       upload: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_UPLOAD_CHANNEL, { tabId, input }),
+      selectOption: (tabId, input) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_SELECT_OPTION_CHANNEL, { tabId, input }),
       press: (tabId, input, expiresAt) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL, {
           tabId,

@@ -274,9 +274,14 @@ const classifyResponseError = (
         detail.selectorLength >= 0
           ? detail.selectorLength
           : undefined;
+      const remoteNativeMenu =
+        detail && "nativeMenu" in detail && typeof detail.nativeMenu === "boolean"
+          ? detail.nativeMenu
+          : undefined;
       return new PreviewAutomationTargetNotEditableError({
         ...context,
         ...remoteDiagnostics,
+        ...(remoteNativeMenu === undefined ? {} : { nativeMenu: remoteNativeMenu }),
         ...(remoteSelectorKind === undefined && context.selectorKind === undefined
           ? {}
           : { selectorKind: remoteSelectorKind ?? context.selectorKind }),

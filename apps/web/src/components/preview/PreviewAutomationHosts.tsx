@@ -972,6 +972,15 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             await inspectAfterAction(ready);
             return result;
           }
+          case "selectOption": {
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.selectOption(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.selectOption>[1],
+            );
+            await inspectAfterAction(ready);
+            return result;
+          }
           case "press": {
             const ready = await requireAutomatableTab();
             const result = await ready.bridge.automation.press(

@@ -29,6 +29,8 @@ import type {
   PreviewAutomationFrame,
   PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
+  PreviewAutomationSelectOptionInput,
+  PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadInput,
   PreviewAutomationUploadResult,
   PreviewAutomationWaitForInput,
@@ -243,6 +245,8 @@ const ZOOM_EPSILON = 0.001;
 const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
+/** Bounds a country or timezone list, which run to hundreds of options. */
+const MAX_SELECT_OPTIONS = 200;
 const MAX_AUTOMATION_SCREENSHOT_WIDTH = 1024;
 const AUTOMATION_SNAPSHOT_JPEG_QUALITY = 78;
 const RECORDING_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
@@ -4493,15 +4497,34 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             "a[href],button,input,textarea,select,[role],[tabindex]"
           )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
             const rect = element.getBoundingClientRect();
+            const select = element instanceof HTMLSelectElement ? element : null;
             return {
               tag: element.tagName.toLowerCase(),
               role: element.getAttribute("role"),
-              name: element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "",
+              // A select's innerText is every option run together, which reads
+              // as a name and is not one. Its label belongs to the control.
+              name: element.getAttribute("aria-label") ||
+                (select ? (element.getAttribute("name") || "") : (element.innerText || element.getAttribute("name") || "")),
               selector: selectorFor(element),
               x: rect.x,
               y: rect.y,
               width: rect.width,
-              height: rect.height
+              height: rect.height,
+              ...(typeof element.value === "string" ? { value: element.value } : {}),
+              ...(element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")
+                ? { checked: element.checked }
+                : {}),
+              // The only way these ever reach a caller: the menu that shows
+              // them is drawn outside the page.
+              ...(select
+                ? {
+                    options: Array.from(select.options).slice(0, ${MAX_SELECT_OPTIONS}).map((option) => ({
+                      label: (option.label || option.text || "").trim(),
+                      value: option.value,
+                      selected: option.selected
+                    }))
+                  }
+                : {})
             };
           });
           const structuralElements = Array.from(document.querySelectorAll(
@@ -5208,7 +5231,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       locator,
     );
     const point = yield* evaluateWithDebugger<
-      { x: number; y: number } | { invalidSelector: true; message: string } | { notFound: true }
+      | { x: number; y: number }
+      | { invalidSelector: true; message: string }
+      | { notFound: true }
+      | { nativeMenu: true }
     >(
       tabId,
       send,
@@ -5218,6 +5244,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const parsed = injected.parseSelector(${locatorJson});
             const element = injected.querySelector(parsed, document, true);
             if (!element) return { notFound: true };
+            // Clicking one opens a menu the browser draws outside the page.
+            // Nothing can observe or dismiss it from here, so refuse rather
+            // than report a success that leaves it open on the user's screen.
+            if (element instanceof HTMLSelectElement) return { nativeMenu: true };
             const visible = injected.elementState(element, "visible");
             const enabled = injected.elementState(element, "enabled");
             if (!visible.matches || !enabled.matches) return { notFound: true };
@@ -5237,6 +5267,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...automationSelectorDiagnostics(input),
         reasonLength: point.message.length,
         cause: point,
+      });
+    }
+    if ("nativeMenu" in point) {
+      return yield* new PreviewAutomationTargetNotEditableError({
+        tabId,
+        ...automationSelectorDiagnostics(input),
+        nativeMenu: true,
       });
     }
     if ("notFound" in point) {
@@ -5820,6 +5857,105 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  const performAutomationSelectOption = Effect.fn("PreviewManager.performAutomationSelectOption")(
+    function* (tabId: string, input: PreviewAutomationSelectOptionInput, send: SendCommand) {
+      const locator = automationLocator(input);
+      const executionContextId = locator ? yield* ensurePlaywrightInjected(tabId, send) : undefined;
+      const locatorJson = locator
+        ? yield* encodeJson({ operation: "automationSelectOption.encodeLocator", tabId }, locator)
+        : null;
+      const elementExpression = locatorJson
+        ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, true); })()`
+        : `document.querySelector("select")`;
+      const choiceJson = yield* encodeJson(
+        { operation: "automationSelectOption.encodeChoice", tabId },
+        { value: input.value, label: input.label, index: input.index },
+      );
+      // Resolve, match and commit in one page turn. Splitting them would let the
+      // option list change between deciding and choosing.
+      const outcome = yield* evaluateWithDebugger<
+        | { ok: true; value: string; label: string; index: number }
+        | { invalidSelector: true; message: string }
+        | { notSelect: true }
+        | { notFound: true }
+        | { noSuchOption: true; available: ReadonlyArray<string> }
+      >(
+        tabId,
+        send,
+        `(() => {
+          try {
+            const element = ${elementExpression};
+            if (!element) return { notFound: true };
+            if (!(element instanceof HTMLSelectElement) || element.disabled) return { notSelect: true };
+            const choice = ${choiceJson};
+            const options = Array.from(element.options);
+            const labelOf = (option) => (option.label || option.text || "").trim();
+            let index = -1;
+            if (choice.index !== undefined && choice.index !== null) {
+              index = choice.index < options.length ? choice.index : -1;
+            } else if (choice.value !== undefined && choice.value !== null) {
+              index = options.findIndex((option) => option.value === choice.value);
+            } else {
+              index = options.findIndex((option) => labelOf(option) === String(choice.label).trim());
+            }
+            const option = index >= 0 ? options[index] : undefined;
+            if (!option || option.disabled) {
+              return { noSuchOption: true, available: options.map(labelOf).slice(0, 50) };
+            }
+            if (element.selectedIndex !== index) {
+              element.selectedIndex = index;
+              // What a real choice fires. Frameworks listen for one or both,
+              // so a bare value assignment leaves their state stale.
+              element.dispatchEvent(new Event("input", { bubbles: true }));
+              element.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            return { ok: true, value: option.value, label: labelOf(option), index };
+          } catch (error) {
+            return { invalidSelector: true, message: String(error) };
+          }
+        })()`,
+        { returnByValue: true, contextId: executionContextId },
+      );
+      if ("invalidSelector" in outcome) {
+        return yield* new PreviewAutomationInvalidSelectorError({
+          operation: "selectOption",
+          tabId,
+          ...automationSelectorDiagnostics(input),
+          reasonLength: outcome.message.length,
+          cause: outcome,
+        });
+      }
+      if ("notFound" in outcome) {
+        return yield* new PreviewAutomationTargetNotFoundError({
+          operation: "selectOption",
+          tabId,
+          ...automationSelectorDiagnostics(input),
+        });
+      }
+      if ("notSelect" in outcome || "noSuchOption" in outcome) {
+        return yield* new PreviewAutomationTargetNotEditableError({
+          tabId,
+          ...automationSelectorDiagnostics(input),
+        });
+      }
+      return {
+        value: outcome.value,
+        label: outcome.label,
+        index: outcome.index,
+      } satisfies PreviewAutomationSelectOptionResult;
+    },
+  );
+
+  const automationSelectOption = Effect.fn("PreviewManager.automationSelectOption")(function* (
+    tabId: string,
+    input: PreviewAutomationSelectOptionInput,
+  ) {
+    const wc = yield* requireWebContents(tabId);
+    return yield* withControlSession(tabId, wc, "selectOption", (send) =>
+      performAutomationSelectOption(tabId, input, send),
+    );
+  });
+
   const performAutomationPress = Effect.fn("PreviewManager.performAutomationPress")(function* (
     tabId: string,
     wc: Electron.WebContents,
@@ -6238,6 +6374,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationStatus,
     automationType,
     automationUpload,
+    automationSelectOption,
     automationWaitFor,
     automationWaitForDownload,
     cancelPickElement,
@@ -6410,10 +6547,15 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     tabId: Schema.String,
     selectorKind: PreviewAutomationSelectorKind,
     selectorLength: Schema.optionalKey(Schema.Number),
+    /** The target opens a menu Chromium draws outside the page. */
+    nativeMenu: Schema.optionalKey(Schema.Boolean),
   },
 ) {
   override get message(): string {
     const target = previewAutomationTargetLabel(this.selectorKind, this.selectorLength);
+    if (this.nativeMenu === true) {
+      return `Preview automation found ${target} in tab ${this.tabId}, but it is a <select> whose menu the browser draws outside the page. Use selectOption instead.`;
+    }
     return `Preview automation type found ${target}, but it is not editable in tab ${this.tabId}`;
   }
 }
@@ -6623,6 +6765,10 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       input: PreviewAutomationUploadInput,
     ) => Effect.Effect<PreviewAutomationUploadResult, PreviewManagerError>;
+    readonly automationSelectOption: (
+      tabId: string,
+      input: PreviewAutomationSelectOptionInput,
+    ) => Effect.Effect<PreviewAutomationSelectOptionResult, PreviewManagerError>;
     readonly automationPress: (
       tabId: string,
       input: PreviewAutomationPressInput,
@@ -6758,6 +6904,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationClick: operations.automationClick,
     automationType: operations.automationType,
     automationUpload: operations.automationUpload,
+    automationSelectOption: operations.automationSelectOption,
     automationPress: operations.automationPress,
     automationScroll: operations.automationScroll,
     automationEvaluate: operations.automationEvaluate,

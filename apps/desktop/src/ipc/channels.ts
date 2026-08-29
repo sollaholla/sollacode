@@ -96,6 +96,7 @@ export const PREVIEW_AUTOMATION_FRAME_CHANNEL = "desktop:preview-automation-fram
 export const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop:preview-automation-click";
 export const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop:preview-automation-type";
 export const PREVIEW_AUTOMATION_UPLOAD_CHANNEL = "desktop:preview-automation-upload";
+export const PREVIEW_AUTOMATION_SELECT_OPTION_CHANNEL = "desktop:preview-automation-select-option";
 export const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop:preview-automation-press";
 export const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop:preview-automation-scroll";
 export const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop:preview-automation-evaluate";

@@ -11,6 +11,7 @@ import type {
   PreviewAutomationSnapshot,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationStatus,
+  PreviewAutomationSelectOptionResult,
   PreviewAutomationUploadResult,
   PreviewTabId,
 } from "@t3tools/contracts";
@@ -80,6 +81,8 @@ const handlers = {
   preview_type: (input) => invokeTargeted<void>("type", input, input.timeoutMs).pipe(Effect.as({})),
   preview_upload: (input) =>
     invokeTargeted<PreviewAutomationUploadResult>("upload", input, input.timeoutMs),
+  preview_select_option: (input) =>
+    invokeTargeted<PreviewAutomationSelectOptionResult>("selectOption", input, input.timeoutMs),
   preview_press: (input) => invokeTargeted<void>("press", input).pipe(Effect.as({})),
   preview_scroll: (input) => invokeTargeted<void>("scroll", input).pipe(Effect.as({})),
   preview_evaluate: (input) =>
