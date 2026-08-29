@@ -153,6 +153,21 @@ function bundleFingerprint(directory) {
 }
 
 /**
+ * Only `@t3tools/*` is bundled, so the snapshot still requires the rest of the
+ * desktop package's dependencies at runtime. From tmpdir there is no
+ * node_modules to walk up to, and the first external takes the whole app down
+ * with "Cannot find module" before any of our code runs. One link restores
+ * exactly the directory `dist-electron/main.cjs` would have resolved from.
+ */
+function linkSnapshotDependencies(snapshotDirectory) {
+  const dependencies = NodePath.join(desktopDir, "node_modules");
+  if (!NodeFS.existsSync(dependencies)) {
+    return;
+  }
+  NodeFS.symlinkSync(dependencies, NodePath.join(snapshotDirectory, "node_modules"), "dir");
+}
+
+/**
  * Electron's ESM loader must not race the packer's clean-and-replace cycle.
  * Launch from an immutable per-process snapshot outside macOS's protected
  * Documents directory, while --t3code-dev-root keeps source/backend paths
@@ -172,6 +187,7 @@ function resolveDevelopmentBundleSnapshot() {
     NodeFS.cpSync(sourceDirectory, snapshotDirectory, { recursive: true });
     const after = bundleFingerprint(sourceDirectory);
     if (before === after) {
+      linkSnapshotDependencies(snapshotDirectory);
       developmentBundleSnapshotPath = snapshotDirectory;
       return snapshotDirectory;
     }
