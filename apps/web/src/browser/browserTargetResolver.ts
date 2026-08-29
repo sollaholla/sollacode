@@ -3,7 +3,7 @@ import type {
   EnvironmentId,
   PreviewUrlResolution,
 } from "@t3tools/contracts";
-import { isLoopbackHost, normalizePreviewUrl } from "@t3tools/shared/preview";
+import { isPrivateNetworkHost, isLoopbackHost, normalizePreviewUrl } from "@t3tools/shared/preview";
 
 import { readPreparedConnection } from "~/state/session";
 
@@ -21,31 +21,6 @@ const isLocalLoopbackHost = (host: string): boolean => {
   const normalized = normalizeHostname(host);
   if (normalized === "localhost" || normalized === "::1") return true;
   return parseIpv4Address(normalized)?.[0] === 127;
-};
-
-const isPrivateNetworkHost = (host: string): boolean => {
-  const normalized = normalizeHostname(host);
-  if (isLocalLoopbackHost(normalized) || normalized.endsWith(".local")) {
-    return true;
-  }
-  if (normalized.endsWith(".ts.net")) return true;
-  const parts = parseIpv4Address(normalized);
-  if (parts) {
-    return (
-      parts[0] === 10 ||
-      (parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127) ||
-      (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) ||
-      (parts[0] === 192 && parts[1] === 168) ||
-      (parts[0] === 169 && parts[1] === 254)
-    );
-  }
-  const firstIpv6Token = normalized.split(":", 1)[0] ?? "";
-  if (!normalized.includes(":") || !/^[\da-f]{1,4}$/u.test(firstIpv6Token)) return false;
-  const firstIpv6Hextet = Number.parseInt(firstIpv6Token, 16);
-  return (
-    Number.isInteger(firstIpv6Hextet) &&
-    ((firstIpv6Hextet & 0xfe00) === 0xfc00 || (firstIpv6Hextet & 0xffc0) === 0xfe80)
-  );
 };
 
 const readEnvironmentUrl = (environmentId: EnvironmentId): URL => {
