@@ -290,6 +290,21 @@ export const PreviewRemoteInputInput = Schema.Struct({
 });
 export type PreviewRemoteInputInput = typeof PreviewRemoteInputInput.Type;
 
+/**
+ * Starts the guest's own element picker on the machine hosting it.
+ *
+ * The picker draws its overlay inside the page, so it arrives in the mirrored
+ * frames and is driven by the same forwarded input as anything else — only
+ * starting it needed a way in from off-machine. Resolves when the person
+ * submits or cancels, so callers allow a human-length wait rather than a
+ * request timeout.
+ */
+export const PreviewRemotePickInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+});
+export type PreviewRemotePickInput = typeof PreviewRemotePickInput.Type;
+
 /** Authoritative tab set committed by a close operation. */
 export const PreviewCloseResult = Schema.Struct({
   ...PreviewListResult.fields,

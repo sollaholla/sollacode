@@ -5,7 +5,9 @@ import {
   type EnvironmentId,
   type PreviewAutomationSnapshot,
   type PreviewAutomationOperation,
+  type PreviewAnnotationPayload,
   type PreviewRemoteInputInput,
+  type PreviewRemotePickInput,
   type PreviewRemoteSnapshotInput,
   type PreviewRemoteSnapshotResult,
 } from "@t3tools/contracts";
@@ -13,6 +15,9 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+
+/** Long enough for a person to annotate a page, not a machine round trip. */
+const REMOTE_PICK_TIMEOUT_MS = 300_000;
 
 type RemotePreviewInvoker = Pick<
   PreviewAutomationBroker.PreviewAutomationBroker["Service"],
@@ -142,4 +147,41 @@ export function applyRemotePreviewInput(input: {
       timeoutMs: 10_000,
     })
     .pipe(Effect.asVoid);
+}
+
+/**
+ * Starts the guest's element picker on its host and waits for the person to
+ * finish with it.
+ *
+ * The wait is human-length on purpose. Every other operation here is a machine
+ * round trip, but this one is blocked on somebody selecting elements, drawing
+ * on the page and typing a comment — the same reason waiting for a download
+ * approval gets a longer bound than a page condition does.
+ */
+export function requestRemotePreviewPick(input: {
+  readonly broker: RemotePreviewInvoker;
+  readonly environmentId: EnvironmentId;
+  readonly sessionId: AuthSessionId;
+  readonly request: PreviewRemotePickInput;
+  readonly issuedAt: number;
+}): Effect.Effect<
+  PreviewAnnotationPayload | null,
+  import("@t3tools/contracts").PreviewAutomationError
+> {
+  return input.broker
+    .invoke<PreviewAnnotationPayload | null>({
+      scope: {
+        environmentId: input.environmentId,
+        threadId: input.request.threadId,
+        providerSessionId: `remote-viewer:${input.sessionId}:${input.request.threadId}`,
+        providerInstanceId: ProviderInstanceId.make("remoteViewer"),
+        capabilities: new Set(["preview"]),
+        issuedAt: input.issuedAt,
+      },
+      operation: "pickElement",
+      input: {},
+      tabId: input.request.tabId,
+      timeoutMs: REMOTE_PICK_TIMEOUT_MS,
+    })
+    .pipe(Effect.map((annotation) => annotation ?? null));
 }

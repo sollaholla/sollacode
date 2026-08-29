@@ -84,6 +84,13 @@ interface Props {
 const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 
 /**
+ * While the picker is open the person is hovering and drawing inside the guest
+ * page, so the mirror has to keep up with a pointer rather than with reading.
+ * Paid only for the duration of a pick.
+ */
+const PICKING_FRAME_INTERVAL_MS = 400;
+
+/**
  * Single-tab preview surface: chrome row on top, one webview below, empty
  * state when no session exists for the thread.
  */
@@ -639,7 +646,48 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     [recordingRuntimeTabId, runtimeTabId, tabId, threadRef],
   );
 
+  const requestRemotePick = useAtomCommand(previewEnvironment.remotePick, {
+    reportFailure: false,
+  });
+  // The picker's overlay lives in the guest page, so off-machine it is already
+  // on screen in the mirror and already driven by forwarded input. What has to
+  // travel is the start of the session and the annotation it produces.
+  const pickOnHost = useCallback(async () => {
+    if (!tabId || pickActiveRef.current) return;
+    pickActiveRef.current = true;
+    setPickActive(true);
+    try {
+      const result = await requestRemotePick({
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
+      });
+      if (result._tag === "Failure") return;
+      const annotation = result.value;
+      if (!annotation) return;
+      addPreviewAnnotation(threadRef, annotation);
+      const screenshotFile = await previewAnnotationScreenshotFile(annotation);
+      if (screenshotFile && annotation.screenshot) {
+        addImage(threadRef, {
+          type: "image",
+          id: annotation.id,
+          name: screenshotFile.name,
+          mimeType: screenshotFile.type,
+          sizeBytes: screenshotFile.size,
+          previewUrl: annotation.screenshot.dataUrl,
+          file: screenshotFile,
+        });
+      }
+    } finally {
+      pickActiveRef.current = false;
+      if (isMountedRef.current) setPickActive(false);
+    }
+  }, [addImage, addPreviewAnnotation, requestRemotePick, tabId, threadRef]);
+
   const handlePickElement = useCallback(() => {
+    if (surfaceMode === "remote-mirror") {
+      void pickOnHost();
+      return;
+    }
     if (!previewBridge || !runtimeTabId) return;
     if (pickActiveRef.current) {
       void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
@@ -694,7 +742,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         }
       }
     })();
-  }, [addImage, addPreviewAnnotation, runtimeTabId, threadRef]);
+  }, [addImage, addPreviewAnnotation, pickOnHost, runtimeTabId, surfaceMode, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle
@@ -763,7 +811,14 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onPictureInPicture={previewBridge && tabId ? handlePictureInPicture : undefined}
         pictureInPicture={miniPlayer?.tabId === tabId}
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
-        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
+        onPickElement={
+          // Pickable either through this machine's own guest or, with none, on
+          // the machine hosting it. Gating on the bridge alone hid the button
+          // outright in a regular browser.
+          tabId && (previewBridge || surfaceMode === "remote-mirror")
+            ? handlePickElement
+            : undefined
+        }
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the
@@ -805,6 +860,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             threadId={threadRef.threadId}
             tabId={tabId}
             visible={visible && !isUnreachable}
+            // The picker's overlay is a live UI the person is drawing in, so
+            // it needs frames at something other than a browsing cadence.
+            cadenceMs={pickActive ? PICKING_FRAME_INTERVAL_MS : undefined}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}

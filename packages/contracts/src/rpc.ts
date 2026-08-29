@@ -160,12 +160,14 @@ import {
   PreviewOpenInput,
   PreviewRefreshInput,
   PreviewRemoteInputInput,
+  PreviewRemotePickInput,
   PreviewRemoteSnapshotInput,
   PreviewRemoteSnapshotResult,
   PreviewReportStatusInput,
   PreviewResizeInput,
   PreviewSessionSnapshot,
 } from "./preview.ts";
+import { PreviewAnnotationPayloadSchema } from "./ipc.ts";
 import {
   PreviewAutomationError,
   PreviewAutomationHost,
@@ -303,6 +305,7 @@ export const WS_METHODS = {
   previewList: "preview.list",
   previewRemoteSnapshot: "preview.remoteSnapshot",
   previewRemoteInput: "preview.remoteInput",
+  previewRemotePick: "preview.remotePick",
   previewReportStatus: "preview.reportStatus",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
@@ -891,6 +894,13 @@ export const WsPreviewRemoteInputRpc = Rpc.make(WS_METHODS.previewRemoteInput, {
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewRemotePickRpc = Rpc.make(WS_METHODS.previewRemotePick, {
+  payload: PreviewRemotePickInput,
+  // Null when the person closed the picker without submitting.
+  success: Schema.NullOr(PreviewAnnotationPayloadSchema),
+  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   payload: PreviewReportStatusInput,
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
@@ -1350,6 +1360,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewListRpc,
   WsPreviewRemoteSnapshotRpc,
   WsPreviewRemoteInputRpc,
+  WsPreviewRemotePickRpc,
   WsPreviewReportStatusRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
