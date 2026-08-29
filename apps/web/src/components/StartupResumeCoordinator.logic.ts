@@ -65,11 +65,19 @@ export function isStartupResumableThread(
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.hasPendingApprovals ||
-    thread.hasPendingUserInput ||
     (thread.pendingWork !== null && thread.pendingWork !== undefined)
   ) {
     return false;
   }
+  // `hasPendingUserInput` is deliberately NOT a veto here. A question's
+  // callback lives inside a RUNNING turn — the agent is parked in it — so a
+  // question that can still be answered always comes with a live turn, and the
+  // checks below already require the opposite: last turn `incomplete`, no
+  // active turn, session idle/ready/stopped. A flag surviving into that state
+  // is a leftover whose owner died with the previous process. Vetoing on it
+  // unconditionally is what parked a thread forever when the app restarted
+  // before the user answered: the sidebar read "waiting on you" and the thread
+  // was never once eligible to resume.
   if (thread.latestTurn?.state !== "incomplete") {
     return false;
   }
