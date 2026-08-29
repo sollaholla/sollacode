@@ -231,6 +231,30 @@ const targetNotEditableDiagnostics = (
   };
 };
 
+/**
+ * The desktop's own reason code for a failed preview operation.
+ *
+ * Without this the whole cause chain reaching an agent is "request N failed on
+ * environment E thread T" — true and useless. The desktop knows exactly which
+ * step gave out (`automationType.textDidNotReachGuest`, say), and that string
+ * is a fixed internal identifier rather than anything read off the page, so it
+ * is safe to carry outward while the page's contents are not.
+ */
+const desktopOperationReason = (cause: unknown): string | undefined => {
+  if (
+    typeof cause !== "object" ||
+    cause === null ||
+    !("_tag" in cause) ||
+    cause._tag !== "PreviewOperationError" ||
+    !("operation" in cause) ||
+    typeof cause.operation !== "string"
+  ) {
+    return undefined;
+  }
+  const operation = cause.operation.trim();
+  return operation.length === 0 || operation.length > 128 ? undefined : operation;
+};
+
 export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<PreviewAutomationOperationError>()(
   "PreviewAutomationOperationError",
   {
@@ -239,6 +263,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
     environmentId: EnvironmentId,
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
+    reason: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
@@ -246,6 +271,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
     input: PreviewAutomationOperationContext & { readonly cause: unknown },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
+    const reason = desktopOperationReason(input.cause);
     const diagnostics = targetNotEditableDiagnostics(input.cause);
     return diagnostics
       ? new PreviewAutomationTargetNotEditableHostError({
@@ -256,7 +282,10 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
           tabId: input.tabId,
           ...diagnostics,
         })
-      : new PreviewAutomationOperationError(input);
+      : new PreviewAutomationOperationError({
+          ...input,
+          ...(reason === undefined ? {} : { reason }),
+        });
   }
 
   get responseTag() {
@@ -264,7 +293,8 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
   }
 
   override get message(): string {
-    return `Preview automation ${this.operation} request ${this.requestId} failed on environment ${this.environmentId} thread ${this.threadId} (tab ${this.tabId ?? "unassigned"}).`;
+    const reason = this.reason === undefined ? "" : ` [${this.reason}]`;
+    return `Preview automation ${this.operation} request ${this.requestId} failed on environment ${this.environmentId} thread ${this.threadId} (tab ${this.tabId ?? "unassigned"})${reason}.`;
   }
 }
 
