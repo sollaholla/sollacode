@@ -26,6 +26,7 @@ import {
   BACKGROUND_TASK_CONTINUATION_GRACE_MS,
   isControlOnlyAgentTurn,
   isSyntheticAgentLoopUserMessage,
+  BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX,
   KILLED_BACKGROUND_TASK_RESUME_MAX_AGE_MS,
   outstandingBackgroundTasks,
   threadLostBackgroundTaskAtRestart,
@@ -142,6 +143,39 @@ describe("server-owned Agent continuation", () => {
     );
     expect(
       shouldAutoContinueAgentThread(shell({ hasPendingUserInput: true }), assistantEvent()),
+    ).toBe(false);
+  });
+
+  it("counts a resolved blocker as the user acting, not as machinery", () => {
+    // A blocker exists because the agent stopped and asked for something only
+    // the user could do, so the thread is signed off by construction. Reading
+    // the resolution as synthetic left the notice queued forever — the one
+    // message that can unpark the work was the one being suppressed.
+    const resolved = `${BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX}0f0d2c5e-8f4a-4d9a-9f2c-3a1b6d7e8c90`;
+    expect(
+      isSyntheticAgentLoopUserMessage({
+        role: "user",
+        id: resolved,
+        // Tagged agent-loop on purpose: it reads as machinery in the
+        // transcript, which is presentation, not intent.
+        inputOrigin: "agent-loop",
+      }),
+    ).toBe(false);
+    expect(
+      agentLoopSignedOffSinceUserIntent([
+        { role: "user", text: "Send Bryan the reply.", id: "user-1", inputOrigin: "typed" },
+        {
+          role: "assistant",
+          text: "Blocked on the sign-in, so I have stopped.\n\nAGENT_STOP",
+          id: "assistant-stop",
+        },
+        {
+          role: "user",
+          text: 'The user resolved the request "Sign in to VEERA Gmail to send the app.recovr360.com reply". Verify it really is done before relying on it, then continue the work that was waiting on it.',
+          id: resolved,
+          inputOrigin: "agent-loop",
+        },
+      ]),
     ).toBe(false);
   });
 

@@ -28,6 +28,7 @@ import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import { BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX } from "../orchestration/agentModeContinuation.ts";
 import {
   VM_AGENT_CLAUDE_RULES_FILE_NAME,
   VM_AGENT_CLAUDE_RULES_POINTER,
@@ -258,7 +259,12 @@ export const notifyAgentBlockerResolved = (input: {
         commandId: CommandId.make(NodeCrypto.randomUUID()),
         threadId: input.threadId,
         message: {
-          messageId: MessageId.make(NodeCrypto.randomUUID()),
+          // Prefixed so the continuation gate can tell this apart from the
+          // machinery it is meant to suppress: the `agent-loop` tag below is
+          // presentation, but the user resolving the request is user intent.
+          messageId: MessageId.make(
+            `${BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX}${NodeCrypto.randomUUID()}`,
+          ),
           role: "user",
           text,
           inputOrigin: "agent-loop",

@@ -385,6 +385,23 @@ export function isVmAgentTaskPromptMessageId(messageId: string): boolean {
   return messageId.startsWith(VM_AGENT_TASK_MESSAGE_ID_PREFIX);
 }
 
+/** Message-id prefix for "your standing request was dealt with" notices. */
+export const BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX = "blocker-resolved:";
+
+/**
+ * True for the notice an agent gets when a blocker it raised is resolved or
+ * dismissed. Tagged `inputOrigin: "agent-loop"` so it reads as machinery
+ * rather than something the user typed — but the user resolving the request IS
+ * the user acting, and it is the only thing that can unpark work the agent
+ * stopped for. Classified as synthetic it was suppressed by the AGENT_STOP
+ * gate, which is precisely the state a blocker leaves a thread in: observed
+ * 2026-08-29 on thread ce4c14c6, message queued 20:58:57 and its delivery
+ * obligation cancelled 273ms later, so the thread never resumed.
+ */
+export function isBlockerResolutionMessageId(messageId: string): boolean {
+  return messageId.startsWith(BLOCKER_RESOLUTION_MESSAGE_ID_PREFIX);
+}
+
 export function isSyntheticAgentLoopUserMessage(input: {
   readonly role: string;
   readonly id?: string;
@@ -394,7 +411,7 @@ export function isSyntheticAgentLoopUserMessage(input: {
 }): boolean {
   if (input.role !== "user") return false;
   const id = input.id ?? input.messageId ?? "";
-  if (isVmAgentTaskPromptMessageId(id)) return false;
+  if (isVmAgentTaskPromptMessageId(id) || isBlockerResolutionMessageId(id)) return false;
   return (
     input.inputOrigin === "agent-loop" ||
     isBrowserTabCleanupMessageId(id) ||
