@@ -1803,6 +1803,117 @@ describe("ProviderCommandReactor", () => {
     expect(delivery?.state).not.toBe("cancelled");
   });
 
+  it("does not re-carry a steered predecessor that already has a delivery receipt", async () => {
+    // A message steered into a running turn never starts its own provider
+    // turn, so the carry-fold's providerTurnId probe reads it as stranded
+    // forever. Observed 2026-08-30 on thread 66e462cc: the same steered
+    // messages (screenshots included) were re-sent by every later turn for
+    // the whole carry window. The durable message.delivered receipt is the
+    // proof of consumption and must exclude it from the carry.
+    const harness = await createHarness({
+      startReactor: false,
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "test-model",
+      },
+    });
+    const threadId = ThreadId.make("thread-1");
+    const steeredMessageId = asMessageId("user-steered-delivered");
+    const strandedMessageId = asMessageId("user-stranded");
+    const queuedMessageId = asMessageId("user-final-queued");
+    const startTurn = (messageId: MessageId, text: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-carry-${messageId}`),
+          threadId,
+          message: { messageId, role: "user", text, attachments: [] },
+          interactionMode: "default",
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const readObligation = (messageId: MessageId) =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(messageId),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+    const retire = async (messageId: MessageId, state: "completed" | "cancelled") => {
+      const row = await readObligation(messageId);
+      if (row === undefined) throw new Error(`no obligation for ${messageId}`);
+      await Effect.runPromise(
+        harness.threadWorkObligations.transition({
+          obligationId: row.obligationId,
+          expectedState: row.state,
+          expectedAttempt: row.attempt,
+          state,
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        }),
+      );
+    };
+
+    // The steered message: consumed by the live turn, receipt persisted, its
+    // steer pre-claimed the parked delivery as completed.
+    await startTurn(steeredMessageId, "Steered and already answered.", "2026-01-01T00:00:00.000Z");
+    await retire(steeredMessageId, "completed");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-carry-steered-receipt"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-carry-steered-receipt"),
+          tone: "info",
+          kind: "message.delivered",
+          summary: "Message delivered to the provider",
+          payload: { messageId: steeredMessageId },
+          turnId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    // The stranded message: supersede-collapsed, no receipt — must be carried.
+    await startTurn(strandedMessageId, "Stranded burst message.", "2026-01-01T00:00:02.000Z");
+    await retire(strandedMessageId, "cancelled");
+    // The winning delivery.
+    await startTurn(queuedMessageId, "Latest message.", "2026-01-01T00:00:04.000Z");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-carry-session-ready"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:04.000Z",
+        },
+        createdAt: "2026-01-01T00:00:04.000Z",
+      }),
+    );
+    await harness.startReactor();
+
+    await waitFor(() => harness.sendTurn.mock.calls.length >= 1);
+    const request = harness.sendTurn.mock.calls[0]?.[0] as { input: string };
+    expect(request.input).toContain("Latest message.");
+    expect(request.input).toContain("Stranded burst message.");
+    expect(request.input).not.toContain("Steered and already answered.");
+  });
+
   it("recovers an already-projected Agent continuation after a server restart", async () => {
     const harness = await createHarness({ startReactor: false });
     const threadId = ThreadId.make("thread-1");

@@ -1484,6 +1484,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     ) {
       const sourceIndex = thread.messages.findIndex((message) => message.id === source.id);
       if (sourceIndex <= 0) return [] as ReadonlyArray<OrchestrationThread["messages"][number]>;
+      const deliveredMessageIds = queuedPromotionCoveredMessageIds(thread.activities ?? []);
       const sourceCreatedAt = Date.parse(source.createdAt);
       const carried: Array<OrchestrationThread["messages"][number]> = [];
       for (let index = sourceIndex - 1; index >= 0; index -= 1) {
@@ -1492,6 +1493,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         if (candidate.role !== "user") continue;
         if (candidate.inputOrigin === "agent-loop") continue;
         if (candidate.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX)) continue;
+        // A message steered into an already-running turn never starts its own
+        // provider turn, so the providerTurnId probe below reads it as
+        // stranded forever — but the provider consumed it, and the durable
+        // message.delivered receipt says so. Without this check every steered
+        // message was re-sent (text AND attachments) by every later turn for
+        // the whole carry window: observed 2026-08-30 as the same three
+        // messages replaying in every post-restart batch, each replay
+        // re-embedding their screenshots (~250KB per image per turn).
+        if (deliveredMessageIds.has(String(candidate.id))) continue;
         const candidateCreatedAt = Date.parse(candidate.createdAt);
         if (
           Number.isFinite(sourceCreatedAt) &&
