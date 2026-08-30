@@ -76,7 +76,11 @@ import {
   inspectPreviewHumanVerification,
   usePreviewHumanVerification,
 } from "./previewHumanVerification";
-import { isEmbeddedOAuthRejected, openPreviewUrlInSystemBrowser } from "./embeddedOAuth";
+import {
+  isEmbeddedOAuthRejected,
+  openPreviewUrlInSystemBrowser,
+  resolveEmbeddedOAuthHandoffUrl,
+} from "./embeddedOAuth";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -415,6 +419,17 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [url]);
 
   const embeddedOAuthRejected = isEmbeddedOAuthRejected(url);
+  const embeddedOAuthHandoffUrl = resolveEmbeddedOAuthHandoffUrl(url);
+  const handleOpenOAuthInBrowser = useCallback(() => {
+    if (!embeddedOAuthHandoffUrl) return;
+    openPreviewUrlInSystemBrowser({
+      url: embeddedOAuthHandoffUrl,
+      ...(localApi ? { openNative: localApi.shell.openExternal } : {}),
+      openWeb: (externalUrl) => {
+        window.open(externalUrl, "_blank", "noopener,noreferrer");
+      },
+    });
+  }, [embeddedOAuthHandoffUrl]);
 
   const handlePictureInPicture = useCallback(() => {
     if (!tabId) return;
@@ -1035,13 +1050,19 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold">Sign-in needs your system browser</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Google does not allow account sign-in inside embedded browsers. Retrying in
-                  Preview will return to this page. Open it in your system browser to continue
-                  there.
+                  Google does not allow account sign-in inside embedded browsers. Restart the
+                  sign-in in your system browser to continue there.
                 </p>
-                <Button className="mt-2" size="xs" type="button" onClick={handleOpenInBrowser}>
-                  Open in browser <ExternalLinkIcon />
-                </Button>
+                {embeddedOAuthHandoffUrl ? (
+                  <Button
+                    className="mt-2"
+                    size="xs"
+                    type="button"
+                    onClick={handleOpenOAuthInBrowser}
+                  >
+                    Continue in browser <ExternalLinkIcon />
+                  </Button>
+                ) : null}
               </div>
             </div>
           </div>

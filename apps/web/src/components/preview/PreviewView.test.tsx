@@ -259,7 +259,7 @@ describe("PreviewView navigation", () => {
 
   it("explains Google's embedded-browser rejection and offers a browser handoff", () => {
     mocks.sessionUrl =
-      "https://accounts.google.com/v3/signin/rejected?flowEntry=ServiceLogin&service=youtube";
+      "https://accounts.google.com/v3/signin/rejected?flowEntry=ServiceLogin&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3Dhttps%253A%252F%252Fstudio.youtube.com%252F";
 
     const markup = renderToStaticMarkup(
       <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />,
@@ -267,7 +267,7 @@ describe("PreviewView navigation", () => {
 
     expect(markup).toContain("Sign-in needs your system browser");
     expect(markup).toContain("Google does not allow account sign-in inside embedded browsers");
-    expect(markup).toContain("Open in browser");
+    expect(markup).toContain("Continue in browser");
   });
 
   it.each([

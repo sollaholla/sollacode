@@ -1,4 +1,12 @@
 const GOOGLE_SIGN_IN_REJECTED_PATH = /\/signin\/rejected\/?$/u;
+const GOOGLE_HANDOFF_HOSTS = ["google.com", "youtube.com"] as const;
+
+function isTrustedGoogleHandoffUrl(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    GOOGLE_HANDOFF_HOSTS.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`))
+  );
+}
 
 /**
  * Google deliberately refuses OAuth inside embedded browser surfaces. This is
@@ -15,6 +23,32 @@ export function isEmbeddedOAuthRejected(url: string): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+/**
+ * Google's rejection URL is a terminal error page, not an OAuth entry point.
+ * Opening it in a different browser produces a malformed-request error because
+ * that browser does not own the embedded flow. Google's `continue` URL can
+ * itself be a stale sign-in wrapper, so prefer its final trusted `next`
+ * destination and let that page start a completely fresh supported flow.
+ */
+export function resolveEmbeddedOAuthHandoffUrl(url: string): string | null {
+  if (!isEmbeddedOAuthRejected(url)) return null;
+
+  try {
+    const continueUrl = new URL(url).searchParams.get("continue");
+    if (!continueUrl) return null;
+
+    const parsed = new URL(continueUrl);
+    const nextUrl = parsed.searchParams.get("next");
+    if (nextUrl) {
+      const next = new URL(nextUrl);
+      if (isTrustedGoogleHandoffUrl(next)) return next.toString();
+    }
+    return isTrustedGoogleHandoffUrl(parsed) ? parsed.toString() : null;
+  } catch {
+    return null;
   }
 }
 
