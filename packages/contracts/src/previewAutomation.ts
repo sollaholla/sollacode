@@ -986,6 +986,19 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
+  /**
+   * Whether this host runs on the environment's own machine — it reaches the
+   * environment through its own local backend rather than over the network.
+   *
+   * A guest is rendered by whichever host executes the request, so this decides
+   * which machine's browser profile an agent gets. Without it the broker picks
+   * the most recently focused host, which is simply whichever screen the user
+   * last touched: driving a thread on a laptop from a desktop in another room
+   * put every agent in the desktop's browser, signed out of everything the
+   * laptop was signed in to. Missing means an older client that cannot say, and
+   * is treated as not local.
+   */
+  environmentLocal: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
