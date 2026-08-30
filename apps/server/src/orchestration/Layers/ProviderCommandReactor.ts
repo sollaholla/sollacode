@@ -1863,11 +1863,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // steer then fails, the row is put back and the parked path delivers
           // it at the turn boundary as before.
           const parked = yield* threadWorkObligations.getByKey(steerObligationKey);
-          if (Option.isNone(parked) || parked.value.state !== "pending") {
-            // The scheduler claims queued deliveries on supervisor-less
-            // threads and supervises the blocking turn while holding the row
-            // "executing" for the turn's whole lifetime — which makes this
-            // exit permanent for that send, not a race. Say so, loudly.
+          if (
+            Option.isNone(parked) ||
+            (parked.value.state !== "pending" &&
+              parked.value.state !== "claimed" &&
+              parked.value.state !== "executing")
+          ) {
             yield* Effect.logInfo("provider.steer.parked-row-unavailable", {
               threadId: event.payload.threadId,
               messageId: event.payload.messageId,
@@ -1878,7 +1879,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           }
           const claimedForSteer = yield* threadWorkObligations.transition({
             obligationId: parked.value.obligationId,
-            expectedState: "pending",
+            expectedState: parked.value.state,
             expectedAttempt: parked.value.attempt,
             state: "completed",
             nextAttemptAt: null,
@@ -1886,6 +1887,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             leaseExpiresAt: null,
             // `completed` temporarily claims this parked row without creating
             // a second active scheduler owner for the already-running thread.
+            // A supervisor-less provider turn lets the scheduler claim this
+            // row before the event reactor reaches it. Taking over its claimed
+            // or executing row is safe: that handler is only supervising the
+            // *other* running turn, and its durable heartbeat notices this
+            // state change and releases its runtime lease.
             // The provider's acceptance boundary clears the marker; if the
             // process dies first, startup re-arms the message only when no
             // exact durable delivery receipt exists.
