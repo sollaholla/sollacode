@@ -44,6 +44,19 @@ export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
 export type DeleteProjectionThreadActivitiesInput =
   typeof DeleteProjectionThreadActivitiesInput.Type;
 
+export const DeleteSupersededToolUpdatesInput = Schema.Struct({
+  threadId: ThreadId,
+  toolCallId: Schema.String,
+  /**
+   * Lower bound on `created_at` so the delete stays on the indexed
+   * (thread_id, kind, created_at) range instead of scanning a thread's whole
+   * tool.updated history. Frames older than this window are left for the
+   * background compactor.
+   */
+  sinceCreatedAt: IsoDateTime,
+});
+export type DeleteSupersededToolUpdatesInput = typeof DeleteSupersededToolUpdatesInput.Type;
+
 /**
  * ProjectionThreadActivityRepositoryShape - Service API for projected thread activity.
  */
@@ -72,6 +85,18 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly deleteByThreadId: (
     input: DeleteProjectionThreadActivitiesInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Delete the progressive `tool.updated` frames a `tool.completed` activity
+   * has just superseded. In history every superseded frame is a second copy
+   * of text the completed row already carries; snapshot reads have dropped
+   * them since 0.1.278, and deleting here keeps them from accumulating in
+   * storage at all. An interrupted tool has no completion, so its last frame
+   * is never touched.
+   */
+  readonly deleteSupersededToolUpdates: (
+    input: DeleteSupersededToolUpdatesInput,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

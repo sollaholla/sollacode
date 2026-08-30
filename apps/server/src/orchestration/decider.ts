@@ -26,6 +26,7 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import { trimActivityToolRawOutputForStorage } from "./toolRawOutputTrim.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -1453,7 +1454,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.activity-appended",
         payload: {
           threadId: command.threadId,
-          activity: command.activity,
+          // Cap oversized tool rawOutput before the payload is persisted —
+          // every byte stored here lands in BOTH the event store and the
+          // activity projection, forever.
+          activity: trimActivityToolRawOutputForStorage(command.activity),
         },
       };
       // An approval or user-input request is blocked-on-you work — it must

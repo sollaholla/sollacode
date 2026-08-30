@@ -34,6 +34,10 @@ import {
   ThreadId,
   ThreadTurnStartRequestedPayload,
 } from "@t3tools/contracts";
+import {
+  toolCallIdOfToolActivityPayload,
+  trimToolRawOutputInPayload,
+} from "../toolRawOutputTrim.ts";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -461,25 +465,17 @@ function mapActivityRow(
 export function dropSupersededToolUpdates<
   A extends { readonly kind: string; readonly payload: unknown },
 >(activities: ReadonlyArray<A>): ReadonlyArray<A> {
-  const toolCallIdOf = (activity: A): string | null => {
-    if (activity.payload === null || typeof activity.payload !== "object") return null;
-    const data = (activity.payload as { readonly data?: unknown }).data;
-    if (data === null || typeof data !== "object") return null;
-    const id = (data as { readonly toolCallId?: unknown }).toolCallId;
-    return typeof id === "string" && id.length > 0 ? id : null;
-  };
-
   const completedToolCallIds = new Set<string>();
   for (const activity of activities) {
     if (activity.kind !== "tool.completed") continue;
-    const toolCallId = toolCallIdOf(activity);
+    const toolCallId = toolCallIdOfToolActivityPayload(activity.payload);
     if (toolCallId !== null) completedToolCallIds.add(toolCallId);
   }
   if (completedToolCallIds.size === 0) return activities;
 
   return activities.filter((activity) => {
     if (activity.kind !== "tool.updated") return true;
-    const toolCallId = toolCallIdOf(activity);
+    const toolCallId = toolCallIdOfToolActivityPayload(activity.payload);
     return toolCallId === null || !completedToolCallIds.has(toolCallId);
   });
 }
@@ -517,56 +513,9 @@ const SNAPSHOT_RAW_OUTPUT_MAX_CHARS = 2_048;
 export function trimSnapshotToolRawOutput<A extends { readonly payload: unknown }>(
   activities: ReadonlyArray<A>,
 ): ReadonlyArray<A> {
-  // Deep enough for the nesting real tool results use, bounded so a cyclic or
-  // pathological payload cannot walk forever.
-  const MAX_DEPTH = 8;
-
-  const trim = (value: unknown, depth: number): { value: unknown; changed: boolean } => {
-    if (typeof value === "string") {
-      return value.length > SNAPSHOT_RAW_OUTPUT_MAX_CHARS
-        ? { value: value.slice(0, SNAPSHOT_RAW_OUTPUT_MAX_CHARS), changed: true }
-        : { value, changed: false };
-    }
-    if (depth >= MAX_DEPTH || value === null || typeof value !== "object") {
-      return { value, changed: false };
-    }
-    if (Array.isArray(value)) {
-      let changed = false;
-      const next = value.map((entry) => {
-        const result = trim(entry, depth + 1);
-        if (result.changed) changed = true;
-        return result.value;
-      });
-      return changed ? { value: next, changed: true } : { value, changed: false };
-    }
-    let changed = false;
-    const next: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      const result = trim(entry, depth + 1);
-      if (result.changed) changed = true;
-      next[key] = result.value;
-    }
-    return changed ? { value: next, changed: true } : { value, changed: false };
-  };
-
   return activities.map((activity) => {
-    const payload = activity.payload;
-    if (payload === null || typeof payload !== "object") return activity;
-    const data = (payload as { readonly data?: unknown }).data;
-    if (data === null || typeof data !== "object") return activity;
-    const rawOutput = (data as { readonly rawOutput?: unknown }).rawOutput;
-    if (rawOutput === null || typeof rawOutput !== "object") return activity;
-
-    const trimmed = trim(rawOutput, 0);
-    if (!trimmed.changed) return activity;
-
-    return {
-      ...activity,
-      payload: {
-        ...(payload as Record<string, unknown>),
-        data: { ...(data as Record<string, unknown>), rawOutput: trimmed.value },
-      },
-    };
+    const trimmed = trimToolRawOutputInPayload(activity.payload, SNAPSHOT_RAW_OUTPUT_MAX_CHARS);
+    return trimmed.changed ? { ...activity, payload: trimmed.payload } : activity;
   });
 }
 
