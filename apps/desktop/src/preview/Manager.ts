@@ -5161,10 +5161,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    *
    * Deliberately not a trimmed snapshot: it skips the DOM reads and the
    * accessibility tree that exist to keep a snapshot's *text* consistent with
-   * its image, because there is no text here to be inconsistent with. Captured
-   * with `fromSurface: false` so it comes from the renderer rather than the
-   * compositor, and so does not require this machine to be showing the tab —
-   * the mirroring case is precisely the one where it is not.
+   * its image, because there is no text here to be inconsistent with.
+   *
+   * `fromSurface` must be true. The non-surface capture was chosen so a frame
+   * would not require this machine to be showing the tab — but on macOS a
+   * hidden guest's non-surface capture can return pixels of a DIFFERENT
+   * surface entirely. Observed 2026-08-29: a guest whose own URL read
+   * suno.com/create was served to mirror viewers as a live picture of this
+   * app's main window, native traffic lights included, matching a screenshot
+   * of the actual screen. The snapshot ladder learned the same lesson and
+   * pins fromSurface: true throughout. When the composited surface is not
+   * available the command fails instead of lying, and the server falls back
+   * to the snapshot path, which stages hidden guests properly.
    */
   const automationFrame = Effect.fn("PreviewManager.automationFrame")(function* (tabId: string) {
     const wc = yield* requireWebContents(tabId);
@@ -5173,7 +5181,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const captured = yield* send("Page.captureScreenshot", {
           format: "jpeg",
           quality: AUTOMATION_SNAPSHOT_JPEG_QUALITY,
-          fromSurface: false,
+          fromSurface: true,
           captureBeyondViewport: false,
         });
         const data =

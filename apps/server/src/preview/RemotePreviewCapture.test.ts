@@ -4,6 +4,8 @@ import {
   PreviewTabId,
   ThreadId,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationExecutionError,
+  PreviewAutomationConnectionId,
   type PreviewAutomationError,
   ProviderInstanceId,
   type PreviewAutomationSnapshot,
@@ -269,6 +271,42 @@ describe("captureRemotePreviewSnapshot host compatibility", () => {
                 threadId: ThreadId.make("thread-mobile-preview"),
                 providerSessionId: "session-mobile-preview",
                 providerInstanceId: ProviderInstanceId.make("mobileBrowser"),
+              }),
+            )
+          : Effect.succeed(snapshot);
+      });
+
+      expect(operations).toEqual(["frame", "snapshot"]);
+      expect(result.screenshot.data).toBe("frame");
+    }),
+  );
+
+  it.effect("falls back to a snapshot when the cheap capture refuses to run", () =>
+    Effect.gen(function* () {
+      // The frame op fails rather than capture a surface that is not the
+      // guest's own — a hidden agent tab, typically. The refusal is the fix
+      // for mirrors showing the host's window as if it were the page; the
+      // viewer still deserves a picture, and the snapshot ladder stages
+      // hidden guests properly.
+      const operations: string[] = [];
+      const result = yield* capture((request) => {
+        operations.push(request.operation);
+        return request.operation === "frame"
+          ? Effect.fail(
+              new PreviewAutomationExecutionError({
+                operation: "frame",
+                environmentId: EnvironmentId.make("environment-mobile-preview"),
+                threadId: ThreadId.make("thread-mobile-preview"),
+                providerSessionId: "session-mobile-preview",
+                providerInstanceId: ProviderInstanceId.make("mobileBrowser"),
+                clientId: "preview-host-1",
+                connectionId: PreviewAutomationConnectionId.make("connection-1"),
+                requestId: "request-1",
+                tabId: PreviewTabId.make("tab-mobile-preview"),
+                timeoutMs: 10_000,
+                remoteTag: "PreviewOperationError",
+                remoteMessageLength: 42,
+                cause: new Error("The compositor surface is not available."),
               }),
             )
           : Effect.succeed(snapshot);
