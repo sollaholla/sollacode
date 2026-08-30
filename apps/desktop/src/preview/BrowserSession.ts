@@ -26,7 +26,6 @@ import {
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
 import { selectLegacyBrowserProfile } from "./browserProfileScope.ts";
-import { withChromeClientHintBrand } from "./clientHints.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 // Electron strips the `persist:` marker when it names the on-disk folder.
@@ -478,66 +477,6 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
-          // Present the Chrome the guest actually is. Electron's default UA
-          // carries `Electron/x.y.z` and an app token, and Google refuses
-          // OAuth sign-in to any UA with an embedded-framework marker ("this
-          // browser or app may not be secure" / disallowed_useragent) — other
-          // providers copy the policy. Only those two tokens go; platform and
-          // Chrome versions stay truthful. History, because this keeps getting
-          // relitigated: the stripping shipped with the first preview panel,
-          // was dropped in cf27a4200 ("browser integrity checks"), restored in
-          // 74aa9a918 + e9d0371f5, and PROVEN live 2026-08-30T03:37Z — a fresh
-          // Google sign-in under the cleaned UA reached the real "Choose an
-          // account" screen with no disallowed_useragent wall. c1f22638a then
-          // removed it again after a DURABLE preview tab restored Google's
-          // terminal /signin/rejected URL from a pre-fix attempt and was
-          // misread as a fresh rejection; that page is persisted state, not
-          // evidence. Do not remove this again without a fresh-profile
-          // sign-in attempt on a build that actually contains it.
-          const nativeUserAgent = browserSession.getUserAgent();
-          // Electron removes spaces and other separators from product names
-          // before placing them in the UA (`Solla Code` becomes
-          // `SollaCode/0.1.303`). Match both the display name and that actual
-          // HTTP product-token shape. Matching only app.getName() left the
-          // packaged token behind and Google still recognized the guest as an
-          // embedded app on both Mac and Windows.
-          const escapeRegExp = (value: string): string =>
-            value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const appName = typeof app?.getName === "function" ? app.getName() : null;
-          const appTokens = appName
-            ? [appName, appName.replace(/[^A-Za-z0-9]/g, "")]
-                .filter(
-                  (token, index, tokens) => token.length > 0 && tokens.indexOf(token) === index,
-                )
-                .map(escapeRegExp)
-            : [];
-          const cleanedUserAgent = appTokens
-            .reduce(
-              (userAgent, appToken) =>
-                userAgent.replace(new RegExp(`\\s${appToken}\\/[\\d.]+`, "gi"), ""),
-              nativeUserAgent.replace(/\sElectron\/[\d.]+/gi, "").replace(/\st3code\/[\d.]+/gi, ""),
-            )
-            .replace(/\s{2,}/g, " ")
-            .trim();
-          if (cleanedUserAgent !== nativeUserAgent && cleanedUserAgent.length > 0) {
-            browserSession.setUserAgent(cleanedUserAgent);
-          }
-          // Cleaning the UA string above is only half of the Chrome identity:
-          // Electron's Chromium still advertises a "Chromium" brand and NO
-          // "Google Chrome" brand in its `Sec-CH-UA` client-hint headers, and
-          // `setUserAgent` does not touch those. Google's sign-in integrity
-          // gate reads these headers server-side and redirects a
-          // Chromium-but-not-Chrome request to /signin/rejected AFTER the
-          // account chooser — which is why every fix that only edited the UA
-          // string still failed at the credential step (measured 2026-08-30:
-          // clean UA string, yet navigator.userAgentData.brands = [Chromium]
-          // with no Google Chrome brand, and clicking an account jumped to
-          // /signin/rejected before any password). Present the same coherent
-          // Chrome identity in the client hints as in the UA string. See
-          // clientHints.ts for the full history.
-          browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
-            callback({ requestHeaders: withChromeClientHintBrand(details.requestHeaders) });
-          });
           browserSession.on("will-download", (_downloadEvent, item, guest) => {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.

@@ -21,14 +21,11 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
       readonly setPermissionRequestHandler: ReturnType<typeof vi.fn>;
       readonly setPermissionCheckHandler: ReturnType<typeof vi.fn>;
       readonly setUserAgent: ReturnType<typeof vi.fn>;
-      readonly webRequest: { readonly onBeforeSendHeaders: ReturnType<typeof vi.fn> };
     }
   >(),
 }));
 
 vi.mock("electron", () => ({
-  // The UA cleanup reads the app token it must strip from the session's UA.
-  app: { getName: () => "Solla Code" },
   session: {
     fromPartition,
   },
@@ -112,17 +109,11 @@ describe("BrowserSession", () => {
       const browserSession = {
         clearCache: vi.fn(() => Promise.resolve()),
         clearStorageData: vi.fn(() => Promise.resolve()),
-        getUserAgent: vi.fn(
-          () =>
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) SollaCode/0.1.303 " +
-            "Chrome/146.0.7680.216 Electron/41.5.0 Safari/537.36",
-        ),
+        getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/0.0.27"),
         on: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
         setUserAgent: vi.fn(),
-        webRequest: { onBeforeSendHeaders: vi.fn() },
       };
       sessions.set(partition, browserSession);
       return browserSession;
@@ -143,66 +134,15 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("presents the Chrome the guest actually is to sign-in walls", () =>
+  it.effect("preserves Electron's native user agent for browser integrity checks", () =>
     Effect.gen(function* () {
-      // Google's disallowed_useragent policy refuses OAuth to any UA carrying
-      // an embedded-framework marker, so the session drops the Electron and
-      // app product tokens and nothing else. Verified live 2026-08-30T03:37Z:
-      // a fresh sign-in under this cleaned UA reached Google's account
-      // chooser. The terminal /signin/rejected page a durable tab restores
-      // from an earlier attempt is persisted state, not a fresh rejection —
-      // do not use it to justify removing this again.
       const browserSessions = yield* BrowserSession.BrowserSession;
       const partition = yield* browserSessions.getPartition("scope-a");
       const browserSession = yield* browserSessions.getSession("scope-a");
 
       assert.strictEqual(browserSession as unknown, sessions.get(partition));
-      assert.deepStrictEqual(
-        sessions.get(partition)?.setUserAgent.mock.calls.map((call) => call[0]),
-        [
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
-        ],
-      );
-    }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("presents a Google Chrome client-hint brand so Google's sign-in gate accepts it", () =>
-    Effect.gen(function* () {
-      // The UA *string* cleanup is not enough: Electron's Sec-CH-UA headers
-      // still say Chromium with no Google Chrome brand, and Google's sign-in
-      // integrity gate reads those headers server-side. The session installs
-      // an onBeforeSendHeaders hook that adds the missing Chrome brand.
-      const browserSessions = yield* BrowserSession.BrowserSession;
-      const partition = yield* browserSessions.getPartition("scope-a");
-      yield* browserSessions.getSession("scope-a");
-
-      const browserSession = sessions.get(partition);
-      assert.isDefined(browserSession);
-      const registration = browserSession?.webRequest.onBeforeSendHeaders.mock.calls.at(0);
-      assert.isDefined(registration, "expected an onBeforeSendHeaders registration");
-      const handler = registration?.[0] as (
-        details: { requestHeaders: Record<string, string> },
-        callback: (response: { requestHeaders: Record<string, string> }) => void,
-      ) => void;
-
-      let rewritten: Record<string, string> | null = null;
-      handler(
-        {
-          requestHeaders: {
-            "Sec-CH-UA": '"Chromium";v="146", "Not-A.Brand";v="24"',
-            "User-Agent": "Mozilla/5.0 Chrome/146.0.7680.216 Safari/537.36",
-          },
-        },
-        (response) => {
-          rewritten = response.requestHeaders;
-        },
-      );
-
-      assert.strictEqual(
-        rewritten?.["Sec-CH-UA"],
-        '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-      );
+      assert.strictEqual(sessions.get(partition)?.getUserAgent.mock.calls.length, 0);
+      assert.strictEqual(sessions.get(partition)?.setUserAgent.mock.calls.length, 0);
     }).pipe(Effect.provide(layer)),
   );
 
