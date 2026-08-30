@@ -109,7 +109,7 @@ const agent: VmAgent = {
   updatedAt: iso,
 };
 
-it("keeps ephemeral delegated workers on the exclusive T3 browser-control surface", () => {
+it("hands ephemeral delegated workers the strongly-preferred T3 browser-control policy", () => {
   const delegation = {
     title: "Inspect inherited browser state",
     task: "Verify the signed-in browser session.",
@@ -118,8 +118,12 @@ it("keeps ephemeral delegated workers on the exclusive T3 browser-control surfac
 
   const prompt = taskPrompt(task, delegation);
   assert.include(prompt, T3_BROWSER_CONTROL_POLICY);
-  assert.include(prompt, "Authentication, login, CAPTCHA");
-  assert.include(prompt, "browser-profile mismatch");
+  // The softened policy: preview is the strongly preferred default, sign-in
+  // stays inside preview, and only a genuinely impossible-in-preview task may
+  // fall back to other surfaces.
+  assert.include(prompt, "default and strongly preferred browser-control surface");
+  assert.include(prompt, "Authentication, login, or a browser-profile mismatch");
+  assert.include(prompt, "GENUINELY impossible in the preview browser");
 });
 
 it.effect("dispatches a new ephemeral worker with transitive browser provenance", () =>
