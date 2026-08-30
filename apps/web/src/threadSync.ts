@@ -26,6 +26,10 @@ export function threadSyncLabel(phase: ThreadSyncPhase): string {
   return phase === "loading" ? "Loading messages..." : "Syncing messages...";
 }
 
+export function threadSyncBlocksSend(phase: ThreadSyncPhase | null): boolean {
+  return phase === "loading";
+}
+
 export function threadSyncOverlayCopy(phase: ThreadSyncPhase): {
   readonly title: string;
   readonly detail: string;

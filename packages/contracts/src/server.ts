@@ -527,6 +527,11 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
 
+export const ServerConfigEditorsUpdatedPayload = Schema.Struct({
+  availableEditors: ForwardCompatibleArray(EditorId),
+});
+export type ServerConfigEditorsUpdatedPayload = typeof ServerConfigEditorsUpdatedPayload.Type;
+
 export const ServerConfigStreamSnapshotEvent = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("snapshot"),
@@ -558,11 +563,20 @@ export const ServerConfigStreamSettingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamSettingsUpdatedEvent =
   typeof ServerConfigStreamSettingsUpdatedEvent.Type;
 
+export const ServerConfigStreamEditorsUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("editorsUpdated"),
+  payload: ServerConfigEditorsUpdatedPayload,
+});
+export type ServerConfigStreamEditorsUpdatedEvent =
+  typeof ServerConfigStreamEditorsUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
+  ServerConfigStreamEditorsUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

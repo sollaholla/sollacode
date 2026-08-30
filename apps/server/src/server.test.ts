@@ -3019,6 +3019,36 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("streams editor discovery after the config snapshot", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          externalLauncher: {
+            resolveAvailableEditors: () => Effect.succeed([EditorId.make("vscode")]),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const events = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeServerConfig]({}).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      const [snapshot, update] = Array.from(events);
+      assert.equal(snapshot?.type, "snapshot");
+      if (snapshot?.type === "snapshot") {
+        assert.deepEqual(snapshot.config.availableEditors, []);
+      }
+      assert.deepEqual(update, {
+        version: 1,
+        type: "editorsUpdated",
+        payload: { availableEditors: ["vscode"] },
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("does not lose a settings update while creating the config snapshot", () =>
     Effect.gen(function* () {
       const settingsChanges = yield* PubSub.unbounded<typeof DEFAULT_SERVER_SETTINGS>();

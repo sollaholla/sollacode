@@ -439,7 +439,7 @@ import {
 } from "./ChatView.logic";
 import { prepareImageAttachmentsForSend } from "../lib/sendImageCompression";
 import { runCompactAndContinue } from "../lib/lowContextWarning";
-import { resolveThreadSyncPhase, type ThreadSyncPhase } from "../threadSync";
+import { resolveThreadSyncPhase, threadSyncBlocksSend, type ThreadSyncPhase } from "../threadSync";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
@@ -1570,11 +1570,11 @@ function ChatViewContent(props: ChatViewProps) {
         : props.threadSyncPhase
       : null;
   const threadDetailLoading = threadSyncPhase === "loading";
-  // Both catch-up phases hold a send rather than refuse it. Loading has no
-  // timeline yet and syncing is still fast-forwarding one, so neither is a
-  // safe moment to append a turn — but both end on their own, which makes
-  // this a wait, not a failure.
-  const threadCatchingUp = threadSyncPhase !== null;
+  // Only the no-detail phase blocks submission. Once the bounded snapshot is
+  // present, the server remains authoritative for the command even while this
+  // client applies replay events. Holding the composer through that replay
+  // made startup latency user-visible as a thread that could not be answered.
+  const threadCatchingUp = threadSyncBlocksSend(threadSyncPhase);
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
   const { environments } = useEnvironments();
   // A thread on a host we cannot reach reports last-known state, not live
