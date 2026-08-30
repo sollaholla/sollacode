@@ -529,12 +529,21 @@ export function applyThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
-      const activities = pipe(
-        thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
-        Arr.sort(activityOrder),
-      );
+      // The common case by far is an append at (or near) the tail of an
+      // already-sorted list. A full filter + sort here ran O(n log n) work per
+      // event over thousands of activities — on a catch-up replay of hundreds
+      // of events that alone pinned the CPU. Drop any previous copy in one
+      // pass, then insert at the sorted position scanning back from the tail.
+      const appended = event.payload.activity;
+      const activities: Array<OrchestrationThreadActivity> = [];
+      for (const activity of thread.activities) {
+        if (activity.id !== appended.id) activities.push(activity);
+      }
+      let insertAt = activities.length;
+      while (insertAt > 0 && activityOrder(appended, activities[insertAt - 1]!) < 0) {
+        insertAt -= 1;
+      }
+      activities.splice(insertAt, 0, appended);
 
       return {
         kind: "updated",
