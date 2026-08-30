@@ -265,9 +265,10 @@ describe("PreviewView navigation", () => {
       <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />,
     );
 
-    expect(markup).toContain("Sign-in needs your system browser");
-    expect(markup).toContain("Google does not allow account sign-in inside embedded browsers");
+    expect(markup).toContain("Google sign-in stays in your browser");
+    expect(markup).toContain("does not share your Safari or Chrome sign-in with Preview");
     expect(markup).toContain("Continue in browser");
+    expect(markup).toContain("Back to site");
   });
 
   it.each([
