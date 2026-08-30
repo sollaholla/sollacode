@@ -1,5 +1,6 @@
 import {
   type ApprovalRequestId,
+  CommandId,
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
@@ -446,6 +447,7 @@ import { createProviderUsageRefreshCoordinator } from "./settings/providerUsageR
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
+import { retryInterruptedCommand } from "../state/retryInterruptedCommand";
 import { Button } from "./ui/button";
 import {
   AlertDialog,
@@ -2420,6 +2422,15 @@ function ChatViewContent(props: ChatViewProps) {
   const activeThreadKey = activeThread
     ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
     : null;
+  const activeThreadKeyRef = useRef(activeThreadKey);
+  activeThreadKeyRef.current = activeThreadKey;
+  const chatViewMountedRef = useRef(false);
+  useEffect(() => {
+    chatViewMountedRef.current = true;
+    return () => {
+      chatViewMountedRef.current = false;
+    };
+  }, []);
   const activeQueuedMessagePromotionState = activeThreadKey
     ? queuedMessagePromotionPhases[activeThreadKey]
     : undefined;
@@ -7408,6 +7419,7 @@ function ChatViewContent(props: ChatViewProps) {
 
       const messageId = newMessageId();
       const createdAt = new Date().toISOString();
+      const targetThreadKey = activeThreadKey;
       const messageText =
         options?.rawProviderCommand || options?.preserveExactText
           ? text
@@ -7436,33 +7448,40 @@ function ChatViewContent(props: ChatViewProps) {
         },
       ]);
 
-      const settingsResult = await persistThreadSettingsForNextTurn({
-        threadId: activeThread.id,
-        createdAt,
-        modelSelection: sendCtx.selectedModelSelection,
-        runtimeMode,
-        interactionMode,
-      });
-      const startResult =
-        settingsResult._tag === "Failure"
-          ? settingsResult
-          : await startThreadTurn({
-              environmentId,
-              input: {
-                threadId: activeThread.id,
-                message: {
-                  messageId,
-                  role: "user",
-                  text: messageText,
-                  attachments: [],
+      const startResult = await retryInterruptedCommand({
+        run: async () => {
+          const settingsResult = await persistThreadSettingsForNextTurn({
+            threadId: activeThread.id,
+            createdAt,
+            modelSelection: sendCtx.selectedModelSelection,
+            runtimeMode,
+            interactionMode,
+          });
+          return settingsResult._tag === "Failure"
+            ? settingsResult
+            : await startThreadTurn({
+                environmentId,
+                input: {
+                  commandId: CommandId.make(`automated-chat-turn:${messageId}`),
+                  threadId: activeThread.id,
+                  message: {
+                    messageId,
+                    role: "user",
+                    text: messageText,
+                    attachments: [],
+                  },
+                  modelSelection: sendCtx.selectedModelSelection,
+                  titleSeed: activeThread.title,
+                  runtimeMode,
+                  interactionMode,
+                  createdAt,
                 },
-                modelSelection: sendCtx.selectedModelSelection,
-                titleSeed: activeThread.title,
-                runtimeMode,
-                interactionMode,
-                createdAt,
-              },
-            });
+              });
+        },
+        isInterrupted: isAtomCommandInterrupted,
+        shouldRetry: () =>
+          chatViewMountedRef.current && activeThreadKeyRef.current === targetThreadKey,
+      });
 
       sendInFlightRef.current = false;
       if (startResult._tag === "Success") {
@@ -7474,13 +7493,14 @@ function ChatViewContent(props: ChatViewProps) {
       );
       resetLocalDispatch();
       if (isAtomCommandInterrupted(startResult)) {
-        throw new Error("The compact command was interrupted.");
+        throw new Error("The chat command was interrupted.");
       }
       const cause = squashAtomCommandFailure(startResult);
       throw cause instanceof Error ? cause : new Error("Failed to start the provider turn.");
     },
     [
       activeThread,
+      activeThreadKey,
       appliedInteractionMode,
       beginLocalDispatch,
       environmentId,
