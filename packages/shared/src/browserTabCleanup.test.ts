@@ -81,4 +81,14 @@ describe("browser tab cleanup", () => {
     expect(prompt).toContain("Never close a reused tab");
     expect(prompt).not.toContain("tab-a");
   });
+
+  it("tells an Agent-mode thread to sign off so housekeeping cannot re-trigger the loop", () => {
+    const agentPrompt = browserTabCleanupPrompt(1, { agentMode: true });
+    expect(agentPrompt).toContain("1 tab is open");
+    expect(agentPrompt).toContain("`AGENT_STOP` on a new line by itself");
+    expect(agentPrompt).toContain("does not re-trigger autonomous work");
+    // Ordinary threads must not be taught a control token they don't use.
+    expect(browserTabCleanupPrompt(1)).not.toContain("AGENT_STOP");
+    expect(browserTabCleanupPrompt(1, { agentMode: false })).not.toContain("AGENT_STOP");
+  });
 });

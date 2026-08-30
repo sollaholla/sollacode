@@ -1,5 +1,7 @@
 import { CommandId, MessageId, TurnId } from "@t3tools/contracts";
 
+import { AGENT_STOP_TOKEN } from "./agentMode.ts";
+
 const BROWSER_TAB_CLEANUP_MESSAGE_ID_PREFIX = "browser-tab-cleanup-message:";
 
 export const browserTabCleanupIds = (input: {
@@ -26,11 +28,21 @@ export const browserTabCleanupSourceTurnId = (input: {
   return sourceTurnId.length > 0 ? TurnId.make(sourceTurnId) : null;
 };
 
-export const browserTabCleanupPrompt = (tabCount: number): string =>
+export const browserTabCleanupPrompt = (
+  tabCount: number,
+  options?: { readonly agentMode?: boolean },
+): string =>
   [
     `Browser tab check: ${tabCount} ${tabCount === 1 ? "tab is" : "tabs are"} open.`,
     "Review the preview_open results from your work and clean up any tabs that a preview_open call reported as newly created and that you no longer need by calling preview_close.",
     "Never close a reused tab or a user-owned tab merely as cleanup. Keep tabs that are still needed for the ongoing task.",
+    // In Agent mode this housekeeping turn would otherwise count as fresh work
+    // and re-trigger the autonomous continuation loop after it completes.
+    ...(options?.agentMode === true
+      ? [
+          `This is automated housekeeping, not new work from the user: after the cleanup pass (even if you close nothing), end your message with \`${AGENT_STOP_TOKEN}\` on a new line by itself so this check does not re-trigger autonomous work.`,
+        ]
+      : []),
   ].join(" ");
 
 export const normalizeBrowserTabSet = (tabIds: ReadonlyArray<string>): ReadonlyArray<string> =>
