@@ -1,12 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -185,6 +188,35 @@ it.effect("scans for editors once per process, not once per connect", () =>
     assert.equal(editors.first.includes("vscode"), true);
     assert.deepEqual(editors.second, editors.first);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps populating the editor cache after a config caller times out", () =>
+  Effect.gen(function* () {
+    const discoveryStarted = yield* Deferred.make<void>();
+    const finishDiscovery = yield* Deferred.make<void>();
+    let discoveryCount = 0;
+    const resolveEditors = yield* ExternalLauncher.cacheAcrossCallerInterruptions(
+      Effect.gen(function* () {
+        discoveryCount += 1;
+        yield* Deferred.succeed(discoveryStarted, undefined);
+        yield* Deferred.await(finishDiscovery);
+        return ["vscode"] as const;
+      }),
+    );
+
+    const firstCaller = yield* resolveEditors.pipe(
+      Effect.timeoutOption("5 seconds"),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(discoveryStarted);
+    yield* TestClock.adjust("5 seconds");
+    const firstResult = yield* Fiber.join(firstCaller);
+    assert.equal(firstResult._tag, "None");
+
+    yield* Deferred.succeed(finishDiscovery, undefined);
+    assert.deepEqual(yield* resolveEditors, ["vscode"]);
+    assert.equal(discoveryCount, 1);
+  }),
 );
 
 it.effect("rejects unknown editors through the service API", () =>
