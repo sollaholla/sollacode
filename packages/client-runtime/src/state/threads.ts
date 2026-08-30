@@ -37,6 +37,8 @@ import {
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
 
+type ThreadEventItem = Extract<OrchestrationThreadStreamItem, { kind: "event" }>;
+
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
 }
@@ -236,6 +238,54 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  // Fold a run of events into ONE state commit. The per-item path did one
+  // SubscriptionRef.set — one React commit — per event, so a catch-up replay
+  // of hundreds of events pinned the CPU exactly while the thread showed
+  // "Catching up…". Cursor dedup is evolved across the batch, so the same
+  // out-of-order duplicates the per-item path skipped are still skipped.
+  const applyEvents = Effect.fn("EnvironmentThreadState.applyEvents")(function* (
+    items: ReadonlyArray<ThreadEventItem>,
+  ) {
+    if (items.length === 0) {
+      return;
+    }
+    let cursor = yield* SubscriptionRef.get(lastSequence);
+    const fresh: Array<ThreadEventItem> = [];
+    for (const item of items) {
+      if (item.event.sequence <= cursor) {
+        continue;
+      }
+      cursor = item.event.sequence;
+      fresh.push(item);
+    }
+    if (fresh.length === 0) {
+      return;
+    }
+    yield* SubscriptionRef.set(lastSequence, cursor);
+
+    const current = yield* SubscriptionRef.get(state);
+    if (Option.isNone(current.data)) {
+      if (fresh.some((item) => item.event.type === "thread.deleted")) {
+        yield* setDeleted();
+      }
+      return;
+    }
+    let thread = current.data.value;
+    let changed = false;
+    for (const item of fresh) {
+      const result = applyThreadDetailEvent(thread, item.event);
+      if (result.kind === "updated") {
+        thread = result.thread;
+        changed = true;
+      } else if (result.kind === "deleted") {
+        return yield* setDeleted();
+      }
+    }
+    if (changed) {
+      yield* setThread(thread);
+    }
+  });
+
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
@@ -265,25 +315,26 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
 
-    const sequence = yield* SubscriptionRef.get(lastSequence);
-    if (item.event.sequence <= sequence) {
-      return;
-    }
-    yield* SubscriptionRef.set(lastSequence, item.event.sequence);
+    yield* applyEvents([item]);
+  });
 
-    const current = yield* SubscriptionRef.get(state);
-    if (Option.isNone(current.data)) {
-      if (item.event.type === "thread.deleted") {
-        yield* setDeleted();
+  // Control items (snapshot / synchronized / resync-required) must stay
+  // ordered relative to the events around them, so a chunk flushes pending
+  // events before each control item and once more at the end.
+  const applyChunk = Effect.fn("EnvironmentThreadState.applyChunk")(function* (
+    items: ReadonlyArray<OrchestrationThreadStreamItem>,
+  ) {
+    let pending: Array<ThreadEventItem> = [];
+    for (const item of items) {
+      if (item.kind === "event") {
+        pending.push(item);
+        continue;
       }
-      return;
+      yield* applyEvents(pending);
+      pending = [];
+      yield* applyItem(item);
     }
-    const result = applyThreadDetailEvent(current.data.value, item.event);
-    if (result.kind === "updated") {
-      yield* setThread(result.thread);
-    } else if (result.kind === "deleted") {
-      yield* setDeleted();
-    }
+    yield* applyEvents(pending);
   });
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
@@ -398,7 +449,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           foregroundResubscriptions,
         ),
       },
-    ).pipe(Stream.runForEach(applyItem)),
+    ).pipe(
+      // Batch on the stream's NATURAL chunks: a catch-up replay arrives as
+      // large chunks and folds into one state commit each, while a single
+      // live event is a chunk of one and applies immediately. No timer is
+      // involved, so nothing here interacts with the TestClock or adds
+      // live-tail latency.
+      Stream.chunks,
+      Stream.runForEach(applyChunk),
+    ),
   );
 
   yield* Effect.addFinalizer(() =>
