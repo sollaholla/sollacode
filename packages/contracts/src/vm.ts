@@ -403,6 +403,12 @@ export const VmAgentNotificationPreferences = Schema.Struct({
   taskCompletions: Schema.Boolean,
   taskFailures: Schema.Boolean,
   agentMessages: Schema.Boolean,
+  /**
+   * Auto-approve tasks this agent schedules for itself while its chat runs in
+   * Agent mode. Optional for wire compatibility with older peers; undefined
+   * means enabled (the default).
+   */
+  autoApproveTasks: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 export type VmAgentNotificationPreferences = typeof VmAgentNotificationPreferences.Type;
@@ -973,6 +979,8 @@ export const VmAgentNotificationPreferencesInput = Schema.Struct({
   taskCompletions: Schema.Boolean,
   taskFailures: Schema.Boolean,
   agentMessages: Schema.Boolean,
+  /** Omitted by older clients; the server preserves the stored value. */
+  autoApproveTasks: Schema.optional(Schema.Boolean),
 });
 export type VmAgentNotificationPreferencesInput = Schema.Codec.Encoded<
   typeof VmAgentNotificationPreferencesInput

@@ -19,20 +19,21 @@ describe("agentBrowserCursorOpacity", () => {
 });
 
 describe("agentBrowserCursorOffset", () => {
-  // Measured from a live 1280x800 freeform viewport in a panel too narrow for
-  // it: the fit scale lands on 0.913, and the guest itself then reports
-  // window.innerWidth === 1169 rather than 1280.
+  // A 1280x800 freeform viewport in a panel too narrow for it: the webview is
+  // laid out at the full 1280 and shrunk with `transform: scale(0.9133)`
+  // (HostedBrowserWebview). A CSS transform leaves the guest's layout
+  // viewport untouched, so the guest still reports coordinates in 1280-space
+  // and the drawn position is coordinate × scale + panel offset.
   const fitted = { x: 40, y: 12, scale: 0.9133, scrollLeft: 0, scrollTop: 0 };
 
-  it("puts the cursor on the click, not short of it, in a scaled-down panel", () => {
-    // The guest reported 1169 as its own right edge, so 1169 has to land on
-    // the right edge of the drawn viewport — 40 + 1169. Re-applying the fit
-    // scale here put it at 40 + 1068, over a hundred pixels adrift, and the
-    // error grew with distance from the top-left.
-    expect(agentBrowserCursorOffset({ x: 1169, y: 730, zoomFactor: 1, surface: fitted })).toEqual({
-      x: 40 + 1169,
-      y: 12 + 730,
-    });
+  it("puts the cursor on the click in a scaled-down panel", () => {
+    // The guest's right edge (1280) must land on the drawn viewport's right
+    // edge: 40 + 1280 × 0.9133. Without the fit scale the cursor overshot the
+    // drawn page by the inverse amount, drifting further from the real click
+    // toward the bottom-right (reported 2026-08-30 against Doodle Dungeon).
+    const offset = agentBrowserCursorOffset({ x: 1280, y: 800, zoomFactor: 1, surface: fitted });
+    expect(offset.x).toBeCloseTo(40 + 1280 * 0.9133, 6);
+    expect(offset.y).toBeCloseTo(12 + 800 * 0.9133, 6);
   });
 
   it("still lands on the origin of the drawn viewport", () => {
@@ -62,6 +63,18 @@ describe("agentBrowserCursorOffset", () => {
         surface: { x: 10, y: 20, scale: 1, scrollLeft: 30, scrollTop: 40 },
       }),
     ).toEqual({ x: 80, y: 80 });
+  });
+
+  it("pans the scaled canvas with the wrapper scrollbars", () => {
+    // Scroll offsets are panel pixels on the already-scaled canvas, so they
+    // subtract after the fit scale is applied.
+    const offset = agentBrowserCursorOffset({
+      x: 200,
+      y: 100,
+      zoomFactor: 1,
+      surface: { x: 0, y: 0, scale: 0.5, scrollLeft: 25, scrollTop: 10 },
+    });
+    expect(offset).toEqual({ x: 200 * 0.5 - 25, y: 100 * 0.5 - 10 });
   });
 
   it("falls back to raw coordinates before any surface geometry arrives", () => {

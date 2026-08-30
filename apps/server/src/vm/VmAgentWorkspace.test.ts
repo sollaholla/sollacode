@@ -18,12 +18,26 @@ import { VmAgentStoreLive } from "../persistence/Layers/VmAgents.ts";
 import { VmAgentWorkspaceStoreLive } from "../persistence/Layers/VmAgentWorkspaces.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentWorkspace, VmAgentWorkspaceLive } from "./VmAgentWorkspace.ts";
 
 const stores = Layer.mergeAll(VmAgentStoreLive, VmAgentWorkspaceStoreLive).pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
 );
-const workspaceLayer = it.layer(VmAgentWorkspaceLive.pipe(Layer.provideMerge(stores)));
+/** Interaction mode served per thread id; threads absent here have no shell. */
+const threadInteractionModes = new Map<string, "default" | "plan" | "agent">();
+const projectionStub = Layer.mock(ProjectionSnapshotQuery)({
+  getThreadShellById: (threadId) =>
+    Effect.sync(() => {
+      const interactionMode = threadInteractionModes.get(String(threadId));
+      return interactionMode === undefined
+        ? Option.none()
+        : Option.some({ interactionMode } as never);
+    }),
+});
+const workspaceLayer = it.layer(
+  VmAgentWorkspaceLive.pipe(Layer.provideMerge(stores), Layer.provide(projectionStub)),
+);
 
 const insertAgent = (suffix: string) =>
   Effect.gen(function* () {
@@ -85,6 +99,91 @@ workspaceLayer("VmAgentWorkspace", (it) => {
         taskId: task.taskId,
         status: "paused",
       });
+    }),
+  );
+
+  it.effect("auto-approves agent recurrence while the chat runs in Agent mode", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("auto-approve");
+      threadInteractionModes.set(String(agent.threadId), "agent");
+
+      const task = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Nightly sweep",
+        prompt: "Run the sweep.",
+        completionCriteria: [],
+        schedule: { kind: "interval", everyMinutes: 60 },
+        createdBy: "agent",
+      });
+      assert.strictEqual(task.status, "active");
+      assert.strictEqual(task.approvalState, "approved");
+      assert.isNotNull(task.nextRunAt);
+      assert.isTrue(yield* workspace.autoApprovesTasks(agent.vmAgentId));
+
+      // The control is honored: switching it off restores the approval flow
+      // even in Agent mode, and an omitted flag on an unrelated preferences
+      // update must not flip it back on.
+      yield* workspace.updateNotificationPreferences({
+        vmAgentId: agent.vmAgentId,
+        enabled: true,
+        taskCompletions: true,
+        taskFailures: true,
+        agentMessages: true,
+        autoApproveTasks: false,
+      });
+      yield* workspace.updateNotificationPreferences({
+        vmAgentId: agent.vmAgentId,
+        enabled: false,
+        taskCompletions: true,
+        taskFailures: true,
+        agentMessages: true,
+      });
+      const snapshot = yield* workspace.snapshot(agent.vmAgentId);
+      assert.strictEqual(snapshot.notificationPreferences.autoApproveTasks, false);
+      assert.strictEqual(snapshot.notificationPreferences.enabled, false);
+      const gated = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Gated sweep",
+        prompt: "Run the sweep.",
+        completionCriteria: [],
+        schedule: { kind: "interval", everyMinutes: 60 },
+        createdBy: "agent",
+        activate: true,
+      });
+      assert.strictEqual(gated.status, "draft");
+      assert.strictEqual(gated.approvalState, "pending");
+      assert.isFalse(yield* workspace.autoApprovesTasks(agent.vmAgentId));
+
+      // Park the auto-approved interval task: under the shared TestClock its
+      // nextRunAt is near epoch, and leaving it active would win claimNextDue
+      // over the claim test's own 2020-dated tasks.
+      yield* workspace.updateTask({
+        vmAgentId: agent.vmAgentId,
+        taskId: task.taskId,
+        status: "paused",
+      });
+    }),
+  );
+
+  it.effect("keeps the approval flow when the chat is not in Agent mode", () =>
+    Effect.gen(function* () {
+      const workspace = yield* VmAgentWorkspace;
+      const agent = yield* insertAgent("manual-mode");
+      threadInteractionModes.set(String(agent.threadId), "default");
+
+      const task = yield* workspace.createTask({
+        vmAgentId: agent.vmAgentId,
+        title: "Manual-mode sweep",
+        prompt: "Run the sweep.",
+        completionCriteria: [],
+        schedule: { kind: "interval", everyMinutes: 60 },
+        createdBy: "agent",
+        activate: true,
+      });
+      assert.strictEqual(task.status, "draft");
+      assert.strictEqual(task.approvalState, "pending");
+      assert.isFalse(yield* workspace.autoApprovesTasks(agent.vmAgentId));
     }),
   );
 

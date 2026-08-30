@@ -249,6 +249,23 @@ describe("isProviderAuthenticationFailure", () => {
       false,
     );
   });
+
+  // 2026-08-30, VeeraMedical: the agent reported that a WEBSITE's dashboard
+  // session expired. "Auth0" matched `auth\w*` and "a login" matched
+  // `log ?in` near "session expired", so a healthy finishing turn was stopped
+  // as a logged-out provider and its prose became the thread's error banner.
+  it("does not treat a report about a website's expired session as a provider failure", () => {
+    expect(
+      isProviderAuthenticationFailure(
+        "Auth0 dashboard session expired. Rather than block on a login, I can pre-check the callback URL directly against Auth0's `/authorize` endpoint — no config change, no side effects.",
+      ),
+    ).toBe(false);
+    expect(
+      isProviderAuthenticationFailure(
+        "The Okta admin session expired again; I'll retry the token exchange after refreshing the SSO cookie.",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("emittedAgentStop (continuation stop-gate)", () => {

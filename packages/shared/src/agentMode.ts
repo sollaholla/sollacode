@@ -276,8 +276,17 @@ const PROVIDER_AUTHENTICATION_FAILURE_SIGNATURES = [
   /\bfailed to authenticate\b/i,
   /\bnot logged in\b/i,
   /\bplease run\s+\/login\b/i,
-  /\b(log ?in|sign ?in|auth\w*|oauth|token|credential)\b[\s\S]{0,80}\bsession (has )?expired\b/i,
-  /\bsession (has )?expired\b[\s\S]{0,80}\b(log ?in|sign ?in|auth\w*|oauth|token|credential)\b/i,
+  // Proximity to "session expired" requires a provider-credential noun, not
+  // any auth-flavored word. The old alternation (`log ?in|sign ?in|auth\w*|
+  // token|credential`) matched the product name "Auth0" and the prose word
+  // "login", so an agent REPORTING that a website's dashboard session expired
+  // ("Auth0 dashboard session expired. Rather than block on a login, …") was
+  // classified as a logged-out provider — the pause then stopped a healthy
+  // session mid-settle and stamped that prose as the thread error (observed
+  // 2026-08-30, VeeraMedical). Real provider failures name the credential
+  // ("OAuth session expired") or arrive as the standalone shapes below.
+  /\b(oauth|api key|credentials?)\b[\s\S]{0,80}\bsession (has )?expired\b/i,
+  /\bsession (has )?expired\b[\s\S]{0,80}\b(oauth|api key|credentials?)\b/i,
   // Deliberately NOT a bare "unauthorized": this heuristic also scans
   // assistant prose, and an agent discussing ADB devices, HTTP APIs, or
   // permissions says "unauthorized" constantly. A real credential failure

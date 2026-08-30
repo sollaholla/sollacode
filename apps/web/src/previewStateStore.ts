@@ -578,6 +578,27 @@ export function applyPreviewDesktopState(
     const desktopByTabId = { ...current.desktopByTabId };
     if (overlay) desktopByTabId[tabId] = overlay;
     else delete desktopByTabId[tabId];
+    // Follow the agent: the moment automation starts working in a tab
+    // (`agentActive` moves onto it, or a CDP command marks it "agent"), the
+    // panel switches to that tab, the same way a human's click would. Only
+    // the rising edge switches, so the user can still look at another tab
+    // mid-turn without the store yanking them back on every state refresh.
+    const previous = current.desktopByTabId[tabId];
+    const agentEngaged =
+      overlay !== null &&
+      (overlay.agentActive === true || overlay.controller === "agent") &&
+      !(previous?.agentActive === true || previous?.controller === "agent");
+    const focusSnapshot =
+      agentEngaged && current.activeTabId !== tabId ? current.sessions[tabId] : undefined;
+    if (focusSnapshot) {
+      return {
+        ...current,
+        desktopByTabId,
+        activeTabId: tabId,
+        snapshot: focusSnapshot,
+        desktopOverlay: overlay,
+      };
+    }
     return {
       ...current,
       desktopByTabId,

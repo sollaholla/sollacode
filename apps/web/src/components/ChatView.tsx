@@ -686,6 +686,16 @@ const TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR = [
   '[data-slot="combobox-popup"]',
   '[data-slot="autocomplete-popup"]',
 ].join(",");
+/**
+ * Typing that belongs to the collaborative browser must never be stolen.
+ * Electron re-dispatches guest keyboard events on the embedder with the
+ * <webview> element as the target, so the type-to-focus redirect saw a
+ * printable key, inserted it into the composer, and preventDefault()ed the
+ * guest delivery — making it impossible to type into any page input (the
+ * composer swallowed every character). The activeElement check covers the
+ * same steal when the re-dispatched event carries an empty composed path.
+ */
+const TYPE_TO_FOCUS_BROWSER_SURFACE_SELECTOR = "webview,[data-preview-viewport]";
 
 type EnvironmentUnavailableState = {
   readonly environmentId: EnvironmentId;
@@ -710,6 +720,15 @@ function shouldTypeToFocusComposer(event: KeyboardEvent): boolean {
 
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_EDITABLE_SELECTOR)) return false;
   if (eventPathContainsSelector(event, TYPE_TO_FOCUS_INTERACTIVE_SELECTOR)) return false;
+  if (eventPathContainsSelector(event, TYPE_TO_FOCUS_BROWSER_SURFACE_SELECTOR)) return false;
+  const activeElement = document.activeElement;
+  if (
+    activeElement instanceof Element &&
+    (activeElement.tagName.toUpperCase() === "WEBVIEW" ||
+      activeElement.closest(TYPE_TO_FOCUS_BROWSER_SURFACE_SELECTOR) !== null)
+  ) {
+    return false;
+  }
   if (document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)) return false;
 
   return true;

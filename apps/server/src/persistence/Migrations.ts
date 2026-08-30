@@ -79,6 +79,7 @@ import Migration0063 from "./Migrations/063_PurgeDeletedThreadData.ts";
 import Migration0064 from "./Migrations/064_RemoveBlockerNotifications.ts";
 import Migration0065 from "./Migrations/065_RepairAutomationPreviewViewports.ts";
 import Migration0066 from "./Migrations/066_RepairProjectionPendingUserInput.ts";
+import Migration0067 from "./Migrations/067_VmAgentTaskAutoApproval.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -157,6 +158,7 @@ export const migrationEntries = [
   [64, "RemoveBlockerNotifications", Migration0064],
   [65, "RepairAutomationPreviewViewports", Migration0065],
   [66, "RepairProjectionPendingUserInput", Migration0066],
+  [67, "VmAgentTaskAutoApproval", Migration0067],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
