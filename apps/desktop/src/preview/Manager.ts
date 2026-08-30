@@ -1668,23 +1668,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 webContentsId: wc.id,
               });
             }
-            // Present the guest as a normal, non-automated browser. The manager
-            // attaches this CDP debugger for screencast/mirroring and agent
-            // observation, but attaching it flips navigator.webdriver to true,
-            // and Google's sign-in integrity gate refuses any
-            // automation-controlled browser ("this browser or app may not be
-            // secure"). Because the fleet-foreground path attaches a debugger to
-            // EVERY guest whenever an agent is connected, and navigator.webdriver
-            // latches at document load, the user's own Google/YouTube sign-in was
-            // rejected at the credential step (measured 2026-08-30: clean Chrome
-            // UA, yet webdriver=true and every fresh sign-in hit /signin/rejected).
-            // Sent only after debugger ownership is confirmed, so a lost init
-            // race stays a no-op. Best-effort: a Chromium build without this CDP
-            // method must not fail the control session.
-            yield* attemptPromise(
-              { operation: "initializeDebugger.setAutomationOverride", webContentsId: wc.id },
-              () => wc.debugger.sendCommand("Emulation.setAutomationOverride", { enabled: false }),
-            ).pipe(Effect.ignore);
             return [
               control,
               replaceMap(sessions, (copy) => {

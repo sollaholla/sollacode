@@ -80,6 +80,21 @@ if (disabledCaptureFeatureList) {
 // preview guest rather than one of the app's own windows.
 Electron.app.commandLine.appendSwitch("remote-debugging-port", "0");
 Electron.app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+// Present preview guests as the normal browser they are, not an
+// automation-controlled one. This is the host's own browser; the manager
+// attaches a CDP debugger to it purely for frame capture, screencast/mirroring
+// and agent observation, and that attachment makes Blink flip
+// navigator.webdriver to true. Google's sign-in integrity gate refuses any
+// browser reporting webdriver=true ("this browser or app may not be secure"),
+// so the user's own Google/YouTube sign-in was rejected at the credential step
+// whenever a preview was open. Disabling the AutomationControlled Blink feature
+// at launch turns that flag off at the source — in the page's MAIN world, for
+// every guest, whether or not a debugger is attached — which per-document CDP
+// overrides could not reach (they land in the automation isolated world) and
+// Emulation.setAutomationOverride could not clear on Chromium 146. This does
+// not weaken the app's own sandboxing; it only stops the guest advertising
+// automation it is not actually under from the user's point of view.
+Electron.app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 // Chromium writes the port it bound into whichever user-data directory it
 // started with. This app moves that directory afterwards, so record it here,
 // while the two still agree.
