@@ -240,7 +240,7 @@ export function PreviewChromeRow({
           {onOpenInBrowser && !inputFocused ? (
             <InputGroupAddon
               align="inline-end"
-              className="pointer-events-none absolute inset-y-0 right-0 opacity-0 transition-opacity group-hover/address:pointer-events-auto group-hover/address:opacity-100"
+              className="pointer-events-none absolute inset-y-0 right-0 opacity-0 transition-opacity max-sm:pointer-events-auto max-sm:opacity-100 group-hover/address:pointer-events-auto group-hover/address:opacity-100 group-focus-within/address:pointer-events-auto group-focus-within/address:opacity-100"
             >
               <Tooltip>
                 <TooltipTrigger

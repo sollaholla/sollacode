@@ -62,11 +62,13 @@ with the Browser `+` control. OAuth-style popup windows remain real child window
 can communicate with and return to their opener; popup permission is present when Electron creates
 the guest rather than being added after its first navigation.
 
-The desktop guest keeps the real Chromium version, platform, languages, cookies, cache, and storage.
-It removes only Electron and Solla Code product tokens from the user agent because OAuth providers
-reject embedded-framework markers even though the guest is the bundled Chromium browser. It does
-not invent a Chrome version, spoof a device fingerprint, hide automation from a site, or bypass
-CAPTCHA and anti-abuse decisions.
+The desktop guest keeps its real embedded-Chromium identity, platform, languages, cookies, cache,
+and storage. Solla Code does not rewrite the user agent, spoof a device fingerprint, hide automation
+from a site, or bypass CAPTCHA and anti-abuse decisions. Providers such as Google deliberately block
+account authorization inside embedded browsers. When Google returns that rejection, Preview explains
+the policy and offers **Open in browser**. On desktop this uses the operating system's browser; on a
+remote or mobile web client it opens a normal tab on that device. The sign-in continues there rather
+than being copied back into Preview's separate browser profile.
 
 Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
 background, so timer- and animation-frame-based authentication can finish without the user focusing
