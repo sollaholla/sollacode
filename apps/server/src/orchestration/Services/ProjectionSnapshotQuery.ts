@@ -24,6 +24,8 @@ import type {
   OrchestrationThread,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadHistoryPage,
+  OrchestrationThreadHistoryPageInput,
   OrchestrationThreadShell,
   ProviderInteractionMode,
   ProjectId,
@@ -299,6 +301,12 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /** Read one bounded page older than the supplied snapshot/history cursors. */
+  readonly getThreadHistoryPage?: (
+    threadId: ThreadId,
+    input: OrchestrationThreadHistoryPageInput,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadHistoryPage>, ProjectionRepositoryError>;
 }
 
 /**

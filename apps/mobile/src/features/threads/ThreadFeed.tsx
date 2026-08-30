@@ -165,6 +165,10 @@ export interface ThreadFeedProps {
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
+  readonly hasOlderHistory?: boolean;
+  readonly olderHistoryMessageCount?: number;
+  readonly olderHistoryLoading?: boolean;
+  readonly onLoadOlderHistory?: () => void;
 }
 
 function MessageAttachmentImage(props: {
@@ -1463,10 +1467,24 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      if (
+        props.hasOlderHistory === true &&
+        props.olderHistoryLoading !== true &&
+        contentOffset.y + anchorTopInset <= 600
+      ) {
+        props.onLoadOlderHistory?.();
+      }
       nearListEnd.value =
         contentSize.height - layoutMeasurement.height - contentOffset.y < layoutMeasurement.height;
     },
-    [reportHeaderMaterialVisibility, anchorTopInset, nearListEnd],
+    [
+      reportHeaderMaterialVisibility,
+      anchorTopInset,
+      nearListEnd,
+      props.hasOlderHistory,
+      props.olderHistoryLoading,
+      props.onLoadOlderHistory,
+    ],
   );
 
   // Gated variant of the 180ms feed layout slide. Instant while browsing
@@ -1909,7 +1927,31 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onScroll={handleScroll}
             scrollEventThrottle={16}
             ListHeaderComponent={
-              usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />
+              props.hasOlderHistory === true ? (
+                <View
+                  className="items-center pb-3"
+                  style={{ paddingTop: usesNativeAutomaticInsets ? 12 : topContentInset + 12 }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Load earlier conversation history"
+                    className="min-h-11 flex-row items-center gap-2 rounded-full border border-border bg-surface px-4 py-2"
+                    disabled={props.olderHistoryLoading}
+                    onPress={props.onLoadOlderHistory}
+                  >
+                    {props.olderHistoryLoading ? <ActivityIndicator size="small" /> : null}
+                    <Text className="text-sm text-foreground-secondary">
+                      {props.olderHistoryLoading
+                        ? "Loading earlier history…"
+                        : (props.olderHistoryMessageCount ?? 0) > 0
+                          ? `Load ${(props.olderHistoryMessageCount ?? 0).toLocaleString()} earlier messages`
+                          : "Load earlier history"}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : usesNativeAutomaticInsets ? null : (
+                <View style={{ height: topContentInset }} />
+              )
             }
             contentContainerStyle={{
               paddingTop: 12,

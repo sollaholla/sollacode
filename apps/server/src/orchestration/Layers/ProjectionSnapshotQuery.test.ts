@@ -22,6 +22,7 @@ import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   OrchestrationProjectionSnapshotQueryLive,
   THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+  THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT,
 } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -141,6 +142,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         FROM activity_numbers
       `;
       yield* sql`
+        WITH RECURSIVE message_numbers(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1
+          FROM message_numbers
+          WHERE value < ${THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT + 5}
+        )
         INSERT INTO projection_thread_messages (
           message_id,
           thread_id,
@@ -150,27 +158,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           is_streaming,
           created_at,
           updated_at
-        ) VALUES
-          (
-            'message-large-snapshot-1',
-            'thread-large-snapshot',
-            NULL,
-            'user',
-            'oldest conversation message',
-            0,
-            '2026-08-02T00:00:00.000Z',
-            '2026-08-02T00:00:00.000Z'
-          ),
-          (
-            'message-large-snapshot-2',
-            'thread-large-snapshot',
-            NULL,
-            'assistant',
-            'newest conversation message',
-            0,
-            '2026-08-02T00:00:02.000Z',
-            '2026-08-02T00:00:02.000Z'
-          )
+        )
+        SELECT
+          printf('message-large-snapshot-%04d', value),
+          'thread-large-snapshot',
+          NULL,
+          CASE WHEN value % 2 = 1 THEN 'user' ELSE 'assistant' END,
+          printf('conversation message %d', value),
+          0,
+          '2026-08-02T00:00:00.000Z',
+          '2026-08-02T00:00:00.000Z'
+        FROM message_numbers
       `;
 
       const full = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-large-snapshot"));
@@ -215,10 +213,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           snapshot.value.thread.activities.at(-1)?.sequence,
           THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5,
         );
-        assert.deepEqual(
-          snapshot.value.thread.messages.map((message) => message.text),
-          ["oldest conversation message", "newest conversation message"],
-        );
+        assert.equal(full.value.messages.length, THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT + 5);
+        assert.equal(snapshot.value.thread.messages.length, THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT);
+        assert.equal(snapshot.value.thread.messages[0]?.text, "conversation message 6");
+        assert.deepEqual(snapshot.value.history, {
+          totalMessages: THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT + 5,
+          totalActivities: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5,
+          messageCursor: {
+            createdAt: "2026-08-02T00:00:00.000Z",
+            messageId: "message-large-snapshot-0006",
+          },
+          activityCursor: {
+            createdAt: "2026-08-02T00:00:01.000Z",
+            activityId: "activity-0006",
+          },
+        });
+        const getThreadHistoryPage = snapshotQuery.getThreadHistoryPage;
+        if (getThreadHistoryPage === undefined) {
+          return yield* Effect.die("Thread history paging is unavailable");
+        }
+        const historyPage = yield* getThreadHistoryPage(ThreadId.make("thread-large-snapshot"), {
+          beforeMessageCreatedAt: snapshot.value.history!.messageCursor!.createdAt,
+          beforeMessageId: snapshot.value.history!.messageCursor!.messageId,
+          beforeActivityCreatedAt: snapshot.value.history!.activityCursor!.createdAt,
+          beforeActivityId: snapshot.value.history!.activityCursor!.activityId,
+          limit: 3,
+        });
+        assert.equal(historyPage._tag, "Some");
+        if (historyPage._tag === "Some") {
+          assert.deepEqual(
+            historyPage.value.messages.map((message) => message.text),
+            ["conversation message 3", "conversation message 4", "conversation message 5"],
+          );
+          assert.deepEqual(
+            historyPage.value.activities.map((activity) => activity.sequence),
+            [3, 4, 5],
+          );
+          assert.equal(
+            historyPage.value.history.messageCursor?.messageId,
+            "message-large-snapshot-0003",
+          );
+          assert.equal(historyPage.value.history.activityCursor?.activityId, "activity-0003");
+        }
       }
 
       yield* sql`

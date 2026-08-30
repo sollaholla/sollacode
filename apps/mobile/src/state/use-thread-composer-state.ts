@@ -1,15 +1,20 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   CommandId,
   MessageId,
   type EnvironmentId,
   type ModelSelection,
+  type OrchestrationMessage,
+  type OrchestrationThreadActivity,
+  type OrchestrationThreadHistoryWindow,
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
@@ -37,7 +42,9 @@ import {
   useComposerDraft,
 } from "./use-composer-drafts";
 import { setPendingConnectionError } from "../state/use-remote-environment-registry";
-import { useSelectedThreadDetail } from "../state/use-thread-detail";
+import { useSelectedThreadDetailState } from "../state/use-thread-detail";
+import { useAtomCommand } from "./use-atom-command";
+import { loadThreadHistory } from "./threads";
 import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { useThreadOutboxMessages } from "./use-thread-outbox";
@@ -84,7 +91,143 @@ export function useThreadDraftForThread(input: {
 
 export function useThreadComposerState() {
   const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const selectedThreadDetail = useSelectedThreadDetail();
+  const selectedThreadDetailState = useSelectedThreadDetailState();
+  const recentSelectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const loadThreadHistoryCommand = useAtomCommand(loadThreadHistory, { reportFailure: false });
+  const selectedHistoryKey = selectedThreadShell
+    ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
+    : null;
+  const [loadedHistory, setLoadedHistory] = useState<{
+    readonly key: string | null;
+    readonly messages: ReadonlyArray<OrchestrationMessage>;
+    readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+    readonly window: OrchestrationThreadHistoryWindow | null;
+  }>(() => ({
+    key: selectedHistoryKey,
+    messages: [],
+    activities: [],
+    window: selectedThreadDetailState.history ?? null,
+  }));
+  const historyLoadInFlightRef = useRef(false);
+  const selectedHistoryKeyRef = useRef(selectedHistoryKey);
+  selectedHistoryKeyRef.current = selectedHistoryKey;
+  useEffect(() => {
+    historyLoadInFlightRef.current = false;
+    setLoadedHistory((current) => {
+      if (current.key !== selectedHistoryKey) {
+        return {
+          key: selectedHistoryKey,
+          messages: [],
+          activities: [],
+          window: selectedThreadDetailState.history ?? null,
+        };
+      }
+      if (current.messages.length === 0 && current.activities.length === 0) {
+        return { ...current, window: selectedThreadDetailState.history ?? null };
+      }
+      return current;
+    });
+  }, [selectedHistoryKey, selectedThreadDetailState.history]);
+  const selectedThreadDetail = useMemo(() => {
+    if (
+      recentSelectedThreadDetail === null ||
+      loadedHistory.key !== selectedHistoryKey ||
+      (loadedHistory.messages.length === 0 && loadedHistory.activities.length === 0)
+    ) {
+      return recentSelectedThreadDetail;
+    }
+    const recentMessageIds = new Set(
+      recentSelectedThreadDetail.messages.map((message) => message.id),
+    );
+    const recentActivityIds = new Set(
+      recentSelectedThreadDetail.activities.map((activity) => activity.id),
+    );
+    return {
+      ...recentSelectedThreadDetail,
+      messages: [
+        ...loadedHistory.messages.filter((message) => !recentMessageIds.has(message.id)),
+        ...recentSelectedThreadDetail.messages,
+      ],
+      activities: [
+        ...loadedHistory.activities.filter((activity) => !recentActivityIds.has(activity.id)),
+        ...recentSelectedThreadDetail.activities,
+      ],
+    };
+  }, [loadedHistory, recentSelectedThreadDetail, selectedHistoryKey]);
+  const olderHistoryWindow =
+    loadedHistory.key === selectedHistoryKey
+      ? loadedHistory.window
+      : (selectedThreadDetailState.history ?? null);
+  const hasOlderHistory =
+    olderHistoryWindow !== null &&
+    (olderHistoryWindow.messageCursor !== null || olderHistoryWindow.activityCursor !== null);
+  const olderHistoryMessageCount = Math.max(
+    0,
+    (olderHistoryWindow?.totalMessages ?? 0) -
+      (recentSelectedThreadDetail?.messages.length ?? 0) -
+      loadedHistory.messages.length,
+  );
+  const [olderHistoryLoading, setOlderHistoryLoading] = useState(false);
+  const onLoadOlderHistory = useCallback(async () => {
+    if (
+      selectedThreadShell === null ||
+      olderHistoryWindow === null ||
+      historyLoadInFlightRef.current ||
+      (olderHistoryWindow.messageCursor === null && olderHistoryWindow.activityCursor === null)
+    ) {
+      return;
+    }
+    historyLoadInFlightRef.current = true;
+    setOlderHistoryLoading(true);
+    const requestedKey = selectedHistoryKey;
+    try {
+      const result = await loadThreadHistoryCommand({
+        environmentId: selectedThreadShell.environmentId,
+        input: {
+          threadId: selectedThreadShell.id,
+          page: {
+            ...(olderHistoryWindow.messageCursor === null
+              ? {}
+              : {
+                  beforeMessageCreatedAt: olderHistoryWindow.messageCursor.createdAt,
+                  beforeMessageId: olderHistoryWindow.messageCursor.messageId,
+                }),
+            ...(olderHistoryWindow.activityCursor === null
+              ? {}
+              : {
+                  beforeActivityCreatedAt: olderHistoryWindow.activityCursor.createdAt,
+                  beforeActivityId: olderHistoryWindow.activityCursor.activityId,
+                }),
+            limit: 150,
+          },
+        },
+      });
+      const commandValue = AsyncResult.value(result);
+      if (Option.isNone(commandValue) || Option.isNone(commandValue.value)) return;
+      const page = commandValue.value.value;
+      if (selectedHistoryKeyRef.current !== requestedKey) return;
+      setLoadedHistory((current) => {
+        if (current.key !== requestedKey) return current;
+        const knownMessages = new Set(current.messages.map((message) => message.id));
+        const knownActivities = new Set(current.activities.map((activity) => activity.id));
+        return {
+          ...current,
+          messages: [
+            ...page.messages.filter((message) => !knownMessages.has(message.id)),
+            ...current.messages,
+          ],
+          activities: [
+            ...page.activities.filter((activity) => !knownActivities.has(activity.id)),
+            ...current.activities,
+          ],
+          window: page.history,
+        };
+      });
+    } finally {
+      historyLoadInFlightRef.current = false;
+      if (selectedHistoryKeyRef.current === requestedKey) setOlderHistoryLoading(false);
+    }
+  }, [loadThreadHistoryCommand, olderHistoryWindow, selectedHistoryKey, selectedThreadShell]);
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const queuedTurnPromotionRequests = useAtomValue(queuedTurnPromotionRequestsAtom);
@@ -379,6 +522,10 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
+    hasOlderHistory,
+    olderHistoryMessageCount,
+    olderHistoryLoading,
+    onLoadOlderHistory,
     selectedThreadQueueCount: selectedThreadQueueCount + serverQueuedMessageIds.length,
     hasQueuedSendNow,
     isPromotingQueuedMessages,
