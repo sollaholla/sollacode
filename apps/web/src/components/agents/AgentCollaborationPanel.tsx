@@ -9,10 +9,25 @@ import type {
   VmAgentDelegationSummary,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { ChevronLeftIcon, RotateCwIcon, SendIcon, StopCircleIcon, UsersIcon } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  BotIcon,
+  CheckCircle2Icon,
+  ChevronLeftIcon,
+  CircleDashedIcon,
+  CircleDotIcon,
+  Clock3Icon,
+  FileTextIcon,
+  MessageSquareIcon,
+  RotateCwIcon,
+  SendIcon,
+  SparklesIcon,
+  StopCircleIcon,
+  UsersIcon,
+} from "lucide-react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useEnvironmentQuery } from "~/state/query";
@@ -154,17 +169,113 @@ function senderLabel(
   }
 }
 
-function messageAlignment(sender: VmAgentDelegationMessage["sender"]): string {
-  switch (sender) {
-    case "user":
-      return "self-end bg-primary text-primary-foreground";
-    case "source-agent":
-      return "self-end bg-sky-500/12 text-foreground ring-1 ring-sky-500/20";
-    case "target-agent":
-      return "self-start bg-muted";
-    case "system":
-      return "self-center border bg-background";
+const normalizedCollaborationText = (value: string): string =>
+  value.replaceAll(/\s+/gu, " ").trim();
+
+/** The durable brief is already rendered above the activity stream. */
+export function delegationActivityMessages(
+  messages: ReadonlyArray<VmAgentDelegationMessage>,
+  brief: string,
+): ReadonlyArray<VmAgentDelegationMessage> {
+  const normalizedBrief = normalizedCollaborationText(brief);
+  return messages.filter(
+    (message, index) =>
+      !(
+        index === 0 &&
+        message.sender === "source-agent" &&
+        normalizedCollaborationText(message.text) === normalizedBrief
+      ),
+  );
+}
+
+export function delegationStatusActivity(status: VmAgentDelegationStatus): {
+  readonly title: string;
+  readonly detail: string;
+  readonly tone: "neutral" | "info" | "warning" | "success" | "error";
+} {
+  switch (status) {
+    case "pending-approval":
+      return {
+        title: "Waiting for approval",
+        detail: "This handoff will start after it is approved in the root chat.",
+        tone: "warning",
+      };
+    case "queued":
+      return {
+        title: "Waiting for collaborator",
+        detail: "The task is queued and will start when capacity is available.",
+        tone: "neutral",
+      };
+    case "running":
+      return {
+        title: "Work in progress",
+        detail: "The collaborator is actively working through the brief.",
+        tone: "info",
+      };
+    case "waiting-input":
+      return {
+        title: "Waiting for your reply",
+        detail: "The collaborator needs an answer before work can continue.",
+        tone: "warning",
+      };
+    case "completed":
+      return {
+        title: "Handoff completed",
+        detail: "The collaborator finished this bounded task.",
+        tone: "success",
+      };
+    case "failed":
+      return {
+        title: "Handoff failed",
+        detail: "The collaborator could not complete this task.",
+        tone: "error",
+      };
+    case "cancelled":
+      return {
+        title: "Handoff stopped",
+        detail: "This delegated task was cancelled.",
+        tone: "neutral",
+      };
+    case "expired":
+      return {
+        title: "Handoff timed out",
+        detail: "The delegated task reached its time limit.",
+        tone: "error",
+      };
   }
+}
+
+function ActivityTimelineRow(props: {
+  readonly icon: typeof SparklesIcon;
+  readonly title: string;
+  readonly timestamp: string;
+  readonly detail?: string;
+  readonly children?: ReactNode;
+  readonly emphasized?: boolean;
+}) {
+  const Icon = props.icon;
+  return (
+    <article className="relative grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-3 pb-5 last:pb-0">
+      <span className="relative z-10 flex size-8 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-xs">
+        <Icon className="size-3.5" aria-hidden />
+      </span>
+      <div
+        className={cn(
+          "min-w-0 pt-1",
+          props.emphasized && "rounded-xl border bg-muted/15 px-3 py-2.5",
+        )}
+      >
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+          <span className="font-medium text-foreground">{props.title}</span>
+          <span className="text-[11px] text-muted-foreground">{props.timestamp}</span>
+        </p>
+        {props.detail ? (
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{props.detail}</p>
+        ) : null}
+        {props.children}
+      </div>
+    </article>
+  );
 }
 
 export function mergeDelegationMessages(
@@ -241,10 +352,10 @@ const DelegationList = memo(function DelegationList(props: {
 }) {
   const emptyCopy = emptyDelegationListCopy(props.hasMoreDelegations);
   return (
-    <section className="flex min-h-0 min-w-0 flex-col bg-muted/15 @3xl/collaboration:border-r">
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3">
-        <span className="text-xs font-medium text-muted-foreground">Handoffs</span>
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+    <section className="flex min-h-0 min-w-0 flex-col bg-muted/8 @3xl/collaboration:border-r">
+      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
+        <span className="text-sm font-medium text-foreground">Handoffs</span>
+        <span className="rounded-md border bg-background/60 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">
           {props.delegations.length}
         </span>
       </div>
@@ -262,23 +373,43 @@ const DelegationList = memo(function DelegationList(props: {
                   type="button"
                   aria-current={selected ? "true" : undefined}
                   className={cn(
-                    "flex w-full min-w-0 flex-col gap-1 border-b px-3 py-2.5 text-left outline-none transition-colors",
+                    "group flex w-full min-w-0 gap-3 border-b border-border/60 px-3 py-3 text-left outline-none transition-colors",
                     "focus-visible:relative focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                    selected ? "bg-muted/65" : "hover:bg-muted/45",
+                    selected ? "bg-sky-500/8" : "hover:bg-muted/35",
                   )}
                   onClick={() => props.onSelect(delegation.delegationId)}
                 >
-                  <span className="line-clamp-2 break-words text-sm font-medium leading-snug">
-                    {delegation.title}
-                  </span>
-                  <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <Badge size="sm" variant={status.variant}>
-                      {status.label}
-                    </Badge>
-                    <span className="truncate">
-                      {delegationDirection(summary, props.vmAgentId)}
+                  <span
+                    className={cn(
+                      "mt-1 size-2 shrink-0 rounded-full",
+                      delegation.status === "running"
+                        ? "bg-sky-400"
+                        : delegation.status === "waiting-input" ||
+                            delegation.status === "pending-approval"
+                          ? "bg-amber-400"
+                          : delegation.status === "completed"
+                            ? "bg-emerald-400"
+                            : delegation.status === "failed" || delegation.status === "expired"
+                              ? "bg-destructive"
+                              : "bg-muted-foreground/45",
+                    )}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="line-clamp-2 break-words text-sm font-medium leading-snug">
+                      {delegation.title}
+                    </span>
+                    <span className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <BotIcon className="size-3 shrink-0" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">
+                        {delegationDirection(summary, props.vmAgentId)}
+                      </span>
+                      <span className="shrink-0 tabular-nums">
+                        {formatRelativeTimeLabel(delegation.updatedAt)}
+                      </span>
                     </span>
                   </span>
+                  <span className="sr-only">{status.label}</span>
                 </button>
               );
             })}
@@ -520,6 +651,10 @@ export function AgentCollaborationPanel(props: {
     loadedHistory?.hasEarlierMessages ??
     detail?.hasEarlierMessages ??
     (detail === null ? false : detail.delegation.messageCount > messages.length);
+  const briefText = selectedSummary
+    ? (detail?.delegation.task ?? selectedSummary.delegation.taskPreview.text)
+    : "";
+  const activityMessages = delegationActivityMessages(messages, briefText);
   const waitingQuestion =
     selectedSummary?.delegation.status === "waiting-input"
       ? ([...messages].toReversed().find((message) => message.kind === "question") ??
@@ -527,6 +662,9 @@ export function AgentCollaborationPanel(props: {
       : null;
   const selectedStatus = selectedSummary
     ? DELEGATION_STATUS_DISPLAY[selectedSummary.delegation.status]
+    : null;
+  const statusActivity = selectedSummary
+    ? delegationStatusActivity(selectedSummary.delegation.status)
     : null;
   const isSending =
     pendingOperation?.kind === "send" && pendingOperation.delegationId === selectedDelegationKey;
@@ -539,9 +677,9 @@ export function AgentCollaborationPanel(props: {
 
   return (
     <div className="@container/collaboration flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 sm:px-4">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold">Activity</h2>
+          <h2 className="text-lg font-semibold tracking-tight">Activity</h2>
           <p className="hidden truncate text-xs text-muted-foreground sm:block">
             Delegated work, questions, and results. Start new work in chat.
           </p>
@@ -568,7 +706,7 @@ export function AgentCollaborationPanel(props: {
         </div>
       ) : null}
 
-      <div className="grid min-h-0 min-w-0 flex-1 overflow-hidden @3xl/collaboration:grid-cols-[minmax(14rem,21rem)_minmax(0,1fr)]">
+      <div className="grid min-h-0 min-w-0 flex-1 overflow-hidden @3xl/collaboration:grid-cols-[minmax(15rem,22.5rem)_minmax(0,1fr)]">
         <div
           className={cn(
             "min-h-0 min-w-0 @3xl/collaboration:flex",
@@ -598,9 +736,9 @@ export function AgentCollaborationPanel(props: {
             mobileDetailOpen ? "flex" : "hidden",
           )}
         >
-          {selectedSummary && selectedStatus ? (
+          {selectedSummary && selectedStatus && statusActivity ? (
             <>
-              <header className="flex min-w-0 shrink-0 items-start gap-2 border-b px-3 py-2.5 sm:px-4">
+              <header className="flex min-w-0 shrink-0 items-start gap-3 border-b px-4 py-3.5">
                 <Button
                   ref={detailBackButtonRef}
                   type="button"
@@ -616,15 +754,20 @@ export function AgentCollaborationPanel(props: {
                   <ChevronLeftIcon />
                 </Button>
                 <div className="min-w-0 flex-1">
-                  <h3 className="line-clamp-2 break-words text-sm font-medium leading-snug">
+                  <h3 className="line-clamp-2 break-words text-base font-semibold leading-snug tracking-tight">
                     {selectedSummary.delegation.title}
                   </h3>
-                  <p className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <p className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Badge size="sm" variant={selectedStatus.variant}>
                       {selectedStatus.label}
                     </Badge>
                     <span className="truncate">
                       {delegationDirection(selectedSummary, props.agent.vmAgentId)}
+                    </span>
+                    <span aria-hidden>·</span>
+                    <span className="inline-flex items-center gap-1 tabular-nums">
+                      <Clock3Icon className="size-3" aria-hidden />
+                      {formatRelativeTimeLabel(selectedSummary.delegation.updatedAt)}
                     </span>
                   </p>
                 </div>
@@ -648,93 +791,38 @@ export function AgentCollaborationPanel(props: {
                 {selectedSummary.delegation.title}: {selectedStatus.label}
               </p>
 
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto p-3 sm:p-4">
-                <section className="min-w-0 rounded-lg border bg-muted/20 px-3 py-2.5">
-                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Brief
-                  </p>
+              <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-3.5">
+                <section className="min-w-0 rounded-xl border bg-muted/10 p-4 shadow-xs">
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <FileTextIcon className="size-3.5 text-muted-foreground" aria-hidden />
+                    <span>Brief</span>
+                  </div>
                   <BoundedCollaborationText
                     key={`brief:${selectedDelegationKey}`}
-                    text={detail?.delegation.task ?? selectedSummary.delegation.taskPreview.text}
-                    maxCharacters={420}
-                    maxLines={5}
-                    collapsedLabel="Show full brief"
+                    text={briefText}
+                    className="mt-2 text-xs leading-relaxed"
+                    maxCharacters={340}
+                    maxLines={2}
+                    collapsedLabel="View full brief"
+                    expandedMaxHeightClassName="max-h-64"
                   />
+                  <div className="mt-3 flex min-w-0 flex-wrap gap-2 border-t pt-3 text-[11px] text-muted-foreground">
+                    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border bg-background/55 px-2 py-1">
+                      <BotIcon className="size-3 shrink-0" aria-hidden />
+                      <span className="truncate">{targetLabel(selectedSummary)}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-md border bg-background/55 px-2 py-1 tabular-nums">
+                      <MessageSquareIcon className="size-3" aria-hidden />
+                      {selectedSummary.delegation.messageCount}{" "}
+                      {selectedSummary.delegation.messageCount === 1 ? "update" : "updates"}
+                    </span>
+                  </div>
                 </section>
-
-                {waitingQuestion ? (
-                  <section className="min-w-0 rounded-lg border border-amber-500/35 bg-amber-500/8 p-3">
-                    <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                      Waiting for your answer
-                    </p>
-                    <BoundedCollaborationText
-                      key={`question:${waitingQuestion.messageId}`}
-                      text={waitingQuestion.text}
-                      className="mt-1"
-                      maxCharacters={600}
-                      maxLines={6}
-                      collapsedLabel="Show full question"
-                    />
-                  </section>
-                ) : null}
-
-                {selectedSummary.delegation.status === "pending-approval" ? (
-                  <section className="min-w-0 rounded-lg border border-amber-500/35 bg-amber-500/8 p-3">
-                    <p className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
-                      Waiting for your approval
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Nothing runs until you approve this request in the root chat.
-                    </p>
-                    <Button type="button" size="xs" className="mt-2" onClick={props.onOpenChat}>
-                      Review in chat
-                    </Button>
-                  </section>
-                ) : null}
-
-                {(detail?.delegation.result ?? selectedSummary.delegation.resultPreview) ? (
-                  <section className="min-w-0 rounded-lg border border-emerald-500/30 bg-emerald-500/8 p-3">
-                    <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-                      Completed result
-                    </p>
-                    <BoundedCollaborationText
-                      key={`result:${selectedDelegationKey}`}
-                      text={
-                        detail?.delegation.result?.summary ??
-                        selectedSummary.delegation.resultPreview?.text ??
-                        ""
-                      }
-                      className="mt-1"
-                      maxCharacters={700}
-                      maxLines={7}
-                      collapsedLabel="Show full result"
-                      expandedMaxHeightClassName="max-h-64"
-                    />
-                  </section>
-                ) : null}
-
-                {(detail?.delegation.error ?? selectedSummary.delegation.errorPreview) ? (
-                  <section className="min-w-0 rounded-lg border border-destructive/30 bg-destructive/7 p-3">
-                    <p className="text-[11px] font-medium text-destructive">Error</p>
-                    <BoundedCollaborationText
-                      key={`error:${selectedDelegationKey}`}
-                      text={
-                        detail?.delegation.error ??
-                        selectedSummary.delegation.errorPreview?.text ??
-                        ""
-                      }
-                      className="mt-1 text-destructive"
-                      maxCharacters={500}
-                      maxLines={6}
-                      collapsedLabel="Show full error"
-                    />
-                  </section>
-                ) : null}
 
                 {detailQuery.error ? (
                   <div
                     role="alert"
-                    className="flex min-w-0 items-center gap-3 rounded-lg border p-3"
+                    className="mt-3 flex min-w-0 items-center gap-3 rounded-lg border p-3"
                   >
                     <span className="min-w-0 flex-1 break-words text-xs text-destructive">
                       {detailQuery.error}
@@ -748,7 +836,7 @@ export function AgentCollaborationPanel(props: {
                 {historyQuery.error && historyLoadState.selectedRequest ? (
                   <div
                     role="alert"
-                    className="flex min-w-0 items-center gap-3 rounded-lg border p-3"
+                    className="mt-3 flex min-w-0 items-center gap-3 rounded-lg border p-3"
                   >
                     <span className="min-w-0 flex-1 break-words text-xs text-destructive">
                       Earlier messages could not be loaded. {historyQuery.error}
@@ -764,62 +852,158 @@ export function AgentCollaborationPanel(props: {
                   </div>
                 ) : null}
 
-                {hasEarlierMessages && messages.length > 0 && !historyLoadState.hasError ? (
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    className="self-center text-muted-foreground"
-                    disabled={historyLoadState.isLoading}
-                    onClick={() => {
-                      const oldest = messages[0];
-                      if (oldest === undefined) return;
-                      setHistoryRequest({
-                        delegationId: oldest.delegationId,
-                        beforeSequence: oldest.sequence,
-                      });
-                    }}
-                  >
-                    {historyLoadState.isLoading
-                      ? "Loading earlier messages…"
-                      : "Show earlier messages"}
-                  </Button>
-                ) : null}
-
-                <div className="flex min-w-0 flex-col gap-2">
-                  {messages.map((message) => (
-                    <article
-                      key={message.messageId}
-                      className={cn(
-                        "max-w-[92%] min-w-0 rounded-lg px-3 py-2",
-                        messageAlignment(message.sender),
-                      )}
+                <section className="mt-5 min-w-0" aria-label="Handoff activity">
+                  {hasEarlierMessages && messages.length > 0 && !historyLoadState.hasError ? (
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="mb-3 ml-11 text-muted-foreground"
+                      disabled={historyLoadState.isLoading}
+                      onClick={() => {
+                        const oldest = messages[0];
+                        if (oldest === undefined) return;
+                        setHistoryRequest({
+                          delegationId: oldest.delegationId,
+                          beforeSequence: oldest.sequence,
+                        });
+                      }}
                     >
-                      <BoundedCollaborationText
-                        text={message.text}
-                        maxCharacters={800}
-                        maxLines={8}
-                        collapsedLabel="Show full message"
-                        expandedMaxHeightClassName="max-h-64"
-                      />
-                      <p className="mt-1 flex min-w-0 flex-wrap gap-1 text-[10px] opacity-65">
-                        <span>{senderLabel(message, selectedSummary)}</span>
-                        {message.kind !== "note" ? <span>· {message.kind}</span> : null}
-                        {message.delivery === "pending" ? <span>· sending…</span> : null}
-                      </p>
-                    </article>
-                  ))}
-                  {detail === null && !detailQuery.error ? (
-                    <p className="text-xs text-muted-foreground">Loading conversation…</p>
-                  ) : messages.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No messages yet.</p>
+                      {historyLoadState.isLoading
+                        ? "Loading earlier activity…"
+                        : "Show earlier activity"}
+                    </Button>
                   ) : null}
-                </div>
+
+                  <div className="relative min-w-0 before:absolute before:bottom-4 before:left-[0.975rem] before:top-4 before:w-px before:bg-border">
+                    <ActivityTimelineRow
+                      icon={SparklesIcon}
+                      title="Task delegated"
+                      timestamp={formatRelativeTimeLabel(selectedSummary.delegation.createdAt)}
+                      detail={`This bounded task was delegated ${delegationDirection(selectedSummary, props.agent.vmAgentId)}.`}
+                    />
+                    <ActivityTimelineRow
+                      icon={FileTextIcon}
+                      title="Brief received"
+                      timestamp={formatRelativeTimeLabel(
+                        selectedSummary.delegation.startedAt ??
+                          selectedSummary.delegation.createdAt,
+                      )}
+                      detail={`${targetLabel(selectedSummary)} received the task details and constraints.`}
+                    />
+
+                    {activityMessages.map((message) => (
+                      <ActivityTimelineRow
+                        key={message.messageId}
+                        icon={message.kind === "question" ? CircleDotIcon : MessageSquareIcon}
+                        title={`${
+                          message.kind === "question"
+                            ? "Question from"
+                            : message.kind === "answer"
+                              ? "Answer from"
+                              : "Update from"
+                        } ${senderLabel(message, selectedSummary)}`}
+                        timestamp={formatRelativeTimeLabel(message.createdAt)}
+                      >
+                        <div className="mt-2 min-w-0 rounded-lg border bg-muted/10 px-3 py-2.5">
+                          <BoundedCollaborationText
+                            text={message.text}
+                            maxCharacters={700}
+                            maxLines={6}
+                            collapsedLabel="Show full update"
+                            expandedMaxHeightClassName="max-h-64"
+                          />
+                          {message.delivery === "pending" ? (
+                            <p className="mt-1 text-[10px] text-muted-foreground">Sending…</p>
+                          ) : null}
+                        </div>
+                      </ActivityTimelineRow>
+                    ))}
+
+                    <ActivityTimelineRow
+                      icon={
+                        statusActivity.tone === "success"
+                          ? CheckCircle2Icon
+                          : statusActivity.tone === "error"
+                            ? StopCircleIcon
+                            : statusActivity.tone === "info"
+                              ? CircleDotIcon
+                              : CircleDashedIcon
+                      }
+                      title={statusActivity.title}
+                      timestamp={formatRelativeTimeLabel(selectedSummary.delegation.updatedAt)}
+                      detail={statusActivity.detail}
+                      emphasized
+                    >
+                      {waitingQuestion ? (
+                        <div className="mt-2 rounded-lg border border-amber-500/35 bg-amber-500/8 p-3">
+                          <BoundedCollaborationText
+                            key={`question:${waitingQuestion.messageId}`}
+                            text={waitingQuestion.text}
+                            maxCharacters={600}
+                            maxLines={5}
+                            collapsedLabel="Show full question"
+                          />
+                        </div>
+                      ) : null}
+
+                      {selectedSummary.delegation.status === "pending-approval" ? (
+                        <Button type="button" size="xs" className="mt-2" onClick={props.onOpenChat}>
+                          Review in chat
+                        </Button>
+                      ) : null}
+
+                      {(detail?.delegation.result ?? selectedSummary.delegation.resultPreview) ? (
+                        <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-500/8 p-3">
+                          <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                            Completed result
+                          </p>
+                          <BoundedCollaborationText
+                            key={`result:${selectedDelegationKey}`}
+                            text={
+                              detail?.delegation.result?.summary ??
+                              selectedSummary.delegation.resultPreview?.text ??
+                              ""
+                            }
+                            className="mt-1"
+                            maxCharacters={700}
+                            maxLines={7}
+                            collapsedLabel="Show full result"
+                            expandedMaxHeightClassName="max-h-64"
+                          />
+                        </div>
+                      ) : null}
+
+                      {(detail?.delegation.error ?? selectedSummary.delegation.errorPreview) ? (
+                        <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/7 p-3">
+                          <BoundedCollaborationText
+                            key={`error:${selectedDelegationKey}`}
+                            text={
+                              detail?.delegation.error ??
+                              selectedSummary.delegation.errorPreview?.text ??
+                              ""
+                            }
+                            className="text-destructive"
+                            maxCharacters={500}
+                            maxLines={6}
+                            collapsedLabel="Show full error"
+                          />
+                        </div>
+                      ) : null}
+                    </ActivityTimelineRow>
+                  </div>
+
+                  {detail === null && !detailQuery.error ? (
+                    <p className="ml-11 mt-3 text-xs text-muted-foreground">
+                      Loading recent activity…
+                    </p>
+                  ) : null}
+                </section>
               </div>
 
               {!TERMINAL_DELEGATION_STATUSES.has(selectedSummary.delegation.status) ? (
-                <div className="flex min-w-0 shrink-0 flex-col gap-2 border-t p-3 @md/collaboration:flex-row">
-                  <div className="min-w-0 flex-1">
+                <div className="min-w-0 shrink-0 border-t bg-background p-3">
+                  <div className="flex min-w-0 items-end gap-2 rounded-xl border bg-muted/10 p-1.5 shadow-xs">
                     <label
                       htmlFor={`delegation-reply-${selectedDelegationKey}`}
                       className="sr-only"
@@ -830,10 +1014,11 @@ export function AgentCollaborationPanel(props: {
                     </label>
                     <Textarea
                       id={`delegation-reply-${selectedDelegationKey}`}
-                      rows={2}
+                      rows={1}
                       maxLength={20_000}
                       value={currentMessageDraft}
-                      className="[&_[data-slot=textarea]]:max-h-32 [&_[data-slot=textarea]]:overflow-y-auto"
+                      unstyled
+                      className="min-w-0 flex-1 [&_[data-slot=textarea]]:!min-h-9 [&_[data-slot=textarea]]:max-h-24 [&_[data-slot=textarea]]:resize-none [&_[data-slot=textarea]]:overflow-y-auto [&_[data-slot=textarea]]:px-2 [&_[data-slot=textarea]]:py-2"
                       placeholder={
                         selectedSummary.delegation.status === "waiting-input"
                           ? "Answer their question…"
@@ -845,16 +1030,28 @@ export function AgentCollaborationPanel(props: {
                           [selectedSummary.delegation.delegationId]: event.target.value,
                         }))
                       }
+                      onKeyDown={(event) => {
+                        if (
+                          event.key !== "Enter" ||
+                          event.shiftKey ||
+                          event.nativeEvent.isComposing
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        void submitMessage();
+                      }}
                     />
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="shrink-0"
+                      disabled={!currentMessageDraft.trim() || pendingOperation !== null}
+                      onClick={() => void submitMessage()}
+                    >
+                      <SendIcon /> {isSending ? "Sending…" : "Send"}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    className="shrink-0 @md/collaboration:self-end"
-                    disabled={!currentMessageDraft.trim() || pendingOperation !== null}
-                    onClick={() => void submitMessage()}
-                  >
-                    <SendIcon /> {isSending ? "Sending…" : "Send"}
-                  </Button>
                 </div>
               ) : null}
             </>

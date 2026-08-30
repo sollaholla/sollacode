@@ -13,8 +13,10 @@ import {
   agentDelegationsFor,
   capabilityChips,
   captureDelegationCancellation,
+  delegationActivityMessages,
   delegationHistoryLoadState,
   delegationRole,
+  delegationStatusActivity,
   emptyDelegationListCopy,
   hasEarlierAfterDelegationPage,
   mergeDelegationMessages,
@@ -164,6 +166,46 @@ describe("collaboration interaction identity", () => {
       [3, "new three"],
       [4, "four"],
     ]);
+  });
+
+  it("does not repeat the full brief as the first activity message", () => {
+    const first = {
+      messageId: VmAgentDelegationMessageId.make("brief-message"),
+      delegationId: VmAgentDelegationId.make("delegation"),
+      sequence: 1,
+      sender: "source-agent" as const,
+      senderVmAgentId: VmAgentId.make("source"),
+      kind: "note" as const,
+      delivery: "delivered" as const,
+      text: "Build the level with a broad central gap.",
+      createdAt: "2026-08-21T00:00:00.000Z",
+    };
+    const update = {
+      ...first,
+      messageId: VmAgentDelegationMessageId.make("real-update"),
+      sequence: 2,
+      sender: "target-agent" as const,
+      text: "I have started blocking out the terrain.",
+    };
+
+    expect(
+      delegationActivityMessages([first, update], "Build the level with a broad\ncentral gap."),
+    ).toEqual([update]);
+  });
+
+  it("gives every handoff state a concise activity summary", () => {
+    expect(delegationStatusActivity("queued")).toMatchObject({
+      title: "Waiting for collaborator",
+      tone: "neutral",
+    });
+    expect(delegationStatusActivity("running")).toMatchObject({
+      title: "Work in progress",
+      tone: "info",
+    });
+    expect(delegationStatusActivity("completed")).toMatchObject({
+      title: "Handoff completed",
+      tone: "success",
+    });
   });
 
   it("stops paging when an older host ignores the message cursor", () => {
