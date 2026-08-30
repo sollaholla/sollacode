@@ -430,6 +430,14 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       },
     });
   }, [embeddedOAuthHandoffUrl]);
+  const handleRetryOAuthInPreview = useCallback(() => {
+    if (!embeddedOAuthHandoffUrl) return;
+    // Google's /signin/rejected page is terminal: reloading it always fails,
+    // even now that the guest presents a clean Chrome UA. A fresh flow from
+    // the final trusted destination succeeds in Preview itself — verified
+    // live 2026-08-30, reaching the real account chooser.
+    void navigateToResolvedUrl(embeddedOAuthHandoffUrl);
+  }, [embeddedOAuthHandoffUrl, navigateToResolvedUrl]);
 
   const handlePictureInPicture = useCallback(() => {
     if (!tabId) return;
@@ -1048,14 +1056,25 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                 <ShieldAlertIcon className="size-4" aria-hidden />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">Google sign-in stays in your browser</p>
+                <p className="text-sm font-semibold">Google rejected this sign-in attempt</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Google does not share your Safari or Chrome sign-in with Preview. Continue in your
-                  system browser, or return to the signed-out page here.
+                  This rejection page is a dead end — reloading it always fails, even after the
+                  cause is fixed. Start the sign-in again with a fresh flow here in Preview, or
+                  continue in your system browser.
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {embeddedOAuthHandoffUrl ? (
-                    <Button size="xs" type="button" onClick={handleOpenOAuthInBrowser}>
+                    <Button size="xs" type="button" onClick={handleRetryOAuthInPreview}>
+                      Try again here
+                    </Button>
+                  ) : null}
+                  {embeddedOAuthHandoffUrl ? (
+                    <Button
+                      size="xs"
+                      type="button"
+                      variant="outline"
+                      onClick={handleOpenOAuthInBrowser}
+                    >
                       Continue in browser <ExternalLinkIcon />
                     </Button>
                   ) : null}

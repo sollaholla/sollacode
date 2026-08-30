@@ -257,7 +257,7 @@ describe("PreviewView navigation", () => {
     electron = true;
   });
 
-  it("explains Google's embedded-browser rejection and offers a browser handoff", () => {
+  it("explains Google's terminal rejection page and offers a fresh in-Preview retry", () => {
     mocks.sessionUrl =
       "https://accounts.google.com/v3/signin/rejected?flowEntry=ServiceLogin&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3Dhttps%253A%252F%252Fstudio.youtube.com%252F";
 
@@ -265,8 +265,12 @@ describe("PreviewView navigation", () => {
       <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />,
     );
 
-    expect(markup).toContain("Google sign-in stays in your browser");
-    expect(markup).toContain("does not share your Safari or Chrome sign-in with Preview");
+    // The rejected URL is persisted terminal state — reloading it always
+    // fails. Sign-in itself works in Preview under the cleaned UA, so the
+    // primary action retries the flow here; the system browser stays as a
+    // fallback, not the only exit.
+    expect(markup).toContain("Google rejected this sign-in attempt");
+    expect(markup).toContain("Try again here");
     expect(markup).toContain("Continue in browser");
     expect(markup).toContain("Back to site");
   });
