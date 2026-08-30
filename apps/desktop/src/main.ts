@@ -55,7 +55,6 @@ import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
-import { recordDevToolsUserDataDirectory } from "./preview/DevToolsEndpoint.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as OrchestratorBubbleWindow from "./window/OrchestratorBubbleWindow.ts";
@@ -71,18 +70,9 @@ if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
 
-// DevTools for a guest rendered here but watched from somewhere else.
-//
-// Port 0 lets the OS pick a free one, which Chromium then writes to
-// `DevToolsActivePort`. It is bound to loopback and never advertised past it:
-// the only thing that reaches it is this machine's own server, which has
-// authenticated the caller and checked that the target being asked for is a
-// preview guest rather than one of the app's own windows.
-Electron.app.commandLine.appendSwitch("remote-debugging-port", "0");
-Electron.app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 // Present preview guests as the normal browser they are, not an
 // automation-controlled one. This is the host's own browser; the manager
-// attaches a CDP debugger to it purely for frame capture, screencast/mirroring
+// attaches a CDP debugger to it purely for frame capture
 // and agent observation, and that attachment makes Blink flip
 // navigator.webdriver to true. Google's sign-in integrity gate refuses any
 // browser reporting webdriver=true ("this browser or app may not be secure"),
@@ -95,10 +85,6 @@ Electron.app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 // not weaken the app's own sandboxing; it only stops the guest advertising
 // automation it is not actually under from the user's point of view.
 Electron.app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
-// Chromium writes the port it bound into whichever user-data directory it
-// started with. This app moves that directory afterwards, so record it here,
-// while the two still agree.
-recordDevToolsUserDataDirectory(Electron.app.getPath("userData"));
 
 // Do not rename the app here.
 //

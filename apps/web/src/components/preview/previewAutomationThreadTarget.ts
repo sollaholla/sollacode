@@ -68,10 +68,8 @@ export function canReusePreviewAutomationBrowser(input: {
  * A provider's pinned tab remains stable across its multi-step interaction
  * only when that tab belongs to the same browser profile. Another custom
  * agent's dedicated guest is never a default or explicit reuse target.
- * Before a valid pin exists, and only when the caller named no tab at all, the
- * visible interactive guest is the browser the user means by "the browser"
- * even when another ordinary thread owns that tab. A caller that DID name a
- * tab always gets that tab back.
+ * Before a valid pin exists, the visible interactive guest is the browser the
+ * user means by "the browser" even when another ordinary thread owns that tab.
  * The returned `tabId` is that visible tab so later open/status/snapshot calls
  * without an explicit id do not fall through to a hidden agent snapshot.
  */
@@ -116,15 +114,6 @@ export function resolvePreviewAutomationThreadTarget(input: {
         foreignAgentTabId: requestedTabId,
       };
     }
-    // Named a tab this host has never heard of. Keep it as the target so the
-    // caller's session sync can resolve it, and fail if it cannot — falling
-    // through to the visible-guest heuristic below answers a question nobody
-    // asked. That is how a mirror viewer on another machine got frames of the
-    // host's own window: it requested one tab, the host had no session for it,
-    // and returned pixels of whatever it happened to be showing, under the
-    // viewer's correct address bar (observed 2026-08-29, Windows viewing a Mac
-    // host). A picture of the wrong guest is worse than no picture.
-    return { threadRef: input.requestThreadRef, tabId: requestedTabId };
   }
 
   const presented = candidates.flatMap(({ threadRef, state }): PresentedPreviewTarget[] => {

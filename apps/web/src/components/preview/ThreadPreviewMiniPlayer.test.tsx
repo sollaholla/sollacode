@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   surfaceProps: [] as Array<Record<string, unknown>>,
-  mirrorProps: [] as Array<Record<string, unknown>>,
   openBrowser: vi.fn(),
   close: vi.fn(),
 }));
@@ -16,25 +15,6 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({
   },
 }));
 
-// This file covers the Electron thumbnail, which is the surface that exists
-// only where a guest can actually be rendered.
-let electron = true;
-let primaryEnvironmentId: string | null = "env-1";
-
-vi.mock("~/env", () => ({
-  get isElectron() {
-    return electron;
-  },
-}));
-vi.mock("~/state/environments", () => ({
-  usePrimaryEnvironmentId: () => primaryEnvironmentId,
-}));
-vi.mock("./PreviewRemoteSurface", () => ({
-  PreviewRemoteSurface: (props: Record<string, unknown>) => {
-    mocks.mirrorProps.push(props);
-    return null;
-  },
-}));
 vi.mock("~/browser/previewRuntimeTabId", () => ({
   previewRuntimeTabId: () => "runtime-tab-1",
 }));
@@ -84,20 +64,8 @@ function render() {
 describe("ThreadPreviewMiniPlayer", () => {
   beforeEach(() => {
     mocks.surfaceProps.length = 0;
-    mocks.mirrorProps.length = 0;
     mocks.openBrowser.mockClear();
     mocks.close.mockClear();
-    electron = true;
-    primaryEnvironmentId = "env-1";
-  });
-
-  it("mirrors an off-machine guest, still as a thumbnail you drag", () => {
-    primaryEnvironmentId = "env-2";
-    render();
-    expect(mocks.surfaceProps).toHaveLength(0);
-    // Same contract as the local surface it replaces: a click moves the
-    // window, it does not land in the page.
-    expect(mocks.mirrorProps[0]).toMatchObject({ tabId: "tab-1", interactive: false });
   });
 
   it("presents the guest surface non-interactively", () => {

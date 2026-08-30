@@ -4,7 +4,6 @@ import {
   Camera,
   ExternalLink,
   MousePointerClick,
-  TerminalIcon,
   PictureInPicture2,
   RotateCw,
   Share2Icon,
@@ -54,13 +53,6 @@ interface Props {
    */
   onPickElement?: (() => void) | undefined;
   pickActive?: boolean | undefined;
-  /**
-   * Opens DevTools for the guest. Provided only where Chromium's own cannot
-   * be opened: a guest on another machine, or a browser with no desktop bridge
-   * at all.
-   */
-  onToggleConsole?: (() => void) | undefined;
-  consoleOpen?: boolean | undefined;
   pickDisabled?: boolean | undefined;
   /** Optional reason string surfaced in the disabled tooltip. */
   pickDisabledReason?: string | undefined;
@@ -97,8 +89,6 @@ export function PreviewChromeRow({
   pictureInPictureDisabled,
   onPickElement,
   pickActive,
-  onToggleConsole,
-  consoleOpen,
   pickDisabled,
   pickDisabledReason,
   trailingActions,
@@ -286,25 +276,6 @@ export function PreviewChromeRow({
                   ? "Cancel annotation (Esc)"
                   : "Annotate elements, regions, and drawings"}
             </TooltipPopup>
-          </Tooltip>
-        ) : null}
-        {onToggleConsole ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant={consoleOpen ? "secondary" : "ghost"}
-                  size="icon-xs"
-                  onClick={onToggleConsole}
-                  aria-label={consoleOpen ? "Hide DevTools" : "Open DevTools"}
-                  aria-pressed={consoleOpen ? "true" : "false"}
-                  type="button"
-                />
-              }
-            >
-              <TerminalIcon className={cn(consoleOpen && "text-primary")} />
-            </TooltipTrigger>
-            <TooltipPopup>{consoleOpen ? "Hide DevTools" : "Open DevTools"}</TooltipPopup>
           </Tooltip>
         ) : null}
         {onCapture ? (
