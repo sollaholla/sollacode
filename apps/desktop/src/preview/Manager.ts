@@ -153,6 +153,7 @@ interface AutomationSnapshotPage {
   readonly viewportWidth: number;
   readonly viewportHeight: number;
   readonly interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
+  readonly editableRegions: NonNullable<PreviewAutomationSnapshot["editableRegions"]>;
   /** Stable page-shell landmarks used only to bracket image/DOM consistency. */
   readonly structuralElements?: ReadonlyArray<{
     readonly tag: string;
@@ -255,6 +256,7 @@ const ZOOM_EPSILON = 0.001;
 const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
+const MAX_EDITABLE_REGIONS = 100;
 /** Bounds a country or timezone list, which run to hundreds of options. */
 const MAX_SELECT_OPTIONS = 200;
 const MAX_AUTOMATION_SCREENSHOT_WIDTH = 1024;
@@ -421,7 +423,11 @@ const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
-const AUTOMATION_SNAPSHOT_STAGE_TIMEOUT = "1 second";
+// The renderer acknowledges only after React has mounted and measured the
+// hidden guest. One second was routinely consumed by a long thread catching
+// up, causing every remote poll to tear down the stage and begin again before
+// it could ever paint.
+const AUTOMATION_SNAPSHOT_STAGE_TIMEOUT = "5 seconds";
 const AUTOMATION_SNAPSHOT_PRESENTATION_TIMEOUT = "1 second";
 const AUTOMATION_SNAPSHOT_SCREENCAST_TIMEOUT = "2 seconds";
 const previewActivityLeasesCurrent = Metric.gauge("t3_preview_activity_leases_current", {
@@ -4503,6 +4509,36 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const rect = element.getBoundingClientRect();
             return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
           };
+          const editableInputMode = (element) => {
+            if (!(element instanceof HTMLElement) ||
+                element.matches(":disabled,[readonly],[aria-disabled=true]") ||
+                (element.hasAttribute("contenteditable") && !element.isContentEditable)) {
+              return null;
+            }
+            const requestedMode = (element.getAttribute("inputmode") || "").toLowerCase();
+            if (requestedMode === "none") return null;
+            const supportedModes = new Set(["text", "decimal", "numeric", "tel", "search", "email", "url"]);
+            if (supportedModes.has(requestedMode)) return requestedMode;
+            if (element instanceof HTMLInputElement) {
+              const type = (element.type || "text").toLowerCase();
+              if (["hidden", "button", "checkbox", "color", "date", "datetime-local", "file", "image", "month", "radio", "range", "reset", "submit", "time", "week"].includes(type)) return null;
+              if (["email", "search", "tel", "url"].includes(type)) return type;
+              if (type === "number") return "decimal";
+              return "text";
+            }
+            return element instanceof HTMLTextAreaElement || element.isContentEditable || element.getAttribute("role") === "textbox"
+              ? "text"
+              : null;
+          };
+          const editableRegions = Array.from(document.querySelectorAll(
+            "input,textarea,[contenteditable],[role=textbox]"
+          )).filter(visible).map((element) => ({ element, inputMode: editableInputMode(element) }))
+            .filter((entry) => entry.inputMode !== null)
+            .slice(0, ${MAX_EDITABLE_REGIONS})
+            .map(({ element, inputMode }) => {
+              const rect = element.getBoundingClientRect();
+              return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, inputMode };
+            });
           const elements = Array.from(document.querySelectorAll(
             "a[href],button,input,textarea,select,[role],[tabindex]"
           )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
@@ -4557,13 +4593,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             viewportWidth: window.innerWidth,
             viewportHeight: window.innerHeight,
             interactiveElements: elements,
+            editableRegions,
             structuralElements
           };
           })()`,
           { returnByValue: true },
         );
+        const { documentKind, ...snapshotPageWithoutDocumentKind } = snapshotPage;
         return {
-          ...snapshotPage,
+          ...snapshotPageWithoutDocumentKind,
+          ...(typeof documentKind === "string" ? { documentKind } : {}),
           navigationGeneration,
           navigationGenerationAfterRead: playwrightExecutionContextGenerations.get(tabId) ?? 0,
         };
@@ -4945,11 +4984,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const pdfDocument =
         page.documentKind === "pdf" || isPdfPreviewDocument({ url: page.url, title: page.title });
       if (axText.length > 0 && (pdfDocument || page.visibleText.trim().length === 0)) {
-        page = {
-          ...page,
-          visibleText: axText,
-          documentKind: pdfDocument ? "pdf" : page.documentKind,
-        };
+        page = pdfDocument
+          ? { ...page, visibleText: axText, documentKind: "pdf" }
+          : { ...page, visibleText: axText };
       } else if (pdfDocument && page.documentKind !== "pdf") {
         page = { ...page, documentKind: "pdf" };
       }
@@ -5214,6 +5251,51 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           typeof width === "number" && typeof height === "number" && width > 0 && height > 0
             ? { width: Math.round(width), height: Math.round(height) }
             : undefined;
+        const reportedEditableRegions = yield* evaluateWithDebugger<
+          NonNullable<PreviewAutomationFrame["editableRegions"]>
+        >(
+          tabId,
+          send,
+          `(() => {
+            const visible = (element) => {
+              const style = getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return style.visibility !== "hidden" && style.display !== "none" &&
+                rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+                rect.left < window.innerWidth && rect.top < window.innerHeight;
+            };
+            const inputMode = (element) => {
+              if (!(element instanceof HTMLElement) ||
+                  element.matches(":disabled,[readonly],[aria-disabled=true]") ||
+                  (element.hasAttribute("contenteditable") && !element.isContentEditable)) return null;
+              const requested = (element.getAttribute("inputmode") || "").toLowerCase();
+              if (requested === "none") return null;
+              if (["text", "decimal", "numeric", "tel", "search", "email", "url"].includes(requested)) return requested;
+              if (element instanceof HTMLInputElement) {
+                const type = (element.type || "text").toLowerCase();
+                if (["hidden", "button", "checkbox", "color", "date", "datetime-local", "file", "image", "month", "radio", "range", "reset", "submit", "time", "week"].includes(type)) return null;
+                if (["email", "search", "tel", "url"].includes(type)) return type;
+                return type === "number" ? "decimal" : "text";
+              }
+              return element instanceof HTMLTextAreaElement || element.isContentEditable || element.getAttribute("role") === "textbox"
+                ? "text"
+                : null;
+            };
+            return Array.from(document.querySelectorAll("input,textarea,[contenteditable],[role=textbox]"))
+              .filter(visible)
+              .map((element) => ({ element, inputMode: inputMode(element) }))
+              .filter((entry) => entry.inputMode !== null)
+              .slice(0, ${MAX_EDITABLE_REGIONS})
+              .map(({ element, inputMode }) => {
+                const rect = element.getBoundingClientRect();
+                return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, inputMode };
+              });
+          })()`,
+          { returnByValue: true },
+        ).pipe(Effect.catch(() => Effect.succeed([])));
+        const editableRegions = Array.isArray(reportedEditableRegions)
+          ? reportedEditableRegions
+          : [];
         // The frame is a remote viewer's only feed, so a download held for
         // approval has to travel in it — the desktop's Allow/Deny overlay
         // never leaves this machine, and without this line a person watching
@@ -5235,6 +5317,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             height: viewport?.height ?? 0,
           },
           ...(viewport === undefined ? {} : { viewport }),
+          ...(editableRegions.length === 0 ? {} : { editableRegions }),
           ...(heldApprovals.length === 0 ? {} : { pendingDownloadApprovals: [...heldApprovals] }),
         } satisfies PreviewAutomationFrame;
       }),

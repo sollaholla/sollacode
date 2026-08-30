@@ -251,6 +251,25 @@ export const PreviewRemoteSnapshotInput = Schema.Struct({
 export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
 
 /**
+ * A text-editing target visible in a mirrored browser frame.
+ *
+ * Mobile browsers only show their software keyboard when a local input is
+ * focused synchronously inside the original tap. Shipping these small bounds
+ * with the frame lets the viewer know that before it sends the asynchronous
+ * click to the guest.
+ */
+export const PreviewRemoteEditableRegion = Schema.Struct({
+  x: Schema.Finite,
+  y: Schema.Finite,
+  width: Schema.Finite,
+  height: Schema.Finite,
+  inputMode: Schema.optional(
+    Schema.Literals(["text", "decimal", "numeric", "tel", "search", "email", "url"]),
+  ),
+});
+export type PreviewRemoteEditableRegion = typeof PreviewRemoteEditableRegion.Type;
+
+/**
  * Mobile only needs the visible browser frame and navigation identity. Keep
  * console/network/accessibility payloads out of this high-frequency path.
  */
@@ -278,6 +297,8 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
       height: Schema.Int,
     }),
   ),
+  /** Visible text controls, bounded by the host and absent on older hosts. */
+  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
   /**
    * Downloads the host is holding for the user's approval on this tab.
    *

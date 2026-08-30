@@ -93,6 +93,9 @@ export function captureRemotePreviewSnapshot(
                 // Carried so a viewer can aim input at the page rather than at
                 // the picture of it. Older hosts omit it and stay view-only.
                 ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
+                ...(snapshot.editableRegions === undefined
+                  ? {}
+                  : { editableRegions: snapshot.editableRegions }),
                 ...(snapshot.pendingDownloadApprovals === undefined ||
                 snapshot.pendingDownloadApprovals.length === 0
                   ? {}
@@ -130,6 +133,9 @@ export function captureRemotePreviewSnapshot(
             capturedAt,
             screenshot: frame.screenshot,
             ...(frame.viewport === undefined ? {} : { viewport: frame.viewport }),
+            ...(frame.editableRegions === undefined
+              ? {}
+              : { editableRegions: frame.editableRegions }),
             // A held download rides the frame because the frame is all a
             // remote viewer polls; drop the field when empty so the common
             // frame stays exactly as small as before.
