@@ -1,5 +1,5 @@
 import type { PreviewAutomationSnapshot } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   clearPreviewHumanVerification,
@@ -75,9 +75,30 @@ describe("preview human verification", () => {
     });
   });
 
-  it("recognizes cf-mitigated challenge responses", () => {
+  it("does not block on a background cf-mitigated response without visible challenge UI", () => {
     const result = detectPreviewHumanVerification({
       snapshot: snapshot({
+        networkEntries: [
+          {
+            url: "https://example.com/",
+            method: "GET",
+            status: 200,
+            failed: false,
+            cfMitigated: true,
+            timestamp: "2026-08-26T12:00:00.000Z",
+          },
+        ],
+      }),
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("uses cf-mitigated as diagnostics when the page visibly presents a challenge", () => {
+    const result = detectPreviewHumanVerification({
+      snapshot: snapshot({
+        title: "Just a moment...",
+        visibleText: "Checking your browser before continuing",
         networkEntries: [
           {
             url: "https://example.com/",
@@ -94,7 +115,6 @@ describe("preview human verification", () => {
     expect(result?.kind).toBe("full-page-challenge");
     expect(result?.diagnostic.cfMitigated).toBe(true);
     expect(result?.diagnostic.responseStatusCode).toBe(200);
-    expect(result?.diagnostic.challengesCloudflareReachable).toBe(true);
   });
 
   it("recognizes a staged Turnstile widget and captures only visible diagnostics", () => {
@@ -171,6 +191,7 @@ describe("preview human verification", () => {
 
     await inspectPreviewHumanVerification({
       runtimeTabId: tabId,
+      waitForConfirmation: () => Promise.resolve(),
       evaluate: async () => {
         evaluations += 1;
         return challengeProbe;
@@ -183,7 +204,7 @@ describe("preview human verification", () => {
         return { ...challengeProbe, visibleText: "Ready", hasTurnstile: false };
       },
     });
-    expect(evaluations).toBe(1);
+    expect(evaluations).toBe(2);
     expect(getPreviewHumanVerification(tabId)).not.toBeNull();
 
     const result = await inspectPreviewHumanVerification({
@@ -197,6 +218,39 @@ describe("preview human verification", () => {
       }),
     });
     expect(result).toBeNull();
+    expect(getPreviewHumanVerification(tabId)).toBeNull();
+  });
+
+  it("does not latch a transient challenge that clears on confirmation", async () => {
+    const tabId = "runtime-tab-transient";
+    clearPreviewHumanVerification(tabId);
+    const challengeProbe = {
+      url: "https://example.com/",
+      title: "Just a moment...",
+      visibleText: "Checking your browser",
+      browserUserAgent: "Mozilla/5.0 Chrome/140.0.0.0",
+      hasTurnstile: false,
+      hasFullPageChallenge: true,
+    };
+    const readyProbe = {
+      ...challengeProbe,
+      title: "Example",
+      visibleText: "Ready",
+      hasFullPageChallenge: false,
+    };
+    const evaluate = vi
+      .fn<() => Promise<typeof challengeProbe | typeof readyProbe>>()
+      .mockResolvedValueOnce(challengeProbe)
+      .mockResolvedValueOnce(readyProbe);
+
+    await expect(
+      inspectPreviewHumanVerification({
+        runtimeTabId: tabId,
+        evaluate,
+        waitForConfirmation: () => Promise.resolve(),
+      }),
+    ).resolves.toBeNull();
+    expect(evaluate).toHaveBeenCalledTimes(2);
     expect(getPreviewHumanVerification(tabId)).toBeNull();
   });
 
