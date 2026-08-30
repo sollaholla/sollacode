@@ -83,6 +83,7 @@ const PreferencesDb = Schema.Struct({
   taskCompletions: Schema.Int,
   taskFailures: Schema.Int,
   agentMessages: Schema.Int,
+  autoApproveTasks: Schema.Int,
   updatedAt: VmAgentNotificationPreferences.fields.updatedAt,
 });
 
@@ -484,7 +485,8 @@ const make = Effect.gen(function* () {
     execute: ({ vmAgentId }) => sql`
       SELECT vm_agent_id AS "vmAgentId", enabled,
              task_completions AS "taskCompletions", task_failures AS "taskFailures",
-             agent_messages AS "agentMessages", updated_at AS "updatedAt"
+             agent_messages AS "agentMessages", auto_approve_tasks AS "autoApproveTasks",
+             updated_at AS "updatedAt"
       FROM vm_agent_notification_preferences
       WHERE vm_agent_id = ${vmAgentId}
     `,
@@ -494,16 +496,19 @@ const make = Effect.gen(function* () {
     Request: PreferencesDb,
     execute: (preferences) => sql`
       INSERT INTO vm_agent_notification_preferences (
-        vm_agent_id, enabled, task_completions, task_failures, agent_messages, updated_at
+        vm_agent_id, enabled, task_completions, task_failures, agent_messages,
+        auto_approve_tasks, updated_at
       ) VALUES (
         ${preferences.vmAgentId}, ${preferences.enabled}, ${preferences.taskCompletions},
-        ${preferences.taskFailures}, ${preferences.agentMessages}, ${preferences.updatedAt}
+        ${preferences.taskFailures}, ${preferences.agentMessages},
+        ${preferences.autoApproveTasks}, ${preferences.updatedAt}
       )
       ON CONFLICT (vm_agent_id) DO UPDATE SET
         enabled = excluded.enabled,
         task_completions = excluded.task_completions,
         task_failures = excluded.task_failures,
         agent_messages = excluded.agent_messages,
+        auto_approve_tasks = excluded.auto_approve_tasks,
         updated_at = excluded.updated_at
     `,
   });
@@ -731,6 +736,7 @@ const make = Effect.gen(function* () {
     taskCompletions: row.taskCompletions !== 0,
     taskFailures: row.taskFailures !== 0,
     agentMessages: row.agentMessages !== 0,
+    autoApproveTasks: row.autoApproveTasks !== 0,
     updatedAt: row.updatedAt,
   });
 
@@ -753,6 +759,7 @@ const make = Effect.gen(function* () {
             taskCompletions: 1,
             taskFailures: 1,
             agentMessages: 1,
+            autoApproveTasks: 1,
             updatedAt: input.now,
           }).pipe(
             Effect.when(
@@ -1026,6 +1033,9 @@ const make = Effect.gen(function* () {
         taskCompletions: preferences.taskCompletions ? 1 : 0,
         taskFailures: preferences.taskFailures ? 1 : 0,
         agentMessages: preferences.agentMessages ? 1 : 0,
+        // Optional on the wire (older peers omit it); stored as int with the
+        // default ON.
+        autoApproveTasks: (preferences.autoApproveTasks ?? true) ? 1 : 0,
       }).pipe(mapError("updateNotificationPreferences"), Effect.as(preferences));
 
   const upsertArtifact: VmAgentWorkspaceStoreShape["upsertArtifact"] = (

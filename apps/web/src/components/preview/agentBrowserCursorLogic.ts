@@ -16,21 +16,22 @@ export interface AgentBrowserCursorSurface {
 /**
  * Where to draw the agent cursor for a point the guest page reported.
  *
- * The guest's coordinates are already in the same pixels the panel draws in,
- * because the fit-to-panel `scale()` on the `<webview>` shrinks the guest's own
- * layout viewport with it — a 1280-wide freeform viewport measures
- * `window.innerWidth === 1169` once it is scaled to 0.913 to fit. Applying that
- * scale here too shrank the cursor's travel a second time, so it drifted
- * further from the real click the further it got from the top-left while the
- * click itself, which uses the guest coordinates directly, always landed
- * correctly.
+ * The `<webview>` element is laid out at the guest's full logical size
+ * (`viewportWidth / viewportScale` — e.g. the whole 1280 of a freeform
+ * viewport) and then shrunk visually with `transform: scale(viewportScale)`
+ * (HostedBrowserWebview). A CSS transform does not change the guest's layout
+ * viewport, so automation coordinates arrive in the UNSCALED guest space and
+ * must be multiplied by the fit scale to land on the drawn pixels; skipping
+ * it left the cursor increasingly short of the real click toward the
+ * bottom-right of a scaled-down panel (reported 2026-08-30). In fill mode the
+ * scale is 1, so this is exact there too.
  *
- * Zoom is different and does belong: the element is laid out at
- * `width * zoomFactor` CSS pixels and the guest reports `width`, so one guest
- * pixel really is `zoomFactor` panel pixels.
+ * Zoom multiplies as well: the element is laid out at `width * zoomFactor`
+ * CSS pixels while the guest reports `width`, so one guest pixel really is
+ * `zoomFactor` panel pixels before the fit scale applies.
  *
- * `scale` stays in the surface type because the caller has it; it is
- * deliberately unused.
+ * The wrapper's own scrollbars pan the already-scaled canvas, so scroll
+ * offsets subtract after scaling.
  */
 export function agentBrowserCursorOffset(input: {
   readonly x: number;
@@ -39,8 +40,9 @@ export function agentBrowserCursorOffset(input: {
   readonly surface: AgentBrowserCursorSurface | null;
 }): { readonly x: number; readonly y: number } {
   const surface = input.surface;
+  const scale = surface !== null && surface.scale > 0 ? surface.scale : 1;
   return {
-    x: input.x * input.zoomFactor + (surface?.x ?? 0) - (surface?.scrollLeft ?? 0),
-    y: input.y * input.zoomFactor + (surface?.y ?? 0) - (surface?.scrollTop ?? 0),
+    x: input.x * input.zoomFactor * scale + (surface?.x ?? 0) - (surface?.scrollLeft ?? 0),
+    y: input.y * input.zoomFactor * scale + (surface?.y ?? 0) - (surface?.scrollTop ?? 0),
   };
 }

@@ -352,6 +352,42 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.snapshot?.canGoBack).toBe(false);
   });
 
+  it("focuses the tab an agent starts working in, once per engagement", () => {
+    const first = makeSnapshot();
+    const second = { ...makeSnapshot(), tabId: "tab_2", updatedAt: "2026-01-02T00:00:00.000Z" };
+    applyPreviewServerSnapshot(ref, first);
+    applyPreviewServerSnapshot(ref, second);
+    setActivePreviewTab(ref, first.tabId);
+    const overlay = {
+      hasWebContents: true,
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1,
+      pictureInPicture: false,
+      colorScheme: "system" as const,
+      controller: "none" as const,
+      agentActive: false,
+      downloads: [],
+      pendingDownloadApprovals: [],
+    };
+
+    // The rising edge of agent activity follows the agent to that tab.
+    applyPreviewDesktopState(ref, second.tabId, { ...overlay, agentActive: true });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(second.tabId);
+
+    // The user can look elsewhere mid-turn: a refresh of the SAME engaged
+    // state is not a new engagement and must not yank them back.
+    setActivePreviewTab(ref, first.tabId);
+    applyPreviewDesktopState(ref, second.tabId, { ...overlay, agentActive: true, loading: true });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(first.tabId);
+
+    // A fresh engagement (activity dropped, then returned) focuses again.
+    applyPreviewDesktopState(ref, second.tabId, { ...overlay, agentActive: false });
+    applyPreviewDesktopState(ref, second.tabId, { ...overlay, controller: "agent" as const });
+    expect(readThreadPreviewState(ref).activeTabId).toBe(second.tabId);
+  });
+
   it("retains multiple tabs and switches active desktop state", () => {
     const first = makeSnapshot();
     const second = { ...makeSnapshot(), tabId: "tab_2", updatedAt: "2026-01-02T00:00:00.000Z" };

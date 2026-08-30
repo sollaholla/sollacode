@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   VmAgent,
   VmAgentArtifactDefinition,
+  VmAgentNotificationPreferences,
   VmAgentTask,
   VmAgentWorkspaceSnapshot,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import { vmAgentEnvironment } from "~/state/vmAgents";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Switch } from "~/components/ui/switch";
 
 import { CreateTaskDialog } from "./CreateTaskDialog";
 import { buildWorkspaceHtmlDocument } from "./workspaceHtmlArtifact";
@@ -95,6 +97,12 @@ export function AgentTasksPanel(props: {
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
+      <TaskAutoApprovalControl
+        environmentId={props.environmentId}
+        preferences={props.workspace?.notificationPreferences ?? null}
+        onError={setError}
+      />
+
       <div className="flex flex-col gap-2">
         {(props.workspace?.tasks ?? []).map((task) => {
           const latestRun = props.workspace?.runs.find((run) => run.taskId === task.taskId);
@@ -102,16 +110,27 @@ export function AgentTasksPanel(props: {
             <article key={task.taskId} className="rounded-xl border p-3">
               <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
+                  {/* min-w-0 on the title: in this wrapping row the h3 keeps
+                      its single-line min-content width otherwise, and one long
+                      title pushed the whole panel wider than a phone viewport
+                      (the + button and Pause buttons rendered clipped). */}
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <h3 className="truncate text-sm font-medium">{task.title}</h3>
-                    <Badge variant={task.status === "active" ? "success" : "secondary"}>
+                    <h3 className="min-w-0 truncate text-sm font-medium">{task.title}</h3>
+                    <Badge
+                      className="shrink-0"
+                      variant={task.status === "active" ? "success" : "secondary"}
+                    >
                       {task.status}
                     </Badge>
                     {task.approvalState === "pending" ? (
-                      <Badge variant="warning">approval needed</Badge>
+                      <Badge className="shrink-0" variant="warning">
+                        approval needed
+                      </Badge>
                     ) : null}
                   </div>
-                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.prompt}</p>
+                  <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+                    {task.prompt}
+                  </p>
                   <p className="mt-2 text-[11px] text-muted-foreground">
                     {task.schedule?.kind === "interval"
                       ? `Every ${task.schedule.everyMinutes} minutes · next ${formatTime(task.nextRunAt)}`
@@ -236,6 +255,57 @@ export function AgentArtifactPanel(props: { readonly workspace: VmAgentWorkspace
   );
 }
 
+/**
+ * Auto-approval for agent-scheduled work: on by default, honored only while
+ * the agent's chat runs in Agent mode (VmAgentWorkspace.autoApprovesTasks).
+ */
+function TaskAutoApprovalControl(props: {
+  readonly environmentId: EnvironmentId;
+  readonly preferences: VmAgentNotificationPreferences | null;
+  readonly onError: (message: string | null) => void;
+}) {
+  const updatePreferences = useAtomCommand(vmAgentEnvironment.updateNotificationPreferences, {
+    reportFailure: false,
+  });
+  const enabled = props.preferences?.autoApproveTasks ?? true;
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-xl border p-3">
+      <span className="min-w-0">
+        <span className="block text-sm font-medium">Auto-approve new agent tasks</span>
+        <span className="block text-xs text-muted-foreground">
+          While this chat runs in Agent mode, work the agent schedules for itself activates without
+          waiting for approval.
+        </span>
+      </span>
+      <Switch
+        checked={enabled}
+        disabled={props.preferences === null}
+        aria-label="Auto-approve new agent tasks"
+        onCheckedChange={(checked) => {
+          const current = props.preferences;
+          if (!current) return;
+          props.onError(null);
+          void updatePreferences({
+            environmentId: props.environmentId,
+            input: {
+              vmAgentId: current.vmAgentId,
+              enabled: current.enabled,
+              taskCompletions: current.taskCompletions,
+              taskFailures: current.taskFailures,
+              agentMessages: current.agentMessages,
+              autoApproveTasks: Boolean(checked),
+            },
+          }).then((result) => {
+            if (result._tag === "Failure") {
+              props.onError("Could not update task auto-approval.");
+            }
+          });
+        }}
+      />
+    </label>
+  );
+}
+
 function ArtifactDefinition({ definition }: { readonly definition: VmAgentArtifactDefinition }) {
   switch (definition.kind) {
     case "metrics":
@@ -354,7 +424,7 @@ export function WorkspacePanel(props: {
         className={
           props.fill
             ? "flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3 sm:p-4"
-            : "mx-auto flex min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4"
+            : "mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4 p-3 sm:p-4"
         }
       >
         <div className="flex items-start justify-between gap-3">

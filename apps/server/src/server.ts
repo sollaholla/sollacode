@@ -341,7 +341,12 @@ const VmAgentPersistenceLayerLive = Layer.mergeAll(
 
 const VmManagerLayerLive = VmManager.VmManagerLive;
 
-const VmAgentWorkspaceLayerLive = VmAgentWorkspace.VmAgentWorkspaceLive;
+// The workspace consults the live projection (the agent chat's interaction
+// mode) to decide task auto-approval, so it needs the orchestration read side
+// the same way the collaboration layer below does.
+const VmAgentWorkspaceLayerLive = VmAgentWorkspace.VmAgentWorkspaceLive.pipe(
+  Layer.provide(OrchestrationLayerLive),
+);
 
 const VmAgentCollaborationLayerLive = VmAgentCollaborationLive.pipe(
   Layer.provide(OrchestrationLayerLive),

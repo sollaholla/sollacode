@@ -7,6 +7,7 @@ import {
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -114,6 +115,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }),
   );
   const resubscribeRequests = yield* Queue.sliding<void>(1);
+  // Stall-watchdog bookkeeping: when the stream last made observable progress
+  // (any delivered chunk zeroes the stall counter; a fresh subscribe attempt
+  // restarts only the timing window).
+  const lastStreamProgressAt = yield* Ref.make(0);
+  const consecutiveStalls = yield* Ref.make(0);
+  const stampStreamProgress = Clock.currentTimeMillis.pipe(
+    Effect.flatMap((now) =>
+      Ref.set(lastStreamProgressAt, now).pipe(Effect.andThen(Ref.set(consecutiveStalls, 0))),
+    ),
+  );
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
@@ -324,6 +335,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyChunk = Effect.fn("EnvironmentThreadState.applyChunk")(function* (
     items: ReadonlyArray<OrchestrationThreadStreamItem>,
   ) {
+    yield* stampStreamProgress;
     let pending: Array<ThreadEventItem> = [];
     for (const item of items) {
       if (item.kind === "event") {
@@ -376,6 +388,37 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       ),
   });
 
+  // Mobile Safari can strand a subscription silently: the tab returns from the
+  // background with a zombie socket the supervisor still believes in, no
+  // transport error surfaces, and the thread sits on "Loading conversation…" /
+  // "Catching up…" until the user fully reloads the page. While the UI is in a
+  // waiting phase, watch for the stream making no progress and force a
+  // resubscribe; after two consecutive stalls assume the resume cursor or the
+  // socket itself is poisoned and reload from a fresh snapshot. The interval
+  // and threshold sit far above the TestClock adjustments the sync tests make
+  // (≤500ms), so the watchdog is inert there.
+  const watchdogTick = Effect.gen(function* () {
+    yield* Effect.sleep(Duration.seconds(5));
+    const current = yield* SubscriptionRef.get(state);
+    if (current.status !== "synchronizing") return;
+    const session = yield* SubscriptionRef.get(supervisor.session);
+    if (Option.isNone(session)) return;
+    const last = yield* Ref.get(lastStreamProgressAt);
+    const now = yield* Clock.currentTimeMillis;
+    if (last === 0 || now - last < 15_000) return;
+    const stalls = (yield* Ref.get(consecutiveStalls)) + 1;
+    yield* Ref.set(consecutiveStalls, stalls);
+    yield* Ref.set(lastStreamProgressAt, now);
+    if (stalls >= 2) {
+      yield* Ref.set(forceSnapshot, true);
+    }
+    yield* Effect.logWarning(
+      "Thread subscription stalled while synchronizing; forcing a resubscribe.",
+    ).pipe(Effect.annotateLogs({ threadId, stalls, forcedSnapshot: stalls >= 2 }));
+    yield* Queue.offer(resubscribeRequests, undefined);
+  });
+  yield* Effect.forkScoped(Effect.forever(watchdogTick));
+
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
@@ -388,6 +431,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* Ref.set(synchronizedGeneration, Option.none());
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
+        // A fresh attempt restarts the stall window without erasing the
+        // escalation count — repeated silent attempts must still escalate.
+        yield* Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => Ref.set(lastStreamProgressAt, now)),
+        );
 
         let current = yield* SubscriptionRef.get(state);
         const mustLoadSnapshot = yield* Ref.get(forceSnapshot);

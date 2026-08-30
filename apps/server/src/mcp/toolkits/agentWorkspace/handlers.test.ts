@@ -68,7 +68,7 @@ const invocation = (
   issuedAt: 1,
 });
 
-const makeHarness = (boundAgent: VmAgent | null = agent) => {
+const makeHarness = (boundAgent: VmAgent | null = agent, autoApprovesTasks = false) => {
   const created: CreateWorkspaceTaskInput[] = [];
   const updated: UpdateWorkspaceTaskInput[] = [];
   const raised: Array<{ readonly title: string; readonly detail: string }> = [];
@@ -118,6 +118,7 @@ const makeHarness = (boundAgent: VmAgent | null = agent) => {
         };
       }),
     notify: () => Effect.succeed(false),
+    autoApprovesTasks: () => Effect.succeed(autoApprovesTasks),
     raiseBlocker: (input) =>
       Effect.sync(() => {
         raised.push(input);
@@ -313,5 +314,22 @@ it.effect("requires approval when an agent changes an existing recurring task", 
     assert.strictEqual(harness.updated[0]?.status, "draft");
     assert.strictEqual(harness.updated[0]?.approvalState, "pending");
     assert.include(result.status, "waiting for user approval");
+  }),
+);
+
+it.effect("update_task keeps recurring work active when auto-approval applies", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness(agent, true);
+    const result = yield* run(
+      handleAgentWorkspace({
+        action: "update_task",
+        taskId: "recurring-task",
+        prompt: "Check the dashboard twice.",
+      }),
+      harness.layer,
+    );
+    assert.strictEqual(harness.updated[0]?.status, "active");
+    assert.strictEqual(harness.updated[0]?.approvalState, "approved");
+    assert.include(result.status, "auto-approved");
   }),
 );

@@ -28,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { VmAgentStore } from "../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspaceStore } from "../persistence/Services/VmAgentWorkspaces.ts";
 import { ARCHIVED_NOTIFICATION_RETENTION_HOURS } from "../persistence/Layers/VmAgentWorkspaces.ts";
@@ -75,6 +76,14 @@ export interface VmAgentWorkspaceShape {
   readonly createTask: (
     input: CreateWorkspaceTaskInput,
   ) => Effect.Effect<VmAgentTask, VmAgentWorkspaceError>;
+  /**
+   * Whether a task this agent creates for itself right now activates without
+   * user approval: the per-agent auto-approval preference is on (the default)
+   * AND the agent's chat currently runs in Agent mode.
+   */
+  readonly autoApprovesTasks: (
+    vmAgentId: VmAgentId,
+  ) => Effect.Effect<boolean, VmAgentWorkspaceError>;
   readonly updateTask: (
     input: UpdateWorkspaceTaskInput,
   ) => Effect.Effect<VmAgentTask, VmAgentWorkspaceError>;
@@ -173,6 +182,7 @@ const nextRunAt = (
 export const make = Effect.gen(function* () {
   const agents = yield* VmAgentStore;
   const store = yield* VmAgentWorkspaceStore;
+  const projections = yield* ProjectionSnapshotQuery;
   const listeners = new Map<string, Set<WorkspaceListener>>();
   const attentionListeners = new Set<AttentionListener>();
 
@@ -292,6 +302,25 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const autoApprovesTasks: VmAgentWorkspaceShape["autoApprovesTasks"] = Effect.fn(
+    "VmAgentWorkspace.autoApprovesTasks",
+  )(function* (vmAgentId) {
+    const agent = yield* requireAgent(vmAgentId);
+    if (agent.threadId === null) return false;
+    yield* ensure(vmAgentId);
+    const preferences = (yield* store
+      .snapshot(vmAgentId)
+      .pipe(Effect.mapError(operationError("reading task auto-approval preference"))))
+      .notificationPreferences;
+    if (preferences.autoApproveTasks === false) return false;
+    // Fail closed: an unreadable projection means no auto-approval — a task
+    // must never activate behind the user's back on a read error.
+    const shell = yield* projections
+      .getThreadShellById(agent.threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    return Option.isSome(shell) && shell.value.interactionMode === "agent";
+  });
+
   const createTask: VmAgentWorkspaceShape["createTask"] = Effect.fn("VmAgentWorkspace.createTask")(
     function* (input) {
       yield* ensure(input.vmAgentId);
@@ -299,10 +328,11 @@ export const make = Effect.gen(function* () {
       const artifact = (yield* store
         .snapshot(input.vmAgentId)
         .pipe(Effect.mapError(operationError("reading agent artifact")))).artifact;
+      const autoApproved =
+        input.createdBy === "agent" && (yield* autoApprovesTasks(input.vmAgentId));
       const agentMayActivate =
         input.createdBy === "agent" &&
-        input.activate === true &&
-        input.schedule?.kind !== "interval";
+        (autoApproved || (input.activate === true && input.schedule?.kind !== "interval"));
       const approvalState =
         input.createdBy === "user" || agentMayActivate
           ? ("approved" as const)
@@ -479,8 +509,18 @@ export const make = Effect.gen(function* () {
   const updateNotificationPreferences: VmAgentWorkspaceShape["updateNotificationPreferences"] =
     Effect.fn("VmAgentWorkspace.updateNotificationPreferences")(function* (input) {
       yield* ensure(input.vmAgentId);
+      // Older clients omit autoApproveTasks entirely; preserve the stored
+      // value instead of resetting it on every unrelated toggle.
+      const current = (yield* store
+        .snapshot(input.vmAgentId)
+        .pipe(Effect.mapError(operationError("reading agent notification preferences"))))
+        .notificationPreferences;
       const preferences = yield* store
-        .updateNotificationPreferences({ ...input, updatedAt: yield* nowIso })
+        .updateNotificationPreferences({
+          ...input,
+          autoApproveTasks: input.autoApproveTasks ?? current.autoApproveTasks ?? true,
+          updatedAt: yield* nowIso,
+        })
         .pipe(Effect.mapError(operationError("updating agent notification preferences")));
       yield* publish(input.vmAgentId);
       return preferences;
@@ -549,6 +589,7 @@ export const make = Effect.gen(function* () {
     subscribe,
     subscribeAttention,
     createTask,
+    autoApprovesTasks,
     updateTask,
     deleteTask,
     runTaskNow,

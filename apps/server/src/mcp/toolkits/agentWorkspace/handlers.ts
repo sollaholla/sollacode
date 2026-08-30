@@ -78,7 +78,9 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
         status:
           task.approvalState === "pending"
             ? "Task saved as a draft and is waiting for user approval."
-            : "Task created and queued when due.",
+            : task.schedule?.kind === "interval"
+              ? "Task created and activated (auto-approved: this chat runs in Agent mode)."
+              : "Task created and queued when due.",
         task,
       };
     }
@@ -92,6 +94,11 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
         input.schedule === undefined
           ? current?.schedule?.kind === "interval"
           : input.schedule?.kind === "interval";
+      const autoApproved = recurring
+        ? yield* workspace
+            .autoApprovesTasks(vmAgentId)
+            .pipe(Effect.mapError(mapFailure("checking the task approval boundary")))
+        : false;
       const task = yield* workspace
         .updateTask({
           vmAgentId,
@@ -105,14 +112,20 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
           ...(input.notificationPolicy !== undefined
             ? { notificationPolicy: input.notificationPolicy }
             : {}),
-          ...(recurring ? { status: "draft", approvalState: "pending" } : {}),
+          ...(recurring
+            ? autoApproved
+              ? { status: "active" as const, approvalState: "approved" as const }
+              : { status: "draft" as const, approvalState: "pending" as const }
+            : {}),
         })
         .pipe(Effect.mapError(mapFailure("updating the task")));
       yield* scheduler.wake();
       return {
         action: input.action,
         status: recurring
-          ? "Recurring task update saved and is waiting for user approval."
+          ? autoApproved
+            ? "Recurring task updated and active (auto-approved: this chat runs in Agent mode)."
+            : "Recurring task update saved and is waiting for user approval."
           : "Task updated.",
         task,
       };
