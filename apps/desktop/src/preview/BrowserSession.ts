@@ -25,11 +25,67 @@ import {
   resolveDownloadApprovalEffects,
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
-import { selectLegacyBrowserProfile } from "./browserProfileScope.ts";
+import {
+  environmentScopeOf,
+  isThreadScopedProfile,
+  selectLegacyBrowserProfile,
+} from "./browserProfileScope.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 // Electron strips the `persist:` marker when it names the on-disk folder.
 const PARTITION_DIRECTORY_PREFIX = PREVIEW_PARTITION_PREFIX.slice("persist:".length);
+
+// A durable "the one-time legacy per-thread → per-environment fold has run"
+// marker. It used to be an in-memory boolean, so the fold re-ran on every
+// launch and could swap a fresh jar for a staler one (see adoptOnDisk).
+const LEGACY_ADOPTION_MARKER = ".t3-legacy-adoption-complete";
+
+// The auth-bearing stores copied when a per-thread profile is first seeded from
+// the environment jar, so an agent's own partition starts with the user's
+// logins and then diverges. The HTTP/code caches are deliberately NOT copied —
+// they refill on their own and would multiply disk use per thread.
+const SEEDED_PROFILE_STORE_PATHS: ReadonlyArray<ReadonlyArray<string>> = [
+  ["Cookies"],
+  ["Cookies-journal"],
+  ["Cookies-wal"],
+  ["Cookies-shm"],
+  ["Network"],
+  ["Local Storage"],
+  ["IndexedDB"],
+  ["Session Storage"],
+];
+
+/**
+ * Clone the login/storage state of one partition onto a not-yet-created one.
+ *
+ * Used to seed a designated per-thread profile from the environment jar the
+ * first time it opens, so an agent begins with the user's sessions instead of a
+ * blank browser. Best-effort and idempotent: it does nothing if the source is
+ * missing or the target already exists (already seeded and possibly diverged),
+ * and copies each store independently so one unreadable file cannot abort the
+ * rest. The source cookie DB may be open in another guest; a copy taken mid
+ * write only costs the agent a re-login on the odd site, never correctness.
+ */
+const seedPartitionStores = (
+  partitionsDir: string,
+  sourcePartition: string,
+  targetPartition: string,
+): void => {
+  const sourceDir = NodePath.join(partitionsDir, sourcePartition.slice("persist:".length));
+  const targetDir = NodePath.join(partitionsDir, targetPartition.slice("persist:".length));
+  if (!NodeFS.existsSync(sourceDir) || NodeFS.existsSync(targetDir)) return;
+  NodeFS.mkdirSync(targetDir, { recursive: true });
+  for (const relative of SEEDED_PROFILE_STORE_PATHS) {
+    const source = NodePath.join(sourceDir, ...relative);
+    if (!NodeFS.existsSync(source)) continue;
+    try {
+      NodeFS.cpSync(source, NodePath.join(targetDir, ...relative), { recursive: true });
+    } catch {
+      // One unreadable store is not worth failing the whole seed; the agent
+      // re-authenticates on that site at worst.
+    }
+  }
+};
 
 // Permissions granted to preview web content. `clipboard-sanitized-write` is the
 // Electron permission behind `navigator.clipboard.writeText()` — note it is NOT
@@ -433,10 +489,30 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     Effect.sync(() => {
       const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
       if (!NodeFS.existsSync(partitionsDir)) return;
+      // One time, ever. This guard used to be an in-memory boolean, so the fold
+      // re-ran on every app launch — and because the candidate scan below picks
+      // the largest cookie jar across ALL of `Partitions/`, each run could pick
+      // one of this block's own `.superseded` backups, or another environment's
+      // jar, and rename the live freshest jar aside to swap a staler one in.
+      // That silently dropped the current first-party session, so the app
+      // redirected to its own sign-in page while the long-lived IdP cookie made
+      // the one-click, no-password re-login succeed — the "it keeps making me
+      // sign in" report. A durable on-disk marker makes it genuinely one-time.
+      const marker = NodePath.join(partitionsDir, LEGACY_ADOPTION_MARKER);
+      if (NodeFS.existsSync(marker)) return;
       const targetName = partition.slice("persist:".length);
+      // A jar that already holds cookies is the live session to KEEP. Never
+      // reshuffle a populated profile; just record the migration as done.
+      if (cookieJarBytes(partitionsDir, targetName) > 0) {
+        NodeFS.writeFileSync(marker, "legacy-adoption-complete\n");
+        return;
+      }
       const profiles = NodeFS.readdirSync(partitionsDir, { withFileTypes: true }).flatMap(
         (entry) => {
           if (!entry.isDirectory() || !entry.name.startsWith(PARTITION_DIRECTORY_PREFIX)) return [];
+          // Never adopt a backup this block made on an earlier launch: that is
+          // exactly how a stale jar climbed back onto the live partition.
+          if (entry.name.includes(".superseded")) return [];
           return [
             { directory: entry.name, cookieBytes: cookieJarBytes(partitionsDir, entry.name) },
           ];
@@ -448,19 +524,21 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       // it was meant to fix, so an existing target is not on its own a reason
       // to stop.
       const adopted = selectLegacyBrowserProfile(profiles);
-      if (adopted === null || adopted === targetName) return;
-      const target = NodePath.join(partitionsDir, targetName);
-      if (NodeFS.existsSync(target)) {
-        // Moved aside rather than removed: it is the user's browsing history,
-        // and a wrong pick here should be recoverable by hand. Numbered rather
-        // than timestamped so this needs no clock inside a sync Electron path.
-        let aside = `${target}.superseded`;
-        for (let attempt = 2; NodeFS.existsSync(aside); attempt += 1) {
-          aside = `${target}.superseded-${attempt}`;
+      if (adopted !== null && adopted !== targetName) {
+        const target = NodePath.join(partitionsDir, targetName);
+        if (NodeFS.existsSync(target)) {
+          // Moved aside rather than removed: it is the user's browsing history,
+          // and a wrong pick here should be recoverable by hand. Numbered rather
+          // than timestamped so this needs no clock inside a sync Electron path.
+          let aside = `${target}.superseded`;
+          for (let attempt = 2; NodeFS.existsSync(aside); attempt += 1) {
+            aside = `${target}.superseded-${attempt}`;
+          }
+          NodeFS.renameSync(target, aside);
         }
-        NodeFS.renameSync(target, aside);
+        NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
       }
-      NodeFS.renameSync(NodePath.join(partitionsDir, adopted), target);
+      NodeFS.writeFileSync(marker, "legacy-adoption-complete\n");
     }).pipe(
       // A profile that cannot be adopted is not worth failing preview over:
       // the user signs in once more and the shared jar fills from there.
@@ -471,130 +549,151 @@ export const make = Effect.gen(function* BrowserSessionMake() {
 
   const getSession = Effect.fn("BrowserSession.getSession")(function* (scope: string) {
     const partition = yield* getPartition(scope);
-    return yield* SynchronizedRef.modifyEffect(sessionsRef, (sessions) => {
-      const existing = sessions.get(partition);
-      if (existing) return Effect.succeed([existing, sessions] as const);
-      return Effect.try({
-        try: () => {
-          const browserSession = session.fromPartition(partition);
-          browserSession.on("will-download", (_downloadEvent, item, guest) => {
-            // Must be synchronous: Electron raises the save panel as soon as
-            // this handler returns without a path set.
-            try {
-              const webContentsId = guest?.id ?? -1;
-              const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
-              NodeFS.mkdirSync(directory, { recursive: true });
-              const fileName = resolveDownloadFileName(item.getFilename());
-              // The guest's own URL is the fallback for downloads with no host
-              // of their own — `data:`, and the `blob:null` a sandboxed frame
-              // produces.
-              let pageUrl = "";
+    // A designated per-thread profile is seeded (cloned) from the environment
+    // jar the first time it opens, so an agent begins with the user's logins
+    // rather than a blank browser, then diverges independently.
+    const seedSource = isThreadScopedProfile(scope)
+      ? yield* getPartition(environmentScopeOf(scope))
+      : null;
+    return yield* SynchronizedRef.modifyEffect(sessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        const existing = sessions.get(partition);
+        if (existing) return [existing, sessions] as const;
+        if (seedSource !== null) {
+          // Held under the sessions lock, before Electron opens the directory,
+          // so a concurrent first open cannot copy onto a half-seeded jar.
+          const partitionsDir = NodePath.join(app.getPath("userData"), "Partitions");
+          yield* Effect.sync(() => seedPartitionStores(partitionsDir, seedSource, partition)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "Could not seed a per-thread browser profile from the environment jar.",
+                { scope, seedSource, cause },
+              ),
+            ),
+          );
+        }
+        return yield* Effect.try({
+          try: () => {
+            const browserSession = session.fromPartition(partition);
+            browserSession.on("will-download", (_downloadEvent, item, guest) => {
+              // Must be synchronous: Electron raises the save panel as soon as
+              // this handler returns without a path set.
               try {
-                pageUrl = guest?.getURL() ?? "";
-              } catch {
-                // A guest torn down mid-download has no URL to offer.
-              }
-              const domain = downloadDomain(item.getURL(), pageUrl);
-              const approval = resolveDownloadApproval({
-                domain,
-                allowedDomains: allowedDownloadDomains,
-              });
+                const webContentsId = guest?.id ?? -1;
+                const directory = downloadDirectories.get(partition) ?? fallbackDownloadsDir;
+                NodeFS.mkdirSync(directory, { recursive: true });
+                const fileName = resolveDownloadFileName(item.getFilename());
+                // The guest's own URL is the fallback for downloads with no host
+                // of their own — `data:`, and the `blob:null` a sandboxed frame
+                // produces.
+                let pageUrl = "";
+                try {
+                  pageUrl = guest?.getURL() ?? "";
+                } catch {
+                  // A guest torn down mid-download has no URL to offer.
+                }
+                const domain = downloadDomain(item.getURL(), pageUrl);
+                const approval = resolveDownloadApproval({
+                  domain,
+                  allowedDomains: allowedDownloadDomains,
+                });
 
-              if (approval === "allowed") {
-                const savePath = resolveUniqueDownloadPath({
-                  directory,
+                if (approval === "allowed") {
+                  const savePath = resolveUniqueDownloadPath({
+                    directory,
+                    fileName,
+                    join: NodePath.join,
+                    exists: NodeFS.existsSync,
+                  });
+                  item.setSavePath(savePath);
+                  item.once("done", (_doneEvent, state) => {
+                    publishDownload(webContentsId, {
+                      fileName: NodePath.basename(savePath),
+                      path: savePath,
+                      completedAt: new Date().toISOString(),
+                      succeeded: state === "completed",
+                    });
+                  });
+                  return;
+                }
+
+                // Unapproved: the transfer runs, but into a staging directory
+                // beside the real one, so the file only enters the workspace if
+                // the user says so. Same filesystem, so approving is a rename.
+                heldDownloadSeq += 1;
+                const id = `download-approval-${heldDownloadSeq}`;
+                const stagingDirectory = NodePath.join(directory, ".pending-approval");
+                NodeFS.mkdirSync(stagingDirectory, { recursive: true });
+                const stagingPath = resolveUniqueDownloadPath({
+                  directory: stagingDirectory,
                   fileName,
                   join: NodePath.join,
                   exists: NodeFS.existsSync,
                 });
-                item.setSavePath(savePath);
-                item.once("done", (_doneEvent, state) => {
-                  publishDownload(webContentsId, {
-                    fileName: NodePath.basename(savePath),
-                    path: savePath,
-                    completedAt: new Date().toISOString(),
-                    succeeded: state === "completed",
-                  });
+                item.setSavePath(stagingPath);
+                const held: HeldDownload = {
+                  webContentsId,
+                  domain,
+                  fileName,
+                  stagingPath,
+                  directory,
+                  item,
+                  landed: false,
+                  decision: null,
+                };
+                heldDownloads.set(id, held);
+                notifyApproval(webContentsId, {
+                  kind: "pending",
+                  approval: { id, domain, fileName },
                 });
-                return;
-              }
-
-              // Unapproved: the transfer runs, but into a staging directory
-              // beside the real one, so the file only enters the workspace if
-              // the user says so. Same filesystem, so approving is a rename.
-              heldDownloadSeq += 1;
-              const id = `download-approval-${heldDownloadSeq}`;
-              const stagingDirectory = NodePath.join(directory, ".pending-approval");
-              NodeFS.mkdirSync(stagingDirectory, { recursive: true });
-              const stagingPath = resolveUniqueDownloadPath({
-                directory: stagingDirectory,
-                fileName,
-                join: NodePath.join,
-                exists: NodeFS.existsSync,
-              });
-              item.setSavePath(stagingPath);
-              const held: HeldDownload = {
-                webContentsId,
-                domain,
-                fileName,
-                stagingPath,
-                directory,
-                item,
-                landed: false,
-                decision: null,
-              };
-              heldDownloads.set(id, held);
-              notifyApproval(webContentsId, {
-                kind: "pending",
-                approval: { id, domain, fileName },
-              });
-              if (Notification.isSupported()) {
-                new Notification({
-                  title: "Download needs approval",
-                  body: `${domain.length > 0 ? domain : "This page"} wants to save ${fileName}. Allow or deny it in Solla Code.`,
-                }).show();
-              }
-              item.once("done", (_doneEvent, state) => {
-                if (!heldDownloads.has(id)) return;
-                if (state !== "completed") {
-                  // Cancelled or interrupted before any answer. There is
-                  // nothing to approve, so drop the card and the staged bytes.
-                  heldDownloads.delete(id);
-                  notifyApproval(webContentsId, { kind: "settled", id });
-                  try {
-                    NodeFS.rmSync(stagingPath, { force: true });
-                  } catch {
-                    // Nothing worth failing a cancelled download over.
-                  }
-                  return;
+                if (Notification.isSupported()) {
+                  new Notification({
+                    title: "Download needs approval",
+                    body: `${domain.length > 0 ? domain : "This page"} wants to save ${fileName}. Allow or deny it in Solla Code.`,
+                  }).show();
                 }
-                held.landed = true;
-                settleHeldDownload(id, held);
-              });
-            } catch {
-              // Falling through to the save panel is the graceful failure here:
-              // the user is asked where to put it rather than losing the file.
-            }
-          });
-          browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-            callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission));
-          });
-          browserSession.setPermissionCheckHandler(
-            (_webContents, permission) =>
-              ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission),
-          );
-          const next = new Map(sessions);
-          next.set(partition, browserSession);
-          return [browserSession, next] as const;
-        },
-        catch: (cause) =>
-          new BrowserSessionCreationError({
-            scope,
-            partition,
-            cause,
-          }),
-      });
-    });
+                item.once("done", (_doneEvent, state) => {
+                  if (!heldDownloads.has(id)) return;
+                  if (state !== "completed") {
+                    // Cancelled or interrupted before any answer. There is
+                    // nothing to approve, so drop the card and the staged bytes.
+                    heldDownloads.delete(id);
+                    notifyApproval(webContentsId, { kind: "settled", id });
+                    try {
+                      NodeFS.rmSync(stagingPath, { force: true });
+                    } catch {
+                      // Nothing worth failing a cancelled download over.
+                    }
+                    return;
+                  }
+                  held.landed = true;
+                  settleHeldDownload(id, held);
+                });
+              } catch {
+                // Falling through to the save panel is the graceful failure here:
+                // the user is asked where to put it rather than losing the file.
+              }
+            });
+            browserSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+              callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission));
+            });
+            browserSession.setPermissionCheckHandler(
+              (_webContents, permission) =>
+                ALLOWED_PREVIEW_PERMISSIONS.has(permission) || denyPermission(permission),
+            );
+            const next = new Map(sessions);
+            next.set(partition, browserSession);
+            return [browserSession, next] as const;
+          },
+          catch: (cause) =>
+            new BrowserSessionCreationError({
+              scope,
+              partition,
+              cause,
+            }),
+        });
+      }),
+    );
   });
 
   const setDownloadDirectory = Effect.fn("BrowserSession.setDownloadDirectory")(function* (
