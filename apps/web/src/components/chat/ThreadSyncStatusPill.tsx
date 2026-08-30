@@ -24,21 +24,19 @@ export function ThreadSyncOverlay({ phase }: { readonly phase: ThreadSyncPhase }
   const copy = threadSyncOverlayCopy(phase);
 
   return (
-    // pointer-events-none the whole way down: catching up is a status, not a
-    // modal. The near-opaque backdrop it shipped with also swallowed every
-    // tap, which on a phone locked the entire app for as long as a long
-    // thread took to fast-forward — the composer below this overlay accepts
-    // input mid-sync on purpose (see ChatView.logic), so the veil must not
-    // take back what the logic deliberately allows. Lighter, and click-through.
+    // Catching up is a status, not a modal. Keep its composited box bounded to
+    // the card itself: Mobile Safari can retarget the first tap through a
+    // full-viewport overlay even when that overlay has pointer-events:none,
+    // producing the observed "every control needs two taps" state.
     <div
       aria-busy="true"
       aria-label={`${copy.title} ${copy.detail}`}
       aria-live="polite"
-      className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background/60 px-4"
+      className="pointer-events-none absolute left-1/2 top-1/2 z-30 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2"
       data-thread-sync-overlay={phase}
       role="status"
     >
-      <div className="flex max-w-sm items-center gap-3 rounded-2xl border border-border/70 bg-card px-4 py-3 text-foreground shadow-lg">
+      <div className="flex w-full items-center gap-3 rounded-2xl border border-border/70 bg-card px-4 py-3 text-foreground shadow-lg">
         <LoaderCircleIcon
           aria-hidden
           className="size-5 shrink-0 animate-spin text-muted-foreground"

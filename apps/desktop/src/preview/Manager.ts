@@ -65,7 +65,10 @@ import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import { PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL } from "../ipc/channels.ts";
+import {
+  PREVIEW_PICTURE_IN_PICTURE_FRAME_CHANNEL,
+  PREVIEW_USER_INPUT_CHANNEL,
+} from "../ipc/channels.ts";
 import { PreviewActivityConsumer, PreviewActivityLeases } from "./ActivityLeases.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import { classifyPreviewNetworkResponse } from "./CloudflareChallenge.ts";
@@ -271,17 +274,6 @@ const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const USER_INPUT_DEFERRAL_MS = 2_000;
 /** Re-check cadence while deferring. */
 const USER_INPUT_DEFERRAL_POLL_MS = 200;
-/**
- * Longest an action waits for the user before going ahead anyway.
- *
- * Not a failure — the action still runs. This exists because the *caller* is
- * not infinitely patient: the MCP preview tools give up at 15s, so a wait with
- * no ceiling did not queue the action, it lost it. An agent click issued while
- * someone was typing a message simply never happened, which is the "dead
- * click" that was reported. Ten seconds keeps the user winning for any normal
- * burst of typing while leaving room for the action to still be delivered.
- */
-const USER_INPUT_DEFERRAL_MAX_WAIT_MS = 10_000;
 
 /** Time for a synthetic press's focus change to reach the guest's widget. */
 const AUTOMATION_FOCUS_SETTLE_MS = 120;
@@ -305,20 +297,10 @@ export function resolveUserInputDeferral(input: {
   readonly nowMs: number;
   /** A held dictation chord owns the focus until its physical release. */
   readonly pushToTalkActive?: boolean;
-  /** When this action began waiting; omit for a first, un-waited check. */
-  readonly waitingSinceMs?: number;
 }): "proceed" | "wait" {
   if (input.pushToTalkActive) return "wait";
   if (input.lastUserInputAtMs === 0) return "proceed";
   if (input.nowMs - input.lastUserInputAtMs >= USER_INPUT_DEFERRAL_MS) return "proceed";
-  // Held long enough that the caller is about to give up on us. Going ahead
-  // delivers the action late; waiting on would discard it entirely.
-  if (
-    input.waitingSinceMs !== undefined &&
-    input.nowMs - input.waitingSinceMs >= USER_INPUT_DEFERRAL_MAX_WAIT_MS
-  ) {
-    return "proceed";
-  }
   return "wait";
 }
 
@@ -2715,6 +2697,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* Ref.set(mainWindowRef, Option.some(window));
     mainWindowFocused = typeof window.isFocused !== "function" || window.isFocused();
     const mainWebContents = window.webContents;
+    const mainRendererIpc = mainWebContents.ipc;
     // Observe the chord in the main renderer as well as in guest webviews. A
     // live UI update can move focus from the composer into a guest between the
     // press and release; remembering the press here lets that guest forward
@@ -2787,6 +2770,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
     };
     mainWebContents.on("input-event", observeUserPointer);
+    const observeRendererUserInput = (): void => {
+      userFocusIntent = "app";
+      runFork(
+        Effect.gen(function* () {
+          lastUserInputAtMs = yield* currentMillis;
+        }),
+      );
+    };
+    // The preload reports trusted pointer/key presses from the renderer. Keep
+    // the native observers above as coverage for events Chromium handles
+    // before DOM dispatch (shortcuts, wheel input, and platform gestures).
+    mainRendererIpc?.on(PREVIEW_USER_INPUT_CHANNEL, observeRendererUserInput);
     window.once("closed", () => {
       // BrowserWindow.webContents can itself throw after the native window has
       // closed. Keep the captured wrapper and only detach while it is alive;
@@ -2794,6 +2789,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!mainWebContents.isDestroyed()) {
         mainWebContents.off("before-input-event", observePushToTalk);
         mainWebContents.off("input-event", observeUserPointer);
+        mainRendererIpc?.off(PREVIEW_USER_INPUT_CHANNEL, observeRendererUserInput);
       }
       window.off("blur", stopPushToTalkForWindowDeparture);
       window.off("focus", refreshPresentedGuests);
@@ -5291,20 +5287,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
   ) {
     const startedAt = yield* currentMillis;
-    // Time spent holding push-to-talk does not consume the ordinary 10-second
-    // delivery budget. The budget restarts on release, after which the normal
-    // idle cooldown still has to elapse in full.
-    let maxWaitStartedAt = startedAt;
     let deferred = false;
     while (true) {
       const now = yield* currentMillis;
-      if (pushToTalkInputActive) maxWaitStartedAt = now;
       if (
         resolveUserInputDeferral({
           lastUserInputAtMs,
           nowMs: now,
           pushToTalkActive: pushToTalkInputActive,
-          waitingSinceMs: maxWaitStartedAt,
         }) === "proceed"
       ) {
         break;
