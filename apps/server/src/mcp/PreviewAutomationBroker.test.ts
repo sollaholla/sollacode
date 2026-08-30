@@ -1269,3 +1269,77 @@ it.effect("accepts responses only from the host that received the request", () =
     }),
   ),
 );
+
+it.effect("routes to the host on the environment's own machine over a focused remote viewer", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      let remoteConnectionId = "";
+      const localRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-local", environmentLocal: true })),
+      );
+      const remoteRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-remote" })),
+        (connectionId) => {
+          remoteConnectionId = connectionId;
+        },
+      );
+      yield* Stream.runForEach(localRequests, (request) =>
+        broker.respond({
+          clientId: "client-local",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "local",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(remoteRequests, (request) =>
+        broker.respond({
+          clientId: "client-remote",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "remote",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      // The remote viewer is the screen the user is actually looking at, and it
+      // connected last, so both of the old tie-breaks favour it. It still must
+      // not host the guest: its browser profile is on the wrong machine.
+      yield* broker.focusHost({
+        clientId: "client-remote",
+        environmentId: scope.environmentId,
+        connectionId: remoteConnectionId,
+        focused: true,
+      });
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe("local");
+    }),
+  ),
+);
+
+it.effect("still falls back to a remote host when the environment's machine has none", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const remoteRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-remote" })),
+      );
+      yield* Stream.runForEach(remoteRequests, (request) =>
+        broker.respond({
+          clientId: "client-remote",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "remote",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "remote",
+      );
+    }),
+  ),
+);
