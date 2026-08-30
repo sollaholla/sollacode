@@ -225,6 +225,12 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
           activity("provider.user-input.respond.failed", "req-2", {
             detail: "stale pending user-input request req-2",
           }),
+          // The answer died with its session: nothing can resolve this request
+          // later (the re-ask mints a new id), so it must read as settled.
+          activity("user-input.requested", "req-4", {}),
+          activity("provider.user-input.respond.failed", "req-4", {
+            detail: "No active provider session is bound to this thread.",
+          }),
         ]),
       });
       const settledEvents = Array.isArray(settled) ? settled : [settled];

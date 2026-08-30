@@ -78,6 +78,7 @@ import Migration0062 from "./Migrations/062_BrowserTabCleanupState.ts";
 import Migration0063 from "./Migrations/063_PurgeDeletedThreadData.ts";
 import Migration0064 from "./Migrations/064_RemoveBlockerNotifications.ts";
 import Migration0065 from "./Migrations/065_RepairAutomationPreviewViewports.ts";
+import Migration0066 from "./Migrations/066_RepairProjectionPendingUserInput.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -155,6 +156,7 @@ export const migrationEntries = [
   [63, "PurgeDeletedThreadData", Migration0063],
   [64, "RemoveBlockerNotifications", Migration0064],
   [65, "RepairAutomationPreviewViewports", Migration0065],
+  [66, "RepairProjectionPendingUserInput", Migration0066],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

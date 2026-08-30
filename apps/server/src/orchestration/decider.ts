@@ -54,7 +54,14 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
     detail.includes("stale pending user-input request") ||
     detail.includes("unknown pending user-input request") ||
     detail.includes("unknown pending user input request") ||
-    detail.includes("unknown pending codex user input request")
+    detail.includes("unknown pending codex user input request") ||
+    // The session died before the answer arrived. The reactor now delivers
+    // that answer as a plain user message and resolves the request, but the
+    // failure activity alone must also read as settled or an old row keeps a
+    // thread flagged "waiting for your input" forever (observed 2026-08-29:
+    // an agent's sidebar badge stuck on a request whose re-ask had long been
+    // answered).
+    detail.includes("no active provider session is bound")
   );
 }
 
