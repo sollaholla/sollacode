@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveThreadSyncPhase, threadSyncLabel, threadSyncOverlayCopy } from "./threadSync";
+import {
+  resolveThreadSyncPhase,
+  threadSyncBlocksSend,
+  threadSyncLabel,
+  threadSyncOverlayCopy,
+} from "./threadSync";
 
 describe("resolveThreadSyncPhase", () => {
   it("loads when only shell data is available", () => {
@@ -42,6 +47,12 @@ describe("resolveThreadSyncPhase", () => {
 });
 
 describe("threadSyncLabel", () => {
+  it("blocks sends only until the bounded detail snapshot exists", () => {
+    expect(threadSyncBlocksSend("loading")).toBe(true);
+    expect(threadSyncBlocksSend("syncing")).toBe(false);
+    expect(threadSyncBlocksSend(null)).toBe(false);
+  });
+
   it("uses the same loading and syncing language as mobile", () => {
     expect(threadSyncLabel("loading")).toBe("Loading messages...");
     expect(threadSyncLabel("syncing")).toBe("Syncing messages...");

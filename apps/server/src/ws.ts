@@ -1458,18 +1458,16 @@ const makeWsRpcLayer = (
         // Editor discovery is the slow one (a PATH scan per editor); it is
         // cached process-wide by ExternalLauncher, so only the first connect
         // after startup pays for it at all.
-        const [keybindingsConfig, providers, rawSettings, environment, auth, availableEditors] =
-          yield* Effect.all(
-            [
-              keybindings.loadConfigState,
-              providerRegistry.getProviders,
-              serverSettings.getSettings,
-              serverEnvironment.getDescriptor,
-              serverAuth.getDescriptor(),
-              resolveAvailableEditorsForConfig(externalLauncher.resolveAvailableEditors()),
-            ],
-            { concurrency: "unbounded" },
-          );
+        const [keybindingsConfig, providers, rawSettings, environment, auth] = yield* Effect.all(
+          [
+            keybindings.loadConfigState,
+            providerRegistry.getProviders,
+            serverSettings.getSettings,
+            serverEnvironment.getDescriptor,
+            serverAuth.getDescriptor(),
+          ],
+          { concurrency: "unbounded" },
+        );
         const settings = ServerSettings.redactServerSettingsForClient(rawSettings);
 
         return {
@@ -1480,7 +1478,10 @@ const makeWsRpcLayer = (
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
-          availableEditors,
+          // PATH discovery can take minutes on a cold macOS shell. It is not
+          // connection-critical; subscribeServerConfig publishes the result
+          // as an incremental update after this handshake has completed.
+          availableEditors: [],
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,
@@ -3222,14 +3223,34 @@ const makeWsRpcLayer = (
                   payload: { settings },
                 })),
               );
+              const editorUpdates = Stream.fromEffect(
+                externalLauncher.resolveAvailableEditors().pipe(
+                  Effect.map((availableEditors) => ({
+                    version: 1 as const,
+                    type: "editorsUpdated" as const,
+                    payload: { availableEditors },
+                  })),
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("editor discovery failed after server config snapshot", {
+                      cause: Cause.pretty(cause),
+                    }).pipe(
+                      Effect.as({
+                        version: 1 as const,
+                        type: "editorsUpdated" as const,
+                        payload: { availableEditors: [] },
+                      }),
+                    ),
+                  ),
+                ),
+              ).pipe(Stream.filter((event) => event.payload.availableEditors.length > 0));
 
               yield* providerRegistry
                 .refresh()
                 .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
               const liveUpdates = Stream.merge(
-                keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                editorUpdates,
+                Stream.merge(keybindingsUpdates, Stream.merge(providerStatuses, settingsUpdates)),
               );
 
               return Stream.concat(

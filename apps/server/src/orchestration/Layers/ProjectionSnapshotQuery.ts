@@ -78,11 +78,14 @@ const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
 // A thread snapshot is a transport/read-model surface, not provider context.
 // Keep only the newest transport window. Provider context continues to use the
 // unbounded ingestion query; older UI history is fetched through indexed pages.
-export const THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT = 300;
+export const THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT = 100;
 // Tool-heavy turns can put tens of megabytes into only a few hundred activity
 // rows. Keep the initial window small enough to cross a remote/mobile link
 // promptly; the history endpoint supplies older activities in indexed pages.
 export const THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT = 200;
+// Checkpoints describe historical turn diffs. Only checkpoints that can be
+// rendered beside the recent message window belong in the initial payload.
+export const THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT = 100;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -158,6 +161,10 @@ const ThreadActivityWindowLookupInput = Schema.Struct({
   limit: Schema.Int,
 });
 const ThreadMessageWindowLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  limit: Schema.Int,
+});
+const ThreadCheckpointWindowLookupInput = Schema.Struct({
   threadId: ThreadId,
   limit: Schema.Int,
 });
@@ -1723,6 +1730,32 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listRecentCheckpointRowsByThread = SqlSchema.findAll({
+    Request: ThreadCheckpointWindowLookupInput,
+    Result: ProjectionCheckpointDbRowSchema,
+    execute: ({ threadId, limit }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef",
+          checkpoint_status AS "status",
+          checkpoint_files_json AS "files",
+          assistant_message_id AS "assistantMessageId",
+          completed_at AS "completedAt"
+        FROM (
+          SELECT *
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+            AND checkpoint_turn_count IS NOT NULL
+          ORDER BY checkpoint_turn_count DESC
+          LIMIT ${limit}
+        ) AS recent_thread_checkpoints
+        ORDER BY checkpoint_turn_count ASC
+      `,
+  });
+
   const getFullThreadDiffContextRow = SqlSchema.findOneOption({
     Request: FullThreadDiffContextLookupInput,
     Result: ProjectionFullThreadDiffContextRowSchema,
@@ -2986,6 +3019,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     options?: {
       readonly messageLimit?: number;
       readonly activityLimit?: number;
+      readonly checkpointLimit?: number;
       /** Snapshot reads only — see {@link dropSupersededToolUpdates}. */
       readonly dropSupersededToolUpdates?: boolean;
     },
@@ -3044,7 +3078,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listCheckpointRowsByThread({ threadId }).pipe(
+        (options?.checkpointLimit === undefined
+          ? listCheckpointRowsByThread({ threadId })
+          : listRecentCheckpointRowsByThread({
+              threadId,
+              limit: options.checkpointLimit,
+            })
+        ).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listCheckpoints:query",
@@ -3147,6 +3187,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const thread = yield* loadThreadDetailById(threadId, {
             messageLimit: THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT,
             activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+            checkpointLimit: THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT,
             dropSupersededToolUpdates: true,
           });
           if (Option.isNone(thread)) {

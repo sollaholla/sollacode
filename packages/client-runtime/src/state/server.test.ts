@@ -80,6 +80,23 @@ describe("server state projection", () => {
     expect(result.latestEvent.type).toBe("settingsUpdated");
   });
 
+  it("applies asynchronously discovered editors", () => {
+    const snapshot = applyServerConfigProjection(Option.none(), {
+      version: 1,
+      type: "snapshot",
+      config: CONFIG,
+    });
+    const projected = applyServerConfigProjection(snapshot, {
+      version: 1,
+      type: "editorsUpdated",
+      payload: { availableEditors: ["vscode"] },
+    });
+
+    const result = Option.getOrThrow(projected);
+    expect(result.config.availableEditors).toEqual(["vscode"]);
+    expect(result.latestEvent.type).toBe("editorsUpdated");
+  });
+
   it("retains welcome when a ready event follows in the same stream chunk", () => {
     const welcome = {
       environment: {} as ServerLifecycleWelcomePayload["environment"],

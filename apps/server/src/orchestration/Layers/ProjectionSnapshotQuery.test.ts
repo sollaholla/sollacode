@@ -22,6 +22,7 @@ import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   OrchestrationProjectionSnapshotQueryLive,
   THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
+  THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT,
   THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT,
 } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -49,6 +50,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
       yield* sql`DELETE FROM projection_thread_activities`;
       yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_turns`;
       yield* sql`DELETE FROM projection_threads`;
       yield* sql`DELETE FROM projection_projects`;
 
@@ -170,6 +172,37 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-08-02T00:00:00.000Z'
         FROM message_numbers
       `;
+      yield* sql`
+        WITH RECURSIVE checkpoint_numbers(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1
+          FROM checkpoint_numbers
+          WHERE value < ${THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT + 5}
+        )
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          state,
+          checkpoint_turn_count,
+          checkpoint_ref,
+          checkpoint_status,
+          checkpoint_files_json,
+          requested_at,
+          completed_at
+        )
+        SELECT
+          'thread-large-snapshot',
+          printf('turn-large-snapshot-%04d', value),
+          'completed',
+          value,
+          printf('refs/t3/checkpoints/%04d', value),
+          'ready',
+          '[]',
+          '2026-08-02T00:00:02.000Z',
+          '2026-08-02T00:00:02.000Z'
+        FROM checkpoint_numbers
+      `;
 
       const full = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-large-snapshot"));
       const bounded = yield* snapshotQuery.getThreadDetailById(
@@ -216,16 +249,21 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(full.value.messages.length, THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT + 5);
         assert.equal(snapshot.value.thread.messages.length, THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT);
         assert.equal(snapshot.value.thread.messages[0]?.text, "conversation message 6");
+        assert.equal(
+          snapshot.value.thread.checkpoints.length,
+          THREAD_DETAIL_SNAPSHOT_CHECKPOINT_LIMIT,
+        );
+        assert.equal(snapshot.value.thread.checkpoints[0]?.checkpointTurnCount, 6);
         assert.deepEqual(snapshot.value.history, {
           totalMessages: THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT + 5,
           totalActivities: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT + 5,
           messageCursor: {
             createdAt: "2026-08-02T00:00:00.000Z",
-            messageId: "message-large-snapshot-0006",
+            messageId: asMessageId("message-large-snapshot-0006"),
           },
           activityCursor: {
             createdAt: "2026-08-02T00:00:01.000Z",
-            activityId: "activity-0006",
+            activityId: asEventId("activity-0006"),
           },
         });
         const getThreadHistoryPage = snapshotQuery.getThreadHistoryPage;
@@ -263,6 +301,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
       yield* sql`
         DELETE FROM projection_thread_activities
+        WHERE thread_id = 'thread-large-snapshot'
+      `;
+      yield* sql`
+        DELETE FROM projection_turns
         WHERE thread_id = 'thread-large-snapshot'
       `;
       yield* sql`
