@@ -2,6 +2,7 @@ import {
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewArtifactInputSchema,
   DesktopPreviewAutomationClickInputSchema,
+  DesktopPreviewAutomationDragInputSchema,
   DesktopPreviewAutomationEvaluateInputSchema,
   DesktopPreviewAutomationPressInputSchema,
   DesktopPreviewAutomationScrollInputSchema,
@@ -370,7 +371,7 @@ export const automationSnapshot = DesktopIpc.makeIpcMethod({
  * push-to-talk could time out remotely and still click or type after release.
  */
 const runAutomationInputBeforeExpiry = <A, E, R>(input: {
-  readonly operation: "click" | "type" | "press";
+  readonly operation: "click" | "drag" | "type" | "press";
   readonly tabId: string;
   readonly expiresAt: number | undefined;
   readonly effect: Effect.Effect<A, E, R>;
@@ -419,6 +420,21 @@ export const automationClick = DesktopIpc.makeIpcMethod({
       tabId,
       expiresAt,
       effect: manager.automationClick(tabId, input),
+    });
+  }),
+});
+
+export const automationDrag = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_AUTOMATION_DRAG_CHANNEL,
+  payload: DesktopPreviewAutomationDragInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.automationDrag")(function* ({ tabId, input, expiresAt }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* runAutomationInputBeforeExpiry({
+      operation: "drag",
+      tabId,
+      expiresAt,
+      effect: manager.automationDrag(tabId, input),
     });
   }),
 });
@@ -553,6 +569,7 @@ export const methods = [
   automationStatus,
   automationSnapshot,
   automationClick,
+  automationDrag,
   automationType,
   automationUpload,
   automationPress,

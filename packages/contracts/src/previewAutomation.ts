@@ -49,6 +49,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "upload",
   "close",
   "waitForDownload",
+  "drag",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -568,6 +569,85 @@ export const PreviewAutomationClickInput = Schema.Struct({
       "Clicks one target. Provide exactly one of locator, selector, or the x/y coordinate pair.",
   });
 export type PreviewAutomationClickInput = typeof PreviewAutomationClickInput.Type;
+
+/** One viewport CSS-pixel coordinate along a drag path. */
+export const PreviewAutomationDragPoint = Schema.Struct({
+  x: Schema.Finite.annotate({
+    description: "Viewport-relative X coordinate in CSS pixels.",
+  }),
+  y: Schema.Finite.annotate({
+    description: "Viewport-relative Y coordinate in CSS pixels.",
+  }),
+});
+export type PreviewAutomationDragPoint = typeof PreviewAutomationDragPoint.Type;
+
+/** Default interpolation steps inserted between consecutive path vertices. */
+export const PREVIEW_AUTOMATION_DRAG_DEFAULT_STEPS = 8;
+
+export const PreviewAutomationDragInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  from: Schema.optional(PreviewAutomationDragPoint).annotate({
+    description:
+      "Start point in viewport CSS pixels. Provide with to for a straight click-and-drag; omit when using path.",
+  }),
+  to: Schema.optional(PreviewAutomationDragPoint).annotate({
+    description:
+      "End point in viewport CSS pixels. Provide with from for a straight click-and-drag; omit when using path.",
+  }),
+  path: Schema.optional(
+    Schema.Array(PreviewAutomationDragPoint).check(Schema.isMinLength(2)),
+  ).annotate({
+    description:
+      "Ordered viewport CSS-pixel points for a freeform stroke, at least two. The button is pressed at the first point, dragged through the rest, and released at the last. Use instead of from/to.",
+  }),
+  steps: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(64)).annotate({
+      description:
+        "Interpolated moves inserted between each pair of path vertices so canvases sample a continuous stroke. Defaults to 8; maximum 64.",
+    }),
+  ).annotate({
+    description:
+      "Interpolated moves inserted between each pair of path vertices so canvases sample a continuous stroke. Defaults to 8; maximum 64.",
+  }),
+  holdMs: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+      .check(Schema.isLessThanOrEqualTo(5_000))
+      .annotate({
+        description:
+          "Pause in milliseconds to hold the button down at the final point before release. Defaults to 0; maximum 5000.",
+      }),
+  ).annotate({
+    description:
+      "Pause in milliseconds to hold the button down at the final point before release. Defaults to 0; maximum 5000.",
+  }),
+  button: Schema.optional(
+    Schema.Literals(["left", "middle", "right"]).annotate({
+      description: "Mouse button held during the drag. Defaults to left.",
+    }),
+  ).annotate({
+    description: "Mouse button held during the drag. Defaults to left.",
+  }),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      const hasFrom = input.from !== undefined;
+      const hasTo = input.to !== undefined;
+      const hasPath = input.path !== undefined;
+      if (hasPath) {
+        if (hasFrom || hasTo) return "Provide either from/to or path, not both.";
+        return input.path!.length >= 2 || "path must contain at least two points.";
+      }
+      if (hasFrom !== hasTo) return "from and to must be provided together.";
+      if (!hasFrom) return "Provide from and to, or a multi-point path.";
+      return true;
+    }),
+  )
+  .annotate({
+    description:
+      "Drags trusted pointer events across a path. Provide from and to for a straight drag, or path for a freeform stroke.",
+  });
+export type PreviewAutomationDragInput = typeof PreviewAutomationDragInput.Type;
 
 export const PreviewAutomationTypeInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
