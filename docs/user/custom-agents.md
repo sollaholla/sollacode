@@ -66,7 +66,9 @@ The desktop guest keeps its real embedded-Chromium identity, platform, languages
 and storage. Solla Code does not rewrite the user agent, spoof a device fingerprint, hide automation
 from a site, or bypass CAPTCHA and anti-abuse decisions. Providers such as Google deliberately block
 account authorization inside embedded browsers. When Google returns that rejection, Preview explains
-the policy and offers **Open in browser**. On desktop this uses the operating system's browser; on a
+the policy and offers **Continue in browser**. It opens the final trusted Google or YouTube
+destination so that page can start a fresh sign-in, instead of reusing either Google's terminal
+rejection URL or a stale sign-in wrapper. On desktop this uses the operating system's browser; on a
 remote or mobile web client it opens a normal tab on that device. The sign-in continues there rather
 than being copied back into Preview's separate browser profile.
 
