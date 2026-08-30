@@ -26,6 +26,8 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
+  // The UA cleanup reads the app token it must strip from the session's UA.
+  app: { getName: () => "Solla Code" },
   session: {
     fromPartition,
   },
@@ -139,18 +141,27 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("preserves the native embedded-browser identity", () =>
+  it.effect("presents the Chrome the guest actually is to sign-in walls", () =>
     Effect.gen(function* () {
-      // Google deliberately rejects OAuth in embedded browsers. Changing only
-      // the UA did not make the browser compliant and left its other client
-      // hints inconsistent, so Preview identifies the browser truthfully and
-      // offers the system-browser handoff instead.
+      // Google's disallowed_useragent policy refuses OAuth to any UA carrying
+      // an embedded-framework marker, so the session drops the Electron and
+      // app product tokens and nothing else. Verified live 2026-08-30T03:37Z:
+      // a fresh sign-in under this cleaned UA reached Google's account
+      // chooser. The terminal /signin/rejected page a durable tab restores
+      // from an earlier attempt is persisted state, not a fresh rejection —
+      // do not use it to justify removing this again.
       const browserSessions = yield* BrowserSession.BrowserSession;
       const partition = yield* browserSessions.getPartition("scope-a");
       const browserSession = yield* browserSessions.getSession("scope-a");
 
       assert.strictEqual(browserSession as unknown, sessions.get(partition));
-      assert.strictEqual(sessions.get(partition)?.setUserAgent.mock.calls.length, 0);
+      assert.deepStrictEqual(
+        sessions.get(partition)?.setUserAgent.mock.calls.map((call) => call[0]),
+        [
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
