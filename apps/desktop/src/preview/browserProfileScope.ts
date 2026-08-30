@@ -9,7 +9,10 @@
  * Environments stay separate because a remote machine's browser is a
  * different machine's browser, and its cookies are not the user's to reuse.
  */
-export function previewBrowserProfileScope(environmentId: string): string {
+export function previewBrowserProfileScope(
+  environmentId: string,
+  profileThreadId?: string | null,
+): string {
   // A blank or missing id must not resolve to a profile. It used to reach a
   // default scope one layer down and open a second, empty jar, which is
   // indistinguishable from the browser being signed out of every site — the
@@ -20,7 +23,34 @@ export function previewBrowserProfileScope(environmentId: string): string {
         (typeof environmentId === "string" ? JSON.stringify(environmentId) : typeof environmentId),
     );
   }
-  return environmentId;
+  // A designated profile owner (an agent-created thread carrying a
+  // `browserProfileThreadId`, or its inheriting descendants, which all carry
+  // the same id) gets its OWN partition, isolated from the user's shared
+  // environment jar and from other agent families. The desktop used to drop
+  // this field and key every tab on the environment alone, so the whole
+  // per-agent isolation + cache-inheritance feature was a no-op at the cookie
+  // layer. A first open of one of these partitions is seeded (cloned) from the
+  // environment jar so the agent starts with the user's logins and then
+  // diverges — see BrowserSession.seedProfileFromEnvironment.
+  //
+  // A thread with no designated owner (the user's own conversations) keeps the
+  // shared environment jar so the user stays live-logged-in across their tabs,
+  // which is exactly why env-scope was chosen; isolating those too would sign
+  // the user out of every new thread.
+  const owner = typeof profileThreadId === "string" ? profileThreadId.trim() : "";
+  return owner === "" ? environmentId : `${environmentId}:thread:${owner}`;
+}
+
+/** The bare environment scope a per-thread profile is cloned from. */
+export const PROFILE_SCOPE_THREAD_SEPARATOR = ":thread:";
+
+export function environmentScopeOf(scope: string): string {
+  const index = scope.indexOf(PROFILE_SCOPE_THREAD_SEPARATOR);
+  return index === -1 ? scope : scope.slice(0, index);
+}
+
+export function isThreadScopedProfile(scope: string): boolean {
+  return scope.includes(PROFILE_SCOPE_THREAD_SEPARATOR);
 }
 
 export interface LegacyBrowserProfile {

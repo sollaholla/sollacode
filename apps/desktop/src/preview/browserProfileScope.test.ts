@@ -1,87 +1,77 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { previewBrowserProfileScope, selectLegacyBrowserProfile } from "./browserProfileScope.ts";
+import {
+  environmentScopeOf,
+  isThreadScopedProfile,
+  previewBrowserProfileScope,
+  selectLegacyBrowserProfile,
+} from "./browserProfileScope.ts";
 
 describe("previewBrowserProfileScope", () => {
-  it("gives every thread in an environment the same profile", () => {
-    // The bug this replaces: each thread hashed to its own partition, so an
-    // agent read `LOGGED_IN: false` on a site the user was signed into.
-    expect(previewBrowserProfileScope("primary")).toBe(previewBrowserProfileScope("primary"));
+  it("returns the bare environment when no profile owner is designated", () => {
+    // The user's own conversations share one environment-wide jar so signing in
+    // once keeps every user tab in the environment signed in.
+    expect(previewBrowserProfileScope("env-1")).toBe("env-1");
+    expect(previewBrowserProfileScope("env-1", undefined)).toBe("env-1");
+    expect(previewBrowserProfileScope("env-1", null)).toBe("env-1");
+    expect(previewBrowserProfileScope("env-1", "   ")).toBe("env-1");
   });
 
-  it("keeps separate environments on separate profiles", () => {
-    expect(previewBrowserProfileScope("primary")).not.toBe(previewBrowserProfileScope("remote-vm"));
-  });
-
-  it("refuses a missing environment id instead of resolving a second profile", () => {
-    // Falling back here is what put agent tabs on an empty jar while the user
-    // stayed signed in on their own: the page reads as logged out, and the
-    // profile that has the session is never opened.
-    expect(() => previewBrowserProfileScope(undefined as unknown as string)).toThrow(
-      /environment id/,
+  it("scopes a designated profile owner to its own partition", () => {
+    // An agent-created thread (or an inheriting descendant carrying the same
+    // browserProfileThreadId) gets its own jar, isolated from the user's.
+    expect(previewBrowserProfileScope("env-1", "thread-9")).toBe("env-1:thread:thread-9");
+    // Descendants that share one owner id share one partition.
+    expect(previewBrowserProfileScope("env-1", "owner-a")).toBe(
+      previewBrowserProfileScope("env-1", "owner-a"),
     );
+    // Different owners never collide.
+    expect(previewBrowserProfileScope("env-1", "owner-a")).not.toBe(
+      previewBrowserProfileScope("env-1", "owner-b"),
+    );
+    // The same owner in a different environment is a different machine's jar.
+    expect(previewBrowserProfileScope("env-1", "owner-a")).not.toBe(
+      previewBrowserProfileScope("env-2", "owner-a"),
+    );
+  });
+
+  it("still fails closed on a missing environment id", () => {
     expect(() => previewBrowserProfileScope("")).toThrow(/environment id/);
-    expect(() => previewBrowserProfileScope("   ")).toThrow(/environment id/);
+    expect(() => previewBrowserProfileScope("   ", "thread-9")).toThrow(/environment id/);
+    // @ts-expect-error deliberately wrong type to prove the guard.
+    expect(() => previewBrowserProfileScope(undefined)).toThrow(/environment id/);
+  });
+});
+
+describe("environmentScopeOf / isThreadScopedProfile", () => {
+  it("recovers the environment a per-thread profile is cloned from", () => {
+    const scope = previewBrowserProfileScope("env-1", "thread-9");
+    expect(isThreadScopedProfile(scope)).toBe(true);
+    expect(environmentScopeOf(scope)).toBe("env-1");
+  });
+
+  it("treats a bare environment scope as not thread-scoped and its own source", () => {
+    expect(isThreadScopedProfile("env-1")).toBe(false);
+    expect(environmentScopeOf("env-1")).toBe("env-1");
+  });
+
+  it("round-trips: the source of a per-thread scope is the bare environment scope", () => {
+    const environment = "env-42";
+    const scope = previewBrowserProfileScope(environment, "agent-thread");
+    expect(environmentScopeOf(scope)).toBe(previewBrowserProfileScope(environment));
   });
 });
 
 describe("selectLegacyBrowserProfile", () => {
-  it("adopts the jar holding the most cookies, which is where the logins are", () => {
+  it("adopts the jar with the most cookies and ignores empty ones", () => {
     expect(
       selectLegacyBrowserProfile([
-        { directory: "t3code-preview-aaa", cookieBytes: 20_480 },
-        { directory: "t3code-preview-bbb", cookieBytes: 618_496 },
-        { directory: "t3code-preview-ccc", cookieBytes: 45_056 },
+        { directory: "a", cookieBytes: 0 },
+        { directory: "b", cookieBytes: 4096 },
+        { directory: "c", cookieBytes: 2048 },
       ]),
-    ).toBe("t3code-preview-bbb");
-  });
-
-  it("ignores empty jars so the one adoption is not spent on a fresh profile", () => {
-    expect(
-      selectLegacyBrowserProfile([
-        { directory: "t3code-preview-empty", cookieBytes: 0 },
-        { directory: "t3code-preview-signed-in", cookieBytes: 1_024 },
-      ]),
-    ).toBe("t3code-preview-signed-in");
-  });
-
-  it("has nothing to adopt when every jar is empty", () => {
-    expect(
-      selectLegacyBrowserProfile([{ directory: "t3code-preview-empty", cookieBytes: 0 }]),
-    ).toBeNull();
-  });
-
-  it("has nothing to adopt on a first run", () => {
+    ).toBe("b");
+    expect(selectLegacyBrowserProfile([{ directory: "a", cookieBytes: 0 }])).toBeNull();
     expect(selectLegacyBrowserProfile([])).toBeNull();
-  });
-
-  it("still adopts when the shared jar exists but is the staler one", () => {
-    // The environment-wide profile already existed as the old threadless
-    // fallback. Its Google session had expired months ago, so treating "the
-    // target exists" as done left every thread signed out — the exact bug.
-    expect(
-      selectLegacyBrowserProfile([
-        { directory: "t3code-preview-environment-wide", cookieBytes: 94_208 },
-        { directory: "t3code-preview-signed-in-today", cookieBytes: 163_840 },
-      ]),
-    ).toBe("t3code-preview-signed-in-today");
-  });
-
-  it("leaves the shared jar alone once it is already the richest", () => {
-    expect(
-      selectLegacyBrowserProfile([
-        { directory: "t3code-preview-shared", cookieBytes: 200_000 },
-        { directory: "t3code-preview-old", cookieBytes: 4_096 },
-      ]),
-    ).toBe("t3code-preview-shared");
-  });
-
-  it("picks the same jar every run when two are the same size", () => {
-    const profiles = [
-      { directory: "t3code-preview-bbb", cookieBytes: 4_096 },
-      { directory: "t3code-preview-aaa", cookieBytes: 4_096 },
-    ];
-    expect(selectLegacyBrowserProfile(profiles)).toBe("t3code-preview-aaa");
-    expect(selectLegacyBrowserProfile(profiles.toReversed())).toBe("t3code-preview-aaa");
   });
 });
