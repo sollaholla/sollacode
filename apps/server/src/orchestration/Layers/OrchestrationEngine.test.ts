@@ -102,6 +102,7 @@ describe("OrchestrationEngine", () => {
           return savedEvent;
         }),
       readFromSequence: () => Stream.empty,
+      readThreadEventsFromSequence: () => Stream.empty,
       readAll: () =>
         Stream.fail(
           new PersistenceSqlError({
@@ -963,6 +964,17 @@ describe("OrchestrationEngine", () => {
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
+      readThreadEventsFromSequence(threadId, sequenceExclusive, limit) {
+        const matches = events.filter(
+          (event) =>
+            event.aggregateKind === "thread" &&
+            event.aggregateId === threadId &&
+            event.sequence > sequenceExclusive,
+        );
+        return Stream.fromIterable(
+          limit === undefined ? matches : matches.slice(0, Math.max(0, Math.floor(limit))),
+        );
+      },
       readAll() {
         return Stream.fromIterable(events);
       },
@@ -1195,6 +1207,17 @@ describe("OrchestrationEngine", () => {
       },
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
+      },
+      readThreadEventsFromSequence(threadId, sequenceExclusive, limit) {
+        const matches = events.filter(
+          (event) =>
+            event.aggregateKind === "thread" &&
+            event.aggregateId === threadId &&
+            event.sequence > sequenceExclusive,
+        );
+        return Stream.fromIterable(
+          limit === undefined ? matches : matches.slice(0, Math.max(0, Math.floor(limit))),
+        );
       },
       readAll() {
         return Stream.fromIterable(events);

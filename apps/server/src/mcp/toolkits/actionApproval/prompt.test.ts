@@ -23,6 +23,7 @@ const makeHarness = Effect.fn("ActionApprovalPromptTest.makeHarness")(function* 
     OrchestrationEngineService,
     OrchestrationEngineService.of({
       readEvents: () => Stream.empty,
+      readThreadEvents: () => Stream.empty,
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);

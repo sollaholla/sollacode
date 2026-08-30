@@ -9,7 +9,7 @@
  *
  * @module OrchestrationEventStore
  */
-import { OrchestrationEvent } from "@t3tools/contracts";
+import { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -42,6 +42,25 @@ export interface OrchestrationEventStoreShape {
    * Reads in fixed-size pages and normalizes non-integer/negative limits.
    */
   readonly readFromSequence: (
+    sequenceExclusive: number,
+    limit?: number,
+  ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
+   * Replay events for a single thread stream after the provided sequence.
+   *
+   * @param threadId - Thread aggregate stream to scan.
+   * @param sequenceExclusive - Sequence cursor (exclusive).
+   * @param limit - Maximum number of events to emit.
+   * @returns Stream containing this thread's ordered events after the cursor.
+   *
+   * Uses the (aggregate_kind, stream_id, sequence) index so an idle thread
+   * replays ~0 events regardless of how far the *global* event head has
+   * advanced. This is the thread-scoped counterpart of {@link readFromSequence},
+   * which scans the whole global range and forces callers to filter.
+   */
+  readonly readThreadEventsFromSequence: (
+    threadId: ThreadId,
     sequenceExclusive: number,
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
