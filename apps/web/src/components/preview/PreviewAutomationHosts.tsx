@@ -6,7 +6,6 @@ import {
   FILL_PREVIEW_VIEWPORT,
   PREVIEW_AUTOMATION_OPERATIONS,
   type EnvironmentId,
-  type PreviewAutomationAnswerDownloadApprovalInput,
   type PreviewAutomationCloseResult,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
@@ -47,7 +46,7 @@ import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
+import { useEnvironments } from "~/state/environments";
 import { useThreadShells } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { vmAgentEnvironment } from "~/state/vmAgents";
@@ -331,20 +330,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   );
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
-  // The primary connection is this desktop's own backend, so an environment
-  // reached that way lives on this machine — and a guest rendered here uses the
-  // browser profile the person sitting at it signed in with. Every other target
-  // is somebody else's machine over the network.
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const environmentLocal = primaryEnvironmentId === environmentId;
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
-      environmentLocal,
     }),
-    [automationClientId, environmentId, environmentLocal],
+    [automationClientId, environmentId],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -922,37 +914,6 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               tabId: ready.tabId,
               colorScheme: input.colorScheme,
             } satisfies PreviewAutomationSetColorSchemeResult;
-          }
-          case "pickElement": {
-            // The picker's overlay is injected into the guest page itself, so
-            // it rides the mirror like any other pixels and the viewer's
-            // forwarded input drives it. Only starting the session needed a
-            // way in from off-machine. Resolves when the person submits or
-            // cancels, which is why the caller allows a human-length wait.
-            const ready = await requireReadyTab();
-            return await ready.bridge.pickElement(ready.runtimeTabId);
-          }
-          case "devtools": {
-            // Only ever answered by the machine actually running the guest,
-            // which is the machine whose loopback endpoint this describes.
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.devtools(ready.runtimeTabId);
-          }
-          case "answerDownloadApproval": {
-            // A remote viewer answering the Allow/Deny card this machine is
-            // showing. The decision is keyed by the hold's id, not a tab, and
-            // lands on the same handler the local card's buttons call.
-            const input = request.input as PreviewAutomationAnswerDownloadApprovalInput;
-            const bridge = previewBridge;
-            if (!bridge) {
-              throw new PreviewAutomationTargetUnavailableError(unavailableTarget);
-            }
-            await bridge.answerPreviewDownloadApproval(input.id, input.decision);
-            return undefined;
-          }
-          case "frame": {
-            const ready = await requireReadyTab();
-            return await ready.bridge.automation.frame(ready.runtimeTabId);
           }
           case "snapshot": {
             const ready = await requireReadyTab();

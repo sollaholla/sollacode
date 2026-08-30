@@ -8,27 +8,7 @@
  * prefix only Vite knows gets answered with index.html; a prefix only the
  * server knows redirect-loops through the proxy.
  */
-import { DEVTOOLS_ROUTE_PREFIX } from "./preview.ts";
-
-export const DEV_PROXIED_PATH_PREFIXES = [
-  "/api",
-  "/oauth",
-  "/.well-known",
-  "/ws",
-  DEVTOOLS_ROUTE_PREFIX,
-] as const;
-
-/**
- * Prefixes whose traffic includes a WebSocket upgrade.
- *
- * Vite only forwards upgrades for proxy entries that ask for it, so a socket
- * under an otherwise-proxied prefix fails the handshake rather than 404ing —
- * which looks like a broken server rather than a missing flag.
- */
-export const DEV_PROXIED_WEBSOCKET_PATH_PREFIXES: ReadonlySet<string> = new Set([
-  "/ws",
-  DEVTOOLS_ROUTE_PREFIX,
-]);
+export const DEV_PROXIED_PATH_PREFIXES = ["/api", "/oauth", "/.well-known", "/ws"] as const;
 
 export function isDevProxiedPath(pathname: string): boolean {
   return DEV_PROXIED_PATH_PREFIXES.some(

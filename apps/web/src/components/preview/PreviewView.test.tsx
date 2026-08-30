@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => ({
   showEmptyState: false,
   sessionUrl: "http://example.com/",
   surfaceProps: [] as Array<Record<string, unknown>>,
-  mirrorProps: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("~/state/session", async () => {
@@ -52,7 +51,6 @@ vi.mock("~/previewStateStore", () => ({
   rememberPreviewUrl: mocks.rememberPreviewUrl,
   updatePreviewServerSnapshot: vi.fn(),
   useThreadPreviewState: () => ({
-    remoteApprovalsByTabId: {},
     activeTabId: "tab-1",
     desktopByTabId: {
       "tab-1": {
@@ -86,23 +84,9 @@ vi.mock("~/previewStateStore", () => ({
   }),
 }));
 
-let primaryEnvironmentId: string | null = "environment-1";
-// These cases cover the Electron surface; a plain browser has no guest to
-// render and is covered by the mirror case below.
-let electron = true;
-
-vi.mock("~/env", () => ({
-  get isElectron() {
-    return electron;
-  },
-}));
-
 vi.mock("~/state/environments", () => ({
   useEnvironment: () => ({ label: "WSL" }),
   useEnvironmentHttpBaseUrl: () => "http://172.25.85.75:3773",
-  // These cases drive the environment from the machine that owns it, which is
-  // the arrangement that renders a local guest.
-  usePrimaryEnvironmentId: () => primaryEnvironmentId,
 }));
 
 vi.mock("~/state/preview", () => ({
@@ -214,12 +198,6 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({
     return null;
   },
 }));
-vi.mock("./PreviewRemoteSurface", () => ({
-  PreviewRemoteSurface: (props: Record<string, unknown>) => {
-    mocks.mirrorProps.push(props);
-    return null;
-  },
-}));
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
@@ -252,9 +230,6 @@ describe("PreviewView navigation", () => {
     mocks.showEmptyState = false;
     mocks.sessionUrl = "http://example.com/";
     mocks.surfaceProps.length = 0;
-    mocks.mirrorProps.length = 0;
-    primaryEnvironmentId = "environment-1";
-    electron = true;
   });
 
   it("explains Google's terminal rejection page and offers a fresh in-Preview retry", () => {
@@ -392,33 +367,5 @@ describe("PreviewView navigation", () => {
 
     renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
     expect(mocks.surfaceProps.at(-1)?.audible).toBe(true);
-  });
-
-  it("mirrors the real guest instead of opening a second one off-machine", () => {
-    // The environment lives on another machine, so the broker runs this
-    // thread's guest there and a local one would be a different browser.
-    primaryEnvironmentId = "environment-2";
-
-    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
-
-    expect(mocks.mirrorProps.at(-1)).toMatchObject({
-      environmentId: "environment-1",
-      threadId: "thread-1",
-      tabId: "tab-1",
-      visible: true,
-    });
-    // Acquiring a local surface is what creates the divergent guest.
-    expect(mocks.surfaceProps).toHaveLength(0);
-  });
-
-  it("mirrors in a plain browser, where no guest can be rendered at all", () => {
-    // The Electron-only browser host is what paints a guest; without it the
-    // local surface shows nothing rather than something wrong.
-    electron = false;
-
-    renderToStaticMarkup(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
-
-    expect(mocks.mirrorProps.at(-1)).toMatchObject({ tabId: "tab-1", visible: true });
-    expect(mocks.surfaceProps).toHaveLength(0);
   });
 });

@@ -263,10 +263,8 @@ describe("PreviewRemoteSnapshotResult", () => {
         width: 1024,
         height: 640,
       },
-      editableRegions: [{ x: 40, y: 80, width: 240, height: 44, inputMode: "email" }],
     });
     expect(frame.screenshot.width).toBe(1024);
-    expect(frame.editableRegions?.[0]?.inputMode).toBe("email");
     expect(frame).not.toHaveProperty("visibleText");
   });
 });

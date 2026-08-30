@@ -90,31 +90,6 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
-    remoteInput: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:remote-input",
-      tag: WS_METHODS.previewRemoteInput,
-      scheduler: automationScheduler,
-      // Strictly ordered per tab. Input dispatched concurrently arrives
-      // reordered, and a guest that receives a keystroke before the click that
-      // focused it does the wrong thing with both.
-      concurrency: {
-        mode: "serial",
-        key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.threadId, input.tabId]),
-      },
-    }),
-    remotePick: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:preview:remote-pick",
-      tag: WS_METHODS.previewRemotePick,
-      scheduler: automationScheduler,
-      // One picker per tab. It stays open until the person is done, so a
-      // second press must not start a rival session on the same guest.
-      concurrency: {
-        mode: "singleFlight",
-        key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.threadId, input.tabId]),
-      },
-    }),
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,

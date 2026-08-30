@@ -1,7 +1,6 @@
 import {
   type ApprovalRequestId,
   DEFAULT_MODEL,
-  PreviewTabId,
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
@@ -1837,12 +1836,6 @@ function ChatViewContent(props: ChatViewProps) {
   });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
-  // Answers a download held on ANOTHER machine's browser: routed through the
-  // server to whichever host is holding the file, the same way the mirror
-  // routes clicks. This machine's own holds answer through the desktop bridge.
-  const sendPreviewRemoteInput = useAtomCommand(previewEnvironment.remoteInput, {
-    reportFailure: false,
-  });
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
@@ -2454,26 +2447,12 @@ function ChatViewContent(props: ChatViewProps) {
   // a controller change alone, not on every navigation or zoom the overlay
   // also carries.
   const pendingPreviewDownloadApprovals = useMemo(() => {
-    const pending: {
-      readonly approval: DesktopPreviewOverlay["pendingDownloadApprovals"][number];
-      /** Set when the hold lives on another machine and answers must travel. */
-      readonly remoteTabId: string | null;
-    }[] = [];
+    const pending: DesktopPreviewOverlay["pendingDownloadApprovals"][number][] = [];
     for (const overlay of Object.values(activePreviewState.desktopByTabId)) {
-      for (const approval of overlay.pendingDownloadApprovals) {
-        pending.push({ approval, remoteTabId: null });
-      }
-    }
-    for (const [tabId, approvals] of Object.entries(activePreviewState.remoteApprovalsByTabId)) {
-      for (const approval of approvals) {
-        // The same hold cannot be both local and remote, but a desktop that
-        // also mirrors itself must not raise one card per source.
-        if (pending.some((entry) => entry.approval.id === approval.id)) continue;
-        pending.push({ approval, remoteTabId: tabId });
-      }
+      pending.push(...overlay.pendingDownloadApprovals);
     }
     return pending;
-  }, [activePreviewState.desktopByTabId, activePreviewState.remoteApprovalsByTabId]);
+  }, [activePreviewState.desktopByTabId]);
   const previewControllerByTabId = useMemo(() => {
     const entries: Record<string, Pick<DesktopPreviewOverlay, "controller" | "agentActive">> = {};
     for (const [tabId, overlay] of Object.entries(activePreviewState.desktopByTabId)) {
@@ -3167,32 +3146,13 @@ function ChatViewContent(props: ChatViewProps) {
     }
     if (pendingPreviewDownloadApprovals.length > 0) {
       const first = pendingPreviewDownloadApprovals[0]!;
-      const remoteTabId = first.remoteTabId;
       items.push({
-        id: `preview-download-approval:${first.approval.id}`,
+        id: `preview-download-approval:${first.id}`,
         variant: "warning",
         icon: <DownloadIcon />,
         title: "Browser download waiting for you",
-        description: `${previewDownloadApprovalSource(first.approval)} wants to save ${first.approval.fileName}. The agent is paused until you choose.`,
-        actions: (
-          <PreviewDownloadApprovalActions
-            approval={first.approval}
-            size="xs"
-            {...(remoteTabId !== null && activeThreadRef !== null
-              ? {
-                  onAnswer: (id: string, decision: "allow-domain" | "allow-once" | "deny") =>
-                    void sendPreviewRemoteInput({
-                      environmentId: activeThreadRef.environmentId,
-                      input: {
-                        threadId: activeThreadRef.threadId,
-                        tabId: PreviewTabId.make(remoteTabId),
-                        action: { kind: "answerDownloadApproval", id, decision },
-                      },
-                    }),
-                }
-              : {})}
-          />
-        ),
+        description: `${previewDownloadApprovalSource(first)} wants to save ${first.fileName}. The agent is paused until you choose.`,
+        actions: <PreviewDownloadApprovalActions approval={first} size="xs" />,
       });
     }
     if (

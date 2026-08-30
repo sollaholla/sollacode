@@ -22,28 +22,20 @@ export function previewDownloadApprovalSource(approval: PreviewDownloadApproval)
   return approval.domain.length > 0 ? approval.domain : "This page";
 }
 
-/**
- * Allow / Deny controls shared by the browser overlay and the composer banner.
- *
- * `onAnswer` overrides where the decision goes: the desktop answers through
- * its own bridge, while a remote viewer routes the same decision through the
- * server to the machine actually holding the download.
- */
+/** Allow / Deny controls shared by the browser overlay and the composer banner. */
 export function PreviewDownloadApprovalActions(props: {
   readonly approval: PreviewDownloadApproval;
   readonly size?: "xs" | "sm";
-  readonly onAnswer?: (id: string, decision: PreviewDownloadApprovalDecision) => void;
 }) {
   const size = props.size ?? "sm";
   const compact = size === "sm";
-  const answer = props.onAnswer ?? answerPreviewDownloadApproval;
   return (
     <>
       <Button
         size={size}
         variant="ghost"
         className={compact ? "h-7 px-2 text-xs" : undefined}
-        onClick={() => answer(props.approval.id, "deny")}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "deny")}
       >
         Deny
       </Button>
@@ -51,7 +43,7 @@ export function PreviewDownloadApprovalActions(props: {
         size={size}
         variant="outline"
         className={compact ? "h-7 px-2 text-xs" : undefined}
-        onClick={() => answer(props.approval.id, "allow-once")}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "allow-once")}
       >
         Allow once
       </Button>
@@ -59,7 +51,7 @@ export function PreviewDownloadApprovalActions(props: {
         size={size}
         className={compact ? "h-7 px-2 text-xs" : undefined}
         disabled={props.approval.domain.length === 0}
-        onClick={() => answer(props.approval.id, "allow-domain")}
+        onClick={() => answerPreviewDownloadApproval(props.approval.id, "allow-domain")}
       >
         Allow for this domain
       </Button>
@@ -80,8 +72,6 @@ export function PreviewDownloadApprovalActions(props: {
 export function PreviewDownloadApprovalPrompt(props: {
   /** Absent when the desktop host predates download approvals. */
   readonly approvals: ReadonlyArray<PreviewDownloadApproval> | undefined;
-  /** Routes answers somewhere other than the local desktop bridge. */
-  readonly onAnswer?: (id: string, decision: PreviewDownloadApprovalDecision) => void;
 }) {
   const pending = props.approvals ?? [];
   if (pending.length === 0) return null;
@@ -108,10 +98,7 @@ export function PreviewDownloadApprovalPrompt(props: {
             </div>
           </div>
           <div className="flex flex-wrap justify-end gap-1.5">
-            <PreviewDownloadApprovalActions
-              approval={approval}
-              {...(props.onAnswer === undefined ? {} : { onAnswer: props.onAnswer })}
-            />
+            <PreviewDownloadApprovalActions approval={approval} />
           </div>
         </div>
       ))}

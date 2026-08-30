@@ -4,30 +4,23 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
-  PreviewTabId,
-  type PreviewRemoteInputAction,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLinkIcon, LoaderCircleIcon, ShieldAlertIcon } from "lucide-react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
 import { ensureLocalApi } from "~/localApi";
-import { readPreparedConnection } from "~/state/session";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
   useThreadPreviewState,
 } from "~/previewStateStore";
 import { resolveDiscoveredServerUrl } from "~/browser/browserTargetResolver";
-import {
-  useEnvironment,
-  useEnvironmentHttpBaseUrl,
-  usePrimaryEnvironmentId,
-} from "~/state/environments";
+import { useEnvironment, useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { useThreadShell } from "~/state/entities";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -51,11 +44,6 @@ import { PreviewUnreachable } from "./PreviewUnreachable";
 import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
-import { PreviewRemoteDevTools } from "./PreviewRemoteDevTools";
-import { devToolsFrontendUrl } from "./devToolsFrontendUrl";
-import { PreviewRemoteSurface } from "./PreviewRemoteSurface";
-import { isElectron } from "~/env";
-import { resolvePreviewSurfaceMode } from "./previewSurfaceMode";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { useLoadingProgress } from "./useLoadingProgress";
 import { usePreviewSession } from "./usePreviewSession";
@@ -92,25 +80,12 @@ interface Props {
 const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 
 /**
- * While the picker is open the person is hovering and drawing inside the guest
- * page, so the mirror has to keep up with a pointer rather than with reading.
- * Paid only for the duration of a pick, and only affordable at all because a
- * frame no longer drags a DOM and accessibility read behind it.
- */
-const PICKING_FRAME_INTERVAL_MS = 300;
-
-/**
  * Single-tab preview surface: chrome row on top, one webview below, empty
  * state when no session exists for the thread.
  */
 export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, visible }: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
-  // DevTools is a window on the host, not pixels in the page, so it cannot
-  // travel. The console behind it can.
-  // Real DevTools, proxied from the machine hosting the guest. Only offered
-  // where there is no local guest to open Chromium's own on.
-  const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [checkingVerification, setCheckingVerification] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
   const pickActiveRef = useRef(false);
@@ -156,31 +131,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   const canGoForward = desktopOverlay?.canGoForward ?? snapshot?.canGoForward ?? false;
   const refreshDisabled = navStatus._tag === "Idle";
   const isUnreachable = navStatus._tag === "LoadFailed";
-  // The broker runs a thread's guest on the machine that owns its
-  // environment, so that is the only client whose own guest is the one the
-  // agent is driving. Everywhere else, render frames from that machine
-  // instead of opening a second browser with different logins.
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const surfaceMode = resolvePreviewSurfaceMode({
-    canRenderLocalGuest: isElectron,
-    environmentLocal:
-      primaryEnvironmentId === null ? null : primaryEnvironmentId === threadRef.environmentId,
-  });
-  // Resolved here so the panel can fall back to the console when there is no
-  // way to reach real DevTools — an environment served from somewhere other
-  // than this page's own origin leaves the frontend with no credential to
-  // present.
-  const devToolsFrontend = useMemo(() => {
-    if (!tabId) return null;
-    const connection = readPreparedConnection(threadRef.environmentId);
-    if (!connection) return null;
-    return devToolsFrontendUrl({
-      httpBaseUrl: connection.httpBaseUrl,
-      threadId: threadRef.threadId,
-      tabId,
-      pageOrigin: typeof window === "undefined" ? null : window.location.origin,
-    });
-  }, [tabId, threadRef]);
   const showEmptyState = shouldShowPreviewEmptyState(snapshot);
   const controller = desktopOverlay?.controller ?? "none";
   const loadProgress = useLoadingProgress(loading);
@@ -197,39 +147,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
 
-  const sendRemoteInput = useAtomCommand(previewEnvironment.remoteInput, {
-    reportFailure: false,
-  });
-  // Chrome-row controls drive this machine's own guest through the bridge.
-  // When the guest is on another machine there is nothing here to drive, so
-  // the same intent goes to the host that has it.
-  const sendGuestAction = useCallback(
-    async (action: PreviewRemoteInputAction) => {
-      if (!tabId) return;
-      await sendRemoteInput({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId), action },
-      });
-    },
-    [sendRemoteInput, tabId, threadRef],
-  );
-
   const navigateToResolvedUrl = useCallback(
     async (resolvedUrl: string) => {
-      if (surfaceMode === "remote-mirror" && tabId) {
-        // No guest of ours to drive. Send it to the machine hosting the real
-        // one, the same way the mirror sends everything else.
-        await sendRemoteInput({
-          environmentId: threadRef.environmentId,
-          input: {
-            threadId: threadRef.threadId,
-            tabId: PreviewTabId.make(tabId),
-            action: { kind: "navigate", url: resolvedUrl },
-          },
-        });
-        rememberPreviewUrl(threadRef, resolvedUrl);
-        return;
-      }
       if (runtimeTabId && previewBridge) {
         // Drive the webview imperatively; `usePreviewBridge` mirrors the
         // resolved URL back to the server so other clients stay in sync.
@@ -243,7 +162,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         });
       }
     },
-    [open, runtimeTabId, sendRemoteInput, surfaceMode, tabId, threadRef],
+    [open, runtimeTabId, threadRef],
   );
 
   const handleSubmitUrl = useCallback(
@@ -270,12 +189,8 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
 
   const handleRefresh = useCallback(() => {
     if (humanVerification) return;
-    if (surfaceMode === "remote-mirror") {
-      void sendGuestAction({ kind: "reload" });
-      return;
-    }
     if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
-  }, [humanVerification, runtimeTabId, sendGuestAction, surfaceMode]);
+  }, [humanVerification, runtimeTabId]);
 
   const handleCheckHumanVerification = useCallback(async () => {
     const bridge = previewBridge;
@@ -392,20 +307,12 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
-    if (surfaceMode === "remote-mirror") {
-      void sendGuestAction({ kind: "history", direction: "back" });
-      return;
-    }
     if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
-  }, [runtimeTabId, sendGuestAction, surfaceMode]);
+  }, [runtimeTabId]);
 
   const handleForward = useCallback(() => {
-    if (surfaceMode === "remote-mirror") {
-      void sendGuestAction({ kind: "history", direction: "forward" });
-      return;
-    }
     if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
-  }, [runtimeTabId, sendGuestAction, surfaceMode]);
+  }, [runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!url) return;
@@ -702,48 +609,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     [recordingRuntimeTabId, runtimeTabId, tabId, threadRef],
   );
 
-  const requestRemotePick = useAtomCommand(previewEnvironment.remotePick, {
-    reportFailure: false,
-  });
-  // The picker's overlay lives in the guest page, so off-machine it is already
-  // on screen in the mirror and already driven by forwarded input. What has to
-  // travel is the start of the session and the annotation it produces.
-  const pickOnHost = useCallback(async () => {
-    if (!tabId || pickActiveRef.current) return;
-    pickActiveRef.current = true;
-    setPickActive(true);
-    try {
-      const result = await requestRemotePick({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, tabId: PreviewTabId.make(tabId) },
-      });
-      if (result._tag === "Failure") return;
-      const annotation = result.value;
-      if (!annotation) return;
-      addPreviewAnnotation(threadRef, annotation);
-      const screenshotFile = await previewAnnotationScreenshotFile(annotation);
-      if (screenshotFile && annotation.screenshot) {
-        addImage(threadRef, {
-          type: "image",
-          id: annotation.id,
-          name: screenshotFile.name,
-          mimeType: screenshotFile.type,
-          sizeBytes: screenshotFile.size,
-          previewUrl: annotation.screenshot.dataUrl,
-          file: screenshotFile,
-        });
-      }
-    } finally {
-      pickActiveRef.current = false;
-      if (isMountedRef.current) setPickActive(false);
-    }
-  }, [addImage, addPreviewAnnotation, requestRemotePick, tabId, threadRef]);
-
   const handlePickElement = useCallback(() => {
-    if (surfaceMode === "remote-mirror") {
-      void pickOnHost();
-      return;
-    }
     if (!previewBridge || !runtimeTabId) return;
     if (pickActiveRef.current) {
       void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
@@ -798,7 +664,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         }
       }
     })();
-  }, [addImage, addPreviewAnnotation, pickOnHost, runtimeTabId, surfaceMode, threadRef]);
+  }, [addImage, addPreviewAnnotation, runtimeTabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle
@@ -867,20 +733,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         onPictureInPicture={previewBridge && tabId ? handlePictureInPicture : undefined}
         pictureInPicture={miniPlayer?.tabId === tabId}
         pictureInPictureDisabled={!desktopOverlay?.hasWebContents || isUnreachable}
-        onToggleConsole={
-          surfaceMode === "remote-mirror" && tabId
-            ? () => setDevToolsOpen((open) => !open)
-            : undefined
-        }
-        consoleOpen={devToolsOpen}
-        onPickElement={
-          // Pickable either through this machine's own guest or, with none, on
-          // the machine hosting it. Gating on the bridge alone hid the button
-          // outright in a regular browser.
-          tabId && (previewBridge || surfaceMode === "remote-mirror")
-            ? handlePickElement
-            : undefined
-        }
+        onPickElement={previewBridge && tabId ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
         // failed to load (a React overlay covers the webview, so the
@@ -906,7 +759,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {runtimeTabId && snapshot && !showEmptyState && surfaceMode === "local-guest" ? (
+        {runtimeTabId && snapshot && !showEmptyState ? (
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
@@ -914,27 +767,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             audible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
-        ) : null}
-        {tabId && snapshot && !showEmptyState && surfaceMode === "remote-mirror" ? (
-          <div className="absolute inset-0 flex flex-col">
-            <PreviewRemoteSurface
-              key={tabId}
-              environmentId={threadRef.environmentId}
-              threadId={threadRef.threadId}
-              tabId={tabId}
-              visible={visible && !isUnreachable}
-              // The picker's overlay is a live UI the person is drawing in, so
-              // it needs frames at something other than a browsing cadence.
-              cadenceMs={pickActive ? PICKING_FRAME_INTERVAL_MS : undefined}
-              // Without a reachable DevTools, the console it would have been
-              // opened for is still worth showing.
-              showConsole={devToolsOpen && devToolsFrontend === null}
-              className="min-h-0 flex-1"
-            />
-            {devToolsOpen && devToolsFrontend !== null ? (
-              <PreviewRemoteDevTools frontendUrl={devToolsFrontend} className="h-1/2 shrink-0" />
-            ) : null}
-          </div>
         ) : null}
         {showEmptyState ? (
           <PreviewEmptyState
@@ -952,17 +784,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         ) : null}
         {desktopOverlay && !showEmptyState && !isUnreachable ? (
           <PreviewDownloadApprovalPrompt approvals={desktopOverlay.pendingDownloadApprovals} />
-        ) : null}
-        {/* The mirrored guest's held downloads, reported by its frames. The
-            answer goes back through the server to the machine holding the
-            file — the same route every other viewer action takes. */}
-        {surfaceMode === "remote-mirror" && tabId && !showEmptyState && !isUnreachable ? (
-          <PreviewDownloadApprovalPrompt
-            approvals={previewState.remoteApprovalsByTabId[tabId]}
-            onAnswer={(id, decision) =>
-              void sendGuestAction({ kind: "answerDownloadApproval", id, decision })
-            }
-          />
         ) : null}
         {runtimeTabId && desktopOverlay && !showEmptyState && !isUnreachable ? (
           <AgentBrowserCursor

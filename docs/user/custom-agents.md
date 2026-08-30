@@ -85,11 +85,6 @@ opacity, so a newly opened page starts loading before its thread or tab is selec
 clipped, resized, or stacked over chat and files. A native snapshot fallback briefly raises the
 same geometry into the compositor; selecting a tab changes only its presentation, and
 automation preserves the fill-the-panel viewport unless the user or tool explicitly resizes it.
-Web clients connected to another machine mirror that same guest instead of opening a second browser.
-On touch screens, a tap clicks, a hold right-clicks, and a drag scrolls. Frames include bounded
-locations for visible text controls so tapping one can open the phone's software keyboard
-synchronously; typing is forwarded to the guest control that received the click. Restoring a hidden
-guest uses a bounded staging handshake that remains alive while a busy thread finishes catching up.
 When preview automation connects or begins an MCP operation, Solla Code makes every registered
 preview tab foreground-equivalent before running that operation and renews the fleet-wide lease
 throughout long-running operations. The lease is released one minute after the last operation

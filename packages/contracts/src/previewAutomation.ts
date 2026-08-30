@@ -3,10 +3,6 @@ import { Schema } from "effect";
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
-  PreviewAutomationConsoleEntry,
-  PreviewAutomationNetworkEntry,
-  PreviewDownloadApproval,
-  PreviewRemoteEditableRegion,
   PreviewRenderedViewportSize,
   PreviewTabId,
   PreviewViewportPresetId,
@@ -53,11 +49,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "upload",
   "close",
   "waitForDownload",
-  "pickElement",
-  "frame",
   "selectOption",
-  "devtools",
-  "answerDownloadApproval",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -150,28 +142,25 @@ export type PreviewDownload = typeof PreviewDownload.Type;
 
 const PreviewDownloadList = Schema.Array(PreviewDownload);
 
-// Defined beside the remote-viewer contracts (whose frames carry it to other
-// machines) and re-exported here for the automation surface's consumers.
-export { PreviewDownloadApproval };
+/**
+ * A download held until the user says whether that site may write a file.
+ *
+ * Downloads no longer raise the system save panel, so without this a page — or
+ * an agent driving one — writes into the user's workspace with no prompt and
+ * no click at all.
+ */
+export const PreviewDownloadApproval = Schema.Struct({
+  id: Schema.String,
+  domain: Schema.String,
+  fileName: Schema.String,
+});
+export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
 
 /**
  * Waiting on a person, not a server, so this gets its own bound rather than
  * the 60s cap the page-condition waits use. Someone has to notice the card and
  * decide.
  */
-/**
- * Answers a download the host is holding, from a machine that is not the host.
- *
- * The decision semantics are exactly the desktop prompt's: allow the domain
- * from now on, allow this one file, or deny and keep nothing.
- */
-export const PreviewAutomationAnswerDownloadApprovalInput = Schema.Struct({
-  id: Schema.String,
-  decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
-});
-export type PreviewAutomationAnswerDownloadApprovalInput =
-  typeof PreviewAutomationAnswerDownloadApprovalInput.Type;
-
 export const PreviewAutomationWaitForDownloadInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   timeoutMs: Schema.optional(
@@ -562,17 +551,6 @@ export const PreviewAutomationClickInput = Schema.Struct({
       description: "Viewport-relative Y coordinate in CSS pixels. Must be paired with x.",
     }),
   ),
-  /**
-   * Defaults to left. A right press reaches the page as a real secondary
-   * click, so custom context menus open in the guest — which is how a remote
-   * viewer's long-press becomes a right-click on the machine hosting the tab.
-   */
-  button: Schema.optional(
-    Schema.Literals(["left", "right"]).annotate({
-      description:
-        "Mouse button to press. Defaults to left; right reaches the page as a real secondary click, so its own context menus open.",
-    }),
-  ),
   timeoutMs: OptionalTimeoutMs,
 })
   .check(
@@ -892,9 +870,25 @@ export const PreviewAutomationElement = Schema.Struct({
 });
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
-// Defined alongside the preview session types so the remote snapshot can carry
-// them without this module and that one importing each other.
-export { PreviewAutomationConsoleEntry, PreviewAutomationNetworkEntry } from "./preview.ts";
+export const PreviewAutomationConsoleEntry = Schema.Struct({
+  level: Schema.String,
+  text: Schema.String,
+  timestamp: Schema.String,
+  source: Schema.optional(Schema.String),
+});
+export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
+
+export const PreviewAutomationNetworkEntry = Schema.Struct({
+  url: Schema.String,
+  method: Schema.String,
+  status: Schema.NullOr(Schema.Number),
+  failed: Schema.Boolean,
+  errorText: Schema.optional(Schema.String),
+  /** True when Cloudflare marked an HTML response as a Challenge Page. */
+  cfMitigated: Schema.optional(Schema.Boolean),
+  timestamp: Schema.String,
+});
+export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
 
 export const PreviewAutomationActionEvent = Schema.Struct({
   id: Schema.String,
@@ -917,8 +911,6 @@ export const PreviewAutomationSnapshot = Schema.Struct({
    */
   documentKind: Schema.optional(Schema.Literals(["page", "pdf"])),
   interactiveElements: Schema.Array(PreviewAutomationElement),
-  /** Visible text controls for synchronous software-keyboard handoff. */
-  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
   accessibilityTree: Schema.Unknown,
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
@@ -954,80 +946,10 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   ),
   /** Why there is no screenshot, when there is none. */
   screenshotError: Schema.optional(Schema.String),
-  /**
-   * The guest's viewport in CSS pixels.
-   *
-   * The screenshot above is in device pixels, so it alone cannot say where a
-   * point in the picture falls on the page. Coordinate input is specified in
-   * CSS pixels, so anyone mapping a place in the frame back onto the page —
-   * a remote viewer forwarding a click, for instance — needs both. Optional
-   * for hosts predating it.
-   */
-  viewport: Schema.optional(
-    Schema.Struct({
-      width: Schema.Int,
-      height: Schema.Int,
-    }),
-  ),
   /** Optional for compatibility with hosts predating challenge handoff. */
   humanVerification: Schema.optional(Schema.NullOr(PreviewHumanVerification)),
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
-
-/**
- * Just the picture and where it points.
- *
- * A snapshot walks the DOM twice and reads the accessibility tree to keep its
- * text consistent with its image. A viewer mirroring a guest wants none of
- * that and was paying for all of it on every frame — which is what held the
- * mirror to a browsing cadence. This is the same guest, captured renderer-side
- * so it works whether or not the host is showing the tab.
- */
-export const PreviewAutomationFrame = Schema.Struct({
-  url: Schema.String,
-  title: Schema.String,
-  loading: Schema.Boolean,
-  screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/jpeg"),
-    data: Schema.String,
-    width: Schema.Int,
-    height: Schema.Int,
-  }),
-  /** CSS pixels, so a viewer can map a point in the picture onto the page. */
-  viewport: Schema.optional(
-    Schema.Struct({
-      width: Schema.Int,
-      height: Schema.Int,
-    }),
-  ),
-  /** Visible text controls for synchronous software-keyboard handoff. */
-  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
-  /**
-   * Downloads this guest is holding for the user's approval.
-   *
-   * The frame is the only thing a remote viewer polls, so this is the only
-   * channel through which a person on another machine can learn a download
-   * is waiting at all — the desktop overlay that shows the Allow/Deny card
-   * never leaves the machine hosting the guest.
-   */
-  pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
-});
-export type PreviewAutomationFrame = typeof PreviewAutomationFrame.Type;
-
-/**
- * Where a guest's DevTools target lives on the machine hosting it.
- *
- * The port is bound to loopback, so this is useful only to something running
- * beside the guest — the environment's own server, which by then has
- * authenticated the caller. `targetId` names this guest and nothing else: the
- * same endpoint also exposes the app's own windows, and vouching for exactly
- * one target is what stops a proxy from reaching them.
- */
-export const PreviewAutomationDevTools = Schema.Struct({
-  port: Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(65_535)),
-  targetId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
-});
-export type PreviewAutomationDevTools = typeof PreviewAutomationDevTools.Type;
 
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
@@ -1064,19 +986,6 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
-  /**
-   * Whether this host runs on the environment's own machine — it reaches the
-   * environment through its own local backend rather than over the network.
-   *
-   * A guest is rendered by whichever host executes the request, so this decides
-   * which machine's browser profile an agent gets. Without it the broker picks
-   * the most recently focused host, which is simply whichever screen the user
-   * last touched: driving a thread on a laptop from a desktop in another room
-   * put every agent in the desktop's browser, signed out of everything the
-   * laptop was signed in to. Missing means an older client that cannot say, and
-   * is treated as not local.
-   */
-  environmentLocal: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 

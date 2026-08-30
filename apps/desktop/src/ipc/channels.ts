@@ -92,8 +92,6 @@ export const PREVIEW_AUTOMATION_RENEW_FOREGROUND_CHANNEL =
   "desktop:preview-automation-renew-foreground";
 export const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop:preview-automation-status";
 export const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:preview-automation-snapshot";
-export const PREVIEW_AUTOMATION_FRAME_CHANNEL = "desktop:preview-automation-frame";
-export const PREVIEW_AUTOMATION_DEVTOOLS_CHANNEL = "desktop:preview-automation-devtools";
 export const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop:preview-automation-click";
 export const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop:preview-automation-type";
 export const PREVIEW_AUTOMATION_UPLOAD_CHANNEL = "desktop:preview-automation-upload";

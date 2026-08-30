@@ -38,22 +38,6 @@ export const PreviewViewportSize = Schema.Struct({
   width: PreviewViewportDimension,
   height: PreviewViewportDimension,
 }).check(viewportAreaFilter);
-
-/**
- * A download held until the user says whether that site may write a file.
- *
- * Downloads no longer raise the system save panel, so without this a page — or
- * an agent driving one — writes into the user's workspace with no prompt and
- * no click at all. Defined here rather than in the automation contracts so the
- * remote-viewer feed can carry it without a dependency cycle; the automation
- * module re-exports it for its existing consumers.
- */
-export const PreviewDownloadApproval = Schema.Struct({
-  id: Schema.String,
-  domain: Schema.String,
-  fileName: Schema.String,
-});
-export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
 export type PreviewViewportSize = typeof PreviewViewportSize.Type;
 
 /**
@@ -216,58 +200,12 @@ export const PreviewListResult = Schema.Struct({
 });
 export type PreviewListResult = typeof PreviewListResult.Type;
 
-export const PreviewAutomationConsoleEntry = Schema.Struct({
-  level: Schema.String,
-  text: Schema.String,
-  timestamp: Schema.String,
-  source: Schema.optional(Schema.String),
-});
-export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry.Type;
-
-export const PreviewAutomationNetworkEntry = Schema.Struct({
-  url: Schema.String,
-  method: Schema.String,
-  status: Schema.NullOr(Schema.Number),
-  failed: Schema.Boolean,
-  errorText: Schema.optional(Schema.String),
-  /** True when Cloudflare marked an HTML response as a Challenge Page. */
-  cfMitigated: Schema.optional(Schema.Boolean),
-  timestamp: Schema.String,
-});
-export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry.Type;
-
 /** Requests a bounded rendered frame from the desktop host that owns a tab. */
 export const PreviewRemoteSnapshotInput = Schema.Struct({
   threadId: ThreadId,
   tabId: PreviewTabId,
-  /**
-   * Also return the console and network the host already gathered for this
-   * frame. Off by default: a viewer showing only the page should not carry
-   * diagnostics it will not display, and the host collects them either way, so
-   * asking costs no extra work on the guest's machine — only bytes.
-   */
-  includeDiagnostics: Schema.optional(Schema.Boolean),
 });
 export type PreviewRemoteSnapshotInput = typeof PreviewRemoteSnapshotInput.Type;
-
-/**
- * A text-editing target visible in a mirrored browser frame.
- *
- * Mobile browsers only show their software keyboard when a local input is
- * focused synchronously inside the original tap. Shipping these small bounds
- * with the frame lets the viewer know that before it sends the asynchronous
- * click to the guest.
- */
-export const PreviewRemoteEditableRegion = Schema.Struct({
-  x: Schema.Finite,
-  y: Schema.Finite,
-  width: Schema.Finite,
-  height: Schema.Finite,
-  inputMode: Schema.optional(
-    Schema.Literals(["text", "decimal", "numeric", "tel", "search", "email", "url"]),
-  ),
-});
-export type PreviewRemoteEditableRegion = typeof PreviewRemoteEditableRegion.Type;
 
 /**
  * Mobile only needs the visible browser frame and navigation identity. Keep
@@ -285,113 +223,8 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
     width: Schema.Int,
     height: Schema.Int,
   }),
-  /**
-   * The guest's viewport in CSS pixels, when the host reports it. The
-   * screenshot is in device pixels, so a viewer cannot turn a point in the
-   * picture into a point on the page without this. Absent from older hosts,
-   * which is what makes a mirror view-only rather than wrongly aimed.
-   */
-  viewport: Schema.optional(
-    Schema.Struct({
-      width: Schema.Int,
-      height: Schema.Int,
-    }),
-  ),
-  /** Visible text controls, bounded by the host and absent on older hosts. */
-  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
-  /**
-   * Downloads the host is holding for the user's approval on this tab.
-   *
-   * A remote viewer has no other way to learn a download is waiting: the
-   * Allow/Deny overlay is desktop-local, and a held download looks exactly
-   * like nothing having happened.
-   */
-  pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
-  /** Present only when asked for. The page's console, oldest first. */
-  consoleEntries: Schema.optional(Schema.Array(PreviewAutomationConsoleEntry)),
-  /** Present only when asked for. Requests the page made, oldest first. */
-  networkEntries: Schema.optional(Schema.Array(PreviewAutomationNetworkEntry)),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
-
-/**
- * One thing a person did to a mirrored guest.
- *
- * Deliberately the small set a viewer can express — a point in the frame, a
- * wheel, a key, some text, a step through history — rather than a general
- * remote-execution surface. Each maps onto an automation operation the host
- * already performs for agents, so nothing new runs on the guest's machine.
- * Coordinates are CSS pixels on the page, which the viewer derives from the
- * viewport reported alongside the frame.
- */
-export const PreviewRemoteInputAction = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("click"),
-    x: Schema.Finite,
-    y: Schema.Finite,
-    /** Defaults to left. Right is how a viewer's long-press reaches the page. */
-    button: Schema.optional(Schema.Literals(["left", "right"])),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("scroll"),
-    deltaX: Schema.Finite,
-    deltaY: Schema.Finite,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("type"),
-    text: Schema.String.check(Schema.isMaxLength(4_096)),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("press"),
-    key: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
-    modifiers: Schema.optional(Schema.Array(Schema.Literals(["Alt", "Control", "Meta", "Shift"]))),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("history"),
-    direction: Schema.Literals(["back", "forward"]),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("navigate"),
-    url: Url,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("reload"),
-  }),
-  Schema.Struct({
-    /**
-     * Answers a download the host is holding: allow the domain, allow this
-     * one file, or deny. The id comes from the approvals the frame carries,
-     * so a viewer can only answer requests the host actually surfaced.
-     */
-    kind: Schema.Literal("answerDownloadApproval"),
-    id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
-    decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
-  }),
-]);
-export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;
-
-/** Applies one viewer action to the guest on whichever machine is hosting it. */
-export const PreviewRemoteInputInput = Schema.Struct({
-  threadId: ThreadId,
-  tabId: PreviewTabId,
-  action: PreviewRemoteInputAction,
-});
-export type PreviewRemoteInputInput = typeof PreviewRemoteInputInput.Type;
-
-/**
- * Starts the guest's own element picker on the machine hosting it.
- *
- * The picker draws its overlay inside the page, so it arrives in the mirrored
- * frames and is driven by the same forwarded input as anything else — only
- * starting it needed a way in from off-machine. Resolves when the person
- * submits or cancels, so callers allow a human-length wait rather than a
- * request timeout.
- */
-export const PreviewRemotePickInput = Schema.Struct({
-  threadId: ThreadId,
-  tabId: PreviewTabId,
-});
-export type PreviewRemotePickInput = typeof PreviewRemotePickInput.Type;
 
 /** Authoritative tab set committed by a close operation. */
 export const PreviewCloseResult = Schema.Struct({
