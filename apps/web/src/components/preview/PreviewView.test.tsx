@@ -51,6 +51,7 @@ vi.mock("~/previewStateStore", () => ({
   rememberPreviewUrl: mocks.rememberPreviewUrl,
   updatePreviewServerSnapshot: vi.fn(),
   useThreadPreviewState: () => ({
+    remoteApprovalsByTabId: {},
     activeTabId: "tab-1",
     desktopByTabId: {
       "tab-1": {

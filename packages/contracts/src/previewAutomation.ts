@@ -5,6 +5,7 @@ import {
   PREVIEW_VIEWPORT_MAX_AREA,
   PreviewAutomationConsoleEntry,
   PreviewAutomationNetworkEntry,
+  PreviewDownloadApproval,
   PreviewRenderedViewportSize,
   PreviewTabId,
   PreviewViewportPresetId,
@@ -55,6 +56,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "frame",
   "selectOption",
   "devtools",
+  "answerDownloadApproval",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -147,25 +149,28 @@ export type PreviewDownload = typeof PreviewDownload.Type;
 
 const PreviewDownloadList = Schema.Array(PreviewDownload);
 
-/**
- * A download held until the user says whether that site may write a file.
- *
- * Downloads no longer raise the system save panel, so without this a page — or
- * an agent driving one — writes into the user's workspace with no prompt and
- * no click at all.
- */
-export const PreviewDownloadApproval = Schema.Struct({
-  id: Schema.String,
-  domain: Schema.String,
-  fileName: Schema.String,
-});
-export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
+// Defined beside the remote-viewer contracts (whose frames carry it to other
+// machines) and re-exported here for the automation surface's consumers.
+export { PreviewDownloadApproval };
 
 /**
  * Waiting on a person, not a server, so this gets its own bound rather than
  * the 60s cap the page-condition waits use. Someone has to notice the card and
  * decide.
  */
+/**
+ * Answers a download the host is holding, from a machine that is not the host.
+ *
+ * The decision semantics are exactly the desktop prompt's: allow the domain
+ * from now on, allow this one file, or deny and keep nothing.
+ */
+export const PreviewAutomationAnswerDownloadApprovalInput = Schema.Struct({
+  id: Schema.String,
+  decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
+});
+export type PreviewAutomationAnswerDownloadApprovalInput =
+  typeof PreviewAutomationAnswerDownloadApprovalInput.Type;
+
 export const PreviewAutomationWaitForDownloadInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   timeoutMs: Schema.optional(
@@ -554,6 +559,17 @@ export const PreviewAutomationClickInput = Schema.Struct({
   y: Schema.optional(
     Schema.Finite.annotate({
       description: "Viewport-relative Y coordinate in CSS pixels. Must be paired with x.",
+    }),
+  ),
+  /**
+   * Defaults to left. A right press reaches the page as a real secondary
+   * click, so custom context menus open in the guest — which is how a remote
+   * viewer's long-press becomes a right-click on the machine hosting the tab.
+   */
+  button: Schema.optional(
+    Schema.Literals(["left", "right"]).annotate({
+      description:
+        "Mouse button to press. Defaults to left; right reaches the page as a real secondary click, so its own context menus open.",
     }),
   ),
   timeoutMs: OptionalTimeoutMs,
@@ -981,6 +997,15 @@ export const PreviewAutomationFrame = Schema.Struct({
       height: Schema.Int,
     }),
   ),
+  /**
+   * Downloads this guest is holding for the user's approval.
+   *
+   * The frame is the only thing a remote viewer polls, so this is the only
+   * channel through which a person on another machine can learn a download
+   * is waiting at all — the desktop overlay that shows the Allow/Deny card
+   * never leaves the machine hosting the guest.
+   */
+  pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
 });
 export type PreviewAutomationFrame = typeof PreviewAutomationFrame.Type;
 

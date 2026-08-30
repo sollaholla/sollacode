@@ -38,6 +38,22 @@ export const PreviewViewportSize = Schema.Struct({
   width: PreviewViewportDimension,
   height: PreviewViewportDimension,
 }).check(viewportAreaFilter);
+
+/**
+ * A download held until the user says whether that site may write a file.
+ *
+ * Downloads no longer raise the system save panel, so without this a page — or
+ * an agent driving one — writes into the user's workspace with no prompt and
+ * no click at all. Defined here rather than in the automation contracts so the
+ * remote-viewer feed can carry it without a dependency cycle; the automation
+ * module re-exports it for its existing consumers.
+ */
+export const PreviewDownloadApproval = Schema.Struct({
+  id: Schema.String,
+  domain: Schema.String,
+  fileName: Schema.String,
+});
+export type PreviewDownloadApproval = typeof PreviewDownloadApproval.Type;
 export type PreviewViewportSize = typeof PreviewViewportSize.Type;
 
 /**
@@ -262,6 +278,14 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
       height: Schema.Int,
     }),
   ),
+  /**
+   * Downloads the host is holding for the user's approval on this tab.
+   *
+   * A remote viewer has no other way to learn a download is waiting: the
+   * Allow/Deny overlay is desktop-local, and a held download looks exactly
+   * like nothing having happened.
+   */
+  pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
   /** Present only when asked for. The page's console, oldest first. */
   consoleEntries: Schema.optional(Schema.Array(PreviewAutomationConsoleEntry)),
   /** Present only when asked for. Requests the page made, oldest first. */
@@ -284,6 +308,8 @@ export const PreviewRemoteInputAction = Schema.Union([
     kind: Schema.Literal("click"),
     x: Schema.Finite,
     y: Schema.Finite,
+    /** Defaults to left. Right is how a viewer's long-press reaches the page. */
+    button: Schema.optional(Schema.Literals(["left", "right"])),
   }),
   Schema.Struct({
     kind: Schema.Literal("scroll"),
@@ -309,6 +335,16 @@ export const PreviewRemoteInputAction = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("reload"),
+  }),
+  Schema.Struct({
+    /**
+     * Answers a download the host is holding: allow the domain, allow this
+     * one file, or deny. The id comes from the approvals the frame carries,
+     * so a viewer can only answer requests the host actually surfaced.
+     */
+    kind: Schema.Literal("answerDownloadApproval"),
+    id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+    decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
   }),
 ]);
 export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;

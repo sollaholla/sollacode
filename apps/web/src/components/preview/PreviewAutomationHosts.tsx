@@ -6,6 +6,7 @@ import {
   FILL_PREVIEW_VIEWPORT,
   PREVIEW_AUTOMATION_OPERATIONS,
   type EnvironmentId,
+  type PreviewAutomationAnswerDownloadApprovalInput,
   type PreviewAutomationCloseResult,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
@@ -936,6 +937,18 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             // which is the machine whose loopback endpoint this describes.
             const ready = await requireReadyTab();
             return await ready.bridge.automation.devtools(ready.runtimeTabId);
+          }
+          case "answerDownloadApproval": {
+            // A remote viewer answering the Allow/Deny card this machine is
+            // showing. The decision is keyed by the hold's id, not a tab, and
+            // lands on the same handler the local card's buttons call.
+            const input = request.input as PreviewAutomationAnswerDownloadApprovalInput;
+            const bridge = previewBridge;
+            if (!bridge) {
+              throw new PreviewAutomationTargetUnavailableError(unavailableTarget);
+            }
+            await bridge.answerPreviewDownloadApproval(input.id, input.decision);
+            return undefined;
           }
           case "frame": {
             const ready = await requireReadyTab();
