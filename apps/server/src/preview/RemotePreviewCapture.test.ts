@@ -119,6 +119,35 @@ describe("captureRemotePreviewSnapshot", () => {
       expect(result.pendingDownloadApprovals).toEqual(held);
     }),
   );
+
+  it.effect("carries editable bounds needed for synchronous mobile keyboard focus", () =>
+    Effect.gen(function* () {
+      const editableRegions = [
+        { x: 40, y: 80, width: 240, height: 44, inputMode: "email" as const },
+      ];
+      const result = yield* captureRemotePreviewSnapshot({
+        broker: {
+          invoke: <A = unknown>() =>
+            Effect.succeed({
+              url: "https://example.com/sign-in",
+              title: "Sign in",
+              loading: false,
+              screenshot: snapshot.screenshot,
+              editableRegions,
+            } as A),
+        },
+        environmentId: EnvironmentId.make("environment-mobile-preview"),
+        sessionId: AuthSessionId.make("session-mobile-preview"),
+        request: {
+          threadId: ThreadId.make("thread-mobile-preview"),
+          tabId: PreviewTabId.make("tab-mobile-preview"),
+        },
+        issuedAt: Date.parse("2026-08-29T00:00:00.000Z"),
+      });
+
+      expect(result.editableRegions).toEqual(editableRegions);
+    }),
+  );
 });
 
 describe("applyRemotePreviewInput", () => {

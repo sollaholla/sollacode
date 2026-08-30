@@ -6,6 +6,7 @@ import {
   PreviewAutomationConsoleEntry,
   PreviewAutomationNetworkEntry,
   PreviewDownloadApproval,
+  PreviewRemoteEditableRegion,
   PreviewRenderedViewportSize,
   PreviewTabId,
   PreviewViewportPresetId,
@@ -916,6 +917,8 @@ export const PreviewAutomationSnapshot = Schema.Struct({
    */
   documentKind: Schema.optional(Schema.Literals(["page", "pdf"])),
   interactiveElements: Schema.Array(PreviewAutomationElement),
+  /** Visible text controls for synchronous software-keyboard handoff. */
+  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
   accessibilityTree: Schema.Unknown,
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
@@ -997,6 +1000,8 @@ export const PreviewAutomationFrame = Schema.Struct({
       height: Schema.Int,
     }),
   ),
+  /** Visible text controls for synchronous software-keyboard handoff. */
+  editableRegions: Schema.optional(Schema.Array(PreviewRemoteEditableRegion)),
   /**
    * Downloads this guest is holding for the user's approval.
    *

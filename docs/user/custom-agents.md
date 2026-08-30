@@ -62,11 +62,11 @@ with the Browser `+` control. OAuth-style popup windows remain real child window
 can communicate with and return to their opener; popup permission is present when Electron creates
 the guest rather than being added after its first navigation.
 
-The desktop guest uses the native user agent produced by its bundled Electron and Chromium runtime,
-along with the real platform, languages, cookies, cache, and storage. Solla Code does not rewrite
-that value: even removing an embedded-app token changes the browser integrity signal and can break
-production verification. It does not invent a Chrome version, spoof a device fingerprint, hide
-automation from a site, or bypass CAPTCHA and anti-abuse decisions.
+The desktop guest keeps the real Chromium version, platform, languages, cookies, cache, and storage.
+It removes only Electron and Solla Code product tokens from the user agent because OAuth providers
+reject embedded-framework markers even though the guest is the bundled Chromium browser. It does
+not invent a Chrome version, spoof a device fingerprint, hide automation from a site, or bypass
+CAPTCHA and anti-abuse decisions.
 
 Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
 background, so timer- and animation-frame-based authentication can finish without the user focusing
@@ -77,6 +77,11 @@ opacity, so a newly opened page starts loading before its thread or tab is selec
 clipped, resized, or stacked over chat and files. A native snapshot fallback briefly raises the
 same geometry into the compositor; selecting a tab changes only its presentation, and
 automation preserves the fill-the-panel viewport unless the user or tool explicitly resizes it.
+Web clients connected to another machine mirror that same guest instead of opening a second browser.
+On touch screens, a tap clicks, a hold right-clicks, and a drag scrolls. Frames include bounded
+locations for visible text controls so tapping one can open the phone's software keyboard
+synchronously; typing is forwarded to the guest control that received the click. Restoring a hidden
+guest uses a bounded staging handshake that remains alive while a busy thread finishes catching up.
 When preview automation connects or begins an MCP operation, Solla Code makes every registered
 preview tab foreground-equivalent before running that operation and renews the fleet-wide lease
 throughout long-running operations. The lease is released one minute after the last operation

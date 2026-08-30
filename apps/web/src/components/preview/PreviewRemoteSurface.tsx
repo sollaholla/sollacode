@@ -17,6 +17,10 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { PreviewRemoteConsole } from "./PreviewRemoteConsole";
+import {
+  focusRemoteKeyboardForPoint,
+  remoteKeyboardActionForBeforeInput,
+} from "./remoteEditableRegions";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
 import {
   TOUCH_LONG_PRESS_MS,
@@ -103,6 +107,7 @@ export function PreviewRemoteSurface(props: {
    */
   const consecutiveFailuresRef = useRef(0);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const virtualKeyboardInputRef = useRef<HTMLInputElement | null>(null);
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -214,6 +219,20 @@ export function PreviewRemoteSurface(props: {
   // report. Without it the mirror stays a picture rather than aiming blind.
   const aimable = interactive && frame?.viewport !== undefined;
 
+  const focusKeyboardForPoint = useCallback(
+    (point: { readonly x: number; readonly y: number }) => {
+      // This mutation and focus must remain synchronous in the tap/click
+      // handler. iOS refuses to raise its keyboard once the user-activation
+      // task has returned, even though the guest click succeeds later.
+      return focusRemoteKeyboardForPoint({
+        keyboardTarget: virtualKeyboardInputRef.current,
+        regions: frame?.editableRegions,
+        point,
+      });
+    },
+    [frame?.editableRegions],
+  );
+
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLImageElement>) => {
       const element = imageRef.current;
@@ -227,10 +246,10 @@ export function PreviewRemoteSurface(props: {
         },
       );
       if (!point) return;
-      element.focus();
+      if (!focusKeyboardForPoint(point)) element.focus();
       void send({ kind: "click", x: point.x, y: point.y });
     },
-    [aimable, frame, send],
+    [aimable, focusKeyboardForPoint, frame, send],
   );
 
   const handleWheel = useCallback(
@@ -242,7 +261,7 @@ export function PreviewRemoteSurface(props: {
   );
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLImageElement>) => {
+    (event: React.KeyboardEvent<HTMLElement>) => {
       if (!aimable) return;
       const modifiers = (
         [
@@ -264,6 +283,32 @@ export function PreviewRemoteSurface(props: {
             ? { kind: "press", key: event.key }
             : { kind: "press", key: event.key, modifiers },
       );
+    },
+    [aimable, send],
+  );
+
+  const handleVirtualKeyboardKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (!aimable) return;
+      // Plain characters are delivered by beforeinput on both software and
+      // hardware keyboards. Sending them here as well duplicates every key.
+      if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) return;
+      handleKeyDown(event);
+    },
+    [aimable, handleKeyDown],
+  );
+
+  const handleVirtualKeyboardBeforeInput = useCallback(
+    (event: React.FormEvent<HTMLInputElement>) => {
+      if (!aimable) return;
+      const native = event.nativeEvent as InputEvent;
+      const action = remoteKeyboardActionForBeforeInput({
+        inputType: native.inputType,
+        data: native.data,
+      });
+      if (!action) return;
+      event.preventDefault();
+      void send(action);
     },
     [aimable, send],
   );
@@ -374,7 +419,7 @@ export function PreviewRemoteSurface(props: {
       if (outcome === "tap") {
         const point = mapClientPoint(gesture.startClientX, gesture.startClientY);
         if (!point) return;
-        imageRef.current?.focus();
+        if (!focusKeyboardForPoint(point)) imageRef.current?.focus();
         void send({ kind: "click", x: point.x, y: point.y });
         return;
       }
@@ -383,7 +428,7 @@ export function PreviewRemoteSurface(props: {
         void capture();
       }
     },
-    [capture, clearTouchGesture, flushTouchScroll, mapClientPoint, send],
+    [capture, clearTouchGesture, flushTouchScroll, focusKeyboardForPoint, mapClientPoint, send],
   );
 
   const handleTouchCancel = useCallback(() => {
@@ -393,7 +438,25 @@ export function PreviewRemoteSurface(props: {
 
   return (
     <div className={cn("flex flex-col overflow-hidden bg-muted/30", className)}>
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+        {aimable ? (
+          <input
+            ref={virtualKeyboardInputRef}
+            className="pointer-events-none absolute bottom-0 left-0 size-px opacity-0"
+            aria-label="Remote browser keyboard input"
+            tabIndex={-1}
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            onKeyDown={handleVirtualKeyboardKeyDown}
+            onBeforeInput={handleVirtualKeyboardBeforeInput}
+            onInput={(event) => {
+              // Unknown edit types must not accumulate invisible local text.
+              event.currentTarget.value = "";
+            }}
+          />
+        ) : null}
         {frame ? (
           <img
             ref={imageRef}

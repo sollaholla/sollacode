@@ -504,6 +504,13 @@ describe("PreviewManager", () => {
           if (method === "Page.getLayoutMetrics") {
             return { cssLayoutViewport: { clientWidth: 800, clientHeight: 600 } };
           }
+          if (method === "Runtime.evaluate") {
+            return {
+              result: {
+                value: [{ x: 120, y: 80, width: 260, height: 44, inputMode: "email" }],
+              },
+            };
+          }
           return {};
         });
         fromId.mockReturnValue({
@@ -551,6 +558,9 @@ describe("PreviewManager", () => {
         const frame = yield* manager.automationFrame("tab_frame_surface");
         expect(frame.screenshot.data).toBe(png);
         expect(frame.url).toBe("https://suno.com/create");
+        expect(frame.editableRegions).toEqual([
+          { x: 120, y: 80, width: 260, height: 44, inputMode: "email" },
+        ]);
         expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
           format: "jpeg",
           quality: 78,
@@ -4331,12 +4341,36 @@ describe("PreviewManager", () => {
         // as visible and try the stale native frame before the live renderer.
         debuggerScreencastAvailable = false;
         acknowledgeSnapshotStage = false;
+        // A busy renderer can take longer than the old one-second deadline to
+        // mount and measure the hidden guest. The stage must remain alive long
+        // enough for that delayed acknowledgement instead of thrashing forever
+        // between stage ids on every remote poll.
+        presentedFrameAvailable = true;
+        const delayedStageStart = states.length;
+        const delayedStageFiber = yield* manager
+          .automationSnapshot("tab_hidden_snapshot")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("2 seconds");
+        const delayedStageId = states
+          .slice(delayedStageStart)
+          .find((state) => state.snapshotStageId !== null)?.snapshotStageId;
+        expect(delayedStageId).toBeTruthy();
+        yield* manager.setUiActivity(
+          "tab_hidden_snapshot",
+          `snapshot-stage:${delayedStageId!}`,
+          true,
+        );
+        const delayedStageSnapshot = yield* Fiber.join(delayedStageFiber);
+        expect(delayedStageSnapshot.screenshot).toBeDefined();
+
+        presentedFrameAvailable = false;
         const statesBeforeExpiredStage = states.length;
         const expiredStageFiber = yield* manager
           .automationSnapshot("tab_hidden_snapshot")
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
-        yield* TestClock.adjust("2 seconds");
+        yield* TestClock.adjust("6 seconds");
         const expiredStage = yield* Fiber.join(expiredStageFiber);
         expect(expiredStage.screenshot).toBeUndefined();
         expect(expiredStage.screenshotError).toContain("rest of this snapshot is complete");
