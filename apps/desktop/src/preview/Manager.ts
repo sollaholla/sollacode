@@ -2594,7 +2594,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             target!.executeJavaScript(`(() => {
               const marked = document.querySelector('[${APP_FOCUS_MARKER_ATTRIBUTE}]');
               const composer = document.querySelector('[data-testid="composer-editor"][contenteditable="true"]');
-              const candidate = marked instanceof HTMLElement && marked.isConnected
+              const markedUsable = marked instanceof HTMLElement && marked.isConnected &&
+                (marked.isContentEditable || marked.matches('input, textarea'));
+              const candidate = markedUsable
                 ? marked
                 : composer instanceof HTMLElement
                   ? composer
@@ -5355,6 +5357,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { operation: "rememberAppFocusTarget", tabId, webContentsId: target.id },
       () =>
         target.executeJavaScript(`(() => {
+          // The renderer marks the user's own last-clicked editor; that choice
+          // always wins over this per-turn fallback snapshot.
+          const existing = document.querySelector('[${APP_FOCUS_MARKER_ATTRIBUTE}]');
+          if (existing instanceof HTMLElement && existing.isConnected) return true;
           const active = document.activeElement;
           const activeEditable = active instanceof HTMLElement && (
             active.matches('input:not([type="button"]):not([type="submit"]), textarea') ||

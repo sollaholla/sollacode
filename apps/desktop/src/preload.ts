@@ -17,16 +17,19 @@ import * as IpcChannels from "./ipc/channels.ts";
 // events are included for the same reason; duplicate reports only refresh the
 // same cooldown timestamp.
 const LAST_USER_FOCUS_ATTRIBUTE = "data-t3-last-user-focus";
+// Only typing surfaces qualify. A click on a button or a sidebar thread row
+// must not move the marker — a reclaimed keystroke has to land somewhere the
+// user can actually type, so non-editable clicks keep the previous marker.
+const EDITABLE_FOCUS_SELECTOR =
+  'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), textarea, [contenteditable="true"], [contenteditable="plaintext-only"]';
 
 const rememberUserFocusTarget = (fallbackTarget?: EventTarget | null): void => {
   const active = document.activeElement;
   const fallback = fallbackTarget instanceof HTMLElement ? fallbackTarget : null;
   const candidate =
-    active instanceof HTMLElement && active !== document.body
+    active instanceof HTMLElement && active.matches(EDITABLE_FOCUS_SELECTOR)
       ? active
-      : fallback?.closest<HTMLElement>(
-          'input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]',
-        );
+      : (fallback?.closest<HTMLElement>(EDITABLE_FOCUS_SELECTOR) ?? null);
   if (!candidate) return;
   document.querySelectorAll(`[${LAST_USER_FOCUS_ATTRIBUTE}]`).forEach((element) => {
     if (element !== candidate) element.removeAttribute(LAST_USER_FOCUS_ATTRIBUTE);
