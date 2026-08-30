@@ -36,6 +36,14 @@ export function focusRemoteKeyboardForPoint(input: {
   return true;
 }
 
+export function resetRemoteKeyboardTarget(
+  target: Pick<HTMLInputElement, "blur" | "value"> | null,
+): void {
+  if (!target) return;
+  target.value = "";
+  target.blur();
+}
+
 export function remoteKeyboardActionForBeforeInput(input: {
   readonly inputType: string;
   readonly data: string | null;

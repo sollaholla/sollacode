@@ -7,7 +7,7 @@ import {
   type PreviewRemoteSnapshotResult,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 
@@ -21,6 +21,7 @@ import {
   focusRemoteKeyboardForPoint,
   remoteKeyboardActionForBeforeInput,
   remoteKeyboardTextForInput,
+  resetRemoteKeyboardTarget,
 } from "./remoteEditableRegions";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
 import {
@@ -149,6 +150,15 @@ export function PreviewRemoteSurface(props: {
     consecutiveFailuresRef.current = 0;
     clearTouchGesture();
   }, [clearTouchGesture, tabId]);
+
+  // This hidden input may still own focus after a remote text field was used.
+  // A route change can reuse this component for a different thread, and iOS
+  // otherwise carries that focus into the new thread and raises the keyboard
+  // without a tap. Reset before paint whenever the mirrored identity changes
+  // or the surface is hidden.
+  useLayoutEffect(() => {
+    resetRemoteKeyboardTarget(virtualKeyboardInputRef.current);
+  }, [environmentId, threadId, tabId, visible]);
 
   useEffect(() => clearTouchGesture, [clearTouchGesture]);
 
