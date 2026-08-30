@@ -30,8 +30,12 @@ export const PREVIEW_HUMAN_VERIFICATION_PROBE_EXPRESSION = `(() => {
       style.display !== 'none' &&
       style.visibility !== 'hidden' &&
       Number(style.opacity || '1') > 0 &&
-      rect.width > 0 &&
-      rect.height > 0
+      rect.width >= 40 &&
+      rect.height >= 20 &&
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < innerHeight &&
+      rect.left < innerWidth
     );
   };
   const html = document.documentElement?.innerHTML?.slice(0, 50000) ?? "";
@@ -80,9 +84,9 @@ const snapshotProbe = (snapshot: PreviewAutomationSnapshot): PreviewHumanVerific
   title: snapshot.title,
   visibleText: snapshot.visibleText,
   browserUserAgent: null,
-  hasTurnstile:
-    snapshot.visibleText.toLowerCase().includes("turnstile") ||
-    snapshot.networkEntries.some((entry) => entry.url.includes("challenges.cloudflare.com")),
+  // Network requests and prose mentions cannot prove that an actionable
+  // widget is on screen. The DOM probe makes that determination.
+  hasTurnstile: false,
   hasFullPageChallenge: false,
 });
 
@@ -105,7 +109,6 @@ export function detectPreviewHumanVerification(input: {
   const fullPageTitle = /^(?:just a moment|attention required)[.!…\s]*$/iu.test(probe.title.trim());
 
   if (
-    cfMitigated !== true &&
     !supportedChallengeCode &&
     !probe.hasTurnstile &&
     !probe.hasFullPageChallenge &&
@@ -240,6 +243,8 @@ export async function inspectPreviewHumanVerification(input: {
   readonly snapshot?: PreviewAutomationSnapshot | null;
   /** Explicit user re-checks must inspect the page even while the gate is active. */
   readonly force?: boolean;
+  /** Tests can make the confirmation boundary immediate without fake timers. */
+  readonly waitForConfirmation?: () => Promise<void>;
 }): Promise<PreviewHumanVerification | null> {
   const existing = getPreviewHumanVerification(input.runtimeTabId);
   if (existing && input.force !== true) return existing;
@@ -251,7 +256,16 @@ export async function inspectPreviewHumanVerification(input: {
     const value = await input.evaluate(PREVIEW_HUMAN_VERIFICATION_PROBE_EXPRESSION);
     detected = detectPreviewHumanVerification({ probe: parsePreviewHumanVerificationProbe(value) });
   }
-  if (detected) return setPreviewHumanVerification(input.runtimeTabId, detected);
+  if (detected) {
+    await (input.waitForConfirmation?.() ??
+      new Promise<void>((resolve) => globalThis.setTimeout(resolve, 1_000)));
+    const confirmationValue = await input.evaluate(PREVIEW_HUMAN_VERIFICATION_PROBE_EXPRESSION);
+    const confirmed = detectPreviewHumanVerification({
+      probe: parsePreviewHumanVerificationProbe(confirmationValue),
+      ...(input.snapshot !== undefined ? { snapshot: input.snapshot } : {}),
+    });
+    if (confirmed) return setPreviewHumanVerification(input.runtimeTabId, confirmed);
+  }
   if (input.force === true) clearPreviewHumanVerification(input.runtimeTabId);
   return null;
 }
