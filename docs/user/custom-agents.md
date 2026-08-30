@@ -70,7 +70,9 @@ the policy and offers **Continue in browser**. It opens the final trusted Google
 destination so that page can start a fresh sign-in, instead of reusing either Google's terminal
 rejection URL or a stale sign-in wrapper. On desktop this uses the operating system's browser; on a
 remote or mobile web client it opens a normal tab on that device. The sign-in continues there rather
-than being copied back into Preview's separate browser profile.
+than being copied back into Preview's separate browser profile. The rejection card says this
+explicitly and offers **Back to site** so Preview can return to the signed-out page instead of
+remaining trapped on Google's error.
 
 Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
 background, so timer- and animation-frame-based authentication can finish without the user focusing

@@ -1048,21 +1048,21 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                 <ShieldAlertIcon className="size-4" aria-hidden />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">Sign-in needs your system browser</p>
+                <p className="text-sm font-semibold">Google sign-in stays in your browser</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Google does not allow account sign-in inside embedded browsers. Restart the
-                  sign-in in your system browser to continue there.
+                  Google does not share your Safari or Chrome sign-in with Preview. Continue in your
+                  system browser, or return to the signed-out page here.
                 </p>
-                {embeddedOAuthHandoffUrl ? (
-                  <Button
-                    className="mt-2"
-                    size="xs"
-                    type="button"
-                    onClick={handleOpenOAuthInBrowser}
-                  >
-                    Continue in browser <ExternalLinkIcon />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {embeddedOAuthHandoffUrl ? (
+                    <Button size="xs" type="button" onClick={handleOpenOAuthInBrowser}>
+                      Continue in browser <ExternalLinkIcon />
+                    </Button>
+                  ) : null}
+                  <Button size="xs" type="button" variant="outline" onClick={handleBack}>
+                    Back to site
                   </Button>
-                ) : null}
+                </div>
               </div>
             </div>
           </div>
