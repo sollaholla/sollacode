@@ -125,14 +125,12 @@ const emptyAdmissionState = (): AdmissionState => ({
   activeAdmissions: new Map(),
 });
 
-// The recovery throttle exists to keep autonomous boot/auth resume storms
-// from spawning a CLI per thread at once. `active-turn-recovery` must NOT
-// count against it: it is also the delivery obligation for every ordinary
-// user message, so including it capped live concurrent chats at
-// maxRecoveryPerProvider (2) — two busy main threads then starved every
-// side chat's send forever, which read as "side chats never reach a CLI".
-const recoveryKind = (kind: ThreadWorkKind): boolean =>
-  kind === "authentication-resume" || kind === "startup-resume";
+// The narrow recovery throttle exists for authentication retries, which can
+// storm without doing useful work. Startup resumes are full agent turns: if
+// they occupy this two-slot throttle for their whole lifetime, every later
+// thread remains stuck on "Auto-resuming thread..." until one long task ends.
+// They still obey the normal global and per-provider concurrency caps.
+const recoveryKind = (kind: ThreadWorkKind): boolean => kind === "authentication-resume";
 
 const runtimePhase = (kind: ThreadWorkKind) =>
   kind === "provider-retry" ? ("provider-retrying" as const) : ("provider-running" as const);

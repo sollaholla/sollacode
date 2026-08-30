@@ -423,6 +423,55 @@ layer("ThreadWorkScheduler", (it) => {
       }),
     ),
   );
+
+  it.effect("lets startup resumes use normal provider capacity", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const repository = yield* ThreadWorkObligationRepository;
+        const scheduler = yield* ThreadWorkScheduler;
+        const release = yield* Deferred.make<void>();
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const providerInstanceId = ProviderInstanceId.make("startup-capacity-provider");
+
+        const hold = Deferred.await(release).pipe(Effect.as({ state: "completed" as const }));
+        yield* scheduler.registerHandler("authentication-resume", () => hold);
+        yield* scheduler.registerHandler("startup-resume", () => hold);
+
+        for (let index = 0; index < 3; index += 1) {
+          for (const kind of ["authentication-resume", "startup-resume"] as const) {
+            yield* repository.insert({
+              obligationId: `${kind}-${index}`,
+              threadId: ThreadId.make(`${kind}-thread-${index}`),
+              sourceTurnId: TurnId.make(`${kind}-turn-${index}`),
+              kind,
+              state: "pending",
+              providerInstanceId,
+              attempt: 0,
+              nextAttemptAt: null,
+              claimedAt: null,
+              leaseExpiresAt: null,
+              blockedReason: null,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+
+        yield* scheduler.start();
+        yield* scheduler.wake();
+        yield* waitUntil(
+          scheduler.snapshot.pipe(Effect.map(({ activeGlobal }) => activeGlobal === 5)),
+          "two authentication recoveries and three startup resumes",
+        );
+
+        const active = yield* scheduler.snapshot;
+        assert.strictEqual(active.activeByProvider[providerInstanceId], 5);
+        assert.strictEqual(active.activeRecoveryByProvider[providerInstanceId], 2);
+
+        yield* Deferred.succeed(release, undefined);
+      }),
+    ),
+  );
 });
 
 const metricsLayer = it.layer(
