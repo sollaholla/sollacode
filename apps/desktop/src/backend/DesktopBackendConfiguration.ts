@@ -409,7 +409,11 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
 
     return {
       executablePath: process.execPath,
-      args: [environment.backendEntryPath, "--bootstrap-fd", "3"],
+      // The projection DB can grow to many GB and snapshot bursts were
+      // aborting the backend at Node's ~4GB default old-space cap (V8 OOM,
+      // "young object promotion failed"). Bounded snapshots are the real fix;
+      // this keeps one bad burst from killing the whole app.
+      args: ["--max-old-space-size=8192", environment.backendEntryPath, "--bootstrap-fd", "3"],
       entryPath: environment.backendEntryPath,
       cwd: environment.backendCwd,
       env: {
