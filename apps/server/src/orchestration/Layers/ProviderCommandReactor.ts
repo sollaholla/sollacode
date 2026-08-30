@@ -600,6 +600,13 @@ export interface ProviderCommandReactorLiveOptions {
    * fast window above must not execute it. Production uses fifteen minutes.
    */
   readonly providerMidTurnSilenceRestartMs?: number;
+  /**
+   * Grace between a failed mid-turn steer and the stale-turn re-check that
+   * may force-settle a phantom running turn. Long enough for a naturally
+   * settling turn's session events to reach the projection first. Production
+   * uses five seconds; tests shorten it.
+   */
+  readonly staleSteerReconcileGraceMs?: number;
 }
 
 const make = (options?: ProviderCommandReactorLiveOptions) =>
@@ -1679,6 +1686,65 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
     });
 
+    const STALE_STEER_RECONCILE_GRACE_MS = options?.staleSteerReconcileGraceMs ?? 5_000;
+
+    /**
+     * Free a thread whose projected turn the provider has already abandoned.
+     *
+     * A failed steer usually means the live turn is healthy and the parked
+     * delivery fires at the natural turn boundary. But when the projection
+     * says "running" while the provider no longer runs that turn — a lost
+     * settle event, a dead adapter thread — that boundary never comes, and
+     * every new message parks behind the phantom turn until the user hits
+     * Stop (observed live 2026-08-30: 4m48s of queued messages behind a turn
+     * Codex reported as no longer active).
+     *
+     * Rather than classifying per-adapter error strings, wait out a grace and
+     * re-verify both sides: only when the projection still claims the exact
+     * steered turn AND the live session disagrees is the same
+     * `thread.session.stop` the Stop button sends dispatched. That settles the
+     * phantom turn and session, spares parked user-message deliveries (the
+     * turn-interrupt cancel mode keeps pending active-turn-recovery rows), and
+     * the woken scheduler promotes the parked message. A turn that settled
+     * naturally inside the grace fails the projection re-check, so healthy
+     * sessions and their queued continuations are never touched.
+     */
+    const reconcileStaleSteerTarget = Effect.fn("reconcileStaleSteerTarget")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly staleTurnId: TurnId;
+    }) {
+      yield* Effect.sleep(STALE_STEER_RECONCILE_GRACE_MS);
+      const thread = yield* resolveThread(input.threadId);
+      if (!thread) return;
+      if (
+        thread.session?.status !== "running" ||
+        thread.session.activeTurnId !== input.staleTurnId
+      ) {
+        return;
+      }
+      const liveSession = (yield* providerService.listSessions()).find(
+        (session) => session.threadId === input.threadId,
+      );
+      if (liveSession?.status === "running" && liveSession.activeTurnId === input.staleTurnId) {
+        return;
+      }
+      yield* Effect.logWarning("provider.steer.stale-turn-reconciled", {
+        threadId: input.threadId,
+        staleTurnId: input.staleTurnId,
+        liveSessionStatus: liveSession?.status ?? null,
+      });
+      const commandId = yield* serverCommandId("stale-steer-reconcile");
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.stop",
+        commandId,
+        threadId: input.threadId,
+        createdAt: yield* nowIso,
+      });
+      yield* threadWorkScheduler.wake(
+        thread.session.providerInstanceId ?? thread.modelSelection.instanceId,
+      );
+    });
+
     const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
       event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
       liveSteerDispatchStarted?: Effect.Effect<void>,
@@ -1961,6 +2027,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
                   event.payload.modelSelection?.instanceId ??
                     thread.session?.providerInstanceId ??
                     thread.modelSelection.instanceId,
+                );
+                yield* reconcileStaleSteerTarget({
+                  threadId: event.payload.threadId,
+                  staleTurnId: activeTurnId,
+                }).pipe(
+                  Effect.catchCause((probeCause) =>
+                    Cause.hasInterruptsOnly(probeCause)
+                      ? Effect.failCause(probeCause)
+                      : Effect.logWarning("provider.steer.stale-turn-reconcile-failed", {
+                          threadId: event.payload.threadId,
+                          cause: Cause.pretty(probeCause),
+                        }),
+                  ),
+                  Effect.forkScoped,
                 );
                 return false;
               }),

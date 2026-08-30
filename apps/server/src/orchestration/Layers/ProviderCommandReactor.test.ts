@@ -557,6 +557,7 @@ describe("ProviderCommandReactor", () => {
     readonly serializeSessionLifecycle?: boolean;
     readonly providerSilenceRestartMs?: number;
     readonly providerMidTurnSilenceRestartMs?: number;
+    readonly staleSteerReconcileGraceMs?: number;
     readonly stopTaskEffect?: (input: {
       readonly threadId: ThreadId;
       readonly taskId: RuntimeTaskId;
@@ -908,7 +909,8 @@ describe("ProviderCommandReactor", () => {
     );
     const providerCommandReactorLayer = makeProviderCommandReactorLive(
       input?.providerSilenceRestartMs === undefined &&
-        input?.providerMidTurnSilenceRestartMs === undefined
+        input?.providerMidTurnSilenceRestartMs === undefined &&
+        input?.staleSteerReconcileGraceMs === undefined
         ? undefined
         : {
             ...(input?.providerSilenceRestartMs === undefined
@@ -917,6 +919,9 @@ describe("ProviderCommandReactor", () => {
             ...(input?.providerMidTurnSilenceRestartMs === undefined
               ? {}
               : { providerMidTurnSilenceRestartMs: input.providerMidTurnSilenceRestartMs }),
+            ...(input?.staleSteerReconcileGraceMs === undefined
+              ? {}
+              : { staleSteerReconcileGraceMs: input.staleSteerReconcileGraceMs }),
           },
     ).pipe(
       Layer.provideMerge(orchestrationLayer),
@@ -5079,6 +5084,263 @@ describe("ProviderCommandReactor", () => {
       expect((yield* readObligation)?.state).toBe("completed");
     }),
   );
+
+  // A steer can fail because the provider already abandoned the turn the
+  // projection still shows as running — a lost settle event or a dead adapter
+  // thread. Nothing else ever settles that phantom: every later message parks
+  // behind it until a manual Stop (observed live 2026-08-30, 4m48s of queued
+  // messages behind a turn Codex reported as no longer active). The reconcile
+  // probe re-checks after a grace and dispatches the same session stop the
+  // Stop button sends, sparing the parked delivery so it promotes on its own.
+  it("settles a phantom running turn when the provider rejects its steer", async () => {
+    const harness = await createHarness({ staleSteerReconcileGraceMs: 120 });
+    const threadId = ThreadId.make("thread-1");
+    const hostTurnId = asTurnId("turn-phantom-steer-host");
+    const freshTurnId = asTurnId("turn-phantom-steer-fresh");
+
+    let sendTurnCalls = 0;
+    harness.sendTurn.mockImplementation(
+      (
+        _rawInput: unknown,
+        _options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<
+        { threadId: ThreadId; turnId: TurnId },
+        ProviderAdapterRequestError | ProviderAdapterProcessError
+      > =>
+        Effect.suspend(() => {
+          sendTurnCalls += 1;
+          if (sendTurnCalls === 1) {
+            const index = harness.runtimeSessions.findIndex(
+              (session) => session.threadId === threadId,
+            );
+            const session = index >= 0 ? harness.runtimeSessions[index] : undefined;
+            if (session !== undefined) {
+              harness.runtimeSessions[index] = {
+                ...session,
+                status: "running",
+                activeTurnId: hostTurnId,
+              };
+            }
+            return Effect.succeed({ threadId, turnId: hostTurnId });
+          }
+          if (sendTurnCalls === 2) {
+            return Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "turn/steer",
+                detail: "turn is no longer active",
+              }),
+            );
+          }
+          return Effect.succeed({ threadId, turnId: freshTurnId });
+        }),
+    );
+
+    const dispatchTurn = (commandId: string, messageId: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: messageId,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const readObligation = (messageId: string) =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(asMessageId(messageId)),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+
+    await dispatchTurn(
+      "cmd-phantom-steer-host",
+      "message-phantom-steer-host",
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => sendTurnCalls === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-phantom-steer-host-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: hostTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation("message-phantom-steer-host");
+      return obligation?.state === "executing";
+    });
+
+    // The provider abandons the turn without any settle event reaching the
+    // projection: the live session goes idle while the projection still says
+    // "running".
+    const runtimeIndex = harness.runtimeSessions.findIndex(
+      (session) => session.threadId === threadId,
+    );
+    const runtimeSession = runtimeIndex >= 0 ? harness.runtimeSessions[runtimeIndex] : undefined;
+    if (runtimeSession === undefined) {
+      throw new Error("Expected the host provider session to exist.");
+    }
+    harness.runtimeSessions[runtimeIndex] = { ...runtimeSession, status: "ready" };
+
+    const steerMessageId = "message-phantom-steer-follow-up";
+    await dispatchTurn("cmd-phantom-steer-follow-up", steerMessageId, "2026-01-01T00:00:03.000Z");
+    await waitFor(() => sendTurnCalls >= 2);
+
+    // The probe settles the phantom, the spared parked delivery promotes the
+    // message as a fresh turn, and the stale host turn is left incomplete.
+    await waitFor(async () => {
+      const obligation = await readObligation(steerMessageId);
+      return obligation?.state === "completed" && sendTurnCalls >= 3;
+    });
+    const hostTurn = await Effect.runPromise(
+      harness.projectionTurns
+        .getByTurnId({ threadId, turnId: hostTurnId })
+        .pipe(Effect.map(Option.getOrUndefined)),
+    );
+    expect(hostTurn?.state).toBe("incomplete");
+  });
+
+  // The counterpart guard: a transient steer failure against a turn the
+  // provider is still genuinely running must reconcile nothing — the message
+  // stays parked and delivers at the natural turn boundary, exactly the
+  // pre-probe behavior.
+  it("leaves a live turn alone when a steer fails transiently", async () => {
+    const harness = await createHarness({ staleSteerReconcileGraceMs: 60 });
+    const threadId = ThreadId.make("thread-1");
+    const hostTurnId = asTurnId("turn-live-steer-host");
+
+    let sendTurnCalls = 0;
+    harness.sendTurn.mockImplementation(
+      (
+        _rawInput: unknown,
+        _options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<
+        { threadId: ThreadId; turnId: TurnId },
+        ProviderAdapterRequestError | ProviderAdapterProcessError
+      > =>
+        Effect.suspend(() => {
+          sendTurnCalls += 1;
+          if (sendTurnCalls === 1) {
+            const index = harness.runtimeSessions.findIndex(
+              (session) => session.threadId === threadId,
+            );
+            const session = index >= 0 ? harness.runtimeSessions[index] : undefined;
+            if (session !== undefined) {
+              harness.runtimeSessions[index] = {
+                ...session,
+                status: "running",
+                activeTurnId: hostTurnId,
+              };
+            }
+            return Effect.succeed({ threadId, turnId: hostTurnId });
+          }
+          return Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "turn/steer",
+              detail: "temporarily unavailable",
+              failureKind: "retryable-upstream",
+            }),
+          );
+        }),
+    );
+
+    const dispatchTurn = (commandId: string, messageId: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: messageId,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const readObligation = (messageId: string) =>
+      Effect.runPromise(
+        harness.threadWorkObligations
+          .getByKey({
+            threadId,
+            sourceTurnId: activeTurnWorkSourceId(asMessageId(messageId)),
+            kind: "active-turn-recovery",
+          })
+          .pipe(Effect.map(Option.getOrUndefined)),
+      );
+
+    await dispatchTurn(
+      "cmd-live-steer-host",
+      "message-live-steer-host",
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => sendTurnCalls === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-live-steer-host-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: hostTurnId,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+    await waitFor(async () => {
+      const obligation = await readObligation("message-live-steer-host");
+      return obligation?.state === "executing";
+    });
+
+    const steerMessageId = "message-live-steer-follow-up";
+    await dispatchTurn("cmd-live-steer-follow-up", steerMessageId, "2026-01-01T00:00:03.000Z");
+    await waitFor(() => sendTurnCalls >= 2);
+
+    // Wait well past the grace: the probe must observe the live session still
+    // running the steered turn and reconcile nothing.
+    await Effect.runPromise(Effect.sleep(300));
+
+    const model = await harness.readModel();
+    const thread = model.threads.find((candidate) => candidate.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe(hostTurnId);
+    const parked = await readObligation(steerMessageId);
+    expect(parked?.state).toBe("pending");
+    expect(sendTurnCalls).toBe(2);
+  });
 
   // Full-flow regression for the mid-turn send ("steer") pipeline: a steer is
   // injected into the live turn immediately when the provider accepts it, the
