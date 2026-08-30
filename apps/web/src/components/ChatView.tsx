@@ -8696,7 +8696,11 @@ function ChatViewContent(props: ChatViewProps) {
 
   const panelToggleControls = terminalMainSurfaceActive ? null : (
     <PanelLayoutControls
-      rightPanelAvailable={activeProject !== null}
+      // Catch-up can restore the thread shell before its project detail. The
+      // panel is thread-owned (Browser, Plan, Diff, side chats); only the Files
+      // and Terminal actions below require a project, so disabling the whole
+      // toggle here made the sidebar unreachable precisely while syncing.
+      rightPanelAvailable={activeThreadRef !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
       onToggleRightPanel={toggleRightPanel}
