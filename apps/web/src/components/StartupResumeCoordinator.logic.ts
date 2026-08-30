@@ -97,6 +97,34 @@ export function deriveStartupResumableThreads(
 }
 
 /**
+ * Capture every thread that belongs to this startup's interrupted cohort.
+ *
+ * Boot recovery can temporarily leave a thread with an active session or a
+ * pending work obligation. Those are dispatch vetoes, but not reasons to omit
+ * the thread from the cohort: once recovery settles, the coordinator must
+ * reconsider it instead of permanently latching after the first ready thread.
+ */
+export function isStartupResumeCohortThread(
+  thread: Pick<
+    EnvironmentThreadShell,
+    "archivedAt" | "settledOverride" | "latestTurn" | "hasPendingApprovals"
+  >,
+): boolean {
+  return (
+    thread.archivedAt === null &&
+    thread.settledOverride !== "settled" &&
+    !thread.hasPendingApprovals &&
+    thread.latestTurn?.state === "incomplete"
+  );
+}
+
+export function deriveStartupResumeCohort(
+  threads: ReadonlyArray<EnvironmentThreadShell>,
+): ReadonlyArray<EnvironmentThreadShell> {
+  return threads.filter(isStartupResumeCohortThread);
+}
+
+/**
  * The local pending marker bridges command acceptance to a visible provider
  * session. A newly projected pending turn is normalized to `running` before
  * the provider session reaches `starting`, so clearing on turn state alone
