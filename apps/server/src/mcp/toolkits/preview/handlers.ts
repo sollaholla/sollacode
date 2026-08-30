@@ -78,6 +78,7 @@ const handlers = {
   preview_snapshot: (input) => invokeTargeted<PreviewAutomationSnapshot>("snapshot", input ?? {}),
   preview_click: (input) =>
     invokeTargeted<void>("click", input, input.timeoutMs).pipe(Effect.as({})),
+  preview_drag: (input) => invokeTargeted<void>("drag", input, input.timeoutMs).pipe(Effect.as({})),
   preview_type: (input) => invokeTargeted<void>("type", input, input.timeoutMs).pipe(Effect.as({})),
   preview_upload: (input) =>
     invokeTargeted<PreviewAutomationUploadResult>("upload", input, input.timeoutMs),

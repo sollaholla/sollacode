@@ -1,5 +1,6 @@
 import {
   PreviewAutomationClickInput,
+  PreviewAutomationDragInput,
   PreviewAutomationCloseInput,
   PreviewAutomationCloseResult,
   PreviewAutomationError,
@@ -145,6 +146,17 @@ export const PreviewClickTool = browserTool(
   }).annotate(Tool.Title, "Click preview page"),
 );
 
+export const PreviewDragTool = browserTool(
+  Tool.make("preview_drag", {
+    description:
+      "Draw a click-and-drag or freeform stroke of trusted pointer events across a path in the tab selected by tabId, or this agent session's current tab when omitted. The button presses at the first point, drags through interpolated moves with the button held, and releases at the last, so canvas games (Phaser and friends), drawing tools, sliders, and drag-and-drop targets receive a continuous trusted stroke. Provide {from:{x,y}, to:{x,y}} for a straight drag or {path:[{x,y},...]} for a freeform stroke; give coordinates in viewport CSS pixels from preview_snapshot. Optional steps controls interpolation density (default 8), holdMs pauses before release, and button selects left/middle/right.",
+    parameters: PreviewAutomationDragInput,
+    success: PreviewActionResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Drag or stroke preview page"),
+);
+
 export const PreviewTypeTool = browserTool(
   Tool.make("preview_type", {
     description:
@@ -263,6 +275,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewSetAppearanceTool,
   PreviewSnapshotTool,
   PreviewClickTool,
+  PreviewDragTool,
   PreviewTypeTool,
   PreviewUploadTool,
   PreviewSelectOptionTool,
@@ -283,6 +296,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewResizeTool,
   PreviewSetAppearanceTool,
   PreviewClickTool,
+  PreviewDragTool,
   PreviewTypeTool,
   PreviewUploadTool,
   PreviewSelectOptionTool,

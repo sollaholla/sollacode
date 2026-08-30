@@ -940,6 +940,16 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             await inspectAfterAction(ready);
             return result;
           }
+          case "drag": {
+            const ready = await requireAutomatableTab();
+            const result = await ready.bridge.automation.drag(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof ready.bridge.automation.drag>[1],
+              request.expiresAt,
+            );
+            await inspectAfterAction(ready);
+            return result;
+          }
           case "type": {
             const ready = await requireAutomatableTab();
             const result = await ready.bridge.automation.type(
