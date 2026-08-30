@@ -64,11 +64,6 @@ import {
   inspectPreviewHumanVerification,
   usePreviewHumanVerification,
 } from "./previewHumanVerification";
-import {
-  isEmbeddedOAuthRejected,
-  openPreviewUrlInSystemBrowser,
-  resolveEmbeddedOAuthHandoffUrl,
-} from "./embeddedOAuth";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -315,36 +310,9 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {
-    if (!url) return;
-    openPreviewUrlInSystemBrowser({
-      url,
-      ...(localApi ? { openNative: localApi.shell.openExternal } : {}),
-      openWeb: (externalUrl) => {
-        window.open(externalUrl, "_blank", "noopener,noreferrer");
-      },
-    });
+    if (!localApi || !url) return;
+    void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);
-
-  const embeddedOAuthRejected = isEmbeddedOAuthRejected(url);
-  const embeddedOAuthHandoffUrl = resolveEmbeddedOAuthHandoffUrl(url);
-  const handleOpenOAuthInBrowser = useCallback(() => {
-    if (!embeddedOAuthHandoffUrl) return;
-    openPreviewUrlInSystemBrowser({
-      url: embeddedOAuthHandoffUrl,
-      ...(localApi ? { openNative: localApi.shell.openExternal } : {}),
-      openWeb: (externalUrl) => {
-        window.open(externalUrl, "_blank", "noopener,noreferrer");
-      },
-    });
-  }, [embeddedOAuthHandoffUrl]);
-  const handleRetryOAuthInPreview = useCallback(() => {
-    if (!embeddedOAuthHandoffUrl) return;
-    // Google's /signin/rejected page is terminal: reloading it always fails,
-    // even now that the guest presents a clean Chrome UA. A fresh flow from
-    // the final trusted destination succeeds in Preview itself — verified
-    // live 2026-08-30, reaching the real account chooser.
-    void navigateToResolvedUrl(embeddedOAuthHandoffUrl);
-  }, [embeddedOAuthHandoffUrl, navigateToResolvedUrl]);
 
   const handlePictureInPicture = useCallback(() => {
     if (!tabId) return;
@@ -864,43 +832,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                     }
                   >
                     Report issue <ExternalLinkIcon />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
-        {embeddedOAuthRejected ? (
-          <div className="absolute inset-x-3 top-3 z-50 mx-auto max-w-2xl rounded-xl border border-amber-500/40 bg-background/95 p-3 shadow-xl backdrop-blur">
-            <div className="flex items-start gap-2.5">
-              <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-amber-500/12 text-amber-500">
-                <ShieldAlertIcon className="size-4" aria-hidden />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">Google rejected this sign-in attempt</p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  This rejection page is a dead end — reloading it always fails, even after the
-                  cause is fixed. Start the sign-in again with a fresh flow here in Preview, or
-                  continue in your system browser.
-                </p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {embeddedOAuthHandoffUrl ? (
-                    <Button size="xs" type="button" onClick={handleRetryOAuthInPreview}>
-                      Try again here
-                    </Button>
-                  ) : null}
-                  {embeddedOAuthHandoffUrl ? (
-                    <Button
-                      size="xs"
-                      type="button"
-                      variant="outline"
-                      onClick={handleOpenOAuthInBrowser}
-                    >
-                      Continue in browser <ExternalLinkIcon />
-                    </Button>
-                  ) : null}
-                  <Button size="xs" type="button" variant="outline" onClick={handleBack}>
-                    Back to site
                   </Button>
                 </div>
               </div>

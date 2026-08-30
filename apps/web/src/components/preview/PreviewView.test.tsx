@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => ({
   closePictureInPicture: vi.fn(async (_tabId: string): Promise<void> => undefined),
   pictureInPicture: false,
   showEmptyState: false,
-  sessionUrl: "http://example.com/",
   surfaceProps: [] as Array<Record<string, unknown>>,
 }));
 
@@ -73,7 +72,7 @@ vi.mock("~/previewStateStore", () => ({
             tabId: "tab-1",
             navStatus: {
               _tag: "Success",
-              url: mocks.sessionUrl,
+              url: "http://example.com/",
               title: "Example",
             },
             canGoBack: false,
@@ -228,26 +227,7 @@ describe("PreviewView navigation", () => {
     mocks.closePictureInPicture.mockClear();
     mocks.pictureInPicture = false;
     mocks.showEmptyState = false;
-    mocks.sessionUrl = "http://example.com/";
     mocks.surfaceProps.length = 0;
-  });
-
-  it("explains Google's terminal rejection page and offers a fresh in-Preview retry", () => {
-    mocks.sessionUrl =
-      "https://accounts.google.com/v3/signin/rejected?flowEntry=ServiceLogin&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Fnext%3Dhttps%253A%252F%252Fstudio.youtube.com%252F";
-
-    const markup = renderToStaticMarkup(
-      <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />,
-    );
-
-    // The rejected URL is persisted terminal state — reloading it always
-    // fails. Sign-in itself works in Preview under the cleaned UA, so the
-    // primary action retries the flow here; the system browser stays as a
-    // fallback, not the only exit.
-    expect(markup).toContain("Google rejected this sign-in attempt");
-    expect(markup).toContain("Try again here");
-    expect(markup).toContain("Continue in browser");
-    expect(markup).toContain("Back to site");
   });
 
   it.each([

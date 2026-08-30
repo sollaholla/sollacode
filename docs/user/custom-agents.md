@@ -62,19 +62,11 @@ with the Browser `+` control. OAuth-style popup windows remain real child window
 can communicate with and return to their opener; popup permission is present when Electron creates
 the guest rather than being added after its first navigation.
 
-The desktop guest presents the Chrome it actually is. The preview session drops only the
-`Electron/x.y.z` and app product tokens from its user agent — Google's `disallowed_useragent`
-policy refuses sign-in to any UA carrying an embedded-framework marker, and other providers copy
-that policy — while platform, language, Chrome version, cookies, cache, and storage stay truthful.
-Solla Code does not spoof a device fingerprint, hide automation from a site, or bypass CAPTCHA and
-anti-abuse decisions. Signing in to Google works inside Preview itself under that identity, and the
-session lands in the environment's shared browser profile, so every thread and agent tab on that
-machine can act on it. A tab left on Google's terminal `/signin/rejected` page (from an attempt made
-before the identity cleanup) never recovers by reloading: Preview explains this and offers
-**Try again here**, which starts a fresh flow in Preview at the final trusted Google or YouTube
-destination, alongside **Continue in browser** (the operating system's browser on desktop, a normal
-tab on a remote or mobile client — that sign-in stays in that browser, separate from Preview's
-profile) and **Back to site** so the tab is never trapped on Google's error.
+The desktop guest uses the native user agent produced by its bundled Electron and Chromium runtime,
+along with the real platform, languages, cookies, cache, and storage. Solla Code does not rewrite
+that value: even removing an embedded-app token changes the browser integrity signal and can break
+production verification. It does not invent a Chrome version, spoof a device fingerprint, hide
+automation from a site, or bypass CAPTCHA and anti-abuse decisions.
 
 Preview guests stay mounted and unthrottled while their owning window, thread, or tab is in the
 background, so timer- and animation-frame-based authentication can finish without the user focusing
