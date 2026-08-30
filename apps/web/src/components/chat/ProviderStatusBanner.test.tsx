@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   getProviderStatusBannerKey,
+  isTransientProviderStatusCheck,
   ProviderStatusBanner,
   shouldShowProviderStatusBanner,
 } from "./ProviderStatusBanner";
@@ -53,23 +54,30 @@ describe("ProviderStatusBanner", () => {
     expect(markup).toContain('data-variant="warning"');
   });
 
-  it("presents a transient provider check timeout as usable and retrying", () => {
+  it("hides transient Codex status checks while the server retries", () => {
+    const status = {
+      ...warningProvider(),
+      auth: { status: "unknown" as const },
+      message:
+        "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
+    };
     const markup = renderToStaticMarkup(
-      <ProviderStatusBanner
-        status={{
-          ...warningProvider(),
-          auth: { status: "unknown" },
-          message:
-            "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
-        }}
-        onDismiss={() => {}}
-      />,
+      <ProviderStatusBanner status={status} onDismiss={() => {}} />,
     );
 
-    expect(markup).toContain('data-variant="warning"');
-    expect(markup).toContain("Codex can still be used");
-    expect(markup).toContain("The next provider refresh will try again");
-    expect(markup).not.toContain('data-variant="error"');
+    expect(isTransientProviderStatusCheck(status)).toBe(true);
+    expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
+    expect(markup).toBe("");
+  });
+
+  it("hides the initial Codex status while its first check is running", () => {
+    const status = {
+      ...warningProvider(),
+      auth: { status: "unknown" as const },
+      message: "Codex provider status has not been checked in this session yet.",
+    };
+
+    expect(shouldShowProviderStatusBanner(status, null)).toBe(false);
   });
 
   it("labels error dismiss controls with the correct severity", () => {

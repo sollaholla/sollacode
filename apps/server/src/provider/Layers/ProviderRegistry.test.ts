@@ -535,7 +535,29 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      it.effect("closes the app-server probe scope when provider status times out", () =>
+      it.effect("retries a timed-out Codex status probe until it succeeds", () =>
+        Effect.gen(function* () {
+          const attempts = yield* Ref.make(0);
+          const statusFiber = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+            Ref.getAndUpdate(attempts, (current) => current + 1).pipe(
+              Effect.flatMap((attempt) =>
+                attempt === 0 ? Effect.never : Effect.succeed(makeCodexProbeSnapshot()),
+              ),
+            ),
+          ).pipe(Effect.forkChild);
+
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("11 seconds");
+          yield* Effect.yieldNow;
+
+          const status = yield* Fiber.join(statusFiber);
+          assert.strictEqual(status.status, "ready");
+          assert.strictEqual(status.auth.status, "authenticated");
+          assert.strictEqual(yield* Ref.get(attempts), 2);
+        }),
+      );
+
+      it.effect("closes each timed-out app-server scope before retrying", () =>
         Effect.gen(function* () {
           const killCalls = yield* Ref.make(0);
           const statusFiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
@@ -544,17 +566,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           );
 
           yield* Effect.yieldNow;
-          yield* TestClock.adjust("11 seconds");
+          yield* TestClock.adjust("10 seconds");
           yield* Effect.yieldNow;
 
-          const status = yield* Fiber.join(statusFiber);
-          assert.strictEqual(status.status, "warning");
-          assert.strictEqual(status.installed, true);
-          assert.strictEqual(
-            status.message,
-            "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
-          );
           assert.strictEqual(yield* Ref.get(killCalls), 1);
+          yield* Fiber.interrupt(statusFiber);
         }),
       );
     });

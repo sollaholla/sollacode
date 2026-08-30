@@ -5,8 +5,25 @@ import { cn } from "~/lib/utils";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+const TRANSIENT_CODEX_STATUS_MESSAGES = new Set([
+  "Codex provider status has not been checked in this session yet.",
+  "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
+]);
+
+export function isTransientProviderStatusCheck(status: ServerProvider | null): boolean {
+  return (
+    status?.driver === "codex" &&
+    status.status === "warning" &&
+    status.auth.status === "unknown" &&
+    TRANSIENT_CODEX_STATUS_MESSAGES.has(status.message ?? "")
+  );
+}
+
 export function getProviderStatusBannerKey(status: ServerProvider | null): string | null {
-  return !status || status.status === "ready" || status.status === "disabled"
+  return !status ||
+    status.status === "ready" ||
+    status.status === "disabled" ||
+    isTransientProviderStatusCheck(status)
     ? null
     : [status.instanceId, status.status, status.auth.status, status.message ?? ""].join("\u0000");
 }
@@ -26,7 +43,7 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
   onDismiss: () => void;
   status: ServerProvider | null;
 }) {
-  if (!status || status.status === "ready" || status.status === "disabled") {
+  if (getProviderStatusBannerKey(status) === null || !status) {
     return null;
   }
 

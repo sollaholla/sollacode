@@ -37,6 +37,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_PROVIDER_STATUS_RETRY_DELAY = "1 second" as const;
 export const CODEX_OPTIONAL_RATE_LIMITS_TIMEOUT = "3 seconds" as const;
 
 const CODEX_PRESENTATION = {
@@ -598,18 +599,28 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     });
   }
 
-  const probeResult = yield* probe({
+  const probeEffect = probe({
     binaryPath: codexSettings.binaryPath,
     homePath: codexSettings.homePath,
     launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
     cwd: process.cwd(),
     customModels: codexSettings.customModels,
     environment: resolvedEnvironment,
-  }).pipe(
-    Effect.scoped,
-    Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
-    Effect.result,
-  );
+  });
+  const probeResult = yield* Effect.gen(function* () {
+    while (true) {
+      const attempt = yield* probeEffect.pipe(
+        Effect.scoped,
+        Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
+        Effect.result,
+      );
+      if (Result.isFailure(attempt) || Option.isSome(attempt.success)) {
+        return attempt;
+      }
+      yield* Effect.logDebug("Codex provider status probe timed out; retrying");
+      yield* Effect.sleep(CODEX_PROVIDER_STATUS_RETRY_DELAY);
+    }
+  });
 
   if (Result.isFailure(probeResult)) {
     const error = probeResult.failure;
@@ -632,25 +643,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     });
   }
 
-  if (Option.isNone(probeResult.success)) {
-    return buildServerProvider({
-      presentation: CODEX_PRESENTATION,
-      enabled: codexSettings.enabled,
-      checkedAt,
-      models: emptyModels,
-      skills: [],
-      probe: {
-        installed: true,
-        version: null,
-        status: "warning",
-        auth: { status: "unknown" },
-        message:
-          "Codex can still be used, but its status check timed out. The next provider refresh will try again.",
-      },
-    });
-  }
-
-  const snapshot = probeResult.success.value;
+  const snapshot = Option.getOrThrow(probeResult.success);
   const accountStatus = accountProbeStatus(snapshot.account);
 
   return buildServerProvider({
