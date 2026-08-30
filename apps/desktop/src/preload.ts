@@ -16,9 +16,37 @@ import * as IpcChannels from "./ipc/channels.ts";
 // click or tap anywhere in the app always pauses Preview automation. Keyboard
 // events are included for the same reason; duplicate reports only refresh the
 // same cooldown timestamp.
+const LAST_USER_FOCUS_ATTRIBUTE = "data-t3-last-user-focus";
+
+const rememberUserFocusTarget = (fallbackTarget?: EventTarget | null): void => {
+  const active = document.activeElement;
+  const fallback = fallbackTarget instanceof HTMLElement ? fallbackTarget : null;
+  const candidate =
+    active instanceof HTMLElement && active !== document.body
+      ? active
+      : fallback?.closest<HTMLElement>(
+          'input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]',
+        );
+  if (!candidate) return;
+  document.querySelectorAll(`[${LAST_USER_FOCUS_ATTRIBUTE}]`).forEach((element) => {
+    if (element !== candidate) element.removeAttribute(LAST_USER_FOCUS_ATTRIBUTE);
+  });
+  candidate.setAttribute(LAST_USER_FOCUS_ATTRIBUTE, "true");
+};
+
 const reportUserInput = (event: Event): void => {
   if (!event.isTrusted) return;
   ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL);
+  // Pointer default handling and React thread switches can move focus after the
+  // capture listener runs. Remember both the immediate and next-frame target
+  // so the first key after an agent focus steal returns to the newly mounted
+  // composer instead of being lost or sent to the page.
+  if (event.type === "pointerdown") {
+    queueMicrotask(() => rememberUserFocusTarget(event.target));
+    requestAnimationFrame(() => rememberUserFocusTarget(event.target));
+  } else if (event.type === "keydown") {
+    rememberUserFocusTarget(event.target);
+  }
 };
 
 window.addEventListener("pointerdown", reportUserInput, true);

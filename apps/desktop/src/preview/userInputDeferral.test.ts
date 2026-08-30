@@ -4,6 +4,7 @@ import {
   isDeliberateUserInputEvent,
   resolveUserInputDeferral,
   shouldReclaimGuestKeyForApp,
+  USER_INPUT_DEFERRAL_MS,
 } from "./Manager.ts";
 
 /**
@@ -41,13 +42,13 @@ describe("resolveUserInputDeferral", () => {
     expect(
       resolveUserInputDeferral({
         lastUserInputAtMs: releasedAtMs,
-        nowMs: releasedAtMs + 1_999,
+        nowMs: releasedAtMs + USER_INPUT_DEFERRAL_MS - 1,
       }),
     ).toBe("wait");
     expect(
       resolveUserInputDeferral({
         lastUserInputAtMs: releasedAtMs,
-        nowMs: releasedAtMs + 2_000,
+        nowMs: releasedAtMs + USER_INPUT_DEFERRAL_MS,
       }),
     ).toBe("proceed");
   });
@@ -66,12 +67,18 @@ describe("resolveUserInputDeferral", () => {
   });
 
   it("proceeds once the user has gone idle for the full cooldown", () => {
-    expect(resolveUserInputDeferral({ lastUserInputAtMs: nowMs, nowMs: nowMs + 1_999 })).toBe(
-      "wait",
-    );
-    expect(resolveUserInputDeferral({ lastUserInputAtMs: nowMs, nowMs: nowMs + 2_000 })).toBe(
-      "proceed",
-    );
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: nowMs,
+        nowMs: nowMs + USER_INPUT_DEFERRAL_MS - 1,
+      }),
+    ).toBe("wait");
+    expect(
+      resolveUserInputDeferral({
+        lastUserInputAtMs: nowMs,
+        nowMs: nowMs + USER_INPUT_DEFERRAL_MS,
+      }),
+    ).toBe("proceed");
   });
 });
 
@@ -82,21 +89,13 @@ describe("resolveUserInputDeferral", () => {
  * with the cooldown in place.
  */
 describe("isDeliberateUserInputEvent", () => {
-  it("counts presses, scrolls and taps as the user working", () => {
-    for (const type of [
-      "mouseDown",
-      "mouseUp",
-      "mouseWheel",
-      "contextMenu",
-      "touchStart",
-      "pointerDown",
-      "gestureTap",
-    ]) {
+  it("counts physical presses and taps as the user working", () => {
+    for (const type of ["mouseDown", "contextMenu", "touchStart", "pointerDown", "gestureTap"]) {
       expect(isDeliberateUserInputEvent(type)).toBe(true);
     }
   });
 
-  it("ignores mere pointer movement, which would starve every agent", () => {
+  it("ignores movement, release and scroll packets, which would starve every agent", () => {
     // A pointer resting over the window emits these continuously; treating
     // them as activity would hold the cooldown open forever.
     for (const type of [
@@ -105,6 +104,11 @@ describe("isDeliberateUserInputEvent", () => {
       "mouseLeave",
       "pointerMove",
       "pointerRawUpdate",
+      "mouseUp",
+      "pointerUp",
+      "touchEnd",
+      "mouseWheel",
+      "gestureScrollBegin",
       undefined,
     ]) {
       expect(isDeliberateUserInputEvent(type)).toBe(false);
@@ -125,8 +129,9 @@ describe("isDeliberateUserInputEvent", () => {
  */
 describe("shouldReclaimGuestKeyForApp", () => {
   const base = {
-    focusIntent: "app" as const,
-    automationInFlight: false,
+    focusIntent: { kind: "app" } as const,
+    currentTabId: "preview-b",
+    expectedAgentInput: false,
     inputType: "keyDown",
     key: "a",
   };
@@ -136,12 +141,25 @@ describe("shouldReclaimGuestKeyForApp", () => {
   });
 
   it("leaves the user alone in a page they clicked into themselves", () => {
-    expect(shouldReclaimGuestKeyForApp({ ...base, focusIntent: "guest" })).toBe(false);
+    expect(
+      shouldReclaimGuestKeyForApp({
+        ...base,
+        focusIntent: { kind: "guest", tabId: "preview-b" },
+      }),
+    ).toBe(false);
   });
 
-  it("never redirects an agent's own keystrokes into the user's chat", () => {
-    // The interlock for the original bug: agent text appearing in the composer.
-    expect(shouldReclaimGuestKeyForApp({ ...base, automationInFlight: true })).toBe(false);
+  it("returns a key that lands in a different Preview tab than the one the user clicked", () => {
+    expect(
+      shouldReclaimGuestKeyForApp({
+        ...base,
+        focusIntent: { kind: "guest", tabId: "preview-a" },
+      }),
+    ).toBe(true);
+  });
+
+  it("never redirects the exact agent key packet into the user's chat", () => {
+    expect(shouldReclaimGuestKeyForApp({ ...base, expectedAgentInput: true })).toBe(false);
   });
 
   it("acts on the key-down only, so the page keeps a matching key-up", () => {
