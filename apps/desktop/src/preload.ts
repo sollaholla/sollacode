@@ -283,6 +283,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
           input,
           ...(expiresAt === undefined ? {} : { expiresAt }),
         }),
+      drag: (tabId, input, expiresAt) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_DRAG_CHANNEL, {
+          tabId,
+          input,
+          ...(expiresAt === undefined ? {} : { expiresAt }),
+        }),
       type: (tabId, input, expiresAt) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL, {
           tabId,

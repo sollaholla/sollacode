@@ -15,6 +15,7 @@ import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationCloseInput,
   PreviewAutomationCloseResult,
+  PreviewAutomationDragInput,
   PreviewAutomationHost,
   PreviewAutomationError,
   PreviewAutomationOpenInput,
@@ -35,6 +36,7 @@ const decodeNavStatus = Schema.decodeUnknownSync(PreviewNavStatus);
 const decodeServer = Schema.decodeUnknownSync(DiscoveredLocalServer);
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
+const decodeDragInput = Schema.decodeUnknownSync(PreviewAutomationDragInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
 const decodeOpenResult = Schema.decodeUnknownSync(PreviewAutomationOpenResult);
 const decodeCloseInput = Schema.decodeUnknownSync(PreviewAutomationCloseInput);
@@ -315,6 +317,55 @@ describe("PreviewAutomationResizeInput", () => {
   });
 });
 
+describe("PreviewAutomationDragInput", () => {
+  it("accepts a straight from/to drag and a multi-point path", () => {
+    expect(decodeDragInput({ from: { x: 10, y: 20 }, to: { x: 100, y: 200 } })).toEqual({
+      from: { x: 10, y: 20 },
+      to: { x: 100, y: 200 },
+    });
+    expect(
+      decodeDragInput({
+        path: [
+          { x: 0, y: 0 },
+          { x: 40, y: 40 },
+          { x: 80, y: 10 },
+        ],
+        steps: 12,
+        holdMs: 50,
+        button: "left",
+      }),
+    ).toMatchObject({
+      path: [
+        { x: 0, y: 0 },
+        { x: 40, y: 40 },
+        { x: 80, y: 10 },
+      ],
+      steps: 12,
+      holdMs: 50,
+      button: "left",
+    });
+  });
+
+  it("rejects mixing from/to with path, a lone endpoint, and a single-point path", () => {
+    expect(() =>
+      decodeDragInput({ from: { x: 1, y: 1 }, to: { x: 2, y: 2 }, path: [{ x: 0, y: 0 }] }),
+    ).toThrow();
+    expect(() => decodeDragInput({ from: { x: 1, y: 1 } })).toThrow();
+    expect(() => decodeDragInput({ path: [{ x: 0, y: 0 }] })).toThrow();
+    expect(() => decodeDragInput({})).toThrow();
+  });
+
+  it("bounds interpolation steps and carries an explicit tab target", () => {
+    expect(() => decodeDragInput({ from: { x: 1, y: 1 }, to: { x: 2, y: 2 }, steps: 0 })).toThrow();
+    expect(() =>
+      decodeDragInput({ from: { x: 1, y: 1 }, to: { x: 2, y: 2 }, steps: 65 }),
+    ).toThrow();
+    expect(
+      decodeDragInput({ tabId: "tab-canvas", from: { x: 1, y: 1 }, to: { x: 2, y: 2 } }),
+    ).toMatchObject({ tabId: "tab-canvas" });
+  });
+});
+
 describe("preview automation tab targeting", () => {
   it("accepts an explicit tab and rejects contradictory open behavior", () => {
     expect(decodeResizeInput({ tabId: "tab-app", mode: "fill" })).toMatchObject({
@@ -344,8 +395,10 @@ describe("PreviewAutomationHost", () => {
     ).toEqual(["status", "resize"]);
     expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("close");
     expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("upload");
+    expect(PREVIEW_AUTOMATION_OPERATIONS).toContain("drag");
     expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("close");
     expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("upload");
+    expect(PREVIEW_AUTOMATION_V1_OPERATIONS).not.toContain("drag");
   });
 });
 

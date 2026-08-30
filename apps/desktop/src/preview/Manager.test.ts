@@ -36,6 +36,53 @@ describe("fitPictureInPictureContentSize", () => {
   });
 });
 
+describe("interpolateDragMoves", () => {
+  it("inserts evenly spaced moves that land exactly on each vertex", () => {
+    const moves = PreviewManager.interpolateDragMoves(
+      [
+        { x: 0, y: 0 },
+        { x: 8, y: 4 },
+      ],
+      4,
+    );
+    expect(moves).toEqual([
+      { x: 2, y: 1 },
+      { x: 4, y: 2 },
+      { x: 6, y: 3 },
+      { x: 8, y: 4 },
+    ]);
+  });
+
+  it("chains segments across a multi-point path so the stroke stays continuous", () => {
+    const moves = PreviewManager.interpolateDragMoves(
+      [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      2,
+    );
+    expect(moves).toEqual([
+      { x: 5, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 5 },
+      { x: 10, y: 10 },
+    ]);
+  });
+
+  it("still produces a single closing move when steps collapse to one", () => {
+    expect(
+      PreviewManager.interpolateDragMoves(
+        [
+          { x: 3, y: 3 },
+          { x: 9, y: 12 },
+        ],
+        1,
+      ),
+    ).toEqual([{ x: 9, y: 12 }]);
+  });
+});
+
 const {
   browserWindowConstructor,
   createFromBuffer,
@@ -5608,6 +5655,119 @@ describe("PreviewManager", () => {
         });
       }),
     ),
+  );
+
+  effectIt.effect(
+    "presses, drags through interpolated held moves, and releases along a stroke",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          let humanInput: ((_event: unknown, signal: unknown) => void) | undefined;
+          const phases: string[] = [];
+          const sendCommand = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+            if (method === "Runtime.evaluate") {
+              return { result: { value: { width: 800, height: 600 } } };
+            }
+            if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") {
+              humanInput?.({}, { kind: "pointer", x: params.x, y: params.y, button: 0 });
+            }
+            return undefined;
+          });
+          fromId.mockReturnValue({
+            id: 43,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            isDevToolsOpened: () => false,
+            getZoomFactor: () => 1,
+            setZoomFactor: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            ipc: {
+              on: vi.fn((channel: string, listener: typeof humanInput) => {
+                if (channel === "preview:human-input") humanInput = listener;
+              }),
+              off: vi.fn(),
+            },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand,
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          } as never);
+
+          yield* manager.subscribePointerEvents((event) =>
+            Effect.sync(() => {
+              phases.push(event.phase);
+            }),
+          );
+          yield* manager.createTab("tab_drag");
+          yield* manager.registerWebview("tab_drag", 43);
+          const drag = yield* manager
+            .automationDrag("tab_drag", {
+              from: { x: 100, y: 100 },
+              to: { x: 180, y: 140 },
+              steps: 4,
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(2000);
+          yield* Fiber.join(drag);
+
+          const mouseEvents = sendCommand.mock.calls
+            .filter(([method]) => method === "Input.dispatchMouseEvent")
+            .map(([, params]) => params);
+          // Approach move (button none), press, four held drag moves, release.
+          expect(mouseEvents.map((params) => params?.type)).toEqual([
+            "mouseMoved",
+            "mousePressed",
+            "mouseMoved",
+            "mouseMoved",
+            "mouseMoved",
+            "mouseMoved",
+            "mouseReleased",
+          ]);
+          expect(mouseEvents[0]).toEqual({
+            type: "mouseMoved",
+            x: 100,
+            y: 100,
+            button: "none",
+          });
+          expect(mouseEvents[1]).toEqual({
+            type: "mousePressed",
+            x: 100,
+            y: 100,
+            button: "left",
+            buttons: 1,
+            clickCount: 1,
+          });
+          // Every held move carries the buttons bitmask so the guest reads a
+          // drag rather than a hover, and lands on the interpolated points.
+          expect(mouseEvents.slice(2, 6)).toEqual([
+            { type: "mouseMoved", x: 120, y: 110, button: "left", buttons: 1 },
+            { type: "mouseMoved", x: 140, y: 120, button: "left", buttons: 1 },
+            { type: "mouseMoved", x: 160, y: 130, button: "left", buttons: 1 },
+            { type: "mouseMoved", x: 180, y: 140, button: "left", buttons: 1 },
+          ]);
+          expect(mouseEvents[6]).toEqual({
+            type: "mouseReleased",
+            x: 180,
+            y: 140,
+            button: "left",
+            buttons: 0,
+            clickCount: 1,
+          });
+          // UI cursor: approach move, press (rendered as a click), then one
+          // pointer move per held drag step.
+          expect(phases).toEqual(["move", "click", "move", "move", "move", "move"]);
+        }),
+      ),
   );
 
   effectIt.effect("keeps Playwright out of the main world and renews it after navigation", () =>
