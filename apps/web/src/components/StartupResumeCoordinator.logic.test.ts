@@ -4,10 +4,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveStartupResumableThreads,
+  deriveStartupResumeCohort,
   isStartupAutoResumeRequested,
   shouldAutomaticallyResumeOnStartup,
   isStartupAutoResumeStalled,
   isStartupResumableThread,
+  isStartupResumeCohortThread,
   pruneStartupResumeSelection,
   shouldClearStartupResumePending,
   shouldAutoCloseStartupResume,
@@ -195,6 +197,37 @@ describe("startup resumable threads", () => {
       ThreadId.make("newer"),
       ThreadId.make("older"),
     ]);
+  });
+
+  it("keeps temporarily blocked boot work in the startup cohort", () => {
+    const recovering = makeThread("recovering", {
+      pendingWork: {
+        kind: "active-turn-recovery",
+        state: "executing",
+        since: NOW,
+      },
+      session: {
+        ...makeThread("recovering").session!,
+        status: "running",
+        activeTurnId: TurnId.make("turn-recovering"),
+      },
+    });
+
+    expect(isStartupResumableThread(recovering)).toBe(false);
+    expect(isStartupResumeCohortThread(recovering)).toBe(true);
+    expect(deriveStartupResumeCohort([recovering])).toEqual([recovering]);
+  });
+
+  it("does not add later completed or retired work to the startup cohort", () => {
+    expect(
+      deriveStartupResumeCohort([
+        makeThread("completed", {
+          latestTurn: { ...makeThread("completed").latestTurn!, state: "completed" },
+        }),
+        makeThread("archived", { archivedAt: NOW }),
+        makeThread("settled", { settledOverride: "settled" }),
+      ]),
+    ).toEqual([]);
   });
 });
 

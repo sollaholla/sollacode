@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   isAtomCommandInterrupted,
@@ -12,9 +12,11 @@ import { useAllEnvironmentShellsBootstrapped, useThreadShells } from "../state/e
 import { useEnvironments } from "../state/environments";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
+import { retryInterruptedCommand } from "../state/retryInterruptedCommand";
 import { useStartupResumeStore } from "../startupResumeStore";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
+  deriveStartupResumeCohort,
   deriveStartupResumableThreads,
   isStartupAutoResumeRequested,
   isStartupAutoResumeStalled,
@@ -23,26 +25,8 @@ import {
   startupAutoResumeIds,
 } from "./StartupResumeCoordinator.logic";
 
-const STARTUP_RESUME_PROMPT_SESSION_KEY = "t3code:startup-resume-prompt:v1";
-
 function threadKey(environmentId: string, threadId: string): string {
   return `${environmentId}:${threadId}`;
-}
-
-function wasPromptHandledThisStartup(): boolean {
-  try {
-    return window.sessionStorage.getItem(STARTUP_RESUME_PROMPT_SESSION_KEY) === "handled";
-  } catch {
-    return false;
-  }
-}
-
-function markPromptHandledThisStartup(): void {
-  try {
-    window.sessionStorage.setItem(STARTUP_RESUME_PROMPT_SESSION_KEY, "handled");
-  } catch {
-    // A blocked sessionStorage must not prevent the prompt from working.
-  }
 }
 
 export function StartupResumeCoordinator() {
@@ -53,7 +37,8 @@ export function StartupResumeCoordinator() {
   const threads = useThreadShells();
   const { environments } = useEnvironments();
   const startThreadTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
-  const dispatchedRef = useRef(false);
+  const [startupCohortKeys, setStartupCohortKeys] = useState<ReadonlySet<string> | null>(null);
+  const dispatchedThreadKeysRef = useRef(new Set<string>());
 
   const connectedEnvironmentIds = useMemo(
     () =>
@@ -71,6 +56,31 @@ export function StartupResumeCoordinator() {
       ),
     [connectedEnvironmentIds, threads],
   );
+
+  useEffect(() => {
+    if (
+      startupCohortKeys !== null ||
+      !settingsHydrated ||
+      !shellsBootstrapped ||
+      !shouldAutomaticallyResumeOnStartup({ showOnStartup, autoResumeRequested })
+    ) {
+      return;
+    }
+    setStartupCohortKeys(
+      new Set(
+        deriveStartupResumeCohort(threads).map((thread) =>
+          threadKey(thread.environmentId, thread.id),
+        ),
+      ),
+    );
+  }, [
+    autoResumeRequested,
+    settingsHydrated,
+    shellsBootstrapped,
+    showOnStartup,
+    startupCohortKeys,
+    threads,
+  ]);
 
   useEffect(() => {
     const pending = useStartupResumeStore.getState().pendingStartedAtByThreadKey;
@@ -119,23 +129,30 @@ export function StartupResumeCoordinator() {
               incompleteTurnId !== undefined
                 ? startupAutoResumeIds({ threadId: thread.id, incompleteTurnId })
                 : null;
-            const result = await startThreadTurn({
-              environmentId: thread.environmentId,
-              input: {
-                ...(resumeIds !== null ? { commandId: resumeIds.commandId } : {}),
-                threadId: thread.id,
-                message: {
-                  messageId: resumeIds?.messageId ?? newMessageId(),
-                  role: "user",
-                  text: RESUME_PROMPT,
-                  attachments: [],
-                },
-                modelSelection: thread.modelSelection,
-                titleSeed: thread.title,
-                runtimeMode: thread.runtimeMode,
-                interactionMode: thread.interactionMode,
-                createdAt,
-              },
+            const messageId = resumeIds?.messageId ?? newMessageId();
+            const result = await retryInterruptedCommand({
+              run: () =>
+                startThreadTurn({
+                  environmentId: thread.environmentId,
+                  input: {
+                    ...(resumeIds !== null ? { commandId: resumeIds.commandId } : {}),
+                    threadId: thread.id,
+                    message: {
+                      messageId,
+                      role: "user",
+                      text: RESUME_PROMPT,
+                      attachments: [],
+                    },
+                    modelSelection: thread.modelSelection,
+                    titleSeed: thread.title,
+                    runtimeMode: thread.runtimeMode,
+                    interactionMode: thread.interactionMode,
+                    createdAt,
+                  },
+                }),
+              isInterrupted: isAtomCommandInterrupted,
+              shouldRetry: () =>
+                dispatchedThreadKeysRef.current.has(key) && startupCohortKeys?.has(key) === true,
             });
             if (result._tag === "Success") {
               return null;
@@ -176,34 +193,23 @@ export function StartupResumeCoordinator() {
         }),
       );
     },
-    [startThreadTurn],
+    [startThreadTurn, startupCohortKeys],
   );
 
   useEffect(() => {
-    if (
-      dispatchedRef.current ||
-      !settingsHydrated ||
-      !shellsBootstrapped ||
-      !shouldAutomaticallyResumeOnStartup({
-        showOnStartup,
-        autoResumeRequested,
-      }) ||
-      candidates.length === 0 ||
-      wasPromptHandledThisStartup()
-    ) {
+    if (startupCohortKeys === null) {
       return;
     }
-    dispatchedRef.current = true;
-    markPromptHandledThisStartup();
-    void resumeThreads(candidates);
-  }, [
-    autoResumeRequested,
-    candidates,
-    resumeThreads,
-    settingsHydrated,
-    shellsBootstrapped,
-    showOnStartup,
-  ]);
+    const selected = candidates.filter((thread) => {
+      const key = threadKey(thread.environmentId, thread.id);
+      return startupCohortKeys.has(key) && !dispatchedThreadKeysRef.current.has(key);
+    });
+    if (selected.length === 0) return;
+    for (const thread of selected) {
+      dispatchedThreadKeysRef.current.add(threadKey(thread.environmentId, thread.id));
+    }
+    void resumeThreads(selected);
+  }, [candidates, resumeThreads, startupCohortKeys]);
 
   return null;
 }
