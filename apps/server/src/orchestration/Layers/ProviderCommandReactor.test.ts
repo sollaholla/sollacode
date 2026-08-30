@@ -6063,13 +6063,59 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(async () => (await obligationState("steer-msg-1")) === "executing");
 
+    // Reproduce the production race: on a supervisor-less running session the
+    // scheduler can claim the durable delivery before the event reactor gets
+    // to its live-steer branch. The reactor must take over this executing row
+    // instead of leaving the message queued for the blocking turn's lifetime.
+    const firstObligation = Option.getOrThrow(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(asMessageId("steer-msg-1")),
+          kind: "active-turn-recovery",
+        }),
+      ),
+    );
+    expect(
+      await Effect.runPromise(
+        harness.threadWorkObligations.transition({
+          obligationId: firstObligation.obligationId,
+          expectedState: "executing",
+          expectedAttempt: firstObligation.attempt,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: "2026-01-01T00:00:02.250Z",
+        }),
+      ),
+    ).toBe(true);
+    await Effect.runPromise(
+      harness.threadWorkObligations.insert({
+        obligationId: `thread-work:active-turn-recovery:${threadId}:turn-start:steer-msg-2`,
+        threadId,
+        sourceTurnId: activeTurnWorkSourceId(asMessageId("steer-msg-2")),
+        kind: "active-turn-recovery",
+        state: "executing",
+        providerInstanceId: codex,
+        attempt: 1,
+        nextAttemptAt: null,
+        claimedAt: "2026-01-01T00:00:02.500Z",
+        leaseExpiresAt: "2026-01-01T00:01:02.500Z",
+        blockedReason: null,
+        createdAt: "2026-01-01T00:00:02.500Z",
+        updatedAt: "2026-01-01T00:00:02.500Z",
+      }),
+    );
+
     // Message 2 mid-turn: the provider accepts the steer, so it reaches the
     // agent immediately and its parked delivery resolves as completed.
     await dispatchTurn("cmd-steer-msg2", "steer-msg-2", "steer me", "2026-01-01T00:00:03.000Z");
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(deliveredMessageIds()[1]).toBe("steer-msg-2");
     await waitFor(async () => (await obligationState("steer-msg-2")) === "completed");
-    expect(await obligationState("steer-msg-1")).toBe("executing");
+    expect(await obligationState("steer-msg-1")).toBe("completed");
 
     // Message 3 mid-turn: the provider refuses the steer (turn boundary race,
     // old binary). The message parks and must not dispatch while the turn runs.
@@ -6077,7 +6123,7 @@ describe("ProviderCommandReactor", () => {
     await dispatchTurn("cmd-steer-msg3", "steer-msg-3", "park me", "2026-01-01T00:00:04.000Z");
     await waitFor(() => harness.sendTurn.mock.calls.length === 3); // the refused steer attempt
     expect(await obligationState("steer-msg-3")).toBe("pending");
-    expect(await obligationState("steer-msg-1")).toBe("executing");
+    expect(await obligationState("steer-msg-1")).toBe("completed");
 
     // Turn 1 completes: the parked message delivers as its own turn.
     providerIdle();
