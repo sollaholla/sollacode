@@ -185,11 +185,15 @@ function AgentWorkspaceResolved(props: {
           // This header spans the window even when the browser panel is open,
           // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
           // Windows the native window controls overlay this row's right edge,
-          // and with them the parked panel toggle.
-          "pr-[var(--workspace-titlebar-content-right)]",
+          // and with them the parked panel toggle. Container-level only from
+          // `md` up, where the header is a single row. Stacked (phones), the
+          // overlay occupies the first row's band alone — padding the whole
+          // header pushed the actions row ~3.5rem off the right edge for
+          // nothing, which read as a broken gap under the title.
+          "md:pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2 md:flex-1">
+        <div className="flex min-w-0 items-center gap-2 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
           {view !== "chat" ? (
             <Button
               type="button"
