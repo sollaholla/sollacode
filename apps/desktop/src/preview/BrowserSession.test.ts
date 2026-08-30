@@ -27,7 +27,7 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   // The UA cleanup reads the app token it must strip from the session's UA.
-  app: { getName: () => "t3code" },
+  app: { getName: () => "Solla Code" },
   session: {
     fromPartition,
   },
@@ -111,7 +111,12 @@ describe("BrowserSession", () => {
       const browserSession = {
         clearCache: vi.fn(() => Promise.resolve()),
         clearStorageData: vi.fn(() => Promise.resolve()),
-        getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/0.0.27"),
+        getUserAgent: vi.fn(
+          () =>
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) SollaCode/0.1.303 " +
+            "Chrome/146.0.7680.216 Electron/41.5.0 Safari/537.36",
+        ),
         on: vi.fn(),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
@@ -149,7 +154,10 @@ describe("BrowserSession", () => {
       assert.strictEqual(browserSession as unknown, sessions.get(partition));
       assert.deepStrictEqual(
         sessions.get(partition)?.setUserAgent.mock.calls.map((call) => call[0]),
-        ["Mozilla/5.0"],
+        [
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
+        ],
       );
     }).pipe(Effect.provide(layer)),
   );
