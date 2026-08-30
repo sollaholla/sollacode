@@ -271,9 +271,10 @@ const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
  * afterwards does not help, because the damage happens while focus is held.
  * Automation therefore defers instead of competing.
  */
-const USER_INPUT_DEFERRAL_MS = 2_000;
+export const USER_INPUT_DEFERRAL_MS = 5_000;
 /** Re-check cadence while deferring. */
 const USER_INPUT_DEFERRAL_POLL_MS = 200;
+const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
 
 /** Time for a synthetic press's focus change to reach the guest's widget. */
 const AUTOMATION_FOCUS_SETTLE_MS = 120;
@@ -310,7 +311,9 @@ export function resolveUserInputDeferral(input: {
  * Deliberately not "any input event": the pointer merely crossing or resting
  * over the window emits a stream of `mouseMove`/`pointerMove`, and counting
  * those would mark the user permanently active and starve every agent. Only
- * events that carry intent — a press, a scroll, a touch — reset the cooldown.
+ * events that carry typing/clicking intent reset the cooldown. Scrolling and
+ * pointer movement remain usable while an agent is waiting, but neither means
+ * that the user is about to type into the focused control.
  *
  * This is the other half of the keyboard gate. Clicking into the composer and
  * pausing to think used to leave automation free to take the caret, because
@@ -319,15 +322,10 @@ export function resolveUserInputDeferral(input: {
 export function isDeliberateUserInputEvent(type: string | undefined): boolean {
   switch (type) {
     case "mouseDown":
-    case "mouseUp":
-    case "mouseWheel":
     case "contextMenu":
     case "touchStart":
-    case "touchEnd":
     case "pointerDown":
-    case "pointerUp":
     case "gestureTap":
-    case "gestureScrollBegin":
       return true;
     default:
       return false;
@@ -371,21 +369,25 @@ const BARE_MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock
  * who owns the keyboard, so someone who clicked into the page themselves keeps
  * typing there and is never yanked back.
  *
- * `automationInFlight` is the safety interlock. Every agent keystroke happens
- * while that agent holds the automation turn, so a guest key arriving during
- * one is the agent's own and must never be redirected into the user's chat —
- * the exact failure this whole area was built to stop.
+ * Agent input is exempt only when the exact key about to be dispatched is
+ * registered. A broad "automation is running" exemption allowed a physical
+ * user key pressed during an agent action to leak into the page.
  */
+type UserFocusIntent =
+  | { readonly kind: "app" }
+  | { readonly kind: "guest"; readonly tabId: string };
+
 export function shouldReclaimGuestKeyForApp(input: {
-  readonly focusIntent: "app" | "guest";
-  readonly automationInFlight: boolean;
+  readonly focusIntent: UserFocusIntent;
+  readonly currentTabId: string;
+  readonly expectedAgentInput: boolean;
   readonly inputType: string;
   readonly key: string;
 }): boolean {
-  if (input.focusIntent !== "app") return false;
-  if (input.automationInFlight) return false;
+  if (input.expectedAgentInput) return false;
   if (input.inputType !== "keyDown") return false;
-  return !BARE_MODIFIER_KEYS.has(input.key);
+  if (BARE_MODIFIER_KEYS.has(input.key)) return false;
+  return input.focusIntent.kind === "app" || input.focusIntent.tabId !== input.currentTabId;
 }
 
 const AGENT_CURSOR_MOVE_MS = 160;
@@ -849,12 +851,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * or a guest page they clicked into. Only their own clicks move this — an
    * agent's do not, so automation cannot quietly reassign the keyboard.
    */
-  let userFocusIntent: "app" | "guest" = "app";
-  /** Non-zero while an agent holds the automation turn. See {@link shouldReclaimGuestKeyForApp}. */
-  let automationTurnsInFlight = 0;
+  let userFocusIntent: UserFocusIntent = { kind: "app" };
   const expectedAgentInputsRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<ExpectedAgentInput>>
   >(new Map());
+  /**
+   * `before-input-event` is synchronous, so it cannot consult the Effect Ref.
+   * Keep only the exact key packet currently crossing the CDP boundary here;
+   * it is removed as soon as that dispatch returns. The renderer-side report
+   * still consumes the durable one-second entry above.
+   */
+  const synchronousAgentKeyInputs = new Map<string, ReadonlyArray<PreviewInputSignal>>();
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -2288,6 +2295,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  const registerSynchronousAgentKey = (tabId: string, signal: PreviewInputSignal): void => {
+    if (signal.kind !== "key") return;
+    synchronousAgentKeyInputs.set(tabId, [...(synchronousAgentKeyInputs.get(tabId) ?? []), signal]);
+  };
+
+  const unregisterSynchronousAgentKey = (tabId: string, signal: PreviewInputSignal): void => {
+    if (signal.kind !== "key") return;
+    const pending = synchronousAgentKeyInputs.get(tabId) ?? [];
+    const index = pending.findIndex((expected) => inputSignalsMatch(expected, signal));
+    if (index < 0) return;
+    const next = pending.filter((_, pendingIndex) => pendingIndex !== index);
+    if (next.length === 0) synchronousAgentKeyInputs.delete(tabId);
+    else synchronousAgentKeyInputs.set(tabId, next);
+  };
+
+  const isSynchronousAgentKey = (tabId: string, input: Electron.Input): boolean =>
+    (synchronousAgentKeyInputs.get(tabId) ?? []).some((expected) =>
+      inputSignalsMatch(expected, { kind: "key", key: input.key, code: input.code }),
+    );
+
   const attachListeners = Effect.fn("PreviewManager.attachListeners")(function* (
     tabId: string,
     wc: Electron.WebContents,
@@ -2499,7 +2526,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // a keystroke that arrives because an agent moved the caret here is the
       // thing being corrected, not a choice to work in this tab.
       if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "pointer") {
-        userFocusIntent = "guest";
+        userFocusIntent = { kind: "guest", tabId };
       }
       yield* Ref.update(controlEpochRef, (epochs) =>
         replaceMap(epochs, (copy) => {
@@ -2542,19 +2569,59 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
      * `char` is what actually inserts text; the surrounding keyDown/keyUp keep
      * the composer's own key handling (Enter to send, shortcuts) intact.
      */
-    const reclaimKeyForApp = Effect.fn("PreviewManager.reclaimKeyForApp")(function* (
+    const reclaimKeyForUserFocus = Effect.fn("PreviewManager.reclaimKeyForUserFocus")(function* (
       input: Electron.Input,
     ) {
-      const mainWindow = yield* Ref.get(mainWindowRef);
-      if (Option.isNone(mainWindow) || mainWindow.value.isDestroyed()) return;
-      const target = mainWindow.value.webContents;
-      yield* attempt(
-        { operation: "reclaimKeyForApp.focus", tabId, webContentsId: target.id },
-        () => {
-          mainWindow.value.focus();
-          target.focus();
-        },
-      ).pipe(Effect.ignore);
+      const focusIntent = userFocusIntent;
+      let target: Electron.WebContents | null = null;
+      if (focusIntent.kind === "app") {
+        const mainWindow = yield* Ref.get(mainWindowRef);
+        if (Option.isNone(mainWindow) || mainWindow.value.isDestroyed()) return;
+        target = mainWindow.value.webContents;
+        yield* attempt(
+          { operation: "reclaimKeyForUserFocus.focusApp", tabId, webContentsId: target.id },
+          () => {
+            mainWindow.value.focus();
+            target?.focus();
+          },
+        ).pipe(Effect.ignore);
+        // An agent can leave Chromium's native focus on the <webview> even
+        // after the app WebContents is restored. Focus the last editable app
+        // element, falling back to the newly mounted thread composer.
+        yield* attemptPromise(
+          { operation: "reclaimKeyForUserFocus.restoreElement", tabId, webContentsId: target.id },
+          () =>
+            target!.executeJavaScript(`(() => {
+              const marked = document.querySelector('[${APP_FOCUS_MARKER_ATTRIBUTE}]');
+              const composer = document.querySelector('[data-testid="composer-editor"][contenteditable="true"]');
+              const candidate = marked instanceof HTMLElement && marked.isConnected
+                ? marked
+                : composer instanceof HTMLElement
+                  ? composer
+                  : null;
+              if (!candidate) return false;
+              candidate.focus({ preventScroll: true });
+              return document.activeElement === candidate;
+            })()`),
+        ).pipe(Effect.ignore);
+      } else {
+        const tabs = yield* SynchronizedRef.get(tabsRef);
+        const targetState = tabs.get(focusIntent.tabId);
+        target =
+          targetState?.webContentsId == null
+            ? null
+            : (webContents.fromId(targetState.webContentsId) ?? null);
+        if (!target || target.isDestroyed()) return;
+        yield* attempt(
+          {
+            operation: "reclaimKeyForUserFocus.focusGuest",
+            tabId: focusIntent.tabId,
+            webContentsId: target.id,
+          },
+          () => target?.focus(),
+        ).pipe(Effect.ignore);
+      }
+      lastUserInputAtMs = yield* currentMillis;
       const modifiers = [
         ...(input.meta ? (["meta"] as const) : []),
         ...(input.shift ? (["shift"] as const) : []),
@@ -2562,18 +2629,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...(input.alt ? (["alt"] as const) : []),
       ];
       yield* attempt(
-        { operation: "reclaimKeyForApp.send", tabId, webContentsId: target.id },
+        { operation: "reclaimKeyForUserFocus.send", tabId, webContentsId: target.id },
         () => {
-          target.sendInputEvent({ type: "keyDown", keyCode: input.key, modifiers });
+          target!.sendInputEvent({ type: "keyDown", keyCode: input.key, modifiers });
           // Only a lone printable character should insert; a chord is a command.
           if (input.key.length === 1 && !input.meta && !input.control && !input.alt) {
-            target.sendInputEvent({ type: "char", keyCode: input.key, modifiers });
+            target!.sendInputEvent({ type: "char", keyCode: input.key, modifiers });
           }
-          target.sendInputEvent({ type: "keyUp", keyCode: input.key, modifiers });
+          target!.sendInputEvent({ type: "keyUp", keyCode: input.key, modifiers });
         },
       ).pipe(Effect.ignore);
-      yield* Effect.logInfo("Returned a keystroke to the app window.", {
+      yield* Effect.logInfo("Returned a keystroke to the user's last focused surface.", {
         tabId,
+        focusKind: focusIntent.kind,
         key: input.key.length === 1 ? "<character>" : input.key,
       });
     });
@@ -2587,13 +2655,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (
         shouldReclaimGuestKeyForApp({
           focusIntent: userFocusIntent,
-          automationInFlight: automationTurnsInFlight > 0,
+          currentTabId: tabId,
+          expectedAgentInput: isSynchronousAgentKey(tabId, input),
           inputType: input.type,
           key: input.key,
         })
       ) {
         event.preventDefault();
-        runFork(reclaimKeyForApp(input));
+        runFork(reclaimKeyForUserFocus(input));
         return;
       }
       // The page keeps the key-up of a chord it already received the key-down
@@ -2706,11 +2775,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       const pushToTalkPressed = isPushToTalkPress(input);
       const pushToTalkReleased = isPushToTalkRelease(input, pushToTalkInputActive);
       if (pushToTalkPressed) beginPushToTalkInput();
-      // Any key the user presses in the app's own window marks them as active,
-      // which holds automation off the focus for a moment. Key-ups included: a
-      // held push-to-talk chord is exactly when losing focus hurts most.
+      // Only a physical key-down starts or extends the cooldown. Counting the
+      // matching key-up and char packets made a single keystroke look like
+      // several independent activity windows, and synthetic redispatches could
+      // keep the gate open for themselves.
       if (pushToTalkReleased) finishPushToTalkInput();
-      else
+      else if (input.type === "keyDown")
         runFork(
           Effect.gen(function* () {
             lastUserInputAtMs = yield* currentMillis;
@@ -2762,7 +2832,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!isDeliberateUserInputEvent(input.type)) return;
       // A click in the app's own window is the user claiming the keyboard back
       // from whatever a preview tab was holding.
-      userFocusIntent = "app";
+      userFocusIntent = { kind: "app" };
       runFork(
         Effect.gen(function* () {
           lastUserInputAtMs = yield* currentMillis;
@@ -2771,7 +2841,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     mainWebContents.on("input-event", observeUserPointer);
     const observeRendererUserInput = (): void => {
-      userFocusIntent = "app";
+      userFocusIntent = { kind: "app" };
       runFork(
         Effect.gen(function* () {
           lastUserInputAtMs = yield* currentMillis;
@@ -3240,7 +3310,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           () => webContents.getFocusedWebContents(),
         ).pipe(Effect.orElseSucceed(() => null));
         if (focused && focused.id === tab?.webContentsId) {
-          userFocusIntent = "app";
+          userFocusIntent = { kind: "app" };
           const mainWindow = yield* Ref.get(mainWindowRef);
           if (Option.isSome(mainWindow) && !mainWindow.value.webContents.isDestroyed()) {
             yield* attempt(
@@ -5274,6 +5344,38 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
   });
 
+  const rememberAppFocusTarget = Effect.fn("PreviewManager.rememberAppFocusTarget")(function* (
+    tabId: string,
+  ) {
+    if (userFocusIntent.kind !== "app") return;
+    const mainWindow = yield* Ref.get(mainWindowRef);
+    if (Option.isNone(mainWindow) || mainWindow.value.isDestroyed()) return;
+    const target = mainWindow.value.webContents;
+    yield* attemptPromise(
+      { operation: "rememberAppFocusTarget", tabId, webContentsId: target.id },
+      () =>
+        target.executeJavaScript(`(() => {
+          const active = document.activeElement;
+          const activeEditable = active instanceof HTMLElement && (
+            active.matches('input:not([type="button"]):not([type="submit"]), textarea') ||
+            active.isContentEditable
+          );
+          const composer = document.querySelector('[data-testid="composer-editor"][contenteditable="true"]');
+          const candidate = activeEditable
+            ? active
+            : composer instanceof HTMLElement
+              ? composer
+              : null;
+          if (!candidate) return false;
+          document.querySelectorAll('[${APP_FOCUS_MARKER_ATTRIBUTE}]').forEach((element) => {
+            if (element !== candidate) element.removeAttribute('${APP_FOCUS_MARKER_ATTRIBUTE}');
+          });
+          candidate.setAttribute('${APP_FOCUS_MARKER_ATTRIBUTE}', 'true');
+          return true;
+        })()`),
+    ).pipe(Effect.ignore);
+  });
+
   /**
    * Hold automation off the keyboard while the user is actively using it.
    *
@@ -5331,14 +5433,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationInputMutex.withPermits(1)(
       Effect.gen(function* () {
         yield* deferToUserInput(operation, tabId);
-        automationTurnsInFlight += 1;
-        return yield* action.pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              automationTurnsInFlight -= 1;
-            }),
-          ),
-        );
+        yield* rememberAppFocusTarget(tabId);
+        return yield* action;
       }).pipe(
         // Also runs when the wait is interrupted, so the badge can never
         // outlive the thing it describes.
@@ -5715,6 +5811,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const releaseInput = Effect.gen(function* () {
       if (clearKeyDownAttempted) {
         yield* sendCleanup("Input.dispatchKeyEvent", clearSequence.keyUp).pipe(Effect.ignore);
+        yield* Effect.sync(() => unregisterSynchronousAgentKey(tabId, clearSequence.signal));
       }
       yield* sendCleanup("Emulation.setFocusEmulationEnabled", {
         enabled: automationForegroundActive,
@@ -5835,6 +5932,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       } else if (input.clear) {
         yield* expectAgentInput(tabId, clearSequence.signal);
         clearKeyDownAttempted = true;
+        yield* Effect.sync(() => registerSynchronousAgentKey(tabId, clearSequence.signal));
         yield* send("Input.dispatchKeyEvent", clearSequence.keyDown);
       }
     }).pipe(Effect.ensuring(releaseInput));
@@ -6101,6 +6199,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const releaseInput = Effect.gen(function* () {
       if (keyDownAttempted) {
         yield* sendCleanup("Input.dispatchKeyEvent", keySequence.keyUp).pipe(Effect.ignore);
+        yield* Effect.sync(() => unregisterSynchronousAgentKey(tabId, keySequence.signal));
       }
       yield* sendCleanup("Emulation.setFocusEmulationEnabled", {
         enabled: automationForegroundActive,
@@ -6146,6 +6245,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* send("Emulation.setFocusEmulationEnabled", { enabled: true });
       yield* expectAgentInput(tabId, keySequence.signal);
       keyDownAttempted = true;
+      yield* Effect.sync(() => registerSynchronousAgentKey(tabId, keySequence.signal));
       yield* send("Input.dispatchKeyEvent", keySequence.keyDown);
     }).pipe(Effect.ensuring(releaseInput));
   });

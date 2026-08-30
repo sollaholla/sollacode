@@ -777,7 +777,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             {controller === "agent"
               ? "Agent controlling browser"
               : controller === "waiting-for-user"
-                ? "Agent paused — waiting for you to stop typing"
+                ? "Agent paused — waiting for typing or clicking to stop"
                 : "Human control"}
           </div>
         ) : null}
