@@ -5,6 +5,7 @@ import {
   focusRemoteKeyboardForPoint,
   remoteKeyboardActionForBeforeInput,
   remoteKeyboardTextForInput,
+  resetRemoteKeyboardTarget,
 } from "./remoteEditableRegions";
 
 describe("findRemoteEditableRegion", () => {
@@ -66,6 +67,18 @@ describe("focusRemoteKeyboardForPoint", () => {
     ).toBe(false);
     expect(blur).toHaveBeenCalledOnce();
     expect(focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("resetRemoteKeyboardTarget", () => {
+  it("clears and blurs retained mobile keyboard focus", () => {
+    const blur = vi.fn();
+    const target = { value: "stale text", blur };
+
+    resetRemoteKeyboardTarget(target);
+
+    expect(target.value).toBe("");
+    expect(blur).toHaveBeenCalledOnce();
   });
 });
 
