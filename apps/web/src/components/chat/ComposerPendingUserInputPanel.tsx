@@ -172,6 +172,10 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         ) : null}
       </div>
       <p
+        // The composer's mobile touch boundary blocks any touch scroll that
+        // does not start inside a marked scroll container, so this pane is
+        // unscrollable on touch devices without the marker.
+        data-chat-composer-scroll-container={isActionApproval ? "true" : undefined}
         className={cn(
           "text-sm text-foreground/90",
           isActionApproval &&
