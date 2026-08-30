@@ -4,6 +4,7 @@ import {
   findRemoteEditableRegion,
   focusRemoteKeyboardForPoint,
   remoteKeyboardActionForBeforeInput,
+  remoteKeyboardTextForInput,
 } from "./remoteEditableRegions";
 
 describe("findRemoteEditableRegion", () => {
@@ -69,11 +70,7 @@ describe("focusRemoteKeyboardForPoint", () => {
 });
 
 describe("remoteKeyboardActionForBeforeInput", () => {
-  it("maps mobile text and editing input onto focused-guest actions", () => {
-    expect(remoteKeyboardActionForBeforeInput({ inputType: "insertText", data: "a" })).toEqual({
-      kind: "type",
-      text: "a",
-    });
+  it("maps non-text mobile editing input onto focused-guest actions", () => {
     expect(
       remoteKeyboardActionForBeforeInput({ inputType: "insertParagraph", data: null }),
     ).toEqual({ kind: "press", key: "Enter" });
@@ -82,7 +79,24 @@ describe("remoteKeyboardActionForBeforeInput", () => {
     ).toEqual({ kind: "press", key: "Backspace" });
   });
 
-  it("does not invent an action for an unsupported edit", () => {
+  it("leaves text insertion to the reliable input event", () => {
+    expect(remoteKeyboardActionForBeforeInput({ inputType: "insertText", data: "a" })).toBeNull();
+    expect(
+      remoteKeyboardActionForBeforeInput({ inputType: "insertCompositionText", data: "a" }),
+    ).toBeNull();
     expect(remoteKeyboardActionForBeforeInput({ inputType: "historyUndo", data: null })).toBeNull();
+  });
+});
+
+describe("remoteKeyboardTextForInput", () => {
+  it("uses the hidden input value when iOS omits beforeinput data", () => {
+    expect(remoteKeyboardTextForInput({ data: null, value: "hello", isComposing: false })).toBe(
+      "hello",
+    );
+  });
+
+  it("falls back to input-event data and waits for composition to commit", () => {
+    expect(remoteKeyboardTextForInput({ data: "a", value: "", isComposing: false })).toBe("a");
+    expect(remoteKeyboardTextForInput({ data: "ka", value: "ka", isComposing: true })).toBeNull();
   });
 });
