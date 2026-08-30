@@ -48,6 +48,7 @@ const state = (tabId: string): ThreadPreviewState => {
     activeTabId: session.tabId,
     desktopOverlay: null,
     desktopByTabId: {},
+    remoteApprovalsByTabId: {},
     recentlySeenUrls: [],
     serverEpoch: "epoch-1",
     serverRevision: 1,

@@ -561,6 +561,140 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("a frame carries the downloads this guest is holding for approval", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // The frame is a remote viewer's only feed. The desktop's Allow/Deny
+        // card never leaves this machine, so without this a person watching
+        // from a phone can neither see nor answer the hold.
+        const png = Buffer.from("frame-held").toString("base64");
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Page.captureScreenshot") return { data: png };
+          if (method === "Page.getLayoutMetrics") {
+            return { cssLayoutViewport: { clientWidth: 800, clientHeight: 600 } };
+          }
+          return {};
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com/",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          session: {},
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          invalidate: vi.fn(),
+          beginFrameSubscription: vi.fn(),
+          endFrameSubscription: vi.fn(),
+          capturePage: vi.fn(),
+        } as never);
+
+        yield* manager.createTab("tab_frame_hold");
+        yield* manager.registerWebview("tab_frame_hold", 42);
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          isFocused: () => true,
+          once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          webContents: { isDestroyed: () => false, on: vi.fn(), off: vi.fn() },
+        } as never);
+        downloadApprovalListener?.(42, {
+          kind: "pending",
+          approval: { id: "download-approval-9", domain: "example.com", fileName: "report.pdf" },
+        });
+
+        const frame = yield* manager.automationFrame("tab_frame_hold");
+        expect(frame.pendingDownloadApprovals).toEqual([
+          { id: "download-approval-9", domain: "example.com", fileName: "report.pdf" },
+        ]);
+
+        // Answered, the next frame stops reporting it.
+        downloadApprovalListener?.(42, { kind: "settled", id: "download-approval-9" });
+        const after = yield* manager.automationFrame("tab_frame_hold");
+        expect(after.pendingDownloadApprovals).toBeUndefined();
+      }),
+    ),
+  );
+
+  effectIt.effect("dispatches a requested right-click as a real secondary press", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // A remote viewer's long-press arrives as button: "right"; the page
+        // must see the same press/release a physical mouse would send, or its
+        // context menus never open.
+        const sendCommand = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+          if (method === "Runtime.evaluate") {
+            return { result: { value: { width: 800, height: 600 } } };
+          }
+          return undefined;
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_right_click");
+        yield* manager.registerWebview("tab_right_click", 42);
+        const click = yield* manager
+          .automationClick("tab_right_click", { x: 120, y: 80, button: "right" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust(200);
+        yield* Fiber.join(click);
+
+        const dispatched = sendCommand.mock.calls
+          .filter(([method]) => method === "Input.dispatchMouseEvent")
+          .map(
+            ([, params]) =>
+              params as { readonly type?: string; readonly button?: string } | undefined,
+          );
+        expect(dispatched.map((params) => params?.type)).toEqual([
+          "mouseMoved",
+          "mousePressed",
+          "mouseReleased",
+        ]);
+        expect(dispatched.map((params) => params?.button)).toEqual(["none", "right", "right"]);
+      }),
+    ),
+  );
+
   effectIt.effect("refuses a held download when the tab asking about it closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {

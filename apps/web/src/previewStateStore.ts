@@ -60,6 +60,13 @@ export interface ThreadPreviewState {
   activeTabId: string | null;
   desktopOverlay: DesktopPreviewOverlay | null;
   desktopByTabId: Record<string, DesktopPreviewOverlay>;
+  /**
+   * Downloads a REMOTE host is holding for approval, keyed by tab, as
+   * reported by the frames the mirror polls. Kept apart from desktopByTabId:
+   * that map describes this machine's own guests, and a viewer with no guest
+   * at all still needs somewhere for the Allow/Deny state to live.
+   */
+  remoteApprovalsByTabId: Record<string, ReadonlyArray<PreviewDownloadApproval>>;
   recentlySeenUrls: string[];
   /** Server process currently authoritative for revision ordering. */
   serverEpoch: string | null;
@@ -77,6 +84,7 @@ const EMPTY_THREAD_PREVIEW_STATE: ThreadPreviewState = Object.freeze({
   activeTabId: null,
   desktopOverlay: null,
   desktopByTabId: {},
+  remoteApprovalsByTabId: {},
   recentlySeenUrls: [] as string[],
   serverEpoch: null,
   serverRevision: 0,
@@ -228,6 +236,7 @@ const removeSession = (current: ThreadPreviewState, tabId: string): ThreadPrevie
   const { [tabId]: _closed, ...sessions } = current.sessions;
   const { [tabId]: _hosted, ...hostedSessions } = current.hostedSessions;
   const { [tabId]: _desktop, ...desktopByTabId } = current.desktopByTabId;
+  const { [tabId]: _remoteApprovals, ...remoteApprovalsByTabId } = current.remoteApprovalsByTabId;
   const nextSnapshot = latestSnapshot(sessions);
   const activeTabId =
     current.activeTabId === tabId ? (nextSnapshot?.tabId ?? null) : current.activeTabId;
@@ -237,6 +246,7 @@ const removeSession = (current: ThreadPreviewState, tabId: string): ThreadPrevie
     sessions,
     hostedSessions,
     desktopByTabId,
+    remoteApprovalsByTabId,
     activeTabId: snapshot?.tabId ?? null,
     snapshot,
     desktopOverlay: snapshot ? (desktopByTabId[snapshot.tabId] ?? null) : null,
@@ -294,6 +304,7 @@ const transitionPreviewServerEpoch = (
     activeTabId: null,
     desktopOverlay: null,
     desktopByTabId,
+    remoteApprovalsByTabId: {},
     serverEpoch,
     serverRevision: 0,
   };
@@ -583,6 +594,33 @@ export function applyPreviewDesktopState(
       desktopByTabId,
       desktopOverlay: current.activeTabId === tabId ? overlay : current.desktopOverlay,
     };
+  });
+}
+
+/**
+ * Records the held downloads a remote frame reported for one tab.
+ *
+ * Called on every mirror tick, so an unchanged answer must not produce a new
+ * state object — the prompt and the composer banner would re-render at the
+ * frame cadence for nothing.
+ */
+export function applyPreviewRemoteDownloadApprovals(
+  ref: ScopedThreadRef,
+  tabId: string,
+  approvals: ReadonlyArray<PreviewDownloadApproval>,
+): void {
+  updateThreadPreviewState(ref, (current) => {
+    const existing = current.remoteApprovalsByTabId[tabId];
+    const unchanged =
+      (existing === undefined && approvals.length === 0) ||
+      (existing !== undefined &&
+        existing.length === approvals.length &&
+        existing.every((held, index) => held.id === approvals[index]?.id));
+    if (unchanged) return current;
+    const remoteApprovalsByTabId = { ...current.remoteApprovalsByTabId };
+    if (approvals.length === 0) delete remoteApprovalsByTabId[tabId];
+    else remoteApprovalsByTabId[tabId] = approvals;
+    return { ...current, remoteApprovalsByTabId };
   });
 }
 

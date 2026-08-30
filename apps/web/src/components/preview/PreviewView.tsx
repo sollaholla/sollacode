@@ -921,6 +921,17 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         {desktopOverlay && !showEmptyState && !isUnreachable ? (
           <PreviewDownloadApprovalPrompt approvals={desktopOverlay.pendingDownloadApprovals} />
         ) : null}
+        {/* The mirrored guest's held downloads, reported by its frames. The
+            answer goes back through the server to the machine holding the
+            file — the same route every other viewer action takes. */}
+        {surfaceMode === "remote-mirror" && tabId && !showEmptyState && !isUnreachable ? (
+          <PreviewDownloadApprovalPrompt
+            approvals={previewState.remoteApprovalsByTabId[tabId]}
+            onAnswer={(id, decision) =>
+              void sendGuestAction({ kind: "answerDownloadApproval", id, decision })
+            }
+          />
+        ) : null}
         {runtimeTabId && desktopOverlay && !showEmptyState && !isUnreachable ? (
           <AgentBrowserCursor
             tabId={runtimeTabId}

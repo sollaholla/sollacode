@@ -85,6 +85,38 @@ describe("captureRemotePreviewSnapshot", () => {
       });
       expect(result).not.toHaveProperty("visibleText");
       expect(result).not.toHaveProperty("consoleEntries");
+      // Nothing is held, so nothing rides along — the common frame must stay
+      // exactly as small as it was.
+      expect(result).not.toHaveProperty("pendingDownloadApprovals");
+    }),
+  );
+
+  it.effect("carries the host's held downloads to the viewer", () =>
+    Effect.gen(function* () {
+      // The frame is the only thing a remote viewer polls, so a download the
+      // host is holding for approval has to travel in it or the person on the
+      // other machine can never learn it exists.
+      const held = [{ id: "hold-1", domain: "example.com", fileName: "report.pdf" }];
+      const result = yield* captureRemotePreviewSnapshot({
+        broker: {
+          invoke: <A = unknown>() =>
+            Effect.succeed({
+              url: "https://example.com/",
+              title: "Example",
+              loading: false,
+              screenshot: snapshot.screenshot,
+              pendingDownloadApprovals: held,
+            } as A),
+        },
+        environmentId: EnvironmentId.make("environment-mobile-preview"),
+        sessionId: AuthSessionId.make("session-mobile-preview"),
+        request: {
+          threadId: ThreadId.make("thread-mobile-preview"),
+          tabId: PreviewTabId.make("tab-mobile-preview"),
+        },
+        issuedAt: Date.parse("2026-08-29T00:00:00.000Z"),
+      });
+      expect(result.pendingDownloadApprovals).toEqual(held);
     }),
   );
 });
@@ -124,6 +156,35 @@ describe("applyRemotePreviewInput", () => {
           threadId: "thread-remote-viewer",
           providerInstanceId: "remoteViewer",
         },
+      });
+    }),
+  );
+
+  it.effect("carries the mouse button only when the viewer pressed a specific one", () =>
+    Effect.gen(function* () {
+      // A phone's long-press arrives as a right-click; a plain tap must stay
+      // exactly the click older hosts already understand.
+      expect((yield* record({ kind: "click", x: 10, y: 20 }))[0]?.input).not.toHaveProperty(
+        "button",
+      );
+      expect((yield* record({ kind: "click", x: 10, y: 20, button: "right" }))[0]).toMatchObject({
+        operation: "click",
+        input: { x: 10, y: 20, button: "right" },
+      });
+    }),
+  );
+
+  it.effect("routes a download answer to the machine holding the file", () =>
+    Effect.gen(function* () {
+      const requests = yield* record({
+        kind: "answerDownloadApproval",
+        id: "hold-1",
+        decision: "allow-once",
+      });
+      expect(requests[0]).toMatchObject({
+        operation: "answerDownloadApproval",
+        input: { id: "hold-1", decision: "allow-once" },
+        tabId: "tab-remote-viewer",
       });
     }),
   );

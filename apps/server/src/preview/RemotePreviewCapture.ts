@@ -93,6 +93,10 @@ export function captureRemotePreviewSnapshot(
                 // Carried so a viewer can aim input at the page rather than at
                 // the picture of it. Older hosts omit it and stay view-only.
                 ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
+                ...(snapshot.pendingDownloadApprovals === undefined ||
+                snapshot.pendingDownloadApprovals.length === 0
+                  ? {}
+                  : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
                 // The host gathered these for this frame either way; they only
                 // travel when something is going to show them.
                 ...(input.request.includeDiagnostics === true
@@ -126,6 +130,13 @@ export function captureRemotePreviewSnapshot(
             capturedAt,
             screenshot: frame.screenshot,
             ...(frame.viewport === undefined ? {} : { viewport: frame.viewport }),
+            // A held download rides the frame because the frame is all a
+            // remote viewer polls; drop the field when empty so the common
+            // frame stays exactly as small as before.
+            ...(frame.pendingDownloadApprovals === undefined ||
+            frame.pendingDownloadApprovals.length === 0
+              ? {}
+              : { pendingDownloadApprovals: frame.pendingDownloadApprovals }),
           }) satisfies PreviewRemoteSnapshotResult,
       ),
       // A host predating the frame operation is never offered for it. Its
@@ -163,7 +174,12 @@ export function applyRemotePreviewInput(input: {
   const [operation, operationInput] = ((): [PreviewAutomationOperation, unknown] => {
     switch (action.kind) {
       case "click":
-        return ["click", { x: action.x, y: action.y }];
+        return [
+          "click",
+          action.button === undefined
+            ? { x: action.x, y: action.y }
+            : { x: action.x, y: action.y, button: action.button },
+        ];
       case "scroll":
         return ["scroll", { deltaX: action.deltaX, deltaY: action.deltaY }];
       case "type":
@@ -192,6 +208,10 @@ export function applyRemotePreviewInput(input: {
         // reloads its own guest — so a viewer with no guest here has to ask
         // the page itself.
         return ["evaluate", { expression: "location.reload()", returnByValue: false }];
+      case "answerDownloadApproval":
+        // Routed to the machine holding the download, which is the only place
+        // the staged bytes and the domain grant live.
+        return ["answerDownloadApproval", { id: action.id, decision: action.decision }];
     }
   })();
 

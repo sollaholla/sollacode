@@ -5214,6 +5214,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           typeof width === "number" && typeof height === "number" && width > 0 && height > 0
             ? { width: Math.round(width), height: Math.round(height) }
             : undefined;
+        // The frame is a remote viewer's only feed, so a download held for
+        // approval has to travel in it — the desktop's Allow/Deny overlay
+        // never leaves this machine, and without this line a person watching
+        // from another device cannot learn the download exists at all.
+        const heldApprovals =
+          (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.pendingDownloadApprovals ?? [];
         return {
           url: wc.getURL(),
           title: wc.getTitle(),
@@ -5229,6 +5235,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             height: viewport?.height ?? 0,
           },
           ...(viewport === undefined ? {} : { viewport }),
+          ...(heldApprovals.length === 0 ? {} : { pendingDownloadApprovals: [...heldApprovals] }),
         } satisfies PreviewAutomationFrame;
       }),
     );
@@ -5526,17 +5533,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ...point,
       button: "none",
     });
-    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
+    // A right press travels through the renderer's real input pipeline, so
+    // the page sees mousedown/mouseup and its contextmenu event exactly as it
+    // would from a physical mouse — which is what lets a remote viewer's
+    // long-press open the guest's own context menus.
+    const button = input.button ?? "left";
+    yield* expectAgentInput(tabId, {
+      kind: "pointer",
+      ...point,
+      button: button === "right" ? 2 : 0,
+    });
     yield* send("Input.dispatchMouseEvent", {
       type: "mousePressed",
       ...point,
-      button: "left",
+      button,
       clickCount: 1,
     });
     yield* send("Input.dispatchMouseEvent", {
       type: "mouseReleased",
       ...point,
-      button: "left",
+      button,
       clickCount: 1,
     });
   });

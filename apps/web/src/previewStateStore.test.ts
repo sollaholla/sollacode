@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   __testing,
   applyPreviewDesktopState,
+  applyPreviewRemoteDownloadApprovals,
   applyPreviewServerEvent as applyPreviewServerEventImpl,
   applyPreviewServerSnapshot,
   beginPreviewSessionClose,
@@ -805,5 +806,44 @@ describe("previewStateStore (single-tab)", () => {
     removePreviewThread(ref);
     const state = readThreadPreviewState(ref);
     expect(state).toEqual(__testing.EMPTY_THREAD_PREVIEW_STATE);
+  });
+});
+
+describe("applyPreviewRemoteDownloadApprovals", () => {
+  beforeEach(() => {
+    resetPreviewStateForTests();
+  });
+
+  const held = [{ id: "hold-1", domain: "example.com", fileName: "report.pdf" }];
+
+  it("records a remote hold per tab and clears it when the frame stops reporting it", () => {
+    applyPreviewRemoteDownloadApprovals(ref, "tab_a", held);
+    expect(readThreadPreviewState(ref).remoteApprovalsByTabId["tab_a"]).toEqual(held);
+
+    applyPreviewRemoteDownloadApprovals(ref, "tab_a", []);
+    expect(readThreadPreviewState(ref).remoteApprovalsByTabId).toEqual({});
+  });
+
+  it("an unchanged report keeps the same state object: frames tick every second", () => {
+    applyPreviewRemoteDownloadApprovals(ref, "tab_a", held);
+    const before = readThreadPreviewState(ref);
+    applyPreviewRemoteDownloadApprovals(ref, "tab_a", [{ ...held[0]! }]);
+    expect(readThreadPreviewState(ref)).toBe(before);
+    // Nothing held, nothing recorded: the empty report must also not churn.
+    const empty = readThreadPreviewState(otherRef);
+    applyPreviewRemoteDownloadApprovals(otherRef, "tab_b", []);
+    expect(readThreadPreviewState(otherRef)).toBe(empty);
+  });
+
+  it("a closed tab takes its held-download state with it", () => {
+    applyPreviewServerSnapshot(ref, makeSnapshot());
+    applyPreviewRemoteDownloadApprovals(ref, "tab_a", held);
+    applyPreviewServerEvent(ref, {
+      type: "closed",
+      threadId: "thread-1",
+      tabId: "tab_a",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    expect(readThreadPreviewState(ref).remoteApprovalsByTabId).toEqual({});
   });
 });

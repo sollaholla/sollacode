@@ -7,14 +7,26 @@ import {
   type PreviewRemoteSnapshotResult,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 
 import { cn } from "~/lib/utils";
+import { applyPreviewRemoteDownloadApprovals } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { PreviewRemoteConsole } from "./PreviewRemoteConsole";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
+import {
+  TOUCH_LONG_PRESS_MS,
+  TOUCH_SCROLL_FLUSH_MS,
+  beginTouchGesture,
+  finishTouchGesture,
+  isTouchLongPressDue,
+  moveTouchGesture,
+  type TouchGestureState,
+} from "./remoteTouchGestures";
 
 /**
  * A frame now costs the host one renderer-side capture rather than a full
@@ -91,6 +103,16 @@ export function PreviewRemoteSurface(props: {
    */
   const consecutiveFailuresRef = useRef(0);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const threadRef = useMemo(
+    () => scopeThreadRef(environmentId, threadId),
+    [environmentId, threadId],
+  );
+  // One finger's worth of gesture state. Refs, not state: a drag emits no
+  // renders of its own, only scroll RPCs.
+  const touchGestureRef = useRef<TouchGestureState | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingScrollRef = useRef({ deltaX: 0, deltaY: 0 });
+  const scrollFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captureRemoteSnapshot = useAtomCommand(previewEnvironment.remoteSnapshot, {
     reportFailure: false,
   });
@@ -102,11 +124,27 @@ export function PreviewRemoteSurface(props: {
   const tabIdRef = useRef(tabId);
   tabIdRef.current = tabId;
 
+  const clearTouchGesture = useCallback(() => {
+    touchGestureRef.current = null;
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (scrollFlushTimerRef.current !== null) {
+      clearTimeout(scrollFlushTimerRef.current);
+      scrollFlushTimerRef.current = null;
+    }
+    pendingScrollRef.current = { deltaX: 0, deltaY: 0 };
+  }, []);
+
   useEffect(() => {
     setFrame((current) => (current?.tabId === tabId ? current : null));
     setStale(false);
     consecutiveFailuresRef.current = 0;
-  }, [tabId]);
+    clearTouchGesture();
+  }, [clearTouchGesture, tabId]);
+
+  useEffect(() => clearTouchGesture, [clearTouchGesture]);
 
   const capture = useCallback(async () => {
     const requested = tabIdRef.current;
@@ -133,7 +171,15 @@ export function PreviewRemoteSurface(props: {
     consecutiveFailuresRef.current = 0;
     setFrame(result.value);
     setStale(false);
-  }, [captureRemoteSnapshot, environmentId, showConsole, threadId]);
+    // The frame is the only channel through which this machine learns the
+    // host is holding a download. Recorded in the store rather than kept
+    // here so the composer banner can raise it even with the panel closed.
+    applyPreviewRemoteDownloadApprovals(
+      threadRef,
+      requested,
+      result.value.pendingDownloadApprovals ?? [],
+    );
+  }, [captureRemoteSnapshot, environmentId, showConsole, threadId, threadRef]);
 
   useEffect(() => {
     if (!visible) return;
@@ -222,6 +268,129 @@ export function PreviewRemoteSurface(props: {
     [aimable, send],
   );
 
+  const mapClientPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const element = imageRef.current;
+      if (!element || !frame?.viewport) return null;
+      return mapRemotePointerToViewport(
+        { clientX, clientY },
+        {
+          element: element.getBoundingClientRect(),
+          frame: { width: frame.screenshot.width, height: frame.screenshot.height },
+          viewport: frame.viewport,
+        },
+      );
+    },
+    [frame],
+  );
+
+  // Scroll increments are batched and sent bare — the shared `send` asks for
+  // a frame after every action, which a drag would turn into a capture per
+  // flush. One refreshed frame at finger-up is enough.
+  const flushTouchScroll = useCallback(() => {
+    scrollFlushTimerRef.current = null;
+    const pending = pendingScrollRef.current;
+    if (pending.deltaX === 0 && pending.deltaY === 0) return;
+    pendingScrollRef.current = { deltaX: 0, deltaY: 0 };
+    void sendRemoteInput({
+      environmentId,
+      input: {
+        threadId,
+        tabId: PreviewTabId.make(tabIdRef.current),
+        action: { kind: "scroll", deltaX: pending.deltaX, deltaY: pending.deltaY },
+      },
+    });
+  }, [environmentId, sendRemoteInput, threadId]);
+
+  const handleTouchStart = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      if (!aimable) return;
+      if (event.touches.length !== 1) {
+        // A second finger is a pinch or a mistake; either way this gesture
+        // must neither tap nor right-click on release.
+        const gesture = touchGestureRef.current;
+        if (gesture) touchGestureRef.current = { ...gesture, mode: "consumed" };
+        if (longPressTimerRef.current !== null) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        return;
+      }
+      const touch = event.touches[0]!;
+      touchGestureRef.current = beginTouchGesture({
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+        now: Date.now(),
+      });
+      if (longPressTimerRef.current !== null) clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        const gesture = touchGestureRef.current;
+        if (!gesture || !isTouchLongPressDue(gesture, Date.now())) return;
+        // Held still: a right-click, the touch spelling of "open the menu".
+        touchGestureRef.current = { ...gesture, mode: "consumed" };
+        const point = mapClientPoint(gesture.startClientX, gesture.startClientY);
+        if (point) void send({ kind: "click", x: point.x, y: point.y, button: "right" });
+      }, TOUCH_LONG_PRESS_MS);
+    },
+    [aimable, mapClientPoint, send],
+  );
+
+  const handleTouchMove = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      const gesture = touchGestureRef.current;
+      if (!gesture || event.touches.length !== 1) return;
+      const touch = event.touches[0]!;
+      const moved = moveTouchGesture(gesture, {
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+      });
+      touchGestureRef.current = moved.gesture;
+      if (moved.gesture.mode === "scrolling" && longPressTimerRef.current !== null) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      if (moved.scrollDelta) {
+        pendingScrollRef.current = {
+          deltaX: pendingScrollRef.current.deltaX + moved.scrollDelta.deltaX,
+          deltaY: pendingScrollRef.current.deltaY + moved.scrollDelta.deltaY,
+        };
+        scrollFlushTimerRef.current ??= setTimeout(flushTouchScroll, TOUCH_SCROLL_FLUSH_MS);
+      }
+    },
+    [flushTouchScroll],
+  );
+
+  const handleTouchEnd = useCallback(
+    (event: React.TouchEvent<HTMLImageElement>) => {
+      const gesture = touchGestureRef.current;
+      if (!gesture) return;
+      // Also suppresses the browser's synthetic click, which would otherwise
+      // land a second, differently-aimed tap through the mouse handler.
+      event.preventDefault();
+      const wasScrolling = gesture.mode === "scrolling";
+      const outcome = finishTouchGesture(gesture);
+      clearTouchGesture();
+      if (outcome === "tap") {
+        const point = mapClientPoint(gesture.startClientX, gesture.startClientY);
+        if (!point) return;
+        imageRef.current?.focus();
+        void send({ kind: "click", x: point.x, y: point.y });
+        return;
+      }
+      if (wasScrolling) {
+        flushTouchScroll();
+        void capture();
+      }
+    },
+    [capture, clearTouchGesture, flushTouchScroll, mapClientPoint, send],
+  );
+
+  const handleTouchCancel = useCallback(() => {
+    if (!touchGestureRef.current) return;
+    clearTouchGesture();
+  }, [clearTouchGesture]);
+
   return (
     <div className={cn("flex flex-col overflow-hidden bg-muted/30", className)}>
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
@@ -233,13 +402,19 @@ export function PreviewRemoteSurface(props: {
             className={cn(
               "h-full w-full object-contain transition-opacity",
               stale && "opacity-60",
-              aimable && "cursor-pointer focus:outline-none",
+              // touch-none hands every touch to the gesture handlers instead
+              // of panning this page: the mirror is the thing being scrolled.
+              aimable && "cursor-pointer touch-none focus:outline-none",
             )}
             draggable={false}
             tabIndex={aimable ? 0 : undefined}
             onClick={aimable ? handleClick : undefined}
             onWheel={aimable ? handleWheel : undefined}
             onKeyDown={aimable ? handleKeyDown : undefined}
+            onTouchStart={aimable ? handleTouchStart : undefined}
+            onTouchMove={aimable ? handleTouchMove : undefined}
+            onTouchEnd={aimable ? handleTouchEnd : undefined}
+            onTouchCancel={aimable ? handleTouchCancel : undefined}
           />
         ) : (
           <p className="px-6 text-center text-sm text-muted-foreground">
