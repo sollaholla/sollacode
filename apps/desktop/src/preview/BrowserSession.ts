@@ -489,14 +489,28 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           // coasted, which is why it surfaced on a new Windows install
           // (2026-08-30) months before anyone saw it on the Mac.
           const nativeUserAgent = browserSession.getUserAgent();
-          const appToken =
-            typeof app?.getName === "function"
-              ? app.getName().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-              : null;
-          const cleanedUserAgent = nativeUserAgent
-            .replace(/\sElectron\/[\d.]+/g, "")
-            .replace(/\st3code\/[\d.]+/g, "")
-            .replace(appToken ? new RegExp(`\\s${appToken}\\/[\\d.]+`, "g") : /$^/, "")
+          // Electron removes spaces and other separators from product names
+          // before placing them in the UA (`Solla Code` becomes
+          // `SollaCode/0.1.303`). Match both the display name and that actual
+          // HTTP product-token shape. Matching only app.getName() left the
+          // packaged token behind and Google still recognized the guest as an
+          // embedded app on both Mac and Windows.
+          const escapeRegExp = (value: string): string =>
+            value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const appName = typeof app?.getName === "function" ? app.getName() : null;
+          const appTokens = appName
+            ? [appName, appName.replace(/[^A-Za-z0-9]/g, "")]
+                .filter(
+                  (token, index, tokens) => token.length > 0 && tokens.indexOf(token) === index,
+                )
+                .map(escapeRegExp)
+            : [];
+          const cleanedUserAgent = appTokens
+            .reduce(
+              (userAgent, appToken) =>
+                userAgent.replace(new RegExp(`\\s${appToken}\\/[\\d.]+`, "gi"), ""),
+              nativeUserAgent.replace(/\sElectron\/[\d.]+/gi, "").replace(/\st3code\/[\d.]+/gi, ""),
+            )
             .replace(/\s{2,}/g, " ")
             .trim();
           if (cleanedUserAgent !== nativeUserAgent && cleanedUserAgent.length > 0) {
