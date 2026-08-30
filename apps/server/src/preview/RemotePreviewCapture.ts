@@ -133,6 +133,13 @@ export function captureRemotePreviewSnapshot(
       // than leave an older desktop unable to be mirrored at all.
       Effect.catchTag("PreviewAutomationNoAvailableHostError", () => fromSnapshot()),
       Effect.catchTag("PreviewAutomationUnsupportedClientError", () => fromSnapshot()),
+      // The cheap capture refuses to run when the guest's composited surface
+      // is unavailable — a hidden agent tab, typically. That refusal is
+      // deliberate (the non-surface capture served pixels of the host's own
+      // window as if they were the page, 2026-08-29); the snapshot ladder
+      // stages hidden guests and captures them properly, so answer with that
+      // rather than with an error the viewer can only render as a gap.
+      Effect.catchTag("PreviewAutomationExecutionError", () => fromSnapshot()),
     );
 }
 

@@ -489,6 +489,78 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("captures a frame from the guest's own surface, never another one", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // fromSurface: false let Chromium answer a hidden guest's capture with
+        // pixels of a DIFFERENT surface — observed as the app's own window,
+        // native traffic lights included, served to mirror viewers as a page
+        // frame whose URL read suno.com/create (2026-08-29). The surface
+        // capture returns the guest's composited pixels or fails honestly,
+        // and the server answers a failure with the staged snapshot path.
+        const png = Buffer.from("frame-surface").toString("base64");
+        const sendCommand = vi.fn(async (method: string) => {
+          if (method === "Page.captureScreenshot") return { data: png };
+          if (method === "Page.getLayoutMetrics") {
+            return { cssLayoutViewport: { clientWidth: 800, clientHeight: 600 } };
+          }
+          return {};
+        });
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://suno.com/create",
+          getTitle: () => "Suno | AI Music",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          session: {},
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          invalidate: vi.fn(),
+          beginFrameSubscription: vi.fn(),
+          endFrameSubscription: vi.fn(),
+          capturePage: vi.fn(),
+        } as never);
+
+        yield* manager.createTab("tab_frame_surface");
+        yield* manager.registerWebview("tab_frame_surface", 42);
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          isFocused: () => true,
+          once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          webContents: { isDestroyed: () => false, on: vi.fn(), off: vi.fn() },
+        } as never);
+
+        const frame = yield* manager.automationFrame("tab_frame_surface");
+        expect(frame.screenshot.data).toBe(png);
+        expect(frame.url).toBe("https://suno.com/create");
+        expect(sendCommand).toHaveBeenCalledWith("Page.captureScreenshot", {
+          format: "jpeg",
+          quality: 78,
+          fromSurface: true,
+          captureBeyondViewport: false,
+        });
+      }),
+    ),
+  );
+
   effectIt.effect("refuses a held download when the tab asking about it closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {
