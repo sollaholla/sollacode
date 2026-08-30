@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { runResumeIncompleteTurn } from "../ChatView.logic";
 import type { ChatMessage } from "../../types";
 import { RESUME_PROMPT } from "../../resumePrompt";
+import { retryInterruptedCommand } from "../../state/retryInterruptedCommand";
 import {
   deriveResumableAssistantMessageId,
   deriveResumableRuntimeErrorActivityId,
@@ -172,6 +173,43 @@ describe("resumable incomplete turns", () => {
     expect(send).toHaveBeenNthCalledWith(1, RESUME_PROMPT);
     expect(send).toHaveBeenNthCalledWith(2, RESUME_PROMPT);
     expect(inFlightRef.current).toBe(false);
+  });
+
+  it("retries interrupted chat commands without duplicating the optimistic send", async () => {
+    const interrupted = { _tag: "Interrupted" as const };
+    const accepted = { _tag: "Success" as const };
+    const run = vi
+      .fn<() => Promise<typeof interrupted | typeof accepted>>()
+      .mockResolvedValueOnce(interrupted)
+      .mockResolvedValueOnce(interrupted)
+      .mockResolvedValueOnce(accepted);
+    const wait = vi.fn(() => Promise.resolve());
+
+    await expect(
+      retryInterruptedCommand({
+        run,
+        isInterrupted: (result) => result._tag === "Interrupted",
+        shouldRetry: () => true,
+        wait,
+      }),
+    ).resolves.toBe(accepted);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops retrying an interrupted chat command after its thread changes", async () => {
+    const interrupted = { _tag: "Interrupted" as const };
+    const run = vi.fn(() => Promise.resolve(interrupted));
+
+    await expect(
+      retryInterruptedCommand({
+        run,
+        isInterrupted: () => true,
+        shouldRetry: () => false,
+        wait: () => Promise.resolve(),
+      }),
+    ).resolves.toBe(interrupted);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("offers Resume for only the final runtime error of a completely dead turn", () => {
