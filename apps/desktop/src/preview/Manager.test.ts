@@ -3053,7 +3053,7 @@ describe("PreviewManager", () => {
             modifiers: [],
           });
           yield* Effect.yieldNow;
-          yield* TestClock.adjust(1_999);
+          yield* TestClock.adjust(PreviewManager.USER_INPUT_DEFERRAL_MS - 1);
           expect(sendCommand).not.toHaveBeenCalled();
 
           yield* TestClock.adjust(1);
@@ -3106,7 +3106,7 @@ describe("PreviewManager", () => {
 
           mainWindowListeners.get("before-input-event")?.({} as Electron.Event, release);
           yield* Effect.yieldNow;
-          yield* TestClock.adjust(2_200);
+          yield* TestClock.adjust(PreviewManager.USER_INPUT_DEFERRAL_MS + 200);
           yield* Fiber.join(rapidRepressClick);
           expect(
             sendCommand.mock.calls
