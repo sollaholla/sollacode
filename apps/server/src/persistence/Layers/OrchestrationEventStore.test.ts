@@ -1,4 +1,4 @@
-import { CommandId, EventId, ProjectId } from "@t3tools/contracts";
+import { CommandId, EventId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -66,6 +66,81 @@ layer("OrchestrationEventStore", (it) => {
       assert.equal(replayed.length, 1);
       assert.equal(replayed[0]?.type, "project.created");
       assert.equal(replayed[0]?.metadata.adapterKey, "codex");
+    }),
+  );
+
+  it.effect("readThreadEventsFromSequence returns only the requested thread's events", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadA = ThreadId.make("thread-scoped-a");
+      const threadB = ThreadId.make("thread-scoped-b");
+
+      const appendMessage = (thread: ThreadId, suffix: string) =>
+        eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-thread-scoped-${suffix}`),
+          aggregateKind: "thread",
+          aggregateId: thread,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId: thread,
+            messageId: MessageId.make(`message-${suffix}`),
+            role: "user",
+            text: `message ${suffix}`,
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+      // Interleave two threads' events so thread B's events sit at higher
+      // global sequences than thread A's cursor.
+      const a1 = yield* appendMessage(threadA, "a1");
+      yield* appendMessage(threadB, "b1");
+      const a2 = yield* appendMessage(threadA, "a2");
+      yield* appendMessage(threadB, "b2");
+
+      // Reading thread A from before its first event returns only A's events,
+      // in order, skipping every intervening thread B event.
+      const fromStart = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, 0, 100),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepEqual(
+        fromStart.map((event) => event.eventId),
+        [a1.eventId, a2.eventId],
+      );
+
+      // Reading thread A after its own first event (with thread B's events at
+      // higher global sequences in between) yields only A's later event.
+      const afterA1 = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, a1.sequence, 100),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepEqual(
+        afterA1.map((event) => event.eventId),
+        [a2.eventId],
+      );
+
+      // A cursor at the thread's own head replays nothing, even though the
+      // global head has advanced (thread B events landed afterwards).
+      const afterA2 = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, a2.sequence, 100),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.equal(afterA2.length, 0);
+
+      // The limit bounds the number of thread events returned.
+      const limited = yield* Stream.runCollect(
+        eventStore.readThreadEventsFromSequence(threadA, 0, 1),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepEqual(
+        limited.map((event) => event.eventId),
+        [a1.eventId],
+      );
     }),
   );
 

@@ -78,7 +78,11 @@ import * as ServerConfig from "./config.ts";
 import { hostRepairWorkspaceName } from "./hostRepair.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { makeRoutesLayer } from "./server.ts";
-import { coalesceThreadStreamItems, resolveAvailableEditorsForConfig } from "./ws.ts";
+import {
+  coalesceThreadStreamItems,
+  resolveAvailableEditorsForConfig,
+  THREAD_RESUME_MAX_EVENTS,
+} from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -734,6 +738,7 @@ const buildAppUnderTest = (options?: {
         Layer.provide(
           Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
             readEvents: () => Stream.empty,
+            readThreadEvents: () => Stream.empty,
             dispatch: () => Effect.succeed({ sequence: 0 }),
             streamDomainEvents: Stream.empty,
             latestSequence: Effect.succeed(0),
@@ -4879,25 +4884,62 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("subscribeThread sends a fresh snapshot instead of replaying a large gap", () =>
+  it.effect("subscribeThread replays incrementally despite a large global gap", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
+      let getThreadDetailSnapshotCalls = 0;
+      let globalReadEventsCalls = 0;
+      let readThreadAfterSequence: number | undefined;
+      let readThreadLimit: number | undefined;
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadMessageEvent = {
+        sequence: 6,
+        eventId: EventId.make("event-thread-scoped-replay"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-thread-scoped"),
+          role: "user",
+          text: "Only this thread's event",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
 
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            // Head is far ahead of the client's afterSequence (gap > 1000).
-            latestSequence: Effect.succeed(100_000),
+            // The GLOBAL head is millions of events ahead of the client's
+            // cursor, but this thread itself has only one new event. The
+            // resume must now scope to the thread and replay incrementally
+            // rather than fall through to a full snapshot.
+            latestSequence: Effect.succeed(2_000_000),
             readEvents: () =>
               Stream.sync(() => {
-                readEventsCalls += 1;
+                globalReadEventsCalls += 1;
                 return {} as OrchestrationEvent;
               }),
+            readThreadEvents: (_threadId, afterSequence, limit) => {
+              readThreadAfterSequence = afterSequence;
+              readThreadLimit = limit;
+              return Stream.make(threadMessageEvent);
+            },
           },
           projectionSnapshotQuery: {
             getThreadDetailSnapshot: () =>
-              Effect.succeed(Option.some({ snapshotSequence: 100_000, thread })),
+              Effect.sync(() => {
+                getThreadDetailSnapshotCalls += 1;
+                return Option.some({ snapshotSequence: 2_000_000, thread });
+              }),
           },
         },
       });
@@ -4914,29 +4956,83 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       const [first, second] = Array.from(items);
-      // Large gap => fresh thread snapshot, and the global replay never starts.
-      assert.equal(first?.kind, "snapshot");
-      if (first?.kind === "snapshot") {
-        assert.equal(first.snapshot.thread.id, defaultThreadId);
-        assert.equal(first.snapshot.snapshotSequence, 100_000);
-      }
+      // Incremental replay: the thread's single event, then synchronized.
+      assert.equal(first?.kind, "event");
+      assert.equal(first?.kind === "event" ? first.event.sequence : null, 6);
       assert.equal(second?.kind, "synchronized");
-      assert.equal(readEventsCalls, 0);
+      // No full snapshot despite the huge global gap, and the global range
+      // scan is never touched.
+      assert.equal(getThreadDetailSnapshotCalls, 0);
+      assert.equal(globalReadEventsCalls, 0);
+      // The thread-scoped read starts at the client's cursor and is bounded by
+      // the overflow cap (cap + 1 to detect "too many").
+      assert.equal(readThreadAfterSequence, 5);
+      assert.equal(readThreadLimit, THREAD_RESUME_MAX_EVENTS + 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeThread falls back to a snapshot when the thread has too many new events",
+    () =>
+      Effect.gen(function* () {
+        let getThreadDetailSnapshotCalls = 0;
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        // The thread itself has more than the cap of new events after the cursor:
+        // a fresh snapshot is cheaper than replaying them one at a time.
+        const overflowEvents = Array.from(
+          { length: THREAD_RESUME_MAX_EVENTS + 1 },
+          () => ({}) as OrchestrationEvent,
+        );
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              latestSequence: Effect.succeed(2_000_000),
+              readThreadEvents: () => Stream.fromIterable(overflowEvents),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.sync(() => {
+                  getThreadDetailSnapshotCalls += 1;
+                  return Option.some({ snapshotSequence: 2_000_000, thread });
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId: defaultThreadId,
+              afterSequence: 5,
+              requestCompletionMarker: true,
+            }).pipe(Stream.take(2), Stream.runCollect),
+          ),
+        );
+
+        const [first, second] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        if (first?.kind === "snapshot") {
+          assert.equal(first.snapshot.thread.id, defaultThreadId);
+        }
+        assert.equal(second?.kind, "synchronized");
+        assert.equal(getThreadDetailSnapshotCalls, 1);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("subscribeThread replaces a cursor ahead of the authoritative head", () =>
     Effect.gen(function* () {
-      let readEventsCalls = 0;
+      let readThreadEventsCalls = 0;
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
 
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
             latestSequence: Effect.succeed(5),
-            readEvents: () =>
+            readThreadEvents: () =>
               Stream.sync(() => {
-                readEventsCalls += 1;
+                readThreadEventsCalls += 1;
                 return {} as OrchestrationEvent;
               }),
           },
@@ -4958,12 +5054,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(Option.getOrThrow(first).kind, "snapshot");
-      assert.equal(readEventsCalls, 0);
+      // Cursor ahead of the head: no catch-up read is attempted at all.
+      assert.equal(readThreadEventsCalls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("subscribeThread bounds catch-up replay to the captured head", () =>
+  it.effect("subscribeThread bounds catch-up replay to the thread-scoped read", () =>
     Effect.gen(function* () {
+      let replayThreadId: ThreadId | undefined;
+      let replayAfterSequence: number | undefined;
       let replayLimit: number | undefined;
       const now = "2026-01-01T00:00:00.000Z";
       const messageEvent = {
@@ -4993,7 +5092,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           orchestrationEngine: {
             latestSequence: Effect.succeed(50),
-            readEvents: (_afterSequence, limit) => {
+            readThreadEvents: (threadId, afterSequence, limit) => {
+              replayThreadId = threadId;
+              replayAfterSequence = afterSequence;
               replayLimit = limit;
               return Stream.make(messageEvent);
             },
@@ -5016,9 +5117,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(first?.kind, "event");
       assert.equal(first?.kind === "event" ? first.event.sequence : null, 3);
       assert.equal(second?.kind, "synchronized");
-      // The replay is bounded to the head captured before the read, not
-      // Number.MAX_SAFE_INTEGER.
-      assert.equal(replayLimit, 50);
+      // The read is scoped to this thread, starts at the client's cursor, and
+      // is bounded by the overflow cap (not Number.MAX_SAFE_INTEGER).
+      assert.equal(replayThreadId, defaultThreadId);
+      assert.equal(replayAfterSequence, 0);
+      assert.equal(replayLimit, THREAD_RESUME_MAX_EVENTS + 1);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

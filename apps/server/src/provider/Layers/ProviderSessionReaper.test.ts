@@ -217,6 +217,7 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(
         Layer.succeed(OrchestrationEngineService, {
           readEvents: () => Stream.empty,
+          readThreadEvents: () => Stream.empty,
           dispatch: (command) =>
             Effect.sync(() => {
               dispatchedCommands.push(command);

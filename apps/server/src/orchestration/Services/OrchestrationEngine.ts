@@ -10,7 +10,7 @@
  *
  * @module OrchestrationEngineService
  */
-import type { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
+import type { OrchestrationCommand, OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -33,6 +33,25 @@ export interface OrchestrationEngineShape {
    * @returns Stream containing ordered events.
    */
   readonly readEvents: (
+    fromSequenceExclusive: number,
+    limit?: number,
+  ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
+
+  /**
+   * Replay a single thread stream's persisted events after an exclusive
+   * sequence cursor, using the per-stream index.
+   *
+   * @param threadId - Thread aggregate stream to scan.
+   * @param fromSequenceExclusive - Sequence cursor (exclusive).
+   * @param limit - Maximum number of thread events to read.
+   * @returns Stream containing this thread's ordered events after the cursor.
+   *
+   * Unlike {@link readEvents}, this does not decode every intervening global
+   * event only to discard other threads' payloads: an idle thread replays ~0
+   * events regardless of how far the global head has advanced.
+   */
+  readonly readThreadEvents: (
+    threadId: ThreadId,
     fromSequenceExclusive: number,
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;

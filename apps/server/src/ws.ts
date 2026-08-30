@@ -410,12 +410,14 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 // Matches the event store's default page size (DEFAULT_READ_FROM_SEQUENCE_LIMIT).
 const SHELL_RESUME_MAX_GAP = 1_000;
 
-// Same bound for thread resume. The replay reads the *global* event range and
-// filters per-thread afterwards, so a stale cursor far behind the head would
-// otherwise decode every intervening event's payload — reconnects with cursors
-// hundreds of thousands of events behind have OOM-killed servers on large
-// databases. Past this gap the client is reset with a fresh thread snapshot.
-const THREAD_RESUME_MAX_GAP = 1_000;
+// Thread resume replays only THIS thread's events (via the per-stream index),
+// so the bound is the number of *thread* events after the client's cursor, not
+// the global sequence gap. A large global drift no longer matters: an idle
+// thread replays ~0 events even when the global head has advanced by millions.
+// Only when this one thread has itself produced more than this many new events
+// is a fresh snapshot cheaper than an incremental replay. Reading one past the
+// cap lets us detect the overflow before committing to a replay.
+export const THREAD_RESUME_MAX_EVENTS = 2_000;
 
 const THREAD_DETAIL_COALESCE_WINDOW = Duration.millis(50);
 const THREAD_DETAIL_COALESCE_MAX_CHUNK = 512;
@@ -1814,41 +1816,54 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // The replay is bounded to the projection head captured below. The
-              // catch-up range is normally tiny (a fresh HTTP snapshot sequence),
-              // but a stale cached cursor can sit hundreds of thousands of global
-              // events behind — replaying that decodes every intervening event
-              // (including every other thread's tool payloads) only to discard
-              // almost all of them, which has OOM-killed servers on large
-              // databases. A truncated replay would silently drop this thread's
-              // events, so past the gap cap we reset the client with a fresh
-              // thread snapshot instead, exactly like subscribeShell above.
+              // The catch-up read is THREAD-scoped: it reads only this thread's
+              // persisted events after the cursor (via the per-stream index),
+              // rather than the global range. The old global scan meant any
+              // thread not continuously viewed blew a global-sequence gap cap
+              // within minutes of wall-clock drift and fell through to a full
+              // uncompressed snapshot — even when the thread itself was idle.
+              // Now an idle thread replays ~0 events regardless of global drift,
+              // and only a thread that has itself produced more than
+              // THREAD_RESUME_MAX_EVENTS new events falls back to a snapshot.
+              // Reading one past the cap detects that overflow; the read is
+              // bounded so a stale cursor can never decode an unbounded range.
+              // A cursor ahead of the authoritative head is invalid, so it also
+              // resets from a fresh snapshot (like subscribeShell above).
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
-                const replayGap = headSequence - afterSequence;
-                if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
-                  const catchUpStream = orchestrationEngine
-                    .readEvents(afterSequence, replayGap)
-                    .pipe(
-                      Stream.filter(isThisThreadDetailEvent),
-                      Stream.map((event) => ({
+                if (afterSequence <= headSequence) {
+                  const threadCatchUpEvents = yield* Stream.runCollect(
+                    orchestrationEngine.readThreadEvents(
+                      input.threadId,
+                      afterSequence,
+                      THREAD_RESUME_MAX_EVENTS + 1,
+                    ),
+                  ).pipe(
+                    Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to replay thread ${input.threadId} events`,
+                          cause,
+                        }),
+                    ),
+                  );
+                  if (threadCatchUpEvents.length <= THREAD_RESUME_MAX_EVENTS) {
+                    const catchUpStream = Stream.fromIterable(
+                      threadCatchUpEvents.filter(isThisThreadDetailEvent).map((event) => ({
                         kind: "event" as const,
                         event: projectActivityEvent(event),
                       })),
-                      Stream.mapError(
-                        (cause) =>
-                          new OrchestrationGetSnapshotError({
-                            message: `Failed to replay thread ${input.threadId} events`,
-                            cause,
-                          }),
-                      ),
                     );
-                  return Stream.concat(catchUpStream, synchronizedThenLive);
+                    return Stream.concat(catchUpStream, synchronizedThenLive);
+                  }
+                  // This one thread has more than the cap of new events: a fresh
+                  // snapshot is cheaper than replaying them one at a time.
                 }
-                // Gap too large (or cursor ahead of authoritative state): fall
-                // through to the snapshot path so the client converges from a
-                // fresh thread detail instead of an unbounded replay.
+                // Cursor ahead of authoritative state (or thread gap too large):
+                // fall through to the snapshot path so the client converges from
+                // a fresh thread detail instead of an unbounded replay.
               }
 
               const snapshot = yield* projectionSnapshotQuery
