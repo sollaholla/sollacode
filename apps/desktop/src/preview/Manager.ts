@@ -20,6 +20,7 @@ import type {
   PreviewDownloadApproval,
   PreviewAutomationWaitForDownloadResult,
   PreviewAutomationClickInput,
+  PreviewAutomationDragInput,
   PreviewAutomationActionEvent,
   PreviewAutomationConsoleEntry,
   PreviewAutomationEvaluateInput,
@@ -407,6 +408,51 @@ export function shouldReclaimGuestKeyForApp(input: {
 
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
+/** Per-step pause during a drag stroke so per-frame sampling captures the path. */
+const AGENT_DRAG_STEP_MS = 16;
+/** Interpolated moves inserted between consecutive drag path vertices by default. */
+const AGENT_DRAG_DEFAULT_STEPS = 8;
+
+/** CDP `button` change code carried on expectAgentInput pointer signals. */
+const DRAG_BUTTON_CODE: Record<"left" | "middle" | "right", number> = {
+  left: 0,
+  middle: 1,
+  right: 2,
+};
+
+/** CDP `buttons` bitmask so held moves read as a drag rather than a hover. */
+const DRAG_BUTTON_MASK: Record<"left" | "middle" | "right", number> = {
+  left: 1,
+  right: 2,
+  middle: 4,
+};
+
+/**
+ * Expand ordered path vertices into the sequence of move targets that follow
+ * the initial press point. Between each pair of consecutive vertices it inserts
+ * `steps` evenly spaced points, the last of which lands exactly on the next
+ * vertex, so a canvas that samples pointermove per frame receives a continuous
+ * stroke rather than a single jump.
+ */
+export const interpolateDragMoves = (
+  points: ReadonlyArray<{ readonly x: number; readonly y: number }>,
+  steps: number,
+): Array<{ x: number; y: number }> => {
+  const stepCount = Math.max(1, Math.trunc(steps));
+  const moves: Array<{ x: number; y: number }> = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1]!;
+    const end = points[index]!;
+    for (let step = 1; step <= stepCount; step += 1) {
+      const t = step / stepCount;
+      moves.push({
+        x: start.x + (end.x - start.x) * t,
+        y: start.y + (end.y - start.y) * t,
+      });
+    }
+  }
+  return moves;
+};
 const AUTOMATION_SNAPSHOT_RETRY_MS = 50;
 const AUTOMATION_SNAPSHOT_RETRIES = 2;
 const AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS = 1_000;
@@ -5420,6 +5466,172 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     yield* withAutomationInputTurn("click", tabId, automationClickUnlocked(tabId, input));
   });
 
+  /**
+   * Dispatch a trusted click-and-drag: press at the first path point, drag
+   * through interpolated moves with the button held, then release at the last.
+   *
+   * Mirrors {@link performAutomationClick}: it moves to the start (button
+   * none), emits the same UI pointer events, honours expectAgentInput, and
+   * dispatches real CDP mouse events so the guest sees `isTrusted` pointer
+   * events with a correct target — the thing hand-rolled PointerEvents cannot
+   * give a Phaser canvas. Every held move carries the `buttons` bitmask so the
+   * page reads it as a drag rather than a hover.
+   */
+  const performAutomationDrag = Effect.fn("PreviewManager.performAutomationDrag")(function* (
+    tabId: string,
+    input: PreviewAutomationDragInput,
+    send: SendCommand,
+  ) {
+    yield* prepareAutomationInput(send, true);
+    const vertices =
+      input.path !== undefined && input.path.length >= 2
+        ? input.path
+        : input.from !== undefined && input.to !== undefined
+          ? [input.from, input.to]
+          : [];
+    if (vertices.length < 2) {
+      return yield* new PreviewAutomationCoordinatesOutsideViewportError({
+        tabId,
+        x: vertices[0]?.x ?? 0,
+        y: vertices[0]?.y ?? 0,
+        viewportWidth: 0,
+        viewportHeight: 0,
+      });
+    }
+    const viewport = yield* evaluateWithDebugger<{ width: number; height: number }>(
+      tabId,
+      send,
+      "({ width: window.innerWidth, height: window.innerHeight })",
+      { returnByValue: true },
+    );
+    for (const vertex of vertices) {
+      if (vertex.x < 0 || vertex.y < 0 || vertex.x > viewport.width || vertex.y > viewport.height) {
+        return yield* new PreviewAutomationCoordinatesOutsideViewportError({
+          tabId,
+          x: vertex.x,
+          y: vertex.y,
+          viewportWidth: viewport.width,
+          viewportHeight: viewport.height,
+        });
+      }
+    }
+    const button = input.button ?? "left";
+    const buttonMask = DRAG_BUTTON_MASK[button];
+    const steps = input.steps ?? AGENT_DRAG_DEFAULT_STEPS;
+    const start = vertices[0]!;
+    const moves = interpolateDragMoves(vertices, steps);
+
+    const moveSequence = yield* nextCounter(pointerSequenceRef);
+    const moveCreatedAt = yield* currentIso;
+    yield* emitPointerEvent({
+      tabId,
+      phase: "move",
+      ...start,
+      sequence: moveSequence,
+      createdAt: moveCreatedAt,
+    });
+    yield* Effect.sleep(AGENT_CURSOR_MOVE_MS);
+    const pressSequence = yield* nextCounter(pointerSequenceRef);
+    const pressCreatedAt = yield* currentIso;
+    yield* emitPointerEvent({
+      tabId,
+      phase: "click",
+      ...start,
+      sequence: pressSequence,
+      createdAt: pressCreatedAt,
+    });
+    yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
+    yield* send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      ...start,
+      button: "none",
+    });
+    yield* expectAgentInput(tabId, { kind: "pointer", ...start, button: DRAG_BUTTON_CODE[button] });
+    yield* send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      ...start,
+      button,
+      buttons: buttonMask,
+      clickCount: 1,
+    });
+    let last = start;
+    for (const move of moves) {
+      const dragSequence = yield* nextCounter(pointerSequenceRef);
+      const dragCreatedAt = yield* currentIso;
+      yield* emitPointerEvent({
+        tabId,
+        phase: "move",
+        ...move,
+        sequence: dragSequence,
+        createdAt: dragCreatedAt,
+      });
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        ...move,
+        button,
+        buttons: buttonMask,
+      });
+      yield* Effect.sleep(AGENT_DRAG_STEP_MS);
+      last = move;
+    }
+    if (input.holdMs !== undefined && input.holdMs > 0) {
+      yield* Effect.sleep(input.holdMs);
+    }
+    yield* send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      ...last,
+      button,
+      buttons: 0,
+      clickCount: 1,
+    });
+  });
+
+  const automationDragUnlocked = Effect.fn("PreviewManager.automationDragUnlocked")(function* (
+    tabId: string,
+    input: PreviewAutomationDragInput,
+  ) {
+    const wc = yield* requireWebContents(tabId);
+    // A synthetic mouse press focuses the guest exactly like a real one, and
+    // that focus outlives the drag. Put focus back where the user left it, the
+    // same way automationClickUnlocked does.
+    const previouslyFocused = yield* attempt(
+      { operation: "automationDrag.getFocusedWebContents", tabId, webContentsId: wc.id },
+      () => webContents.getFocusedWebContents(),
+    ).pipe(Effect.catch(() => Effect.succeed(null)));
+    yield* withControlSession(tabId, wc, "drag", (send) =>
+      performAutomationDrag(tabId, input, send),
+    );
+    if (previouslyFocused && previouslyFocused.id !== wc.id && !previouslyFocused.isDestroyed()) {
+      // Only if the drag is what moved focus. If the user clicked into the
+      // preview themselves meanwhile, leave their focus alone.
+      const focusedNow = yield* attempt(
+        {
+          operation: "automationDrag.getFocusedWebContentsAfterDispatch",
+          tabId,
+          webContentsId: wc.id,
+        },
+        () => webContents.getFocusedWebContents(),
+      ).pipe(Effect.catch(() => Effect.succeed(null)));
+      if (focusedNow === null || focusedNow.id === wc.id) {
+        yield* attempt(
+          {
+            operation: "automationDrag.restoreFocusedWebContents",
+            tabId,
+            webContentsId: previouslyFocused.id,
+          },
+          () => previouslyFocused.focus(),
+        ).pipe(Effect.ignore);
+      }
+    }
+  });
+
+  const automationDrag = Effect.fn("PreviewManager.automationDrag")(function* (
+    tabId: string,
+    input: PreviewAutomationDragInput,
+  ) {
+    yield* withAutomationInputTurn("drag", tabId, automationDragUnlocked(tabId, input));
+  });
+
   const typeIntoAutomationTarget = Effect.fn("PreviewManager.typeIntoAutomationTarget")(function* (
     tabId: string,
     send: SendCommand,
@@ -6290,6 +6502,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   return {
     automationClick,
+    automationDrag,
     automationEvaluate,
     automationPress,
     automationScroll,
@@ -6677,6 +6890,10 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       input: PreviewAutomationClickInput,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationDrag: (
+      tabId: string,
+      input: PreviewAutomationDragInput,
+    ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationType: (
       tabId: string,
       input: PreviewAutomationTypeInput,
@@ -6821,6 +7038,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     automationStatus: operations.automationStatus,
     automationSnapshot: operations.automationSnapshot,
     automationClick: operations.automationClick,
+    automationDrag: operations.automationDrag,
     automationType: operations.automationType,
     automationUpload: operations.automationUpload,
     automationSelectOption: operations.automationSelectOption,

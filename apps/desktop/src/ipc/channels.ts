@@ -93,6 +93,7 @@ export const PREVIEW_AUTOMATION_RENEW_FOREGROUND_CHANNEL =
 export const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop:preview-automation-status";
 export const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:preview-automation-snapshot";
 export const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop:preview-automation-click";
+export const PREVIEW_AUTOMATION_DRAG_CHANNEL = "desktop:preview-automation-drag";
 export const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop:preview-automation-type";
 export const PREVIEW_AUTOMATION_UPLOAD_CHANNEL = "desktop:preview-automation-upload";
 export const PREVIEW_AUTOMATION_SELECT_OPTION_CHANNEL = "desktop:preview-automation-select-option";

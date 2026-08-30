@@ -68,6 +68,7 @@ import type {
 } from "./preview.ts";
 import {
   PreviewAutomationClickInput,
+  PreviewAutomationDragInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
@@ -1082,6 +1083,12 @@ export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
   ...DesktopPreviewAutomationExpiryFields,
 });
 
+export const DesktopPreviewAutomationDragInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: PreviewAutomationDragInput,
+  ...DesktopPreviewAutomationExpiryFields,
+});
+
 export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   input: PreviewAutomationTypeInput,
@@ -1501,6 +1508,7 @@ export interface DesktopPreviewBridge {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput, expiresAt?: number) => Promise<void>;
+    drag: (tabId: string, input: PreviewAutomationDragInput, expiresAt?: number) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput, expiresAt?: number) => Promise<void>;
     upload: (
       tabId: string,
