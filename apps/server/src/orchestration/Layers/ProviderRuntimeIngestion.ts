@@ -1126,7 +1126,9 @@ const make = Effect.gen(function* () {
           message: {
             messageId: ids.messageId,
             role: "user" as const,
-            text: browserTabCleanupPrompt(decision.tabCount),
+            text: browserTabCleanupPrompt(decision.tabCount, {
+              agentMode: input.thread.interactionMode === "agent",
+            }),
             inputOrigin: "agent-loop" as const,
             attachments: [],
           },
