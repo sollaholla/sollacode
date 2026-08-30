@@ -24,11 +24,17 @@ export function ThreadSyncOverlay({ phase }: { readonly phase: ThreadSyncPhase }
   const copy = threadSyncOverlayCopy(phase);
 
   return (
+    // pointer-events-none the whole way down: catching up is a status, not a
+    // modal. The near-opaque backdrop it shipped with also swallowed every
+    // tap, which on a phone locked the entire app for as long as a long
+    // thread took to fast-forward — the composer below this overlay accepts
+    // input mid-sync on purpose (see ChatView.logic), so the veil must not
+    // take back what the logic deliberately allows. Lighter, and click-through.
     <div
       aria-busy="true"
       aria-label={`${copy.title} ${copy.detail}`}
       aria-live="polite"
-      className="absolute inset-0 z-30 flex items-center justify-center bg-background/94 px-4"
+      className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background/60 px-4"
       data-thread-sync-overlay={phase}
       role="status"
     >

@@ -443,8 +443,18 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
+  // Cached for the life of the process. Discovery stats every candidate
+  // command across every PATH entry (~23 editors), and it sat on the
+  // serverGetConfig handshake that gates thread subscriptions — every
+  // reconnect paid the full scan while the user watched "Catching up…".
+  // Editors appear on a machine at human cadence; a restart noticing a
+  // freshly installed one is a fine trade for a fast reconnect.
+  const cachedAvailableEditors = yield* Effect.cached(
+    provideCommandResolutionServices(resolveAvailableEditors()),
+  );
+
   return ExternalLauncher.of({
-    resolveAvailableEditors: () => provideCommandResolutionServices(resolveAvailableEditors()),
+    resolveAvailableEditors: () => cachedAvailableEditors,
     launchBrowser: (target) =>
       launchBrowser(target).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
