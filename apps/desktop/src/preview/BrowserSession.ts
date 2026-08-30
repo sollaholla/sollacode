@@ -477,6 +477,31 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
+          // Present the Chrome the guest actually is. Electron's default UA
+          // carries `Electron/x.y.z` and an app token, and Google refuses
+          // OAuth sign-in to any UA with an embedded-framework marker ("this
+          // browser or app may not be secure" / disallowed_useragent) — other
+          // providers copy the policy. Only those two tokens go; platform and
+          // Chrome versions stay truthful. This stripping shipped with the
+          // first preview panel and was dropped in cf27a4200 under a
+          // "browser integrity checks" rationale, which broke sign-in on
+          // every fresh profile — machines with existing Google cookies
+          // coasted, which is why it surfaced on a new Windows install
+          // (2026-08-30) months before anyone saw it on the Mac.
+          const nativeUserAgent = browserSession.getUserAgent();
+          const appToken =
+            typeof app?.getName === "function"
+              ? app.getName().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+              : null;
+          const cleanedUserAgent = nativeUserAgent
+            .replace(/\sElectron\/[\d.]+/g, "")
+            .replace(/\st3code\/[\d.]+/g, "")
+            .replace(appToken ? new RegExp(`\\s${appToken}\\/[\\d.]+`, "g") : /$^/, "")
+            .replace(/\s{2,}/g, " ")
+            .trim();
+          if (cleanedUserAgent !== nativeUserAgent && cleanedUserAgent.length > 0) {
+            browserSession.setUserAgent(cleanedUserAgent);
+          }
           browserSession.on("will-download", (_downloadEvent, item, guest) => {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.

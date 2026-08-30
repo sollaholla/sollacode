@@ -26,6 +26,8 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
+  // The UA cleanup reads the app token it must strip from the session's UA.
+  app: { getName: () => "t3code" },
   session: {
     fromPartition,
   },
@@ -134,15 +136,21 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("preserves Electron's native user agent for browser integrity checks", () =>
+  it.effect("strips the embedded-framework tokens Google's sign-in wall rejects", () =>
     Effect.gen(function* () {
+      // `Electron/…` and the app token are what "this browser or app may not
+      // be secure" keys on; platform and Chrome stay truthful. Preserving the
+      // native UA instead (tried in cf27a4200) broke OAuth on every fresh
+      // profile while signed-in profiles coasted on old cookies.
       const browserSessions = yield* BrowserSession.BrowserSession;
       const partition = yield* browserSessions.getPartition("scope-a");
       const browserSession = yield* browserSessions.getSession("scope-a");
 
       assert.strictEqual(browserSession as unknown, sessions.get(partition));
-      assert.strictEqual(sessions.get(partition)?.getUserAgent.mock.calls.length, 0);
-      assert.strictEqual(sessions.get(partition)?.setUserAgent.mock.calls.length, 0);
+      assert.deepStrictEqual(
+        sessions.get(partition)?.setUserAgent.mock.calls.map((call) => call[0]),
+        ["Mozilla/5.0"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
