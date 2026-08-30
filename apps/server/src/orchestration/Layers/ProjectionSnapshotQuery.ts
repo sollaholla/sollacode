@@ -79,7 +79,10 @@ const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
 // Keep only the newest transport window. Provider context continues to use the
 // unbounded ingestion query; older UI history is fetched through indexed pages.
 export const THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT = 300;
-export const THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT = 750;
+// Tool-heavy turns can put tens of megabytes into only a few hundred activity
+// rows. Keep the initial window small enough to cross a remote/mobile link
+// promptly; the history endpoint supplies older activities in indexed pages.
+export const THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT = 200;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
