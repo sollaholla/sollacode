@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   closePictureInPicture: vi.fn(async (_tabId: string): Promise<void> => undefined),
   pictureInPicture: false,
   showEmptyState: false,
+  sessionUrl: "http://example.com/",
   surfaceProps: [] as Array<Record<string, unknown>>,
   mirrorProps: [] as Array<Record<string, unknown>>,
 }));
@@ -74,7 +75,7 @@ vi.mock("~/previewStateStore", () => ({
             tabId: "tab-1",
             navStatus: {
               _tag: "Success",
-              url: "http://example.com/",
+              url: mocks.sessionUrl,
               title: "Example",
             },
             canGoBack: false,
@@ -249,10 +250,24 @@ describe("PreviewView navigation", () => {
     mocks.closePictureInPicture.mockClear();
     mocks.pictureInPicture = false;
     mocks.showEmptyState = false;
+    mocks.sessionUrl = "http://example.com/";
     mocks.surfaceProps.length = 0;
     mocks.mirrorProps.length = 0;
     primaryEnvironmentId = "environment-1";
     electron = true;
+  });
+
+  it("explains Google's embedded-browser rejection and offers a browser handoff", () => {
+    mocks.sessionUrl =
+      "https://accounts.google.com/v3/signin/rejected?flowEntry=ServiceLogin&service=youtube";
+
+    const markup = renderToStaticMarkup(
+      <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />,
+    );
+
+    expect(markup).toContain("Sign-in needs your system browser");
+    expect(markup).toContain("Google does not allow account sign-in inside embedded browsers");
+    expect(markup).toContain("Open in browser");
   });
 
   it.each([

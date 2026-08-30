@@ -26,8 +26,6 @@ const { fromPartition, sessions } = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
-  // The UA cleanup reads the app token it must strip from the session's UA.
-  app: { getName: () => "Solla Code" },
   session: {
     fromPartition,
   },
@@ -141,24 +139,18 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("strips the embedded-framework tokens Google's sign-in wall rejects", () =>
+  it.effect("preserves the native embedded-browser identity", () =>
     Effect.gen(function* () {
-      // `Electron/…` and the app token are what "this browser or app may not
-      // be secure" keys on; platform and Chrome stay truthful. Preserving the
-      // native UA instead (tried in cf27a4200) broke OAuth on every fresh
-      // profile while signed-in profiles coasted on old cookies.
+      // Google deliberately rejects OAuth in embedded browsers. Changing only
+      // the UA did not make the browser compliant and left its other client
+      // hints inconsistent, so Preview identifies the browser truthfully and
+      // offers the system-browser handoff instead.
       const browserSessions = yield* BrowserSession.BrowserSession;
       const partition = yield* browserSessions.getPartition("scope-a");
       const browserSession = yield* browserSessions.getSession("scope-a");
 
       assert.strictEqual(browserSession as unknown, sessions.get(partition));
-      assert.deepStrictEqual(
-        sessions.get(partition)?.setUserAgent.mock.calls.map((call) => call[0]),
-        [
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
-        ],
-      );
+      assert.strictEqual(sessions.get(partition)?.setUserAgent.mock.calls.length, 0);
     }).pipe(Effect.provide(layer)),
   );
 

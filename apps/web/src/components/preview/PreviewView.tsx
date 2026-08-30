@@ -76,6 +76,7 @@ import {
   inspectPreviewHumanVerification,
   usePreviewHumanVerification,
 } from "./previewHumanVerification";
+import { isEmbeddedOAuthRejected, openPreviewUrlInSystemBrowser } from "./embeddedOAuth";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -403,9 +404,17 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [runtimeTabId, sendGuestAction, surfaceMode]);
 
   const handleOpenInBrowser = useCallback(() => {
-    if (!localApi || !url) return;
-    void localApi.shell.openExternal(url).catch(() => undefined);
+    if (!url) return;
+    openPreviewUrlInSystemBrowser({
+      url,
+      ...(localApi ? { openNative: localApi.shell.openExternal } : {}),
+      openWeb: (externalUrl) => {
+        window.open(externalUrl, "_blank", "noopener,noreferrer");
+      },
+    });
   }, [url]);
+
+  const embeddedOAuthRejected = isEmbeddedOAuthRejected(url);
 
   const handlePictureInPicture = useCallback(() => {
     if (!tabId) return;
@@ -1013,6 +1022,26 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                     Report issue <ExternalLinkIcon />
                   </Button>
                 </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {embeddedOAuthRejected ? (
+          <div className="absolute inset-x-3 top-3 z-50 mx-auto max-w-2xl rounded-xl border border-amber-500/40 bg-background/95 p-3 shadow-xl backdrop-blur">
+            <div className="flex items-start gap-2.5">
+              <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-amber-500/12 text-amber-500">
+                <ShieldAlertIcon className="size-4" aria-hidden />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">Sign-in needs your system browser</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Google does not allow account sign-in inside embedded browsers. Retrying in
+                  Preview will return to this page. Open it in your system browser to continue
+                  there.
+                </p>
+                <Button className="mt-2" size="xs" type="button" onClick={handleOpenInBrowser}>
+                  Open in browser <ExternalLinkIcon />
+                </Button>
               </div>
             </div>
           </div>
