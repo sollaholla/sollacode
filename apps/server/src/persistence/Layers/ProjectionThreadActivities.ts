@@ -10,6 +10,7 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  DeleteSupersededToolUpdatesInput,
   ListProjectionThreadActivitiesInput,
   ProjectionThreadActivity,
   ProjectionThreadActivityRepository,
@@ -146,10 +147,34 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const deleteSupersededToolUpdateRows = SqlSchema.void({
+    Request: DeleteSupersededToolUpdatesInput,
+    execute: ({ threadId, toolCallId, sinceCreatedAt }) =>
+      sql`
+        DELETE FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind = 'tool.updated'
+          AND created_at >= ${sinceCreatedAt}
+          AND json_extract(payload_json, '$.data.toolCallId') = ${toolCallId}
+      `,
+  });
+
+  const deleteSupersededToolUpdates: ProjectionThreadActivityRepositoryShape["deleteSupersededToolUpdates"] =
+    (input) =>
+      deleteSupersededToolUpdateRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.deleteSupersededToolUpdates:query",
+            "ProjectionThreadActivityRepository.deleteSupersededToolUpdates:encodeRequest",
+          ),
+        ),
+      );
+
   return {
     upsert,
     listByThreadId,
     deleteByThreadId,
+    deleteSupersededToolUpdates,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
 

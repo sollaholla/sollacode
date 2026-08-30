@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { toolCallIdOfToolActivityPayload } from "../toolRawOutputTrim.ts";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -1399,7 +1400,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.activity-appended":
+        case "thread.activity-appended": {
           yield* projectionThreadActivityRepository.upsert({
             activityId: event.payload.activity.id,
             threadId: event.payload.threadId,
@@ -1413,7 +1414,29 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             createdAt: event.payload.activity.createdAt,
           });
+          // A completion supersedes its call's progressive tool.updated
+          // frames — each one is a second stored copy of text the completed
+          // row already carries (33% of a heavy snapshot when measured, and
+          // snapshot reads have dropped them since 0.1.278). Delete them the
+          // moment the completion projects so they stop accumulating. The
+          // one-hour created_at window keeps the delete on the
+          // (thread_id, kind, created_at) index; an interrupted tool has no
+          // completion and keeps its last frame.
+          if (event.payload.activity.kind === "tool.completed") {
+            const toolCallId = toolCallIdOfToolActivityPayload(event.payload.activity.payload);
+            const completedAt = DateTime.make(event.payload.activity.createdAt);
+            if (toolCallId !== null && Option.isSome(completedAt)) {
+              yield* projectionThreadActivityRepository.deleteSupersededToolUpdates({
+                threadId: event.payload.threadId,
+                toolCallId,
+                sinceCreatedAt: DateTime.formatIso(
+                  DateTime.subtract(completedAt.value, { hours: 1 }),
+                ),
+              });
+            }
+          }
           return;
+        }
 
         case "thread.reverted": {
           const existingRows = yield* projectionThreadActivityRepository.listByThreadId({
