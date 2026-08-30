@@ -63,6 +63,7 @@ export const PREVIEW_CREATE_TAB_CHANNEL = "desktop:preview-create-tab";
 export const PREVIEW_CLOSE_TAB_CHANNEL = "desktop:preview-close-tab";
 export const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop:preview-register-webview";
 export const PREVIEW_SET_UI_ACTIVITY_CHANNEL = "desktop:preview-set-ui-activity";
+export const PREVIEW_USER_INPUT_CHANNEL = "desktop:preview-user-input";
 export const PREVIEW_NAVIGATE_CHANNEL = "desktop:preview-navigate";
 export const PREVIEW_GO_BACK_CHANNEL = "desktop:preview-go-back";
 export const PREVIEW_GO_FORWARD_CHANNEL = "desktop:preview-go-forward";

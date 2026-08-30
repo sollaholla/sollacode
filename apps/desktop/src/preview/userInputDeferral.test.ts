@@ -31,7 +31,6 @@ describe("resolveUserInputDeferral", () => {
           lastUserInputAtMs: nowMs,
           nowMs: nowMs + heldForMs,
           pushToTalkActive: true,
-          waitingSinceMs: nowMs,
         }),
       ).toBe("wait");
     }
@@ -43,48 +42,27 @@ describe("resolveUserInputDeferral", () => {
       resolveUserInputDeferral({
         lastUserInputAtMs: releasedAtMs,
         nowMs: releasedAtMs + 1_999,
-        waitingSinceMs: releasedAtMs,
       }),
     ).toBe("wait");
     expect(
       resolveUserInputDeferral({
         lastUserInputAtMs: releasedAtMs,
         nowMs: releasedAtMs + 2_000,
-        waitingSinceMs: releasedAtMs,
-      }),
-    ).toBe("proceed");
-  });
-
-  it("delivers the action late rather than losing it when typing never stops", () => {
-    // The MCP preview tools give up at 15s, so an unbounded wait did not queue
-    // the action, it discarded it — the reported "dead click". Ten seconds of
-    // continuous typing yields, and the action still runs.
-    const waitingSinceMs = nowMs;
-    expect(
-      resolveUserInputDeferral({
-        lastUserInputAtMs: nowMs + 9_000,
-        nowMs: nowMs + 9_000,
-        waitingSinceMs,
-      }),
-    ).toBe("wait");
-    expect(
-      resolveUserInputDeferral({
-        lastUserInputAtMs: nowMs + 10_000,
-        nowMs: nowMs + 10_000,
-        waitingSinceMs,
       }),
     ).toBe("proceed");
   });
 
   it("keeps waiting for as long as the user keeps typing", () => {
-    // Someone leaning on a key holds the caret indefinitely, and that is the
-    // point: the user wins outright rather than being pre-empted by a timeout.
-    expect(resolveUserInputDeferral({ lastUserInputAtMs: nowMs, nowMs: nowMs + 30_000 })).toBe(
-      "proceed",
-    );
-    expect(
-      resolveUserInputDeferral({ lastUserInputAtMs: nowMs + 30_000, nowMs: nowMs + 30_000 }),
-    ).toBe("wait");
+    // Even after the old ten-second escape hatch, a fresh keystroke keeps the
+    // user's caret. The action resumes only after a full idle cooldown.
+    for (const elapsedMs of [10_000, 30_000, 120_000]) {
+      expect(
+        resolveUserInputDeferral({
+          lastUserInputAtMs: nowMs + elapsedMs,
+          nowMs: nowMs + elapsedMs,
+        }),
+      ).toBe("wait");
+    }
   });
 
   it("proceeds once the user has gone idle for the full cooldown", () => {

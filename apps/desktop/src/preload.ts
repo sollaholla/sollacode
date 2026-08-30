@@ -11,6 +11,19 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 
+// Chromium's main-process `input-event` coverage varies by platform and input
+// device. Report trusted renderer presses as a second, explicit signal so a
+// click or tap anywhere in the app always pauses Preview automation. Keyboard
+// events are included for the same reason; duplicate reports only refresh the
+// same cooldown timestamp.
+const reportUserInput = (event: Event): void => {
+  if (!event.isTrusted) return;
+  ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL);
+};
+
+window.addEventListener("pointerdown", reportUserInput, true);
+window.addEventListener("keydown", reportUserInput, true);
+
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
     typeof result === "object" &&
