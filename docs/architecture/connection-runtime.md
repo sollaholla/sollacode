@@ -65,6 +65,8 @@ Finite requests, durable subscriptions, and commands are separate APIs:
   replacement session; they do not take down a healthy transport.
 - Mutations resolve the current environment runtime at execution time.
 - Shell and thread snapshots are available while offline.
+- Thread detail snapshots carry a bounded recent transcript plus total counts and keyset cursors;
+  web and mobile request older pages over HTTP only when the user approaches them.
 - A connected transport may have `empty`, `cached`, `synchronizing`, `live`, or
   failed shell and thread data independently.
 - Cached shell and thread projections are never allowed to overwrite newer live

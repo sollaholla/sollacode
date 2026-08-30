@@ -93,7 +93,17 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     data: cachedThread,
     status: statusWithoutLiveData(cachedThread),
     error: Option.none(),
+    history: Option.match(cached, {
+      onNone: () => null,
+      onSome: (snapshot) => snapshot.history ?? null,
+    }),
   });
+  const historyWindow = yield* Ref.make(
+    Option.match(cached, {
+      onNone: () => null,
+      onSome: (snapshot) => snapshot.history ?? null,
+    }),
+  );
   // Seed the resume cursor from the cached snapshot so a warm cache can catch up
   // via `afterSequence` instead of re-downloading the full thread body.
   const lastSequence = yield* SubscriptionRef.make(
@@ -210,22 +220,32 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
   const setThread = Effect.fn("EnvironmentThreadState.setThread")(function* (
     thread: OrchestrationThread,
+    history?: OrchestrationThreadDetailSnapshot["history"] | null,
   ) {
     const waiting = yield* Ref.get(awaitingCompletion);
     if (!waiting) {
       yield* markCurrentGenerationSynchronized;
     }
+    if (history !== undefined) {
+      yield* Ref.set(historyWindow, history);
+    }
+    const currentHistory = yield* Ref.get(historyWindow);
     yield* SubscriptionRef.set(state, {
       data: Option.some(thread),
       status: waiting ? "synchronizing" : "live",
       error: Option.none(),
+      history: currentHistory,
     });
     // Active threads can update many times per second and retain large tool
     // payloads. The server remains the source of truth while a turn is active;
     // persist once it settles so cache encoding stays off the streaming path.
     if (shouldPersistThread(thread)) {
       const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-      yield* Queue.offer(persistence, { snapshotSequence, thread });
+      yield* Queue.offer(persistence, {
+        snapshotSequence,
+        thread,
+        ...(currentHistory === null ? {} : { history: currentHistory }),
+      });
     }
   });
 
@@ -235,6 +255,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       data: Option.none(),
       status: "deleted",
       error: Option.none(),
+      history: null,
     });
     yield* cache.removeThread(environmentId, threadId).pipe(
       Effect.catch((error) =>
@@ -322,7 +343,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (item.kind === "snapshot") {
       yield* Ref.set(forceSnapshot, false);
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
-      yield* setThread(item.snapshot.thread);
+      yield* setThread(item.snapshot.thread, item.snapshot.history ?? null);
       return;
     }
 
@@ -347,6 +368,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       yield* applyItem(item);
     }
     yield* applyEvents(pending);
+  });
+  const applyNaturalChunk = Effect.fn("EnvironmentThreadState.applyNaturalChunk")(function* (
+    items: ReadonlyArray<OrchestrationThreadStreamItem>,
+  ) {
+    for (let offset = 0; offset < items.length; offset += 100) {
+      yield* applyChunk(items.slice(offset, offset + 100));
+      if (offset + 100 < items.length) {
+        yield* Effect.yieldNow;
+      }
+    }
   });
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
@@ -498,23 +529,31 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         ),
       },
     ).pipe(
-      // Batch on the stream's NATURAL chunks: a catch-up replay arrives as
-      // large chunks and folds into one state commit each, while a single
-      // live event is a chunk of one and applies immediately. No timer is
-      // involved, so nothing here interacts with the TestClock or adds
-      // live-tail latency.
+      // Rechunk oversized catch-up frames so a long replay yields between
+      // bounded folds instead of monopolizing Safari's renderer for seconds.
+      // A live event is still applied immediately as a chunk of one.
       Stream.chunks,
-      Stream.runForEach(applyChunk),
+      Stream.runForEach(applyNaturalChunk),
     ),
   );
 
   yield* Effect.addFinalizer(() =>
-    Effect.all([SubscriptionRef.get(state), SubscriptionRef.get(lastSequence)]).pipe(
-      Effect.flatMap(([current, snapshotSequence]) =>
+    Effect.all([
+      SubscriptionRef.get(state),
+      SubscriptionRef.get(lastSequence),
+      Ref.get(historyWindow),
+    ]).pipe(
+      Effect.flatMap(([current, snapshotSequence, history]) =>
         Option.match(current.data, {
           onNone: () => Effect.void,
           onSome: (thread) =>
-            shouldPersistThread(thread) ? persist({ snapshotSequence, thread }) : Effect.void,
+            shouldPersistThread(thread)
+              ? persist({
+                  snapshotSequence,
+                  thread,
+                  ...(history === null ? {} : { history }),
+                })
+              : Effect.void,
         }),
       ),
     ),

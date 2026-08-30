@@ -4,6 +4,8 @@ import {
   defaultInstanceIdForDriver,
   type EnvironmentId,
   type MessageId,
+  type OrchestrationMessage,
+  type OrchestrationThreadHistoryWindow,
   type ModelSelection,
   type ProjectScript,
   type ProjectId,
@@ -72,6 +74,7 @@ import {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
+import * as Option from "effect/Option";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
@@ -308,7 +311,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import { threadEnvironment } from "../state/threads";
+import { loadThreadHistory, threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
@@ -1510,6 +1513,13 @@ type LocalThreadErrorEntry = {
   readonly at: number;
 };
 
+type LoadedThreadHistory = {
+  readonly routeThreadKey: string;
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly window: OrchestrationThreadHistoryWindow | null;
+};
+
 function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
 }
@@ -1539,6 +1549,10 @@ function ChatViewContent(props: ChatViewProps) {
   const routeServerThreadShell = useThreadShell(routeServerThreadRef);
   const routeServerThreadDetail = useThreadDetail(routeServerThreadRef);
   const routeServerThreadStatus = useThreadStatus(routeServerThreadRef);
+  const routeEnvironmentThreadState = useEnvironmentThread(
+    routeKind === "server" ? environmentId : null,
+    routeKind === "server" ? threadId : null,
+  );
   const inferredThreadSyncPhase = resolveThreadSyncPhase({
     detailExists: routeServerThreadDetail !== null,
     shellExists: routeServerThreadShell !== null,
@@ -1813,6 +1827,9 @@ function ChatViewContent(props: ChatViewProps) {
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const closeTerminalMutation = useAtomCommand(terminalEnvironment.close, "terminal close");
   const refreshThreadPlanCommand = useAtomCommand(threadEnvironment.refreshPlan, "plan refresh");
+  const loadThreadHistoryCommand = useAtomCommand(loadThreadHistory, {
+    reportFailure: false,
+  });
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -1873,7 +1890,137 @@ function ChatViewContent(props: ChatViewProps) {
         ? store.getDraftSession(draftId)
         : null,
   );
-  const serverThread = useThread(routeThreadRef, { waitForShell: draftThread !== null });
+  const recentServerThread = useThread(routeThreadRef, { waitForShell: draftThread !== null });
+  const [loadedThreadHistory, setLoadedThreadHistory] = useState<LoadedThreadHistory>(() => ({
+    routeThreadKey,
+    messages: [],
+    activities: [],
+    window: routeEnvironmentThreadState.history ?? null,
+  }));
+  const historyLoadInFlightRef = useRef(false);
+  const historyRouteKeyRef = useRef(routeThreadKey);
+  historyRouteKeyRef.current = routeThreadKey;
+  useEffect(() => {
+    historyLoadInFlightRef.current = false;
+    setLoadedThreadHistory((current) => {
+      if (current.routeThreadKey !== routeThreadKey) {
+        return {
+          routeThreadKey,
+          messages: [],
+          activities: [],
+          window: routeEnvironmentThreadState.history ?? null,
+        };
+      }
+      if (current.messages.length === 0 && current.activities.length === 0) {
+        return { ...current, window: routeEnvironmentThreadState.history ?? null };
+      }
+      return current;
+    });
+  }, [routeEnvironmentThreadState.history, routeThreadKey]);
+  const serverThread = useMemo(() => {
+    if (recentServerThread === null || loadedThreadHistory.routeThreadKey !== routeThreadKey) {
+      return recentServerThread;
+    }
+    if (loadedThreadHistory.messages.length === 0 && loadedThreadHistory.activities.length === 0) {
+      return recentServerThread;
+    }
+    const recentMessageIds = new Set(recentServerThread.messages.map((message) => message.id));
+    const recentActivityIds = new Set(recentServerThread.activities.map((activity) => activity.id));
+    return {
+      ...recentServerThread,
+      messages: [
+        ...loadedThreadHistory.messages.filter((message) => !recentMessageIds.has(message.id)),
+        ...recentServerThread.messages,
+      ],
+      activities: [
+        ...loadedThreadHistory.activities.filter((activity) => !recentActivityIds.has(activity.id)),
+        ...recentServerThread.activities,
+      ],
+    };
+  }, [loadedThreadHistory, recentServerThread, routeThreadKey]);
+  const olderHistoryWindow =
+    loadedThreadHistory.routeThreadKey === routeThreadKey
+      ? loadedThreadHistory.window
+      : (routeEnvironmentThreadState.history ?? null);
+  const hasOlderThreadHistory =
+    olderHistoryWindow !== null &&
+    (olderHistoryWindow.messageCursor !== null || olderHistoryWindow.activityCursor !== null);
+  const olderHistoryMessageCount = Math.max(
+    0,
+    (olderHistoryWindow?.totalMessages ?? 0) -
+      (recentServerThread?.messages.length ?? 0) -
+      loadedThreadHistory.messages.length,
+  );
+  const [olderHistoryLoading, setOlderHistoryLoading] = useState(false);
+  const loadOlderThreadHistory = useCallback(async () => {
+    if (
+      routeKind !== "server" ||
+      olderHistoryWindow === null ||
+      historyLoadInFlightRef.current ||
+      (olderHistoryWindow.messageCursor === null && olderHistoryWindow.activityCursor === null)
+    ) {
+      return;
+    }
+    historyLoadInFlightRef.current = true;
+    setOlderHistoryLoading(true);
+    const requestedRouteKey = routeThreadKey;
+    try {
+      const result = await loadThreadHistoryCommand({
+        environmentId,
+        input: {
+          threadId,
+          page: {
+            ...(olderHistoryWindow.messageCursor === null
+              ? {}
+              : {
+                  beforeMessageCreatedAt: olderHistoryWindow.messageCursor.createdAt,
+                  beforeMessageId: olderHistoryWindow.messageCursor.messageId,
+                }),
+            ...(olderHistoryWindow.activityCursor === null
+              ? {}
+              : {
+                  beforeActivityCreatedAt: olderHistoryWindow.activityCursor.createdAt,
+                  beforeActivityId: olderHistoryWindow.activityCursor.activityId,
+                }),
+            limit: 150,
+          },
+        },
+      });
+      const commandValue = AsyncResult.value(result);
+      if (Option.isNone(commandValue) || Option.isNone(commandValue.value)) return;
+      const page = commandValue.value.value;
+      if (historyRouteKeyRef.current !== requestedRouteKey) return;
+      setLoadedThreadHistory((current) => {
+        if (current.routeThreadKey !== requestedRouteKey) return current;
+        const knownMessageIds = new Set(current.messages.map((message) => message.id));
+        const knownActivityIds = new Set(current.activities.map((activity) => activity.id));
+        return {
+          ...current,
+          messages: [
+            ...page.messages.filter((message) => !knownMessageIds.has(message.id)),
+            ...current.messages,
+          ],
+          activities: [
+            ...page.activities.filter((activity) => !knownActivityIds.has(activity.id)),
+            ...current.activities,
+          ],
+          window: page.history,
+        };
+      });
+    } finally {
+      historyLoadInFlightRef.current = false;
+      if (historyRouteKeyRef.current === requestedRouteKey) {
+        setOlderHistoryLoading(false);
+      }
+    }
+  }, [
+    environmentId,
+    loadThreadHistoryCommand,
+    olderHistoryWindow,
+    routeKind,
+    routeThreadKey,
+    threadId,
+  ]);
   const loadingServerThread = useMemo(
     () =>
       threadDetailLoading && routeServerThreadShell
@@ -9073,6 +9220,10 @@ function ChatViewContent(props: ChatViewProps) {
                 isResumeIncompleteTurnBusy={isResumeIncompleteTurnBusy}
                 isResumeIncompleteTurnDisabled={activeEnvironmentUnavailable}
                 inlineNotice={inlineTimelineNotice}
+                hasOlderHistory={hasOlderThreadHistory}
+                olderHistoryMessageCount={olderHistoryMessageCount}
+                olderHistoryLoading={olderHistoryLoading}
+                onLoadOlderHistory={loadOlderThreadHistory}
               />
 
               {showThreadSyncOverlay && threadSyncPhase ? (

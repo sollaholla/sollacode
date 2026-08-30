@@ -572,10 +572,25 @@ describe("MessagesTimeline", () => {
       <MessagesTimeline {...buildProps()} timelineEntries={timelineEntries} topFadeEnabled />,
     );
 
-    expect(compactMarkup).toContain('class="h-3 sm:h-4"');
+    expect(compactMarkup).toContain('class="py-3 sm:py-4"');
     expect(compactMarkup).not.toContain("chat-timeline-scroll-fade");
-    expect(fadedMarkup).toContain('class="h-10 sm:h-12"');
+    expect(fadedMarkup).toContain('class="pb-3 pt-10 sm:pt-12"');
     expect(fadedMarkup).toContain("chat-timeline-scroll-fade");
+  });
+
+  it("shows the unloaded message count without hydrating older content", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Recent message")]}
+        hasOlderHistory
+        olderHistoryMessageCount={8_627}
+        onLoadOlderHistory={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Load 8,627 earlier messages");
+    expect(markup).not.toContain("Loading earlier history");
   });
 
   it("keeps assistant changed-files headers sticky below the thread header", () => {

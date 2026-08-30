@@ -219,8 +219,6 @@ interface TimelineRowActivityState {
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
-const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
-const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 // Stable identity: a fresh Set here would rebuild the row context every render.
@@ -283,6 +281,10 @@ interface MessagesTimelineProps {
   isResumeIncompleteTurnBusy: boolean;
   isResumeIncompleteTurnDisabled: boolean;
   inlineNotice?: { readonly id: string; readonly content: ReactNode } | null;
+  hasOlderHistory?: boolean;
+  olderHistoryMessageCount?: number;
+  olderHistoryLoading?: boolean;
+  onLoadOlderHistory?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +336,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isResumeIncompleteTurnBusy,
   isResumeIncompleteTurnDisabled,
   inlineNotice = null,
+  hasOlderHistory = false,
+  olderHistoryMessageCount = 0,
+  olderHistoryLoading = false,
+  onLoadOlderHistory,
 }: MessagesTimelineProps) {
   const drawDistance = resolveTimelineDrawDistance(
     typeof window !== "undefined" && window.desktopBridge !== undefined,
@@ -624,6 +630,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         isAtEnd,
       });
     }
+    if (hasOlderHistory && !olderHistoryLoading && scrollTop <= 600) {
+      onLoadOlderHistory?.();
+    }
     if (minimapItems.length === 0) {
       return;
     }
@@ -651,10 +660,47 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     endGestureWhenMomentumSettles,
     minimapItems,
     minimapStripMap,
+    hasOlderHistory,
+    olderHistoryLoading,
+    onLoadOlderHistory,
     onIsAtEndChange,
     onScrollStateChange,
     userGestureActive,
   ]);
+  const listHeader = useMemo(
+    () => (
+      <div className={topFadeEnabled ? "pb-3 pt-10 sm:pt-12" : "py-3 sm:py-4"}>
+        {hasOlderHistory ? (
+          <button
+            type="button"
+            className="mx-auto flex min-h-9 items-center gap-2 rounded-full border border-border/60 bg-card px-3 py-1.5 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={olderHistoryLoading}
+            onClick={onLoadOlderHistory}
+            onFocus={onLoadOlderHistory}
+            onPointerEnter={onLoadOlderHistory}
+          >
+            {olderHistoryLoading ? (
+              <LoaderCircleIcon aria-hidden className="size-3.5 animate-spin" />
+            ) : (
+              <FastForwardIcon aria-hidden className="size-3.5 rotate-180" />
+            )}
+            {olderHistoryLoading
+              ? "Loading earlier history…"
+              : olderHistoryMessageCount > 0
+                ? `Load ${olderHistoryMessageCount.toLocaleString()} earlier messages`
+                : "Load earlier history"}
+          </button>
+        ) : null}
+      </div>
+    ),
+    [
+      hasOlderHistory,
+      olderHistoryLoading,
+      olderHistoryMessageCount,
+      onLoadOlderHistory,
+      topFadeEnabled,
+    ],
+  );
   const schedulePositionReconcile = useCallback(
     (restoreSavedOffset: boolean) => {
       const nextRestoreSavedOffset =
@@ -1111,7 +1157,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               "scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
               topFadeEnabled && "chat-timeline-scroll-fade",
             )}
-            ListHeaderComponent={topFadeEnabled ? TIMELINE_LIST_FADE_HEADER : TIMELINE_LIST_HEADER}
+            ListHeaderComponent={listHeader}
             ListFooterComponent={listFooter}
           />
           <TimelineMinimap

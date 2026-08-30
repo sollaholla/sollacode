@@ -7,7 +7,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import {
+  projectThreadDetailSnapshot,
+  projectThreadHistoryPage,
+} from "./ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
@@ -76,6 +79,29 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(snapshot.value);
+        }),
+      )
+      .handle(
+        "threadHistory",
+        Effect.fn("environment.orchestration.threadHistory")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const getThreadHistoryPage = projectionSnapshotQuery.getThreadHistoryPage;
+          if (getThreadHistoryPage === undefined) {
+            return yield* failEnvironmentInternal(
+              "orchestration_thread_snapshot_failed",
+              new Error("Thread history paging is unavailable"),
+            );
+          }
+          const page = yield* getThreadHistoryPage(args.params.threadId, args.query).pipe(
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+            ),
+          );
+          if (Option.isNone(page)) {
+            return yield* failEnvironmentNotFound("thread_not_found");
+          }
+          return projectThreadHistoryPage(page.value);
         }),
       )
       .handle(

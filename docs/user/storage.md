@@ -3,6 +3,14 @@
 Solla Code keeps active conversation history, tool activity, browser state, artifacts, and chat
 attachments in the environment that owns the thread.
 
+## Loading long conversations
+
+Opening a conversation loads its newest 300 messages first. The server also returns the total
+message and activity counts plus opaque cursors, so the client can show how much older history
+exists without transferring or rendering its contents. Scrolling near the top or using **Load
+earlier messages** fetches the next bounded page. Provider context and **Export chat** still use the
+complete durable conversation; this windowing changes only what an interactive client loads.
+
 ## Deleted conversations
 
 Deleting a conversation removes its projected messages, activities, plans, sessions, browser

@@ -49,6 +49,10 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly hasOlderHistory: boolean;
+  readonly olderHistoryMessageCount: number;
+  readonly olderHistoryLoading: boolean;
+  readonly onLoadOlderHistory: () => void;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
   readonly respondingApprovalId: ApprovalRequestId | null;
@@ -395,6 +399,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             usesAutomaticContentInsets={props.usesAutomaticContentInsets}
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             skills={selectedProviderSkills}
+            hasOlderHistory={props.hasOlderHistory}
+            olderHistoryMessageCount={props.olderHistoryMessageCount}
+            olderHistoryLoading={props.olderHistoryLoading}
+            onLoadOlderHistory={props.onLoadOlderHistory}
           />
         </View>
       ) : (

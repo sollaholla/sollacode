@@ -14,6 +14,8 @@ import {
   ProviderInteractionMode,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  type OrchestrationThreadHistoryPage,
+  type OrchestrationThreadHistoryPageInput,
   type OrchestrationThreadPendingWork,
   ProjectScript,
   TurnId,
@@ -74,10 +76,9 @@ const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapsho
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
 
 // A thread snapshot is a transport/read-model surface, not provider context.
-// Keep the complete conversational transcript, but only hydrate the newest
-// activity rows. Historical activity payloads can be enormous (hundreds of MB
-// on long-running threads) and are collapsed work-log detail in the UI; loading
-// all of them has caused Safari tab reloads and remote WebSocket churn.
+// Keep only the newest transport window. Provider context continues to use the
+// unbounded ingestion query; older UI history is fetched through indexed pages.
+export const THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT = 300;
 export const THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT = 750;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
@@ -152,6 +153,26 @@ const ThreadIdLookupInput = Schema.Struct({
 const ThreadActivityWindowLookupInput = Schema.Struct({
   threadId: ThreadId,
   limit: Schema.Int,
+});
+const ThreadMessageWindowLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  limit: Schema.Int,
+});
+const ThreadMessageHistoryLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeCreatedAt: IsoDateTime,
+  beforeId: MessageId,
+  limit: Schema.Int,
+});
+const ThreadActivityHistoryLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  beforeCreatedAt: IsoDateTime,
+  beforeId: EventId,
+  limit: Schema.Int,
+});
+const ThreadHistoryCountsRowSchema = Schema.Struct({
+  totalMessages: Schema.Number,
+  totalActivities: Schema.Number,
 });
 const ThreadTaskLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -1381,6 +1402,64 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listRecentThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadMessageWindowLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, limit }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
+          attachments_json AS "attachments",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM (
+          SELECT *
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${limit}
+        ) AS recent_thread_messages
+        ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const listOlderThreadMessageRows = SqlSchema.findAll({
+    Request: ThreadMessageHistoryLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId, beforeCreatedAt, beforeId, limit }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          input_origin AS "inputOrigin",
+          delegation_id AS "delegationId",
+          voice_transcript AS "voiceTranscript",
+          attachments_json AS "attachments",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
+          AND (
+            created_at < ${beforeCreatedAt}
+            OR (created_at = ${beforeCreatedAt} AND message_id < ${beforeId})
+          )
+        ORDER BY created_at DESC, message_id DESC
+        LIMIT ${limit}
+      `,
+  });
+
   const listThreadProposedPlanRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadProposedPlanDbRowSchema,
@@ -1453,17 +1532,49 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             created_at
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
-          ORDER BY
-            sequence DESC,
-            created_at DESC,
-            activity_id DESC
+          ORDER BY created_at DESC, activity_id DESC
           LIMIT ${limit}
         ) AS recent_thread_activities
-        ORDER BY
-          sequence ASC,
-          created_at ASC,
-          activity_id ASC
+        ORDER BY created_at ASC, activity_id ASC
       `,
+  });
+
+  const listOlderThreadActivityRows = SqlSchema.findAll({
+    Request: ThreadActivityHistoryLookupInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, beforeCreatedAt, beforeId, limit }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND (
+            created_at < ${beforeCreatedAt}
+            OR (created_at = ${beforeCreatedAt} AND activity_id < ${beforeId})
+          )
+        ORDER BY created_at DESC, activity_id DESC
+        LIMIT ${limit}
+      `,
+  });
+
+  const getThreadHistoryCountsRow = SqlSchema.findOne({
+    Request: ThreadIdLookupInput,
+    Result: ThreadHistoryCountsRowSchema,
+    execute: ({ threadId }) => sql`
+      SELECT
+        (SELECT COUNT(*) FROM projection_thread_messages WHERE thread_id = ${threadId})
+          AS "totalMessages",
+        (SELECT COUNT(*) FROM projection_thread_activities WHERE thread_id = ${threadId})
+          AS "totalActivities"
+    `,
   });
 
   const getThreadActivityRowById = SqlSchema.findOneOption({
@@ -2870,6 +2981,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const loadThreadDetailById = (
     threadId: ThreadId,
     options?: {
+      readonly messageLimit?: number;
       readonly activityLimit?: number;
       /** Snapshot reads only — see {@link dropSupersededToolUpdates}. */
       readonly dropSupersededToolUpdates?: boolean;
@@ -2893,7 +3005,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listThreadMessageRowsByThread({ threadId }).pipe(
+        (options?.messageLimit === undefined
+          ? listThreadMessageRowsByThread({ threadId })
+          : listRecentThreadMessageRowsByThread({
+              threadId,
+              limit: options.messageLimit,
+            })
+        ).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listMessages:query",
@@ -3024,14 +3142,43 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           const thread = yield* loadThreadDetailById(threadId, {
+            messageLimit: THREAD_DETAIL_SNAPSHOT_MESSAGE_LIMIT,
             activityLimit: THREAD_DETAIL_SNAPSHOT_ACTIVITY_LIMIT,
             dropSupersededToolUpdates: true,
           });
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
-          const { snapshotSequence } = yield* getSnapshotSequence();
-          return Option.some({ snapshotSequence, thread: thread.value });
+          const [{ snapshotSequence }, counts] = yield* Effect.all([
+            getSnapshotSequence(),
+            getThreadHistoryCountsRow({ threadId }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:query",
+                  "ProjectionSnapshotQuery.getThreadDetailSnapshot:getHistoryCounts:decodeRow",
+                ),
+              ),
+            ),
+          ]);
+          const oldestMessage = thread.value.messages[0];
+          const oldestActivity = thread.value.activities[0];
+          return Option.some({
+            snapshotSequence,
+            thread: thread.value,
+            history: {
+              totalMessages: counts.totalMessages,
+              totalActivities: counts.totalActivities,
+              messageCursor:
+                counts.totalMessages > thread.value.messages.length && oldestMessage !== undefined
+                  ? { createdAt: oldestMessage.createdAt, messageId: oldestMessage.id }
+                  : null,
+              activityCursor:
+                counts.totalActivities > thread.value.activities.length &&
+                oldestActivity !== undefined
+                  ? { createdAt: oldestActivity.createdAt, activityId: oldestActivity.id }
+                  : null,
+            },
+          });
         }),
       )
       .pipe(
@@ -3039,6 +3186,109 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           isPersistenceError(error)
             ? error
             : toPersistenceSqlError("ProjectionSnapshotQuery.getThreadDetailSnapshot:transaction")(
+                error,
+              ),
+        ),
+      );
+
+  const getThreadHistoryPage: NonNullable<ProjectionSnapshotQueryShape["getThreadHistoryPage"]> = (
+    threadId,
+    input,
+  ) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const threadRow = yield* getActiveThreadRowById({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadHistoryPage:getThread:query",
+                "ProjectionSnapshotQuery.getThreadHistoryPage:getThread:decodeRow",
+              ),
+            ),
+          );
+          if (Option.isNone(threadRow)) {
+            return Option.none<OrchestrationThreadHistoryPage>();
+          }
+
+          const limit = Math.max(1, Math.min(500, input.limit ?? 150));
+          const messageCursor =
+            input.beforeMessageCreatedAt !== undefined && input.beforeMessageId !== undefined
+              ? { createdAt: input.beforeMessageCreatedAt, id: input.beforeMessageId }
+              : null;
+          const activityCursor =
+            input.beforeActivityCreatedAt !== undefined && input.beforeActivityId !== undefined
+              ? { createdAt: input.beforeActivityCreatedAt, id: input.beforeActivityId }
+              : null;
+          const [messageRows, activityRows, counts] = yield* Effect.all([
+            messageCursor === null
+              ? Effect.succeed([])
+              : listOlderThreadMessageRows({
+                  threadId,
+                  beforeCreatedAt: messageCursor.createdAt,
+                  beforeId: messageCursor.id,
+                  limit: limit + 1,
+                }).pipe(
+                  Effect.mapError(
+                    toPersistenceSqlOrDecodeError(
+                      "ProjectionSnapshotQuery.getThreadHistoryPage:listMessages:query",
+                      "ProjectionSnapshotQuery.getThreadHistoryPage:listMessages:decodeRows",
+                    ),
+                  ),
+                ),
+            activityCursor === null
+              ? Effect.succeed([])
+              : listOlderThreadActivityRows({
+                  threadId,
+                  beforeCreatedAt: activityCursor.createdAt,
+                  beforeId: activityCursor.id,
+                  limit: limit + 1,
+                }).pipe(
+                  Effect.mapError(
+                    toPersistenceSqlOrDecodeError(
+                      "ProjectionSnapshotQuery.getThreadHistoryPage:listActivities:query",
+                      "ProjectionSnapshotQuery.getThreadHistoryPage:listActivities:decodeRows",
+                    ),
+                  ),
+                ),
+            getThreadHistoryCountsRow({ threadId }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadHistoryPage:getCounts:query",
+                  "ProjectionSnapshotQuery.getThreadHistoryPage:getCounts:decodeRow",
+                ),
+              ),
+            ),
+          ]);
+
+          const selectedMessageRows = messageRows.slice(0, limit);
+          const selectedActivityRows = activityRows.slice(0, limit);
+          const oldestMessage = selectedMessageRows[selectedMessageRows.length - 1];
+          const oldestActivity = selectedActivityRows[selectedActivityRows.length - 1];
+          return Option.some({
+            messages: selectedMessageRows.toReversed().map(mapMessageRow),
+            activities: trimSnapshotToolRawOutput(
+              dropSupersededToolUpdates(selectedActivityRows.toReversed().map(mapActivityRow)),
+            ),
+            history: {
+              totalMessages: counts.totalMessages,
+              totalActivities: counts.totalActivities,
+              messageCursor:
+                messageRows.length > limit && oldestMessage !== undefined
+                  ? { createdAt: oldestMessage.createdAt, messageId: oldestMessage.messageId }
+                  : null,
+              activityCursor:
+                activityRows.length > limit && oldestActivity !== undefined
+                  ? { createdAt: oldestActivity.createdAt, activityId: oldestActivity.activityId }
+                  : null,
+            },
+          });
+        }),
+      )
+      .pipe(
+        Effect.mapError((error) =>
+          isPersistenceError(error)
+            ? error
+            : toPersistenceSqlError("ProjectionSnapshotQuery.getThreadHistoryPage:transaction")(
                 error,
               ),
         ),
@@ -3067,6 +3317,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getThreadAssetSource,
     getThreadDetailById,
     getThreadDetailSnapshot,
+    getThreadHistoryPage,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

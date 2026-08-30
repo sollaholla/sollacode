@@ -625,11 +625,55 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
+export const OrchestrationThreadMessageHistoryCursor = Schema.Struct({
+  createdAt: IsoDateTime,
+  messageId: MessageId,
+});
+export type OrchestrationThreadMessageHistoryCursor =
+  typeof OrchestrationThreadMessageHistoryCursor.Type;
+
+export const OrchestrationThreadActivityHistoryCursor = Schema.Struct({
+  createdAt: IsoDateTime,
+  activityId: EventId,
+});
+export type OrchestrationThreadActivityHistoryCursor =
+  typeof OrchestrationThreadActivityHistoryCursor.Type;
+
+/**
+ * The bounded transcript window carried by a thread snapshot or history page.
+ * Null cursors mean the corresponding collection is complete.
+ */
+export const OrchestrationThreadHistoryWindow = Schema.Struct({
+  totalMessages: NonNegativeInt,
+  totalActivities: NonNegativeInt,
+  messageCursor: Schema.NullOr(OrchestrationThreadMessageHistoryCursor),
+  activityCursor: Schema.NullOr(OrchestrationThreadActivityHistoryCursor),
+});
+export type OrchestrationThreadHistoryWindow = typeof OrchestrationThreadHistoryWindow.Type;
+
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
+  /** Optional so cached snapshots written by older clients still decode. */
+  history: Schema.optionalKey(OrchestrationThreadHistoryWindow),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
+
+export const OrchestrationThreadHistoryPageInput = Schema.Struct({
+  beforeMessageCreatedAt: Schema.optionalKey(IsoDateTime),
+  beforeMessageId: Schema.optionalKey(MessageId),
+  beforeActivityCreatedAt: Schema.optionalKey(IsoDateTime),
+  beforeActivityId: Schema.optionalKey(EventId),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
+});
+export type OrchestrationThreadHistoryPageInput = typeof OrchestrationThreadHistoryPageInput.Type;
+
+export const OrchestrationThreadHistoryPage = Schema.Struct({
+  messages: Schema.Array(OrchestrationMessage),
+  activities: Schema.Array(OrchestrationThreadActivity),
+  history: OrchestrationThreadHistoryWindow,
+});
+export type OrchestrationThreadHistoryPage = typeof OrchestrationThreadHistoryPage.Type;
 
 export const ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
