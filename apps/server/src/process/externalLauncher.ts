@@ -24,6 +24,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -298,6 +299,11 @@ const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEdit
   return yield* buildAvailableEditors(platform, env);
 });
 
+export const cacheAcrossCallerInterruptions = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.map(Effect.cached(effect), (cached) =>
+    Effect.flatMap(Effect.forkDetach(cached, { startImmediately: true }), Fiber.join),
+  );
+
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
@@ -448,8 +454,10 @@ export const make = Effect.gen(function* () {
   // serverGetConfig handshake that gates thread subscriptions — every
   // reconnect paid the full scan while the user watched "Catching up…".
   // Editors appear on a machine at human cadence; a restart noticing a
-  // freshly installed one is a fine trade for a fast reconnect.
-  const cachedAvailableEditors = yield* Effect.cached(
+  // freshly installed one is a fine trade for a fast reconnect. The detached
+  // waiter is important: the config request has a timeout, and a caller
+  // interrupt must not become the process-wide cached result.
+  const cachedAvailableEditors = yield* cacheAcrossCallerInterruptions(
     provideCommandResolutionServices(resolveAvailableEditors()),
   );
 
