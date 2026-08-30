@@ -1453,13 +1453,26 @@ const makeWsRpcLayer = (
       );
 
       const loadServerConfig = Effect.gen(function* () {
-        const keybindingsConfig = yield* keybindings.loadConfigState;
-        const providers = yield* providerRegistry.getProviders;
-        const settings = ServerSettings.redactServerSettingsForClient(
-          yield* serverSettings.getSettings,
-        );
-        const environment = yield* serverEnvironment.getDescriptor;
-        const auth = yield* serverAuth.getDescriptor();
+        // Fetched concurrently: none of these reads depend on another, and
+        // this handshake gates every thread subscription on connect — the
+        // client keeps "Catching up…" on screen until it answers — so each
+        // serialized read here was pure added latency on every reconnect.
+        // Editor discovery is the slow one (a PATH scan per editor); it is
+        // cached process-wide by ExternalLauncher, so only the first connect
+        // after startup pays for it at all.
+        const [keybindingsConfig, providers, rawSettings, environment, auth, availableEditors] =
+          yield* Effect.all(
+            [
+              keybindings.loadConfigState,
+              providerRegistry.getProviders,
+              serverSettings.getSettings,
+              serverEnvironment.getDescriptor,
+              serverAuth.getDescriptor(),
+              resolveAvailableEditorsForConfig(externalLauncher.resolveAvailableEditors()),
+            ],
+            { concurrency: "unbounded" },
+          );
+        const settings = ServerSettings.redactServerSettingsForClient(rawSettings);
 
         return {
           environment,
@@ -1469,9 +1482,7 @@ const makeWsRpcLayer = (
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
-          availableEditors: yield* resolveAvailableEditorsForConfig(
-            externalLauncher.resolveAvailableEditors(),
-          ),
+          availableEditors,
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,

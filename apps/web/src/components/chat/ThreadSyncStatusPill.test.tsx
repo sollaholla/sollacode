@@ -28,4 +28,16 @@ describe("ThreadSyncStatusPill", () => {
     expect(markup).toContain(title);
     expect(markup).toContain(detail);
   });
+
+  it.each([["loading"], ["syncing"]] as const)(
+    "lets pointer input through during %s: syncing is a status, not a modal",
+    (phase) => {
+      const markup = renderToStaticMarkup(<ThreadSyncOverlay phase={phase} />);
+
+      expect(markup).toContain("pointer-events-none");
+      // A near-opaque veil is as blocking as a captured tap: what is under it
+      // must stay legible enough to act on.
+      expect(markup).not.toContain("bg-background/94");
+    },
+  );
 });

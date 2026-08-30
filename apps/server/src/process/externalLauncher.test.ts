@@ -155,6 +155,38 @@ it.effect("discovers editors through the service API", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("scans for editors once per process, not once per connect", () =>
+  Effect.gen(function* () {
+    // Discovery sat on the serverGetConfig handshake that gates every thread
+    // subscription; a PATH scan per reconnect was pure "Catching up…" time.
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+    const codeShim = path.join(binDir, "code.CMD");
+    yield* fileSystem.writeFileString(codeShim, "@echo off\r\n");
+
+    const editors = yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      const first = yield* launcher.resolveAvailableEditors();
+      // The filesystem changing under a running process must not change the
+      // answer: the second call is the cache, not another scan.
+      yield* fileSystem.remove(codeShim);
+      const second = yield* launcher.resolveAvailableEditors();
+      return { first, second };
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: { PATH: binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+        }),
+      ),
+    );
+
+    assert.equal(editors.first.includes("vscode"), true);
+    assert.deepEqual(editors.second, editors.first);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("rejects unknown editors through the service API", () =>
   Effect.gen(function* () {
     const launcher = yield* ExternalLauncher.ExternalLauncher;
