@@ -26,6 +26,7 @@ import {
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
 import { selectLegacyBrowserProfile } from "./browserProfileScope.ts";
+import { withChromeClientHintBrand } from "./clientHints.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 // Electron strips the `persist:` marker when it names the on-disk folder.
@@ -521,6 +522,22 @@ export const make = Effect.gen(function* BrowserSessionMake() {
           if (cleanedUserAgent !== nativeUserAgent && cleanedUserAgent.length > 0) {
             browserSession.setUserAgent(cleanedUserAgent);
           }
+          // Cleaning the UA string above is only half of the Chrome identity:
+          // Electron's Chromium still advertises a "Chromium" brand and NO
+          // "Google Chrome" brand in its `Sec-CH-UA` client-hint headers, and
+          // `setUserAgent` does not touch those. Google's sign-in integrity
+          // gate reads these headers server-side and redirects a
+          // Chromium-but-not-Chrome request to /signin/rejected AFTER the
+          // account chooser — which is why every fix that only edited the UA
+          // string still failed at the credential step (measured 2026-08-30:
+          // clean UA string, yet navigator.userAgentData.brands = [Chromium]
+          // with no Google Chrome brand, and clicking an account jumped to
+          // /signin/rejected before any password). Present the same coherent
+          // Chrome identity in the client hints as in the UA string. See
+          // clientHints.ts for the full history.
+          browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+            callback({ requestHeaders: withChromeClientHintBrand(details.requestHeaders) });
+          });
           browserSession.on("will-download", (_downloadEvent, item, guest) => {
             // Must be synchronous: Electron raises the save panel as soon as
             // this handler returns without a path set.
