@@ -20,6 +20,7 @@ import { PreviewRemoteConsole } from "./PreviewRemoteConsole";
 import {
   focusRemoteKeyboardForPoint,
   remoteKeyboardActionForBeforeInput,
+  remoteKeyboardTextForInput,
 } from "./remoteEditableRegions";
 import { mapRemotePointerToViewport } from "./remotePointerMapping";
 import {
@@ -290,8 +291,8 @@ export function PreviewRemoteSurface(props: {
   const handleVirtualKeyboardKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (!aimable) return;
-      // Plain characters are delivered by beforeinput on both software and
-      // hardware keyboards. Sending them here as well duplicates every key.
+      // Plain characters are delivered by the input event on both software
+      // and hardware keyboards. Sending them here as well duplicates them.
       if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) return;
       handleKeyDown(event);
     },
@@ -309,6 +310,22 @@ export function PreviewRemoteSurface(props: {
       if (!action) return;
       event.preventDefault();
       void send(action);
+    },
+    [aimable, send],
+  );
+
+  const handleVirtualKeyboardInput = useCallback(
+    (event: React.FormEvent<HTMLInputElement>) => {
+      if (!aimable) return;
+      const native = event.nativeEvent as InputEvent;
+      const text = remoteKeyboardTextForInput({
+        data: native.data,
+        value: event.currentTarget.value,
+        isComposing: native.isComposing,
+      });
+      if (native.isComposing) return;
+      event.currentTarget.value = "";
+      if (text) void send({ kind: "type", text });
     },
     [aimable, send],
   );
@@ -451,10 +468,7 @@ export function PreviewRemoteSurface(props: {
             spellCheck={false}
             onKeyDown={handleVirtualKeyboardKeyDown}
             onBeforeInput={handleVirtualKeyboardBeforeInput}
-            onInput={(event) => {
-              // Unknown edit types must not accumulate invisible local text.
-              event.currentTarget.value = "";
-            }}
+            onInput={handleVirtualKeyboardInput}
           />
         ) : null}
         {frame ? (

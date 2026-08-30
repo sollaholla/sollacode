@@ -41,11 +41,6 @@ export function remoteKeyboardActionForBeforeInput(input: {
   readonly data: string | null;
 }): PreviewRemoteInputAction | null {
   switch (input.inputType) {
-    case "insertText":
-    case "insertFromPaste":
-    case "insertReplacementText":
-    case "insertCompositionText":
-      return input.data ? { kind: "type", text: input.data.slice(0, 256) } : null;
     case "insertLineBreak":
     case "insertParagraph":
       return { kind: "press", key: "Enter" };
@@ -56,4 +51,20 @@ export function remoteKeyboardActionForBeforeInput(input: {
     default:
       return null;
   }
+}
+
+/**
+ * Software keyboards do not consistently expose inserted text through
+ * `beforeinput` (notably iOS Safari through a mirrored page). The subsequent
+ * `input` event does carry the hidden input's resulting value, so text is read
+ * there and the input is cleared after every committed edit.
+ */
+export function remoteKeyboardTextForInput(input: {
+  readonly data: string | null;
+  readonly value: string;
+  readonly isComposing: boolean;
+}): string | null {
+  if (input.isComposing) return null;
+  const text = input.value || input.data || "";
+  return text === "" ? null : text.slice(0, 256);
 }
