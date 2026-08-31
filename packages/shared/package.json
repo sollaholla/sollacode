@@ -234,6 +234,10 @@
     "./devProxy": {
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
+    },
+    "./previewComputerControl": {
+      "types": "./src/previewComputerControl.ts",
+      "import": "./src/previewComputerControl.ts"
     }
   },
   "scripts": {
