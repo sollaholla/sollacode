@@ -1417,6 +1417,26 @@ export class PreviewAutomationScreenshotUnavailableError extends Schema.TaggedEr
   }
 }
 
+/**
+ * Remote input arrives as frame fractions and must be converted against the
+ * host's measured guest viewport. A host that has not measured one yet (page
+ * still attaching, or a build predating viewport sizing) cannot place the
+ * gesture, and silently guessing coordinates would click the wrong element.
+ */
+export class PreviewAutomationViewportUnavailableError extends Schema.TaggedErrorClass<PreviewAutomationViewportUnavailableError>()(
+  "PreviewAutomationViewportUnavailableError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: PreviewTabId,
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The desktop browser did not report a measured viewport for this tab. ${this.reason}`;
+  }
+}
+
 export const PreviewAutomationError = Schema.Union([
   PreviewAutomationUnavailableError,
   PreviewAutomationNoAvailableHostError,
@@ -1435,6 +1455,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationScreenshotUnavailableError,
+  PreviewAutomationViewportUnavailableError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
 
