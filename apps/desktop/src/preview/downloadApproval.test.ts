@@ -2,12 +2,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   downloadDomain,
+  registrableDomain,
   resolveDownloadApproval,
   resolveDownloadApprovalEffects,
 } from "./downloadApproval.ts";
 
 describe("downloadDomain", () => {
-  it("attributes a download to its host", () => {
+  it("attributes a download to its own site when no page speaks for it", () => {
     expect(downloadDomain("https://grok.com/files/a.mp4")).toBe("grok.com");
   });
 
@@ -27,10 +28,21 @@ describe("downloadDomain", () => {
     expect(downloadDomain("blob:null/6f1e-42", "https://grok.com/chat")).toBe("grok.com");
   });
 
-  it("prefers the download's own host over the page it was started from", () => {
-    expect(downloadDomain("https://cdn.grok.com/a.mp4", "https://grok.com/chat")).toBe(
-      "cdn.grok.com",
+  it("attributes a CDN download to the site that started it, not the CDN", () => {
+    // The reported bug: allowing the file's own host answered for that host
+    // alone, so the next file — from another CDN node, or another subdomain —
+    // asked all over again.
+    expect(downloadDomain("https://cdn1.suno.ai/track.mp3", "https://suno.com/song/1")).toBe(
+      "suno.com",
     );
+    expect(downloadDomain("https://audiopipe.suno.ai/x.mp3", "https://studio.suno.com/a")).toBe(
+      "suno.com",
+    );
+  });
+
+  it("collapses a site's own subdomains onto one answer", () => {
+    expect(downloadDomain("https://cdn.grok.com/a.mp4", "https://grok.com/chat")).toBe("grok.com");
+    expect(downloadDomain("https://cdn1.grok.com/a.mp4")).toBe("grok.com");
   });
 
   it("returns nothing attributable for a URL it cannot parse", () => {
@@ -84,5 +96,31 @@ describe("resolveDownloadApprovalEffects", () => {
       keepFile: false,
       rememberDomain: false,
     });
+  });
+});
+
+describe("registrableDomain", () => {
+  it("collapses subdomains onto the site that owns them", () => {
+    expect(registrableDomain("cdn1.suno.ai")).toBe("suno.ai");
+    expect(registrableDomain("a.b.c.example.com")).toBe("example.com");
+    expect(registrableDomain("example.com")).toBe("example.com");
+  });
+
+  it("keeps a multi-tenant suffix's tenants apart", () => {
+    // One answer must never speak for every tailnet, or every GitHub page.
+    expect(registrableDomain("mac.tail1234.ts.net")).toBe("tail1234.ts.net");
+    expect(registrableDomain("someone.github.io")).toBe("someone.github.io");
+    expect(registrableDomain("shop.example.co.uk")).toBe("example.co.uk");
+  });
+
+  it("leaves addresses and single labels whole", () => {
+    expect(registrableDomain("127.0.0.1")).toBe("127.0.0.1");
+    expect(registrableDomain("[::1]")).toBe("[::1]");
+    expect(registrableDomain("localhost")).toBe("localhost");
+    expect(registrableDomain("")).toBe("");
+  });
+
+  it("normalises case and a trailing root dot", () => {
+    expect(registrableDomain("CDN1.Suno.AI.")).toBe("suno.ai");
   });
 });
