@@ -5051,7 +5051,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         page = {
           ...page,
           visibleText: axText,
-          documentKind: pdfDocument ? "pdf" : page.documentKind,
+          ...(pdfDocument ? { documentKind: "pdf" as const } : {}),
         };
       } else if (pdfDocument && page.documentKind !== "pdf") {
         page = { ...page, documentKind: "pdf" };
