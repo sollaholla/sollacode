@@ -3096,7 +3096,7 @@ export default function SidebarV2() {
                             disabled={clearingSettled}
                             data-testid="sidebar-v2-settled-shelf-clear"
                             title={`Archive all ${settledThreads.length} settled threads`}
-                            className="shrink-0 cursor-pointer rounded px-1 text-xs font-medium text-muted-foreground/40 opacity-0 transition-opacity hover:text-sidebar-foreground focus-visible:opacity-100 disabled:cursor-default disabled:opacity-40 group-hover/settled-shelf:opacity-100"
+                            className="shrink-0 cursor-pointer rounded px-1 text-xs font-medium text-muted-foreground/40 opacity-0 transition-opacity hover:text-sidebar-foreground focus-visible:opacity-100 disabled:cursor-default disabled:opacity-40 group-hover/settled-shelf:opacity-100 pointer-coarse:opacity-100"
                           >
                             {clearingSettled ? "Clearing…" : "Clear"}
                           </button>

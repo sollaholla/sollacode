@@ -3320,7 +3320,7 @@ export default function ThreadTerminalDrawer({
                   {normalizedTerminalIds.length > 1 ? (
                     <button
                       type="button"
-                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
                       aria-label={`Close ${label}`}
                       onClick={() => onCloseTerminal(terminalId)}
                     >
@@ -3800,7 +3800,7 @@ export default function ThreadTerminalDrawer({
                                       <button
                                         type="button"
                                         draggable={false}
-                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
                                         onClick={() => onCloseTerminal(terminalId)}
                                         onMouseDown={(event) => event.stopPropagation()}
                                         aria-label={closeTerminalLabel}
