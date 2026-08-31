@@ -1409,6 +1409,14 @@ describe("deriveWorkLogEntries", () => {
     // `savedPath`; only `path` was read, so the row rendered as a bare
     // "Image view" with nothing to look at (reported 2026-08-31).
     const [entry] = deriveWorkLogEntries([
+      // The real stream is a started/completed PAIR. The started activity has
+      // no savedPath yet, so if the merge takes its payload the path is lost.
+      makeActivity({
+        id: "codex-image-generation-start",
+        kind: "tool.started",
+        summary: "Image view",
+        payload: { itemType: "image_view", title: "Image view", data: { item: {} } },
+      }),
       makeActivity({
         id: "codex-image-generation-complete",
         kind: "tool.completed",
@@ -1431,6 +1439,10 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.readImagePath).toBe(
       "/Users/dev/.codex/generated_images/thread-1/exec-generated.png",
     );
+    // The server authorizes the asset by looking up THIS activity's payload, so
+    // it has to be the completed one that carried savedPath. Pointing at the
+    // started activity would fail authorization and render nothing.
+    expect(entry?.readImageSourceActivityId).toBe("codex-image-generation-complete");
   });
 
   it("recovers image previews from Claude Read invocation details", () => {
