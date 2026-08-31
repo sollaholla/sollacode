@@ -226,6 +226,66 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
 
+/**
+ * A position expressed as fractions of the rendered frame, 0..1 on each axis.
+ * Phones never learn the guest's CSS viewport (frames arrive resized), so the
+ * server converts fractions to CSS pixels against the host's measured viewport
+ * at dispatch time.
+ */
+export const PreviewRemoteFramePoint = Schema.Struct({
+  x: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+  y: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+});
+export type PreviewRemoteFramePoint = typeof PreviewRemoteFramePoint.Type;
+
+/**
+ * Scroll deltas as fractions of the guest viewport per axis. A fling can cover
+ * several viewports; the bound exists so a client bug cannot request an
+ * effectively unbounded scroll.
+ */
+const PreviewRemoteScrollDelta = Schema.Finite.check(
+  Schema.isBetween({ minimum: -32, maximum: 32 }),
+);
+
+export const PreviewRemoteInputAction = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("click"),
+    position: PreviewRemoteFramePoint,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("drag"),
+    from: PreviewRemoteFramePoint,
+    to: PreviewRemoteFramePoint,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("scroll"),
+    deltaX: PreviewRemoteScrollDelta,
+    deltaY: PreviewRemoteScrollDelta,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("type"),
+    text: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("press"),
+    key: TrimmedNonEmptyString.check(Schema.isMaxLength(32)),
+  }),
+]);
+export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;
+
+/** Forwards one user gesture from a remote client into the desktop host's tab. */
+export const PreviewRemoteInputInput = Schema.Struct({
+  threadId: ThreadId,
+  tabId: PreviewTabId,
+  action: PreviewRemoteInputAction,
+});
+export type PreviewRemoteInputInput = typeof PreviewRemoteInputInput.Type;
+
+export const PreviewRemoteInputResult = Schema.Struct({
+  deliveredAt: Schema.String,
+});
+export type PreviewRemoteInputResult = typeof PreviewRemoteInputResult.Type;
+
 /** Authoritative tab set committed by a close operation. */
 export const PreviewCloseResult = Schema.Struct({
   ...PreviewListResult.fields,

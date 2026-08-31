@@ -124,6 +124,7 @@ import { VmAgentStore } from "./persistence/Services/VmAgents.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { captureRemotePreviewSnapshot } from "./preview/RemotePreviewCapture.ts";
+import { dispatchRemotePreviewInput } from "./preview/RemotePreviewInput.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -2713,6 +2714,22 @@ const makeWsRpcLayer = (
               const environmentId = yield* serverEnvironment.getEnvironmentId;
               const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
               return yield* captureRemotePreviewSnapshot({
+                broker: previewAutomationBroker,
+                environmentId,
+                sessionId: currentSessionId,
+                request: input,
+                issuedAt,
+              });
+            }),
+            { "rpc.aggregate": "preview" },
+          ),
+        [WS_METHODS.previewRemoteInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewRemoteInput,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId;
+              const issuedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+              return yield* dispatchRemotePreviewInput({
                 broker: previewAutomationBroker,
                 environmentId,
                 sessionId: currentSessionId,
