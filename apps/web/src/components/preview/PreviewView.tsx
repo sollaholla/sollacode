@@ -44,6 +44,8 @@ import { PreviewUnreachable } from "./PreviewUnreachable";
 import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { isElectron } from "~/env";
+import { RemoteBrowserFrame } from "./RemoteBrowserFrame";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { useLoadingProgress } from "./useLoadingProgress";
 import { usePreviewSession } from "./usePreviewSession";
@@ -728,13 +730,26 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {runtimeTabId && snapshot && !showEmptyState ? (
-          <BrowserSurfaceSlot
-            key={runtimeTabId}
-            tabId={runtimeTabId}
-            visible={visible && !isUnreachable}
-            audible={visible && !isUnreachable}
-            className="absolute inset-0 h-full w-full"
-          />
+          isElectron ? (
+            <BrowserSurfaceSlot
+              key={runtimeTabId}
+              tabId={runtimeTabId}
+              visible={visible && !isUnreachable}
+              audible={visible && !isUnreachable}
+              className="absolute inset-0 h-full w-full"
+            />
+          ) : tabId ? (
+            // Non-Electron clients (phone Safari over Tailscale, plain
+            // browsers) have no local guest to present; show the desktop
+            // host's rendered tab and forward touches to it instead.
+            <RemoteBrowserFrame
+              key={tabId}
+              threadRef={threadRef}
+              tabId={tabId}
+              visible={visible && !isUnreachable}
+              className="absolute inset-0 h-full w-full"
+            />
+          ) : null
         ) : null}
         {showEmptyState ? (
           <PreviewEmptyState
