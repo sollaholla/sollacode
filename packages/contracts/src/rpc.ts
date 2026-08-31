@@ -159,6 +159,8 @@ import {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewRemoteInputInput,
+  PreviewRemoteInputResult,
   PreviewRemoteSnapshotInput,
   PreviewRemoteSnapshotResult,
   PreviewReportStatusInput,
@@ -301,6 +303,7 @@ export const WS_METHODS = {
   previewClose: "preview.close",
   previewList: "preview.list",
   previewRemoteSnapshot: "preview.remoteSnapshot",
+  previewRemoteInput: "preview.remoteInput",
   previewReportStatus: "preview.reportStatus",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
@@ -884,6 +887,12 @@ export const WsPreviewRemoteSnapshotRpc = Rpc.make(WS_METHODS.previewRemoteSnaps
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewRemoteInputRpc = Rpc.make(WS_METHODS.previewRemoteInput, {
+  payload: PreviewRemoteInputInput,
+  success: PreviewRemoteInputResult,
+  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus, {
   payload: PreviewReportStatusInput,
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
@@ -1342,6 +1351,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewCloseRpc,
   WsPreviewListRpc,
   WsPreviewRemoteSnapshotRpc,
+  WsPreviewRemoteInputRpc,
   WsPreviewReportStatusRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
