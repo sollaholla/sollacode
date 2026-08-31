@@ -70,6 +70,31 @@ if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
 
+// Native crashes leave nothing behind on their own. The main process died
+// once on 0.1.332 with a SIGSEGV inside a Chromium runloop task, and all that
+// survived was an OS report whose Electron frames resolve to the nearest
+// exported symbol — enough to see it was a main-thread native fault, not
+// enough to name the call. Crashpad writes a real minidump next to the app's
+// own state instead, and `child-process-gone` is otherwise invisible: a GPU or
+// utility process can die and take features with it while the logs stay quiet.
+//
+// Reporting stays local. `uploadToServer: false` keeps dumps on the machine —
+// this collects evidence for the person running the app, it does not phone
+// home.
+Electron.crashReporter.start({ uploadToServer: false });
+
+Electron.app.on("child-process-gone", (_event, details) => {
+  Effect.runSync(
+    Effect.logWarning("desktop.childProcessGone", {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      ...(details.serviceName === undefined ? {} : { serviceName: details.serviceName }),
+      ...(details.name === undefined ? {} : { name: details.name }),
+    }),
+  );
+});
+
 // Do not rename the app here.
 //
 // `app.getName()` looks like a cosmetic label, but Electron derives two
