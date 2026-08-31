@@ -884,6 +884,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * A window covers every event an action emits, however many that is.
    */
   const agentInputWindows = new Map<string, number>();
+  /**
+   * Sync-readable mirror of the window above. `before-input-event` is
+   * synchronous and cannot consult a Clock, so the deadline is enforced by a
+   * forked expiry rather than compared against wall-clock time here.
+   */
+  const agentInputActiveTabs = new Set<string>();
+  const agentInputWindowGenerations = new Map<string, number>();
+  let agentInputWindowGeneration = 0;
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -2313,6 +2321,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     const now = yield* currentMillis;
     agentInputWindows.set(tabId, now + AGENT_INPUT_WINDOW_MS);
+    agentInputActiveTabs.add(tabId);
+    const windowGeneration = ++agentInputWindowGeneration;
+    agentInputWindowGenerations.set(tabId, windowGeneration);
+    runFork(
+      Effect.sleep(AGENT_INPUT_WINDOW_MS).pipe(
+        Effect.map(() => {
+          // A newer action owns a later generation; only the latest expires.
+          if (agentInputWindowGenerations.get(tabId) !== windowGeneration) return;
+          agentInputWindowGenerations.delete(tabId);
+          agentInputActiveTabs.delete(tabId);
+        }),
+      ),
+    );
     yield* Ref.update(expectedAgentInputsRef, (allExpected) =>
       replaceMap(allExpected, (copy) => {
         const pending = (allExpected.get(tabId) ?? []).filter(
@@ -2342,6 +2363,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     (synchronousAgentKeyInputs.get(tabId) ?? []).some((expected) =>
       inputSignalsMatch(expected, { kind: "key", key: input.key, code: input.code }),
     );
+
+  /**
+   * Whether this guest keystroke came from automation rather than the person.
+   *
+   * A paste or a typed sequence emits more key events than are individually
+   * registered, so the per-event list alone under-reports; the action window
+   * covers the rest of the burst.
+   */
+  const isAgentOriginatedKey = (tabId: string, input: Electron.Input): boolean =>
+    isSynchronousAgentKey(tabId, input) || agentInputActiveTabs.has(tabId);
 
   const attachListeners = Effect.fn("PreviewManager.attachListeners")(function* (
     tabId: string,
@@ -2677,7 +2708,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       if (!listenersActive) return;
-      if (shouldForwardAppShortcut(input)) {
+      // Never forward a chord the AGENT dispatched. This gate had no agent
+      // check at all, while its sibling below took `expectedAgentInput` — so an
+      // automated Cmd+V inside a guest was classified as an app shortcut and
+      // replayed into the main window with sendInputEvent, pasting the agent's
+      // clipboard into whatever the user had focused, typically the composer
+      // (reported 2026-08-31). Preview automation must never produce input
+      // outside its own guest.
+      if (!isAgentOriginatedKey(tabId, input) && shouldForwardAppShortcut(input)) {
         event.preventDefault();
         runFork(forwardShortcut(input));
         return;
