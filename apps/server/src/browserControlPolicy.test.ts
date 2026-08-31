@@ -35,6 +35,16 @@ describe("T3 browser control policy", () => {
     expect(T3_BROWSER_CONTROL_POLICY).toContain("PDF viewers");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("preview_resize");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("320×200");
+    // `visible` is presentation, not permission. A Suno session stalled on
+    // 2026-08-31 because the agent read `visible: false` on an available tab as
+    // a blocker and abandoned work the user had already approved.
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("`visible` is presentation only");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("`visible: false` is an ordinary background tab");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("never blocks anything");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain(
+      "Driving a reused, background, or not-presented tab is expected and safe",
+    );
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("Never stall approved work");
     // Anti-abuse guardrail is retained regardless of surface.
     expect(T3_BROWSER_CONTROL_POLICY).toContain("Never try to defeat anti-bot checks");
   });

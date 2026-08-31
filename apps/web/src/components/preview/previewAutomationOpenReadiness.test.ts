@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   previewAutomationOpenNeedsOverlay,
+  previewPresentationNotice,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
 
@@ -57,5 +58,19 @@ describe("preview automation open readiness", () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+describe("previewPresentationNotice", () => {
+  it("says a not-on-screen tab is still driveable", () => {
+    const notice = previewPresentationNotice({ requestedPresentation: true, visible: false });
+    expect(notice).toContain("not a blocker");
+    expect(notice).toContain("nothing went wrong");
+    expect(notice).toContain("keep driving this tab");
+  });
+
+  it("stays silent when the tab is presented or presentation was not requested", () => {
+    expect(previewPresentationNotice({ requestedPresentation: true, visible: true })).toBe("");
+    expect(previewPresentationNotice({ requestedPresentation: false, visible: false })).toBe("");
   });
 });
