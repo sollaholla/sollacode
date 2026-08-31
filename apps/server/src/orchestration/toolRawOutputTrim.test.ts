@@ -36,20 +36,69 @@ describe("trimToolRawOutputInPayload", () => {
     assert.equal(payload.data.rawOutput.FileContent.content.length, 150);
   });
 
+  it("caps a rawOutput that is one bare oversized string", () => {
+    const payload = { data: { rawOutput: "y".repeat(64) } };
+    const result = trimToolRawOutputInPayload(payload, 16);
+    assert.isTrue(result.changed);
+    assert.equal(
+      (result.payload as { data: { rawOutput: string } }).data.rawOutput,
+      "y".repeat(16),
+    );
+  });
+
+  it("caps strings inside an MCP item result and keeps arguments whole", () => {
+    const payload = {
+      data: {
+        item: {
+          type: "mcpToolCall",
+          server: "t3-code",
+          tool: "preview_snapshot",
+          arguments: { note: "a".repeat(200) },
+          result: {
+            content: [{ type: "text", text: "b".repeat(300) }],
+            screenshot: "c".repeat(400),
+          },
+        },
+      },
+    };
+    const result = trimToolRawOutputInPayload(payload, 100);
+    assert.isTrue(result.changed);
+    const item = (
+      result.payload as {
+        data: {
+          item: {
+            arguments: { note: string };
+            result: { content: Array<{ text: string }>; screenshot: string };
+            server: string;
+          };
+        };
+      }
+    ).data.item;
+    assert.equal(item.result.content[0]?.text.length, 100);
+    assert.equal(item.result.screenshot.length, 100);
+    assert.equal(item.arguments.note.length, 200);
+    assert.equal(item.server, "t3-code");
+    // The input is never mutated.
+    assert.equal(payload.data.item.result.screenshot.length, 400);
+  });
+
   it("returns the identical payload when nothing exceeds the cap", () => {
-    const payload = { data: { rawOutput: { content: "short" } } };
+    const payload = {
+      data: { rawOutput: { content: "short" }, item: { result: { text: "ok" } } },
+    };
     const result = trimToolRawOutputInPayload(payload, 100);
     assert.isFalse(result.changed);
     assert.equal(result.payload, payload);
   });
 
-  it("leaves payloads without a rawOutput object untouched", () => {
+  it("leaves payloads without trimmable subtrees untouched", () => {
     for (const payload of [
       null,
       "text",
       { data: null },
-      { data: { rawOutput: "a plain string is left alone" } },
       { data: { rawOutput: null } },
+      { data: { item: null } },
+      { data: { item: { result: null } } },
       { noData: true },
     ]) {
       const result = trimToolRawOutputInPayload(payload, 4);
