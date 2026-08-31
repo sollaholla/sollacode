@@ -352,7 +352,7 @@ const DelegationList = memo(function DelegationList(props: {
 }) {
   const emptyCopy = emptyDelegationListCopy(props.hasMoreDelegations);
   return (
-    <section className="flex min-h-0 min-w-0 flex-col bg-muted/8 @3xl/collaboration:border-r">
+    <section className="flex min-h-0 w-full min-w-0 flex-1 flex-col bg-muted/8 @3xl/collaboration:border-r">
       <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-4">
         <span className="text-sm font-medium text-foreground">Handoffs</span>
         <span className="rounded-md border bg-background/60 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">
