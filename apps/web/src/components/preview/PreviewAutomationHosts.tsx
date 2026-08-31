@@ -92,6 +92,10 @@ import {
   runPreviewAutomationLifecycleMutation,
   runPreviewAutomationPostCloseRefresh,
 } from "./previewAutomationLifecycleQueue";
+import {
+  answerPreviewDownloadApproval,
+  type PreviewDownloadApprovalDecision,
+} from "./PreviewDownloadApprovalPrompt";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 import {
@@ -992,6 +996,17 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             );
             await inspectAfterAction(ready);
             return result;
+          }
+          case "answerDownloadApproval": {
+            // Answers a card the desktop is already holding, so it needs no
+            // automatable tab, no viewport and no post-action snapshot — the
+            // remote client is standing in for the person at the machine.
+            const input = request.input as {
+              readonly approvalId: string;
+              readonly decision: PreviewDownloadApprovalDecision;
+            };
+            await answerPreviewDownloadApproval(input.approvalId, input.decision);
+            return null;
           }
           case "scroll": {
             const ready = await requireAutomatableTab();

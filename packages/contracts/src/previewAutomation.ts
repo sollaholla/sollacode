@@ -51,6 +51,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "waitForDownload",
   "selectOption",
   "drag",
+  "answerDownloadApproval",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);

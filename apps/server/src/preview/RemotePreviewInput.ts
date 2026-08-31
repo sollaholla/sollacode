@@ -111,6 +111,16 @@ export function dispatchRemotePreviewInput(input: {
         yield* invoke("press", { key: action.key }, ACTION_TIMEOUT_MS);
         return;
       }
+      case "answerDownloadApproval": {
+        // No viewport round-trip: this answers a card the host is already
+        // holding, so it needs neither coordinates nor a measured surface.
+        yield* invoke(
+          "answerDownloadApproval",
+          { approvalId: action.approvalId, decision: action.decision },
+          ACTION_TIMEOUT_MS,
+        );
+        return;
+      }
       case "history": {
         // The automation surface has no history operations; the host's
         // evaluate op runs in the page's main frame, which is exactly where

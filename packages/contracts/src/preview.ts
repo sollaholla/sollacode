@@ -266,6 +266,15 @@ export const PreviewRemoteInputAction = Schema.Union([
     kind: Schema.Literal("type"),
     text: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(4096)),
   }),
+  // Answering a held download is the one approval a remote client must be able
+  // to give: the file is staged on the desktop and the browser blocks until
+  // someone chooses, so without this the user has to walk to the machine to
+  // press one button.
+  Schema.Struct({
+    kind: Schema.Literal("answerDownloadApproval"),
+    approvalId: TrimmedNonEmptyString,
+    decision: Schema.Literals(["allow-domain", "allow-once", "deny"]),
+  }),
   Schema.Struct({
     kind: Schema.Literal("press"),
     key: TrimmedNonEmptyString.check(Schema.isMaxLength(32)),
