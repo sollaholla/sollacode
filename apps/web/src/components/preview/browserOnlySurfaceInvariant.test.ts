@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { shouldEnsureBrowserOnlySurface } from "./browserOnlySurfaceInvariant";
+import {
+  resolveBrowserOnlySurfaceTarget,
+  shouldEnsureBrowserOnlySurface,
+} from "./browserOnlySurfaceInvariant";
 
 describe("browser-only surface invariant", () => {
   it("fills an open agent panel when its final tab disappears", () => {
@@ -23,5 +26,27 @@ describe("browser-only surface invariant", () => {
     ]) {
       expect(shouldEnsureBrowserOnlySurface(input)).toBe(false);
     }
+  });
+});
+
+describe("browser-only surface refill target", () => {
+  it("adopts the most recently updated existing tab instead of a blank one", () => {
+    expect(
+      resolveBrowserOnlySurfaceTarget({
+        "tab-old": { updatedAt: "2026-08-31T00:00:00.000Z" },
+        "tab-new": { updatedAt: "2026-08-31T00:05:00.000Z" },
+        "tab-mid": { updatedAt: "2026-08-31T00:01:00.000Z" },
+      }),
+    ).toEqual({ kind: "existing", tabId: "tab-new" });
+  });
+
+  it("adopts a single surviving tab rather than stacking a blank beside it", () => {
+    expect(
+      resolveBrowserOnlySurfaceTarget({ "tab-1": { updatedAt: "2026-08-31T00:00:00.000Z" } }),
+    ).toEqual({ kind: "existing", tabId: "tab-1" });
+  });
+
+  it("falls back to a blank tab only when the thread has no tabs at all", () => {
+    expect(resolveBrowserOnlySurfaceTarget({})).toEqual({ kind: "blank" });
   });
 });
