@@ -22,12 +22,18 @@ const PreviewEventHosts = lazy(() =>
 );
 
 export function DesktopRendererHosts() {
-  if (!isElectron) return null;
   return (
     <Suspense fallback={null}>
+      {/* Every client follows the desktop host's tabs: Electron to place its
+          local guests, everyone else so remote frames and Browser buttons
+          know which tabs exist. */}
       <PreviewEventHosts />
-      <PreviewAutomationHosts />
-      <ElectronBrowserHost />
+      {isElectron ? (
+        <>
+          <PreviewAutomationHosts />
+          <ElectronBrowserHost />
+        </>
+      ) : null}
     </Suspense>
   );
 }

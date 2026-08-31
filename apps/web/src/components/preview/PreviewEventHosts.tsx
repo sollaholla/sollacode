@@ -6,7 +6,6 @@ import { type EnvironmentId, type PreviewEvent, ThreadId } from "@t3tools/contra
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useEffect, useRef } from "react";
 
-import { isElectron } from "~/env";
 import { applyPreviewServerEvent, reconcilePreviewEnvironmentSessions } from "~/previewStateStore";
 import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
@@ -81,10 +80,14 @@ function PreviewEventHost({ environmentId }: { readonly environmentId: Environme
   return null;
 }
 
-/** Keep every environment's live browser events independent of the routed thread. */
+/**
+ * Keep every environment's live browser events independent of the routed
+ * thread. All clients need this feed — Electron to place its local guests,
+ * everyone else so remote frames, tab lists, and agent Browser buttons know
+ * which tabs exist on the desktop host.
+ */
 export function PreviewEventHosts() {
   const { environments } = useEnvironments();
-  if (!isElectron) return null;
   return environments.map((environment) => (
     <PreviewEventHost key={environment.environmentId} environmentId={environment.environmentId} />
   ));
