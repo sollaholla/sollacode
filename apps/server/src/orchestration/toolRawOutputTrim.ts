@@ -63,9 +63,19 @@ const trimValue = (
 };
 
 /**
- * Caps every string inside `payload.data.rawOutput`, leaving the rest of the
- * payload untouched. Returns `changed: false` (and the original reference)
- * when nothing exceeded the cap, so callers can skip rewrites.
+ * Caps every string inside the payload subtrees that carry raw tool output,
+ * leaving the rest untouched. Returns `changed: false` (and the original
+ * reference) when nothing exceeded the cap, so callers can skip rewrites.
+ *
+ * Two subtrees qualify:
+ * - `data.rawOutput` — the raw provider result (object shapes are walked, a
+ *   bare string is capped directly).
+ * - `data.item.result` — an MCP call's stored result. Measured 2026-08-30 on
+ *   the live database, single Preview MCP results (page snapshots, element
+ *   dumps) reached 5 MB per row and dominated the oversized-row population
+ *   while `rawOutput` was empty. The only reader is the expanded work-log
+ *   row's raw JSON dump; `item.arguments` and the rest of the item stay
+ *   whole.
  */
 export function trimToolRawOutputInPayload(
   payload: unknown,
@@ -76,19 +86,37 @@ export function trimToolRawOutputInPayload(
   if (data === null || typeof data !== "object" || data === undefined) {
     return { payload, changed: false };
   }
+
+  let nextData = data as Record<string, unknown>;
+  let changed = false;
+
   const rawOutput = (data as { readonly rawOutput?: unknown }).rawOutput;
-  if (rawOutput === null || rawOutput === undefined || typeof rawOutput !== "object") {
-    return { payload, changed: false };
+  if (rawOutput !== null && rawOutput !== undefined) {
+    const trimmed = trimValue(rawOutput, maxChars, 0);
+    if (trimmed.changed) {
+      nextData = { ...nextData, rawOutput: trimmed.value };
+      changed = true;
+    }
   }
 
-  const trimmed = trimValue(rawOutput, maxChars, 0);
-  if (!trimmed.changed) return { payload, changed: false };
+  const item = (data as { readonly item?: unknown }).item;
+  if (item !== null && typeof item === "object") {
+    const result = (item as { readonly result?: unknown }).result;
+    if (result !== null && result !== undefined) {
+      const trimmed = trimValue(result, maxChars, 0);
+      if (trimmed.changed) {
+        nextData = {
+          ...nextData,
+          item: { ...(item as Record<string, unknown>), result: trimmed.value },
+        };
+        changed = true;
+      }
+    }
+  }
 
+  if (!changed) return { payload, changed: false };
   return {
-    payload: {
-      ...(payload as Record<string, unknown>),
-      data: { ...(data as Record<string, unknown>), rawOutput: trimmed.value },
-    },
+    payload: { ...(payload as Record<string, unknown>), data: nextData },
     changed: true,
   };
 }
