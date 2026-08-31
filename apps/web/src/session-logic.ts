@@ -1208,7 +1208,20 @@ function extractToolCallId(payload: Record<string, unknown> | null): string | nu
 }
 
 const INLINE_READ_IMAGE_EXTENSIONS = [".avif", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".webp"];
-const READ_PATH_KEYS = ["path", "filePath", "file_path", "absolutePath", "absolute_path"] as const;
+// `savedPath` is where Codex writes an image it GENERATED (item.type
+// "imageGeneration"), as opposed to `path` for one it merely viewed. Both
+// arrive as itemType `image_view`, so leaving it out meant a generated image
+// rendered as a bare "Image view" row with nothing to look at, while a viewed
+// one rendered fine.
+const READ_PATH_KEYS = [
+  "path",
+  "filePath",
+  "file_path",
+  "absolutePath",
+  "absolute_path",
+  "savedPath",
+  "saved_path",
+] as const;
 
 function isInlineRasterImagePath(path: string): boolean {
   const normalized = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";

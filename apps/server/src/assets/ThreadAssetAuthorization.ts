@@ -5,7 +5,20 @@ import {
   normalizeProjectPathForComparison,
 } from "@t3tools/shared/path";
 
-const READ_PATH_KEYS = ["path", "filePath", "file_path", "absolutePath", "absolute_path"] as const;
+// `savedPath` is where Codex writes an image it GENERATED (item.type
+// "imageGeneration"), as opposed to `path` for one it merely viewed. Both
+// arrive as itemType `image_view`, so leaving it out meant a generated image
+// rendered as a bare "Image view" row with nothing to look at, while a viewed
+// one rendered fine.
+const READ_PATH_KEYS = [
+  "path",
+  "filePath",
+  "file_path",
+  "absolutePath",
+  "absolute_path",
+  "savedPath",
+  "saved_path",
+] as const;
 const READ_NESTED_KEYS = ["input", "rawInput", "arguments", "item", "data", "files"] as const;
 const DISALLOWED_READ_ITEM_TYPES = new Set([
   "command_execution",
