@@ -74,6 +74,7 @@ import {
   PaintbrushIcon,
   CircleStopIcon,
   MinusIcon,
+  MouseIcon,
   SlidersHorizontalIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -82,6 +83,10 @@ import {
   XIcon,
   ZapIcon,
 } from "lucide-react";
+import {
+  previewComputerControlAction,
+  previewComputerControlHeading,
+} from "@t3tools/shared/previewComputerControl";
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
@@ -2756,6 +2761,7 @@ type WorkEntryIconName =
   | "globe"
   | "hammer"
   | "message-circle"
+  | "mouse"
   | "square-pen"
   | "terminal"
   | "wrench"
@@ -2780,6 +2786,8 @@ function WorkEntryIconSvg({ name, className }: { name: WorkEntryIconName; classN
       return <HammerIcon className={className} aria-hidden />;
     case "message-circle":
       return <MessageCircleIcon className={className} aria-hidden />;
+    case "mouse":
+      return <MouseIcon className={className} aria-hidden />;
     case "square-pen":
       return <SquarePenIcon className={className} aria-hidden />;
     case "terminal":
@@ -2924,6 +2932,14 @@ function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
   }
   if (workEntry.itemType === "web_search") return "globe";
   if (workEntry.itemType === "image_view") return "eye";
+  if (
+    previewComputerControlAction({
+      ...(workEntry.toolTitle !== undefined ? { toolTitle: workEntry.toolTitle } : {}),
+      toolData: workEntry.toolData,
+    }) !== null
+  ) {
+    return "mouse";
+  }
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
@@ -2945,6 +2961,15 @@ function capitalizePhrase(value: string): string {
 }
 
 function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
+  // The built-in Preview MCP tools are the agent driving the user's browser;
+  // "t3-code · preview_click" describes the transport, not the act.
+  const computerControlAction = previewComputerControlAction({
+    ...(workEntry.toolTitle !== undefined ? { toolTitle: workEntry.toolTitle } : {}),
+    toolData: workEntry.toolData,
+  });
+  if (computerControlAction !== null) {
+    return previewComputerControlHeading(computerControlAction);
+  }
   if (!workEntry.toolTitle) {
     return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
   }

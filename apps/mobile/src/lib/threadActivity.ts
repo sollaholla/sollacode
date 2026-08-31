@@ -8,6 +8,10 @@ import type {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import {
+  previewComputerControlAction,
+  previewComputerControlHeading,
+} from "@t3tools/shared/previewComputerControl";
 
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -49,6 +53,7 @@ export interface ThreadFeedActivity {
     | "globe"
     | "hammer"
     | "message"
+    | "mouse"
     | "warning"
     | "wrench"
     | "zap";
@@ -525,6 +530,14 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) return "edit";
   if (entry.itemType === "web_search") return "globe";
   if (entry.itemType === "image_view") return "eye";
+  if (
+    previewComputerControlAction({
+      ...(entry.toolTitle !== undefined ? { toolTitle: entry.toolTitle } : {}),
+      toolData: entry.toolData,
+    }) !== null
+  ) {
+    return "mouse";
+  }
   if (entry.itemType === "mcp_tool_call") return "wrench";
   if (entry.itemType === "dynamic_tool_call" || entry.itemType === "collab_agent_tool_call") {
     return "hammer";
@@ -599,6 +612,15 @@ function capitalizePhrase(value: string): string {
 }
 
 function workEntryHeading(workEntry: WorkLogEntry): string {
+  // The built-in Preview MCP tools are the agent driving the user's browser;
+  // "t3-code · preview_click" describes the transport, not the act.
+  const computerControlAction = previewComputerControlAction({
+    ...(workEntry.toolTitle !== undefined ? { toolTitle: workEntry.toolTitle } : {}),
+    toolData: workEntry.toolData,
+  });
+  if (computerControlAction !== null) {
+    return previewComputerControlHeading(computerControlAction);
+  }
   if (!workEntry.toolTitle) {
     return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
   }
