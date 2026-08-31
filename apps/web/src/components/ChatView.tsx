@@ -7354,14 +7354,24 @@ function ChatViewContent(props: ChatViewProps) {
 
   const onSendRef = useRef(onSend);
   onSendRef.current = onSend;
-  const sendAwayVoiceTranscriptRef = useRef<(transcript: string) => void>(() => undefined);
-  sendAwayVoiceTranscriptRef.current = (transcript) => {
-    if (!activeThread || !isServerThread) return;
+  // Reports whether the send actually started. The caller closes the
+  // "Transcription ready" card on the strength of that: closing over a send
+  // that silently returned early would drop the user's words with no trace.
+  const sendAwayVoiceTranscriptRef = useRef<
+    (transcript: string, target?: ScopedThreadRef | DraftId) => boolean
+  >(() => false);
+  // `target` pins the send to the conversation the recording belongs to.
+  // This ref is reassigned on every render, so a transcript offered for a
+  // thread the user has since navigated away from would otherwise resolve
+  // `activeThread` at CLICK time and post into whatever chat is focused now.
+  sendAwayVoiceTranscriptRef.current = (transcript, target) => {
+    if (!activeThread || !isServerThread) return false;
+    const draftTarget = target ?? composerDraftTarget;
     const draftStore = useComposerDraftStore.getState();
-    const prompt =
-      draftStore.getComposerDraft(composerDraftTarget)?.prompt?.trim() || transcript.trim();
-    if (prompt.length === 0) return;
-    const threadIdForSend = activeThread.id;
+    const prompt = draftStore.getComposerDraft(draftTarget)?.prompt?.trim() || transcript.trim();
+    if (prompt.length === 0) return false;
+    const threadIdForSend =
+      typeof draftTarget === "string" ? activeThread.id : draftTarget.threadId;
     const createdAt = new Date().toISOString();
     const modelSelection = activeThread.modelSelection;
     const runtimeModeForSend = activeThread.runtimeMode;
@@ -7387,7 +7397,7 @@ function ChatViewContent(props: ChatViewProps) {
       },
     }).then((result) => {
       if (result._tag === "Success") {
-        clearComposerDraftContent(composerDraftTarget);
+        clearComposerDraftContent(draftTarget);
         return;
       }
       if (isAtomCommandInterrupted(result)) return;
@@ -7400,6 +7410,7 @@ function ChatViewContent(props: ChatViewProps) {
         }),
       );
     });
+    return true;
   };
   // Flushes a send the user made while the conversation was still catching up.
   // Their text never left the composer, so replaying the call sends exactly
@@ -7960,8 +7971,19 @@ function ChatViewContent(props: ChatViewProps) {
                       actionProps: {
                         children: "Send",
                         onClick: () => {
+                          if (
+                            !sendAwayVoiceTranscriptRef.current(transcript, composerDraftTarget)
+                          ) {
+                            // Nothing left for the thread. Keep the card up so
+                            // the transcript is still recoverable, and say why
+                            // rather than swallowing the tap.
+                            reportError(
+                              "Could not send transcription",
+                              "Open the conversation this recording belongs to, then send it from there.",
+                            );
+                            return;
+                          }
                           if (transcriptToastId !== null) toastManager.close(transcriptToastId);
-                          sendAwayVoiceTranscriptRef.current(transcript);
                         },
                       },
                       data: {
