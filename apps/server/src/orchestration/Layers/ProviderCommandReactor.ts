@@ -3888,7 +3888,21 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             ...obligation,
             sourceTurnId: activeTurnWorkSourceId(messageId),
           },
-          sourceTurn?.sourceMessageId ?? undefined,
+          // Fall back to the synthetic resume message we just dispatched. A
+          // turn born from a continuation carries no pending_message_id, so
+          // `sourceTurn.sourceMessageId` is null for exactly the turns a
+          // restart strands. The admission UPDATE then resolves its source id
+          // to `COALESCE(NULL, NULL)`, the `EXISTS` over turn-start events can
+          // never match, and the obligation is retired as "a later user turn
+          // won before native synthetic dispatch" without that guard ever
+          // being evaluated. Observed 2026-08-31 on thread 92806586: an
+          // in-place app update settled a 16m36s turn, the boot resume
+          // dispatched its RESUME_PROMPT at 14:58:05, and 2.6s later killed
+          // its own dispatch — the message sat "Queued for Claude" forever.
+          // Keying on `messageId` matches the obligation, which is re-keyed to
+          // that same synthetic message one line above; a genuinely newer user
+          // turn still cancels, because the guard skips only auto-resume ids.
+          sourceTurn?.sourceMessageId ?? messageId,
         );
       }).pipe(Effect.catchCause((cause) => recoverThreadWorkFailure(cause, obligation.attempt)));
 
