@@ -425,12 +425,21 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           const runtimeTabId = previewRuntimeTabId(threadRef, state.serverEpoch, hostedTabId);
           return useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible;
         });
+        // A caller that NAMED a tab gets that tab or nothing. The chain below
+        // exists for requests that named none, but it used to run whenever the
+        // named tab could not be resolved — quietly answering with the last
+        // hosted tab instead. On a phone that surfaced as one tab's title over
+        // a completely different page, which was not even in that thread's tab
+        // strip (reported 2026-08-31). Resolving to null here raises
+        // PreviewAutomationTargetUnavailableError, which is the honest answer.
         tabId =
-          target.tabId ??
-          state.snapshot?.tabId ??
-          presentedHostedTabId ??
-          Object.keys(state.hostedSessions).at(-1) ??
-          null;
+          request.tabId === undefined
+            ? (target.tabId ??
+              state.snapshot?.tabId ??
+              presentedHostedTabId ??
+              Object.keys(state.hostedSessions).at(-1) ??
+              null)
+            : (target.tabId ?? null);
         const unavailableTarget = {
           requestId: request.requestId,
           operation: request.operation,
