@@ -42,12 +42,54 @@ export function frameFraction(size: FrameSize, point: FramePoint): FramePoint | 
 }
 
 /**
+ * The rectangle an `object-fit: contain` image occupies inside its container.
+ * Web panes have a fixed shape, so the frame letterboxes; input landing in the
+ * bars must be ignored rather than mapped onto a page edge.
+ */
+export function containedFrameRect(
+  container: FrameSize,
+  image: FrameSize,
+): ({ readonly left: number; readonly top: number } & FrameSize) | null {
+  if (!(container.width > 0) || !(container.height > 0)) return null;
+  if (!(image.width > 0) || !(image.height > 0)) return null;
+  const scale = Math.min(container.width / image.width, container.height / image.height);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  return {
+    left: (container.width - width) / 2,
+    top: (container.height - height) / 2,
+    width,
+    height,
+  };
+}
+
+/**
+ * Maps a container-relative point to frame fractions through the letterbox.
+ * Returns null when the point is in the bars or the geometry is unusable.
+ */
+export function containedFrameFraction(
+  container: FrameSize,
+  image: FrameSize,
+  point: FramePoint,
+): FramePoint | null {
+  const rect = containedFrameRect(container, image);
+  if (rect === null) return null;
+  const x = point.x - rect.left;
+  const y = point.y - rect.top;
+  if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+  return frameFraction(rect, { x, y });
+}
+
+/**
  * Classifies a completed touch into the remote input it should dispatch.
  *
  * - Stationary touch → click at the start point (long-press stays a click).
  * - Movement after holding ≥ FRAME_DRAG_HOLD_MS → drag from start to end.
  * - Any other movement → scroll, in natural touch direction: dragging the
  *   finger down reveals content above, which is a negative deltaY.
+ *
+ * `size` is the rectangle the frame content occupies; `sample` points are
+ * relative to it (already letterbox-corrected on surfaces that letterbox).
  */
 export function resolveFrameGesture(
   size: FrameSize,

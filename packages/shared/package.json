@@ -238,6 +238,10 @@
     "./previewComputerControl": {
       "types": "./src/previewComputerControl.ts",
       "import": "./src/previewComputerControl.ts"
+    },
+    "./remoteFrameGestures": {
+      "types": "./src/remoteFrameGestures.ts",
+      "import": "./src/remoteFrameGestures.ts"
     }
   },
   "scripts": {

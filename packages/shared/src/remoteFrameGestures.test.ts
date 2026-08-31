@@ -1,12 +1,14 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   FRAME_DRAG_HOLD_MS,
   FRAME_TAP_SLOP_PX,
+  containedFrameFraction,
+  containedFrameRect,
   frameFraction,
   resolveFrameGesture,
   type FrameGestureSample,
-} from "./remoteFrameGestures";
+} from "./remoteFrameGestures.ts";
 
 const size = { width: 400, height: 300 };
 
@@ -30,6 +32,48 @@ describe("frameFraction", () => {
   it("refuses an unmeasured layout instead of dividing by zero", () => {
     expect(frameFraction({ width: 0, height: 300 }, { x: 10, y: 10 })).toBeNull();
     expect(frameFraction({ width: 400, height: 0 }, { x: 10, y: 10 })).toBeNull();
+  });
+});
+
+describe("containedFrameRect", () => {
+  it("pillarboxes a wide container around a narrower image", () => {
+    // 1000×500 container, 800×600 image → scale 5/6 → 666.67×500 centered.
+    const rect = containedFrameRect({ width: 1000, height: 500 }, { width: 800, height: 600 });
+    expect(rect).not.toBeNull();
+    expect(rect?.top).toBe(0);
+    expect(rect?.height).toBe(500);
+    expect(rect?.width).toBeCloseTo(1000 / 1.5, 5);
+    expect(rect?.left).toBeCloseTo((1000 - 1000 / 1.5) / 2, 5);
+  });
+
+  it("letterboxes a tall container above and below a wider image", () => {
+    const rect = containedFrameRect({ width: 400, height: 800 }, { width: 800, height: 600 });
+    expect(rect).toEqual({ left: 0, top: 250, width: 400, height: 300 });
+  });
+
+  it("returns null for unusable geometry", () => {
+    expect(containedFrameRect({ width: 0, height: 10 }, { width: 8, height: 6 })).toBeNull();
+    expect(containedFrameRect({ width: 10, height: 10 }, { width: 0, height: 6 })).toBeNull();
+  });
+});
+
+describe("containedFrameFraction", () => {
+  const container = { width: 400, height: 800 };
+  const image = { width: 800, height: 600 };
+  // Content rect: 400×300 at top 250.
+
+  it("maps points inside the content rect through the letterbox", () => {
+    expect(containedFrameFraction(container, image, { x: 100, y: 400 })).toEqual({
+      x: 0.25,
+      y: 0.5,
+    });
+    expect(containedFrameFraction(container, image, { x: 0, y: 250 })).toEqual({ x: 0, y: 0 });
+    expect(containedFrameFraction(container, image, { x: 400, y: 550 })).toEqual({ x: 1, y: 1 });
+  });
+
+  it("ignores input landing in the letterbox bars", () => {
+    expect(containedFrameFraction(container, image, { x: 100, y: 100 })).toBeNull();
+    expect(containedFrameFraction(container, image, { x: 100, y: 700 })).toBeNull();
   });
 });
 
