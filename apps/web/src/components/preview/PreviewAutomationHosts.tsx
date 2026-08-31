@@ -937,7 +937,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const humanVerification = await inspectReadyTab(ready, { snapshot }).catch(() =>
               getPreviewHumanVerification(ready.runtimeTabId),
             );
-            return { ...snapshot, humanVerification } satisfies PreviewAutomationSnapshot;
+            return {
+              ...snapshot,
+              tabId: ready.tabId,
+              humanVerification,
+            } satisfies PreviewAutomationSnapshot;
           }
           case "click": {
             const ready = await requireAutomatableTab();
