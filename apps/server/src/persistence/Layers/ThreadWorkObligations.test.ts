@@ -1,4 +1,4 @@
-import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import { MessageId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -471,7 +471,8 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
         readonly suffix: string;
         readonly laterMessageIds?: ReadonlyArray<string>;
         readonly includeSourceEvent?: boolean;
-        readonly kind?: "agent-continuation" | "active-turn-recovery";
+        readonly kind?: "agent-continuation" | "active-turn-recovery" | "startup-resume";
+        readonly pendingMessageId?: string | null;
       }) =>
         Effect.gen(function* () {
           const threadId = ThreadId.make(`thread-work-admit-${input.suffix}`);
@@ -484,7 +485,9 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
               thread_id, turn_id, pending_message_id, assistant_message_id, state,
               requested_at, started_at, completed_at, checkpoint_files_json
             ) VALUES (
-              ${threadId}, ${sourceTurnId}, ${sourceMessageId}, ${`assistant-${input.suffix}`},
+              ${threadId}, ${sourceTurnId},
+              ${input.pendingMessageId === undefined ? sourceMessageId : input.pendingMessageId},
+              ${`assistant-${input.suffix}`},
               'completed', ${now}, ${now}, ${now}, '[]'
             )
           `;
@@ -557,6 +560,34 @@ repositoryLayer("ThreadWorkObligationRepository", (it) => {
           updatedAt: later,
         }),
       );
+      // A turn born from a continuation carries no pending_message_id, so a
+      // startup-resume keyed on it resolves its admission source to
+      // COALESCE(NULL, NULL). The EXISTS over turn-start events can then never
+      // match and the obligation is retired as "a later user turn won" without
+      // that guard ever running — every restart mid-turn stranded the thread
+      // on "Queued for Claude" (thread 92806586, 2026-08-31). The reactor now
+      // passes the synthetic resume message id it just dispatched.
+      const orphaned = yield* seed({
+        suffix: "orphaned",
+        kind: "startup-resume",
+        pendingMessageId: null,
+      });
+      assert.isFalse(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: orphaned.obligationId,
+          expectedAttempt: 1,
+          updatedAt: later,
+        }),
+      );
+      assert.isTrue(
+        yield* repository.tryAdmitSyntheticDispatch({
+          obligationId: orphaned.obligationId,
+          expectedAttempt: 1,
+          sourceMessageId: MessageId.make(orphaned.sourceMessageId),
+          updatedAt: later,
+        }),
+      );
+
       // The guard itself still applies to it: newer user intent wins.
       const supersededRecovery = yield* seed({
         suffix: "recovery-superseded",
