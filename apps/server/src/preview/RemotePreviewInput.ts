@@ -111,6 +111,20 @@ export function dispatchRemotePreviewInput(input: {
         yield* invoke("press", { key: action.key }, ACTION_TIMEOUT_MS);
         return;
       }
+      case "history": {
+        // The automation surface has no history operations; the host's
+        // evaluate op runs in the page's main frame, which is exactly where
+        // back/forward/reload belong. The expressions are fixed here — the
+        // client only ever picks one of three names.
+        const expression =
+          action.action === "back"
+            ? "history.back()"
+            : action.action === "forward"
+              ? "history.forward()"
+              : "location.reload()";
+        yield* invoke("evaluate", { expression }, ACTION_TIMEOUT_MS);
+        return;
+      }
     }
   });
 

@@ -1,7 +1,7 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useEffect } from "react";
 
-import { isPreviewSupportedInRuntime } from "../../previewStateStore";
+import { canControlLocalPreviewGuest } from "../../previewStateStore";
 import { resolveThreadDownloadDirectory } from "./threadDownloadDirectory";
 
 /**
@@ -22,7 +22,7 @@ export function PreviewDownloadDirectorySync(props: {
   const { environmentId, threadId, browserProfileThreadId, cwd } = props;
 
   useEffect(() => {
-    if (!isPreviewSupportedInRuntime()) return;
+    if (!canControlLocalPreviewGuest()) return;
     const directory = resolveThreadDownloadDirectory(cwd);
     // No workspace means no better answer than the desktop's own fallback.
     if (directory === null) return;

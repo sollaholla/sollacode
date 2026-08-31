@@ -124,6 +124,19 @@ describe("dispatchRemotePreviewInput", () => {
     }),
   );
 
+  it.effect("maps history actions onto fixed main-frame evaluate expressions", () =>
+    Effect.gen(function* () {
+      const back = run({ kind: "history", action: "back" });
+      yield* back.effect;
+      expect(back.requests.map((request) => request.operation)).toEqual(["evaluate"]);
+      expect(back.requests[0]).toMatchObject({ input: { expression: "history.back()" } });
+
+      const reload = run({ kind: "history", action: "reload" });
+      yield* reload.effect;
+      expect(reload.requests[0]).toMatchObject({ input: { expression: "location.reload()" } });
+    }),
+  );
+
   it.effect("refuses coordinate input when the host has no measured viewport", () =>
     Effect.gen(function* () {
       const { effect, requests } = run(

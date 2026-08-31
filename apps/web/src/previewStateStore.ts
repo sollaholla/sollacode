@@ -675,7 +675,22 @@ export function removePreviewThread(ref: ScopedThreadRef): void {
   changedPreviewThreadKeys.delete(threadKey);
 }
 
+/**
+ * A browser surface can be shown in this runtime. Electron embeds the live
+ * guest; every other client (phone Safari over Tailscale, plain browsers)
+ * renders the desktop host's tab remotely and forwards input to it, so the
+ * browser UI is available anywhere a window exists.
+ */
 export function isPreviewSupportedInRuntime(): boolean {
+  return typeof window !== "undefined";
+}
+
+/**
+ * Whether this renderer owns the local Electron guest. Bridge-bound side
+ * effects (download-directory sync, imperative webview control) require the
+ * bridge itself, not mere surface availability.
+ */
+export function canControlLocalPreviewGuest(): boolean {
   if (typeof window === "undefined") return false;
   return Boolean(window.desktopBridge?.preview);
 }
