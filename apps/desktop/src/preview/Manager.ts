@@ -276,6 +276,13 @@ export const USER_INPUT_DEFERRAL_MS = 5_000;
 const USER_INPUT_DEFERRAL_POLL_MS = 200;
 const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
 
+/**
+ * How long after a dispatched agent action its guest input still counts as the
+ * agent's. Covers the whole event burst of one action — a click's three mouse
+ * events, a drag's interpolated moves — plus the guest's dispatch latency.
+ */
+const AGENT_INPUT_WINDOW_MS = 1_500;
+
 /** Time for a synthetic press's focus change to reach the guest's widget. */
 const AUTOMATION_FOCUS_SETTLE_MS = 120;
 /**
@@ -862,6 +869,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * still consumes the durable one-second entry above.
    */
   const synchronousAgentKeyInputs = new Map<string, ReadonlyArray<PreviewInputSignal>>();
+  /**
+   * Until when a tab's guest input still belongs to the agent.
+   *
+   * Per-event matching alone could never work: one click dispatches three CDP
+   * events (mouseMoved, mousePressed, mouseReleased) against a single
+   * expectation, and a drag interpolates 8 moves per segment against one. Every
+   * unmatched signal fell through to `handleHumanInput`, which armed
+   * `lastUserInputAtMs`, flipped `controller` to "human", and pointed
+   * `userFocusIntent` at the guest — so automation deferred to ITSELF, the
+   * "waiting for you" state latched with nobody touching the machine, and the
+   * keystroke-reclaim path then forwarded presses into the app window with
+   * `sendInputEvent` (reported 2026-08-31: the app icon lighting up mid-run).
+   * A window covers every event an action emits, however many that is.
+   */
+  const agentInputWindows = new Map<string, number>();
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -2260,6 +2282,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const consumeExpectedAgentInput = Effect.fn("PreviewManager.consumeExpectedAgentInput")(
     function* (tabId: string, signal: PreviewInputSignal) {
       const now = yield* currentMillis;
+      const windowUntil = agentInputWindows.get(tabId);
+      if (windowUntil !== undefined) {
+        if (windowUntil > now) return true;
+        agentInputWindows.delete(tabId);
+      }
       return yield* Ref.modify(expectedAgentInputsRef, (allExpected) => {
         const pending = (allExpected.get(tabId) ?? []).filter(
           (expected) => expected.expiresAt > now,
@@ -2285,6 +2312,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     signal: PreviewInputSignal,
   ) {
     const now = yield* currentMillis;
+    agentInputWindows.set(tabId, now + AGENT_INPUT_WINDOW_MS);
     yield* Ref.update(expectedAgentInputsRef, (allExpected) =>
       replaceMap(allExpected, (copy) => {
         const pending = (allExpected.get(tabId) ?? []).filter(
@@ -5491,12 +5519,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       createdAt: clickCreatedAt,
     });
     yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
+    // Register before the first dispatch: this leading mouseMoved used to be
+    // emitted while no expectation and no window existed, so it was always
+    // attributed to the human.
+    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
     yield* send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
       ...point,
       button: "none",
     });
-    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
     yield* send("Input.dispatchMouseEvent", {
       type: "mousePressed",
       ...point,
