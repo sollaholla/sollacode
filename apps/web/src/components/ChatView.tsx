@@ -192,7 +192,10 @@ import {
   type DesktopPreviewOverlay,
 } from "../previewStateStore";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
-import { shouldEnsureBrowserOnlySurface } from "./preview/browserOnlySurfaceInvariant";
+import {
+  resolveBrowserOnlySurfaceTarget,
+  shouldEnsureBrowserOnlySurface,
+} from "./preview/browserOnlySurfaceInvariant";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { RightPanelAutoCollapseOnEmpty } from "./RightPanelAutoCollapseOnEmpty";
@@ -2719,10 +2722,23 @@ function ChatViewContent(props: ChatViewProps) {
       })
     )
       return;
-    // Agent chats own a browser-only sidebar. Keep a real blank Browser tab in
-    // that column instead of exposing the general-purpose surface chooser.
+    // Agent chats own a browser-only sidebar, so the column always holds a real
+    // Browser tab rather than the general-purpose surface chooser. Refilling it
+    // must not invent a tab beside ones that already exist: when this thread
+    // still has host tabs, re-adopt the newest instead of stacking a blank.
+    const target = resolveBrowserOnlySurfaceTarget(activePreviewState.sessions);
+    if (target.kind === "existing") {
+      useRightPanelStore.getState().openBrowser(activeThreadRef, target.tabId);
+      return;
+    }
     useRightPanelStore.getState().open(activeThreadRef, "preview");
-  }, [activeThreadRef, browserOnlySurfaces, rightPanelState.isOpen, rightPanelState.surfaces]);
+  }, [
+    activePreviewState.sessions,
+    activeThreadRef,
+    browserOnlySurfaces,
+    rightPanelState.isOpen,
+    rightPanelState.surfaces,
+  ]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
