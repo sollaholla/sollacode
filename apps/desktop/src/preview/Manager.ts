@@ -2291,8 +2291,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     function* (tabId: string, signal: PreviewInputSignal) {
       const now = yield* currentMillis;
       const windowUntil = agentInputWindows.get(tabId);
-      if (windowUntil !== undefined) {
-        if (windowUntil > now) return true;
+      const windowOpen = windowUntil !== undefined && windowUntil > now;
+      if (windowUntil !== undefined && !windowOpen) {
         agentInputWindows.delete(tabId);
       }
       return yield* Ref.modify(expectedAgentInputsRef, (allExpected) => {
@@ -2300,15 +2300,37 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           (expected) => expected.expiresAt > now,
         );
         const index = pending.findIndex((expected) => inputSignalsMatch(expected.signal, signal));
-        const matched = index >= 0;
-        const nextPending = matched
-          ? pending.filter((_, pendingIndex) => pendingIndex !== index)
-          : pending;
+        if (index >= 0) {
+          // One action emits several events against a single registration
+          // (a click is mouseMoved + mousePressed + mouseReleased). While its
+          // window is open the same expectation covers the whole burst, so
+          // match without consuming; outside it, consume as before.
+          const nextPending = windowOpen
+            ? pending
+            : pending.filter((_, pendingIndex) => pendingIndex !== index);
+          return [
+            true,
+            replaceMap(allExpected, (copy) => {
+              if (nextPending.length === 0) copy.delete(tabId);
+              else copy.set(tabId, nextPending);
+            }),
+          ] as const;
+        }
+        // A KEY nobody registered is still the agent's while its window is
+        // open: a paste or typed sequence emits more key events than are
+        // registered, and letting those look human is what replayed them into
+        // the app window. A POINTER that matches no registration is the person
+        // reaching into the page — the window used to swallow it, so their
+        // click never handed focus to the guest and their next keystroke was
+        // reclaimed straight back to the composer (reported 2026-08-31).
+        if (windowOpen && signal.kind !== "pointer") {
+          return [true, allExpected] as const;
+        }
         return [
-          matched,
+          false,
           replaceMap(allExpected, (copy) => {
-            if (nextPending.length === 0) copy.delete(tabId);
-            else copy.set(tabId, nextPending);
+            if (pending.length === 0) copy.delete(tabId);
+            else copy.set(tabId, pending);
           }),
         ] as const;
       });
