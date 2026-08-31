@@ -197,6 +197,10 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({
     return null;
   },
 }));
+// These tests exercise the Electron-embedded surface (audio grants, slot
+// presentation). Non-Electron clients render RemoteBrowserFrame instead.
+vi.mock("~/env", () => ({ isElectron: true }));
+vi.mock("./RemoteBrowserFrame", () => ({ RemoteBrowserFrame: () => null }));
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 

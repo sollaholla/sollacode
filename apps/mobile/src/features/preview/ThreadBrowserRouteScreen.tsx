@@ -29,7 +29,7 @@ import {
   resolveFrameGesture,
   type FrameGestureSample,
   type FrameSize,
-} from "./remoteFrameGestures";
+} from "@t3tools/shared/remoteFrameGestures";
 
 const LIVE_FRAME_INTERVAL_MS = 2_500;
 
