@@ -422,6 +422,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       if (credential) {
         McpProviderSession.setMcpProviderSession(credential.config);
+      } else {
+        // The registry is only absent when /mcp never came up. Silence here
+        // read downstream as "this thread has no host tools" and providers
+        // fell back to whatever stale credential they had cached, so the
+        // failure surfaced as an unexplained HTTP 401 several layers away.
+        yield* Effect.logWarning("provider.mcp-session.credential-unavailable", {
+          threadId,
+          providerInstanceId,
+        });
       }
       return credential;
     });
