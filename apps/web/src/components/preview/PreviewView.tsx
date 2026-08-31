@@ -4,6 +4,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
+  PreviewTabId,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -184,10 +185,32 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
     [navigateToResolvedUrl, threadRef.environmentId],
   );
 
+  const remoteInput = useAtomCommand(previewEnvironment.remoteInput, { reportFailure: false });
+  // Non-Electron clients have no bridge; back/forward/reload travel to the
+  // desktop host through the same remote-input path as taps in the frame.
+  const dispatchRemoteHistory = useCallback(
+    (action: "back" | "forward" | "reload") => {
+      if (!tabId) return;
+      void remoteInput({
+        environmentId: threadRef.environmentId,
+        input: {
+          threadId: threadRef.threadId,
+          tabId: PreviewTabId.make(tabId),
+          action: { kind: "history", action },
+        },
+      });
+    },
+    [remoteInput, tabId, threadRef.environmentId, threadRef.threadId],
+  );
+
   const handleRefresh = useCallback(() => {
     if (humanVerification) return;
-    if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
-  }, [humanVerification, runtimeTabId]);
+    if (previewBridge && runtimeTabId) {
+      void previewBridge.refresh(runtimeTabId);
+      return;
+    }
+    dispatchRemoteHistory("reload");
+  }, [dispatchRemoteHistory, humanVerification, runtimeTabId]);
 
   const handleCheckHumanVerification = useCallback(async () => {
     const bridge = previewBridge;
@@ -304,12 +327,20 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
   }, [handleViewportChange, runtimeTabId]);
 
   const handleBack = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.goBack(runtimeTabId);
-  }, [runtimeTabId]);
+    if (previewBridge && runtimeTabId) {
+      void previewBridge.goBack(runtimeTabId);
+      return;
+    }
+    dispatchRemoteHistory("back");
+  }, [dispatchRemoteHistory, runtimeTabId]);
 
   const handleForward = useCallback(() => {
-    if (previewBridge && runtimeTabId) void previewBridge.goForward(runtimeTabId);
-  }, [runtimeTabId]);
+    if (previewBridge && runtimeTabId) {
+      void previewBridge.goForward(runtimeTabId);
+      return;
+    }
+    dispatchRemoteHistory("forward");
+  }, [dispatchRemoteHistory, runtimeTabId]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!localApi || !url) return;

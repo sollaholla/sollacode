@@ -270,6 +270,10 @@ export const PreviewRemoteInputAction = Schema.Union([
     kind: Schema.Literal("press"),
     key: TrimmedNonEmptyString.check(Schema.isMaxLength(32)),
   }),
+  Schema.Struct({
+    kind: Schema.Literal("history"),
+    action: Schema.Literals(["back", "forward", "reload"]),
+  }),
 ]);
 export type PreviewRemoteInputAction = typeof PreviewRemoteInputAction.Type;
 

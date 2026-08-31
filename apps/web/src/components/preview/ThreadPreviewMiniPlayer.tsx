@@ -5,6 +5,7 @@ import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
 import { type PointerEvent as ReactPointerEvent, useLayoutEffect, useRef } from "react";
 
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
+import { isElectron } from "~/env";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
@@ -230,7 +231,11 @@ export function ThreadPreviewMiniPlayer({
   // Automation may request a floating presentation for the tab that is
   // already open in the sidebar. Do not mount a second surface owner during
   // the effect that clears that redundant mini-player state.
-  if (!snapshot || miniPlayer?.tabId !== tabId || activePanelTabId === tabId) return null;
+  // Non-Electron clients have no local guest to float; their browser lives in
+  // the panel's RemoteBrowserFrame, so a thumbnail would just be a black box.
+  if (!isElectron || !snapshot || miniPlayer?.tabId !== tabId || activePanelTabId === tabId) {
+    return null;
+  }
 
   return (
     <section
