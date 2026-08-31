@@ -2835,11 +2835,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       // A click in the app's own window is the user claiming the keyboard back
       // from whatever a preview tab was holding.
       userFocusIntent = { kind: "app" };
-      runFork(
-        Effect.gen(function* () {
-          lastUserInputAtMs = yield* currentMillis;
-        }),
-      );
+      // Deliberately does NOT arm the deferral cooldown. This observer cannot
+      // see WHAT was clicked, so arming here held automation for 5s after any
+      // click anywhere — reading through threads parked every agent and the
+      // hold re-armed faster than it expired. The renderer reports the clicks
+      // that matter (PREVIEW_USER_INPUT_CHANNEL, gated on a real typing
+      // surface), and guest input arms on the guest's own webContents.
     };
     mainWebContents.on("input-event", observeUserPointer);
     const observeRendererUserInput = (): void => {
