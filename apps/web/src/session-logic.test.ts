@@ -1403,6 +1403,36 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.readImagePath).toBe("/workspace/art/reference.JPG");
   });
 
+  it("previews an image Codex generated, which reports savedPath not path", () => {
+    // Codex emits itemType `image_view` both for viewing an image and for its
+    // own image-generation tool. Generation writes the PNG and reports
+    // `savedPath`; only `path` was read, so the row rendered as a bare
+    // "Image view" with nothing to look at (reported 2026-08-31).
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "codex-image-generation-complete",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          itemType: "image_view",
+          title: "Image view",
+          data: {
+            item: {
+              id: "exec-generated",
+              type: "imageGeneration",
+              status: "completed",
+              savedPath: "/Users/dev/.codex/generated_images/thread-1/exec-generated.png",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entry?.readImagePath).toBe(
+      "/Users/dev/.codex/generated_images/thread-1/exec-generated.png",
+    );
+  });
+
   it("recovers image previews from Claude Read invocation details", () => {
     const [entry] = deriveWorkLogEntries([
       makeActivity({
