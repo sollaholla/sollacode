@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { XIcon } from "lucide-react";
 
+import { useOnScreenKeyboard } from "~/hooks/useOnScreenKeyboard";
 import { cn } from "~/lib/utils";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -61,6 +62,16 @@ export function ComposerBannerStack({
     };
   }, []);
 
+  // The stack opens on hover, which a touch device can never do — the banners
+  // behind the front one would be unreachable and undismissable. Keep it open
+  // there instead, and report that state so callers tracking which banners the
+  // person has actually seen stay in step with what is on screen. Declared with
+  // the other hooks: everything below here is behind an early return.
+  const alwaysExpanded = useOnScreenKeyboard();
+  useEffect(() => {
+    if (alwaysExpanded) onExpandedChange?.(true);
+  }, [alwaysExpanded, onExpandedChange]);
+
   if (items.length === 0) {
     return null;
   }
@@ -71,7 +82,7 @@ export function ComposerBannerStack({
   }
   const stackedItems = items.slice(1);
   const hasStack = stackedItems.length > 0;
-  const showCollapsedStackCap = hasStack && exitingItemId !== frontItem.id;
+  const showCollapsedStackCap = hasStack && !alwaysExpanded && exitingItemId !== frontItem.id;
 
   const requestDismiss = (item: ComposerBannerStackItem) => {
     if (!item.onDismiss || exitingItemId) {
@@ -135,15 +146,19 @@ export function ComposerBannerStack({
           <div
             data-composer-banner-stack-expanded-items="true"
             className={cn(
-              "relative z-20 grid grid-rows-[0fr] transition-[grid-template-rows] duration-150 ease-out",
+              "relative z-20 grid transition-[grid-template-rows] duration-150 ease-out",
+              alwaysExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
               "group-hover/banner-stack:grid-rows-[1fr] group-focus-within/banner-stack:grid-rows-[1fr]",
             )}
           >
             <div className="min-h-0 overflow-hidden">
               <div
                 className={cn(
-                  "invisible pointer-events-none space-y-2 pb-2 opacity-0",
-                  "translate-y-1 transform-gpu transition-[opacity,transform] duration-150 ease-out will-change-[opacity,transform]",
+                  "space-y-2 pb-2",
+                  alwaysExpanded
+                    ? "visible translate-y-0 opacity-100"
+                    : "invisible pointer-events-none translate-y-1 opacity-0",
+                  "transform-gpu transition-[opacity,transform] duration-150 ease-out will-change-[opacity,transform]",
                   "group-hover/banner-stack:visible group-hover/banner-stack:pointer-events-auto group-hover/banner-stack:translate-y-0 group-hover/banner-stack:opacity-100",
                   "group-focus-within/banner-stack:visible group-focus-within/banner-stack:pointer-events-auto group-focus-within/banner-stack:translate-y-0 group-focus-within/banner-stack:opacity-100",
                 )}
