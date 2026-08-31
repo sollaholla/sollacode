@@ -1,7 +1,7 @@
 "use client";
 
 import type { DesktopPreviewPointerEvent } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -32,6 +32,7 @@ export function AgentBrowserCursor(props: {
   return (
     <AgentBrowserCursorEvent
       key={event.sequence}
+      tabId={tabId}
       event={event}
       content={content}
       zoomFactor={zoomFactor}
@@ -41,6 +42,7 @@ export function AgentBrowserCursor(props: {
 }
 
 function AgentBrowserCursorEvent(props: {
+  readonly tabId: string;
   readonly event: DesktopPreviewPointerEvent;
   readonly content: {
     readonly x: number;
@@ -52,23 +54,69 @@ function AgentBrowserCursorEvent(props: {
   readonly zoomFactor: number;
   readonly controller: BrowserController;
 }) {
-  const { event, content, zoomFactor, controller } = props;
+  const { tabId, event, content, zoomFactor, controller } = props;
   const [active, setActive] = useState(true);
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState<{ readonly x: number; readonly y: number } | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setActive(false), CURSOR_ACTIVE_MS);
     return () => window.clearTimeout(timeout);
   }, []);
 
-  const offset = agentBrowserCursorOffset({
-    x: event.x,
-    y: event.y,
-    zoomFactor,
-    surface: content,
-  });
+  // Measure the drawn guest instead of recomputing where it ought to be.
+  //
+  // The arithmetic version depends on `content` — viewportX/Y/scale mirrored
+  // into a store by HostedBrowserWebview, which lives in a DIFFERENT React tree
+  // (ElectronBrowserHost mounts at AppRoot so webviews survive navigation).
+  // Every term in it checks out on paper, so when the cursor lands nowhere near
+  // the click the mirror is stale or absent, not the algebra — and a stale
+  // scale/offset pair puts the cursor arbitrarily far away rather than slightly
+  // off. Reading the element's own rect cannot go stale: it already includes
+  // the fit transform, the letterboxing, and any panel scroll.
+  //
+  // `offsetWidth` is the untransformed CSS box, which is the guest's
+  // device-independent size; the guest reports CSS pixels, so its viewport is
+  // that divided by the zoom factor. Fraction of the guest maps to the same
+  // fraction of the drawn rect.
+  useLayoutEffect(() => {
+    const node = nodeRef.current;
+    const parent = node?.offsetParent;
+    const guest = document.querySelector<HTMLElement>(
+      `[data-preview-viewport="${CSS.escape(tabId)}"] webview`,
+    );
+    if (!node || !(parent instanceof HTMLElement) || !guest) {
+      setMeasured(null);
+      return;
+    }
+    const guestRect = guest.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    const cssWidth = guest.offsetWidth;
+    const cssHeight = guest.offsetHeight;
+    if (cssWidth <= 0 || cssHeight <= 0 || guestRect.width <= 0 || guestRect.height <= 0) {
+      setMeasured(null);
+      return;
+    }
+    setMeasured({
+      x: ((event.x * zoomFactor) / cssWidth) * guestRect.width + (guestRect.left - parentRect.left),
+      y: ((event.y * zoomFactor) / cssHeight) * guestRect.height + (guestRect.top - parentRect.top),
+    });
+  }, [event.x, event.y, tabId, zoomFactor]);
+
+  // Fall back to the computed offset when the guest element is not reachable
+  // (no webview yet, or a non-Electron host).
+  const offset =
+    measured ??
+    agentBrowserCursorOffset({
+      x: event.x,
+      y: event.y,
+      zoomFactor,
+      surface: content,
+    });
 
   return (
     <div
+      ref={nodeRef}
       className="pointer-events-none absolute left-0 top-0 z-40 transition-[transform,opacity] duration-150 ease-out motion-reduce:transition-none"
       style={{
         opacity: agentBrowserCursorOpacity(active, controller),
