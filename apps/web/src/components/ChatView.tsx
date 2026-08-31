@@ -7946,7 +7946,12 @@ function ChatViewContent(props: ChatViewProps) {
                   });
                 } else if (disposed) {
                   const preview = previewVoiceTranscript(transcript);
-                  toastManager.add(
+                  // `timeout: 0` means this toast never expires on its own, so
+                  // nothing dismissed it after Send: the card stayed up with a
+                  // live button and the same transcript could be sent again on
+                  // every tap. Close it as part of the action.
+                  let transcriptToastId: ReturnType<typeof toastManager.add> | null = null;
+                  transcriptToastId = toastManager.add(
                     stackedThreadToast({
                       type: "success",
                       title: "Transcription ready",
@@ -7954,7 +7959,10 @@ function ChatViewContent(props: ChatViewProps) {
                       timeout: 0,
                       actionProps: {
                         children: "Send",
-                        onClick: () => sendAwayVoiceTranscriptRef.current(transcript),
+                        onClick: () => {
+                          if (transcriptToastId !== null) toastManager.close(transcriptToastId);
+                          sendAwayVoiceTranscriptRef.current(transcript);
+                        },
                       },
                       data: {
                         expandableContent:
