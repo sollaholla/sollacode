@@ -10,6 +10,7 @@ import type {
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+import { EDITABLE_FOCUS_SELECTOR, isTypingSurfaceInput } from "./preview/userInputSurfaces.ts";
 
 // Chromium's main-process `input-event` coverage varies by platform and input
 // device. Report trusted renderer presses as a second, explicit signal so a
@@ -20,8 +21,7 @@ const LAST_USER_FOCUS_ATTRIBUTE = "data-t3-last-user-focus";
 // Only typing surfaces qualify. A click on a button or a sidebar thread row
 // must not move the marker — a reclaimed keystroke has to land somewhere the
 // user can actually type, so non-editable clicks keep the previous marker.
-const EDITABLE_FOCUS_SELECTOR =
-  'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), textarea, [contenteditable="true"], [contenteditable="plaintext-only"]';
+// The same rule now decides whether the input arms the automation cooldown.
 
 const rememberUserFocusTarget = (fallbackTarget?: EventTarget | null): void => {
   const active = document.activeElement;
@@ -39,7 +39,21 @@ const rememberUserFocusTarget = (fallbackTarget?: EventTarget | null): void => {
 
 const reportUserInput = (event: Event): void => {
   if (!event.isTrusted) return;
-  ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL);
+  const active = document.activeElement;
+  const target = event.target;
+  // Only a caret the user actually owns defers automation. Reading the app —
+  // clicking threads, tabs, buttons — must leave agents free to work.
+  if (
+    isTypingSurfaceInput({
+      eventType: event.type,
+      activeElementIsEditable:
+        active instanceof HTMLElement && active.matches(EDITABLE_FOCUS_SELECTOR),
+      targetIsInsideEditable:
+        target instanceof HTMLElement && target.closest(EDITABLE_FOCUS_SELECTOR) !== null,
+    })
+  ) {
+    ipcRenderer.send(IpcChannels.PREVIEW_USER_INPUT_CHANNEL);
+  }
   // Pointer default handling and React thread switches can move focus after the
   // capture listener runs. Remember both the immediate and next-frame target
   // so the first key after an agent focus steal returns to the newly mounted
