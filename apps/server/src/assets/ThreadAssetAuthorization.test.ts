@@ -39,6 +39,35 @@ function makeImageActivity(
 }
 
 describe("activityAuthorizesExternalImagePath", () => {
+  it("authorizes an image Codex GENERATED, which reports savedPath not path", () => {
+    // Codex emits itemType `image_view` for both viewing an image and for its
+    // own image-generation tool. Generation writes the file and reports
+    // `savedPath`; only `path` was accepted, so a generated image rendered as a
+    // bare "Image view" row with nothing to look at (reported 2026-08-31).
+    const generatedPath = "/Users/dev/.codex/generated_images/thread-1/exec-2.png";
+    const generated = makeImageActivity({
+      payload: {
+        itemType: "image_view",
+        data: {
+          item: {
+            id: "exec-2",
+            type: "imageGeneration",
+            status: "completed",
+            savedPath: generatedPath,
+          },
+        },
+      },
+    });
+    expect(activityAuthorizesExternalImagePath(generated, generatedPath)).toBe(true);
+    // Still exact-match only: a sibling in the same directory is not authorized.
+    expect(
+      activityAuthorizesExternalImagePath(
+        generated,
+        "/Users/dev/.codex/generated_images/thread-1/other.png",
+      ),
+    ).toBe(false);
+  });
+
   it("authorizes the exact Windows image path emitted by an image-view activity", () => {
     expect(
       activityAuthorizesExternalImagePath(
