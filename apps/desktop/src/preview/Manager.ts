@@ -2724,7 +2724,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         shouldReclaimGuestKeyForApp({
           focusIntent: userFocusIntent,
           currentTabId: tabId,
-          expectedAgentInput: isSynchronousAgentKey(tabId, input),
+          // Same predicate as the shortcut gate above. The per-event list
+          // alone under-reports: a paste or a typed sequence emits more key
+          // events than are individually registered, so the extras looked
+          // human here and were replayed into the app window.
+          expectedAgentInput: isAgentOriginatedKey(tabId, input),
           inputType: input.type,
           key: input.key,
         })
