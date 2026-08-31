@@ -143,7 +143,7 @@ interface RightPanelTabsProps {
 }
 
 const SURFACE_DISABLED_REASONS = {
-  browser: "Browser previews are only available in the Solla Code desktop app.",
+  browser: "The browser needs a connected desktop host.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
   sideChat: "Side Chat requires a server thread on an updated Solla Code server.",
