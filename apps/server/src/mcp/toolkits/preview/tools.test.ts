@@ -39,3 +39,16 @@ it("exports provider-compatible object schemas with described parameters", () =>
     }
   }
 });
+
+it("tells agents that preview_status.visible is presentation, not a blocker", () => {
+  // A Suno session stalled on 2026-08-31: the tab reported
+  // `available: true, visible: false` (the renderer overwrites the host's
+  // value with its on-screen presentation flag), and the agent abandoned
+  // already-approved work. Every other flag this description names is a real
+  // stop condition, so `visible` must say plainly that it is not one.
+  const description = PreviewToolkit.tools.preview_status.description ?? "";
+  expect(description).toContain("is the only readiness flag here");
+  expect(description).toContain("is NOT a blocker");
+  expect(description).toContain("keep clicking, typing, and snapshotting it");
+  expect(description).not.toMatch(/title, visibility, loading state/);
+});

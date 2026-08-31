@@ -70,6 +70,7 @@ import {
 } from "./previewHumanVerification";
 import {
   previewAutomationOpenNeedsOverlay,
+  previewPresentationNotice,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
 import { presentPreviewAutomationTab } from "./presentPreviewAutomationTab";
@@ -666,18 +667,22 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 ...(await currentStatus(threadRef, activeTabId)),
                 humanVerification,
               } satisfies PreviewAutomationStatus;
+              const presentationNotice = previewPresentationNotice({
+                requestedPresentation: shouldPresentPreview,
+                visible: status.visible,
+              });
               return reusedExistingTab
                 ? ({
                     outcome: "reused",
                     tabId: activeTabId,
                     status,
-                    message: `Reused tab ${activeTabId}. This tab was not created by this call, so do not close it merely as cleanup.`,
+                    message: `Reused tab ${activeTabId}. This tab was not created by this call, so do not close it merely as cleanup.${presentationNotice}`,
                   } satisfies PreviewAutomationOpenResult)
                 : ({
                     outcome: "created",
                     tabId: activeTabId,
                     status,
-                    message: `Created tab ${activeTabId}. Reuse it for this browsing concern and close it with preview_close when it is no longer needed.`,
+                    message: `Created tab ${activeTabId}. Reuse it for this browsing concern and close it with preview_close when it is no longer needed.${presentationNotice}`,
                     cleanup: {
                       tool: "preview_close",
                       arguments: { tabId: activeTabId },

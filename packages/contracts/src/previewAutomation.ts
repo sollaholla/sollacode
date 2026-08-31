@@ -202,7 +202,18 @@ export const PreviewAutomationLoadFailure = Schema.Struct({
 export type PreviewAutomationLoadFailure = typeof PreviewAutomationLoadFailure.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
+  /**
+   * The only readiness gate on this struct. True means the tab is attached and
+   * every automation call works right now.
+   */
   available: Schema.Boolean,
+  /**
+   * Whether the tab's guest is currently painted into an on-screen slot (the
+   * Browser panel or the mini player). Presentation only: a background tab
+   * reports `visible: false` while remaining fully driveable, so this must
+   * never be read as a permission or readiness check. Use it to decide whether
+   * to surface a page to the user, never whether automation may proceed.
+   */
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
   url: Schema.NullOr(Schema.String),
