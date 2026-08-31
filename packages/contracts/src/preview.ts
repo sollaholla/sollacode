@@ -223,6 +223,21 @@ export const PreviewRemoteSnapshotResult = Schema.Struct({
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /**
+   * Downloads the desktop is holding for an answer. Optional so hosts that
+   * predate remote approval still decode. Without this a remote client could
+   * see the page but not the one card blocking it, and the user had to walk to
+   * the machine to press a single button.
+   */
+  pendingDownloadApprovals: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        domain: Schema.String,
+        fileName: Schema.String,
+      }),
+    ),
+  ),
 });
 export type PreviewRemoteSnapshotResult = typeof PreviewRemoteSnapshotResult.Type;
 

@@ -64,6 +64,9 @@ export function captureRemotePreviewSnapshot(input: {
               loading: snapshot.loading,
               capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
               screenshot: snapshot.screenshot,
+              ...(snapshot.pendingDownloadApprovals === undefined
+                ? {}
+                : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
             }),
       ),
     );
