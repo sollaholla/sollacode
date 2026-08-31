@@ -48,26 +48,40 @@ export function captureRemotePreviewSnapshot(input: {
       // say why, rather than going blank. Agents are handed the snapshot
       // itself, with `screenshotError` explaining the gap.
       Effect.flatMap((snapshot) =>
-        snapshot.screenshot === undefined
+        // Refuse a frame from a tab other than the one asked for. The host
+        // resolves targets through a fallback chain, and this layer used to
+        // echo the REQUESTED id back regardless, so a substitution surfaced as
+        // one tab's title over another tab's picture. Hosts predating
+        // `snapshot.tabId` report undefined and are trusted as before.
+        snapshot.tabId !== undefined && snapshot.tabId !== input.request.tabId
           ? Effect.fail(
               new PreviewAutomationScreenshotUnavailableError({
                 environmentId: input.environmentId,
                 threadId: input.request.threadId,
                 tabId: input.request.tabId,
-                reason: snapshot.screenshotError ?? "No reason was reported.",
+                reason: `The desktop host answered with tab ${snapshot.tabId}. Showing a stale frame beats showing another tab's page under this tab's name.`,
               }),
             )
-          : Effect.succeed({
-              tabId: input.request.tabId,
-              url: snapshot.url,
-              title: snapshot.title,
-              loading: snapshot.loading,
-              capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
-              screenshot: snapshot.screenshot,
-              ...(snapshot.pendingDownloadApprovals === undefined
-                ? {}
-                : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
-            }),
+          : snapshot.screenshot === undefined
+            ? Effect.fail(
+                new PreviewAutomationScreenshotUnavailableError({
+                  environmentId: input.environmentId,
+                  threadId: input.request.threadId,
+                  tabId: input.request.tabId,
+                  reason: snapshot.screenshotError ?? "No reason was reported.",
+                }),
+              )
+            : Effect.succeed({
+                tabId: input.request.tabId,
+                url: snapshot.url,
+                title: snapshot.title,
+                loading: snapshot.loading,
+                capturedAt: DateTime.formatIso(DateTime.makeUnsafe(input.issuedAt)),
+                screenshot: snapshot.screenshot,
+                ...(snapshot.pendingDownloadApprovals === undefined
+                  ? {}
+                  : { pendingDownloadApprovals: snapshot.pendingDownloadApprovals }),
+              }),
       ),
     );
 }

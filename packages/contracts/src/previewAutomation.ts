@@ -1021,6 +1021,17 @@ export const PreviewAutomationSnapshot = Schema.Struct({
    */
   pendingDownloadApprovals: Schema.optional(Schema.Array(PreviewDownloadApproval)),
   /**
+   * Which tab this snapshot was actually taken of.
+   *
+   * The host resolves a target through a fallback chain, so a request naming
+   * one tab could be answered with another and nothing downstream could tell:
+   * the snapshot carried only url/title, and the remote capture echoed the
+   * REQUESTED id back. A phone then showed one tab's title over another tab's
+   * picture (observed 2026-08-31: a Suno tab rendering an unrelated page that
+   * was not even in that thread's tab strip). Optional for hosts predating it.
+   */
+  tabId: Schema.optional(PreviewTabId),
+  /**
    * Absent when every capture strategy failed.
    *
    * A picture is one field of a snapshot, and losing it must not cost the
