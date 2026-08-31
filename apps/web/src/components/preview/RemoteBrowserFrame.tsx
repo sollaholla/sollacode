@@ -325,6 +325,50 @@ export function RemoteBrowserFrame(props: {
             Waiting for the desktop browser host…
           </div>
         )}
+        {frame?.pendingDownloadApprovals?.length ? (
+          <div className="absolute inset-x-3 top-3 space-y-2">
+            {frame.pendingDownloadApprovals.map((approval) => (
+              <div
+                key={approval.id}
+                className="rounded-lg border border-amber-500/40 bg-amber-950/90 px-3 py-2 text-xs text-amber-100"
+              >
+                <p className="font-medium">Allow download from {approval.domain}?</p>
+                <p className="mt-0.5 break-all text-amber-200/80">{approval.fileName}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(
+                    [
+                      ["Allow always", "allow-domain"],
+                      ["Allow once", "allow-once"],
+                      ["Deny", "deny"],
+                    ] as const
+                  ).map(([label, decision]) => (
+                    <button
+                      key={decision}
+                      type="button"
+                      className="rounded-md border border-amber-400/40 px-2 py-1 font-medium text-amber-50"
+                      onClick={() => {
+                        void sendRemoteInput({
+                          environmentId: threadRef.environmentId,
+                          input: {
+                            threadId: threadRef.threadId,
+                            tabId: PreviewTabId.make(tabId),
+                            action: {
+                              kind: "answerDownloadApproval",
+                              approvalId: approval.id,
+                              decision,
+                            },
+                          },
+                        });
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {frameError ? (
           <div className="absolute inset-x-3 bottom-3 rounded-lg border border-red-500/30 bg-red-950/80 px-3 py-2 text-xs text-red-200">
             {frameError}
