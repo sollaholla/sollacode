@@ -851,15 +851,23 @@ function SortableTab(props: {
         type="button"
         className={cn(
           "relative flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted focus:opacity-100",
-          props.pending ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+          // Touch has no hover to reveal the close control with, and an
+          // invisible-but-tappable X is worse than a visible one: it is the
+          // only way to close a tab, so coarse pointers always see it.
+          props.pending
+            ? "opacity-100"
+            : "opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100",
         )}
         aria-label={`Close ${props.title}`}
         onClick={() => props.onCloseSurface(props.surface)}
       >
         {props.pending ? (
           <>
-            <span className="size-2 rounded-full bg-current group-hover:hidden" aria-hidden />
-            <X className="hidden size-3 group-hover:block" />
+            <span
+              className="size-2 rounded-full bg-current group-hover:hidden pointer-coarse:hidden"
+              aria-hidden
+            />
+            <X className="hidden size-3 group-hover:block pointer-coarse:block" />
           </>
         ) : (
           <X className="size-3" />

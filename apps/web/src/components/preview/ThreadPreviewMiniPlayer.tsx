@@ -290,7 +290,7 @@ export function ThreadPreviewMiniPlayer({
           onPointerCancel={endDrag}
         />
 
-        <div className="pointer-events-none absolute inset-0 z-[33] flex items-center justify-center rounded-xl bg-background/50 opacity-0 backdrop-blur-[2px] transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100">
+        <div className="pointer-events-none absolute inset-0 z-[33] flex items-center justify-center rounded-xl bg-background/50 opacity-0 backdrop-blur-[2px] transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
           <Button
             variant="secondary"
             size="sm"
@@ -306,7 +306,7 @@ export function ThreadPreviewMiniPlayer({
           </Button>
         </div>
 
-        <div className="pointer-events-none absolute right-1.5 top-1.5 z-[34] flex h-8 items-center gap-0.5 rounded-lg border border-border/80 bg-popover/92 p-0.5 opacity-0 shadow-lg/20 backdrop-blur-xl transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-[34] flex h-8 items-center gap-0.5 rounded-lg border border-border/80 bg-popover/92 p-0.5 opacity-0 shadow-lg/20 backdrop-blur-xl transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
           <Button
             variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
             size="icon-xs"

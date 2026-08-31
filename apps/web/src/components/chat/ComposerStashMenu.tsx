@@ -156,7 +156,7 @@ export const ComposerStashMenu = memo(function ComposerStashMenu(props: {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    className="shrink-0 opacity-0 transition-opacity group-hover/stash:opacity-100"
+                    className="shrink-0 opacity-0 transition-opacity group-hover/stash:opacity-100 pointer-coarse:opacity-100"
                     aria-label="Delete stashed prompt"
                     onClick={(event) => {
                       event.stopPropagation();
