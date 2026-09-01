@@ -430,3 +430,38 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
   );
 });
+
+it("gives a paired device a credential that outlives a month away from the machine", () => {
+  // A device that sat unused for five weeks used to come back to a dead
+  // credential and no way in but pairing again.
+  expect(
+    Duration.toMillis(
+      SessionStore.resolveSessionTtl({ kind: "random", method: "bearer-access-token" }),
+    ),
+  ).toBeGreaterThan(Duration.toMillis(Duration.days(35)));
+});
+
+it("leaves browser and DPoP credentials short-lived", () => {
+  expect(
+    Duration.equals(
+      SessionStore.resolveSessionTtl({ kind: "random", method: "browser-session-cookie" }),
+      Duration.days(30),
+    ),
+  ).toBe(true);
+  expect(
+    Duration.equals(
+      SessionStore.resolveSessionTtl({
+        kind: "random",
+        method: "dpop-access-token",
+        ttl: Duration.hours(1),
+      }),
+      Duration.hours(1),
+    ),
+  ).toBe(true);
+  expect(
+    Duration.equals(
+      SessionStore.resolveSessionTtl({ kind: "desktop-bootstrap" }),
+      Duration.days(30),
+    ),
+  ).toBe(true);
+});

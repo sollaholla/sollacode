@@ -37,7 +37,9 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentAuthInvalidError":
       return new ConnectionBlockedError({
         reason: "authentication",
-        detail: "The environment credential is invalid.",
+        // Say what the user has to do about it. The previous wording named the
+        // failure and left them to guess that pairing again was the way back.
+        detail: "This device is no longer paired with the environment. Pair it again to reconnect.",
         traceId: error.traceId,
       });
     case "EnvironmentScopeRequiredError":
