@@ -24,6 +24,19 @@ export const REMOTE_CONTROL_RECOVERY_MAX_DELAY_MS = 5_000;
  */
 export const REMOTE_CONTROL_RECOVERY_GIVE_UP_MS = 180_000;
 
+/**
+ * How many times a permission failure is retried before the session ends.
+ *
+ * Replacing the application bundle invalidates macOS Screen Recording
+ * authorization even though TCC still lists the app as allowed, so the first
+ * frames after an update can fail with a permission error that the very next
+ * attempt succeeds at. Ending the session on the first one turned a recoverable
+ * hiccup into "go change a system setting and relaunch". A genuinely withheld
+ * permission fails every attempt and still reports itself, just a few seconds
+ * later.
+ */
+export const REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS = 5;
+
 export type RemoteControlFailureKind = "transient" | "fatal";
 
 export interface RemoteControlFailure {
