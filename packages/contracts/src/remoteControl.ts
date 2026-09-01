@@ -335,6 +335,13 @@ export const RemoteControlInput = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("request-image-fallback"),
   }),
+  // "Show me this machine's windows so I can pick one." Deliberately not a key
+  // chord chosen by the controller: the gesture differs per operating system
+  // (Mission Control, Task View) and only the host knows which one it is
+  // running. A phone driving a PC would otherwise send the macOS chord.
+  Schema.Struct({
+    type: Schema.Literal("show-window-switcher"),
+  }),
 ]);
 export type RemoteControlInput = typeof RemoteControlInput.Type;
 
