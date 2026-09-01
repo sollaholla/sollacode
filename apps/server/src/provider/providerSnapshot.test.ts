@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
+  customModelCapabilitiesFrom,
   isCommandMissingCause,
   providerModelsFromSettings,
   spawnAndCollect,
@@ -69,6 +70,46 @@ describe("providerModelsFromSettings", () => {
 
     expect(models.map((model) => model.slug)).toEqual(["claude-opus-4-8", "opus"]);
     expect(models[1]?.isCustom).toBe(true);
+  });
+});
+
+describe("customModelCapabilitiesFrom", () => {
+  const effortCapabilities = createModelCapabilities({
+    optionDescriptors: [
+      {
+        id: "effort",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+        currentValue: "high",
+      },
+    ],
+  });
+  const noOptions = createModelCapabilities({ optionDescriptors: [] });
+
+  it("inherits the first built-in model that exposes an effort picker", () => {
+    expect(
+      customModelCapabilitiesFrom(
+        [
+          { slug: "plain", name: "Plain", isCustom: false, capabilities: noOptions },
+          { slug: "smart", name: "Smart", isCustom: false, capabilities: effortCapabilities },
+        ],
+        noOptions,
+      ),
+    ).toBe(effortCapabilities);
+  });
+
+  it("falls back when no built-in model advertises an effort picker", () => {
+    expect(
+      customModelCapabilitiesFrom(
+        [{ slug: "plain", name: "Plain", isCustom: false, capabilities: noOptions }],
+        noOptions,
+      ),
+    ).toBe(noOptions);
+    expect(customModelCapabilitiesFrom([], noOptions)).toBe(noOptions);
   });
 });
 

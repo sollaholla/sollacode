@@ -22,6 +22,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
   buildSelectOptionDescriptor,
   buildServerProvider,
+  customModelCapabilitiesFrom,
   isCommandMissingCause,
   parseGenericCliVersion,
   providerModelsFromSettings,
@@ -100,7 +101,13 @@ function grokModelsFromSettings(
   customModels: ReadonlyArray<string> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = GROK_BUILT_IN_MODELS,
 ): ReadonlyArray<ServerProviderModel> {
-  return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
+  // A custom id inherits the effort levels the discovered catalog advertises
+  // (`session/set_model` `_meta.reasoningEffort` is model-agnostic on grok).
+  return providerModelsFromSettings(
+    builtInModels,
+    customModels ?? [],
+    customModelCapabilitiesFrom(builtInModels, EMPTY_CAPABILITIES),
+  );
 }
 
 interface GrokReasoningEffortLevel {

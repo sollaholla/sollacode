@@ -852,7 +852,7 @@ export function compactProviderUsageMetric(
     const [currentSession, weekly, fable] = claudePopupWindows(summary.windows);
     const fableSelected =
       selectedModelSelection?.instanceId === summary.provider.instanceId &&
-      selectedModelSelection.model.trim().toLowerCase() === "claude-fable-5";
+      isClaudeFableModel(selectedModelSelection.model);
     // Current-session and weekly limits apply to every Claude model. Fable
     // adds a model-scoped limit; it never replaces the account-wide weekly
     // limit. Show whichever applicable quota is closest to exhaustion.
@@ -889,6 +889,14 @@ export function compactProviderUsageMetric(
 export function providerUsageName(provider: ServerProvider): string {
   if (provider.driver === "claudeAgent") return "Claude";
   return provider.displayName?.trim() || String(provider.driver);
+}
+
+/**
+ * Claude meters the Fable family (`claude-fable-5`, `claude-fable-5-1`, and a
+ * hand-typed custom id such as `fable-5.1`) against its own quota window.
+ */
+export function isClaudeFableModel(model: string): boolean {
+  return model.trim().toLowerCase().includes("fable");
 }
 
 export function claudePopupWindows(

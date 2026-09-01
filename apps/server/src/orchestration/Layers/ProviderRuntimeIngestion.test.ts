@@ -29,6 +29,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -57,6 +58,7 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionLive,
+  ProviderRuntimeIngestionOptions,
   runtimeEventWorkObservation,
   runtimeEventToActivities,
 } from "./ProviderRuntimeIngestion.ts";
@@ -463,6 +465,13 @@ function createProviderServiceHarness() {
   const sendTurnCalls: ProviderSendTurnInput[] = [];
   const interruptTurnCalls: Array<Parameters<ProviderServiceShape["interruptTurn"]>[0]> = [];
   let shouldFailNextSendTurn = false;
+  // A held send models an ACP adapter (Grok, Cursor): `sendTurn` resolves only
+  // when the turn ends, and admission is reported through onNativeDispatch.
+  let shouldHoldNextSendTurn = false;
+  const heldSendTurns: Array<{
+    readonly release: Deferred.Deferred<void>;
+    readonly onNativeDispatch: Effect.Effect<void> | undefined;
+  }> = [];
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
@@ -490,16 +499,26 @@ function createProviderServiceHarness() {
         }
         return session;
       }),
-    sendTurn: (input) =>
-      Effect.sync(() => {
+    sendTurn: (input, options) =>
+      Effect.gen(function* () {
         sendTurnCalls.push(input);
         if (shouldFailNextSendTurn) {
           shouldFailNextSendTurn = false;
           throw new Error("Simulated handoff send failure");
         }
+        const turnId = TurnId.make(`handoff-turn-${sendTurnCalls.length}`);
+        if (shouldHoldNextSendTurn) {
+          shouldHoldNextSendTurn = false;
+          const hold = {
+            release: yield* Deferred.make<void>(),
+            onNativeDispatch: options?.onNativeDispatch,
+          };
+          heldSendTurns.push(hold);
+          yield* Deferred.await(hold.release);
+        }
         return {
           threadId: input.threadId,
-          turnId: TurnId.make(`handoff-turn-${sendTurnCalls.length}`),
+          turnId,
         };
       }),
     interruptTurn: (input) =>
@@ -570,6 +589,10 @@ function createProviderServiceHarness() {
     failNextSendTurn: () => {
       shouldFailNextSendTurn = true;
     },
+    holdNextSendTurn: () => {
+      shouldHoldNextSendTurn = true;
+    },
+    heldSendTurns,
   };
 }
 
@@ -579,6 +602,16 @@ type ProviderRuntimeTestMessage = ProviderRuntimeTestThread["messages"][number];
 type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"][number];
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
 type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
+  while (!predicate()) {
+    if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await Effect.runPromise(Effect.sleep("5 millis"));
+  }
+}
 
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
@@ -637,6 +670,7 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     providers?: ReadonlyArray<ServerProvider>;
     interactionMode?: "default" | "plan" | "agent";
+    failoverHandoffAdmissionTimeoutMs?: number;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
@@ -701,6 +735,13 @@ describe("ProviderRuntimeIngestion", () => {
         }),
     });
     const layer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provide(
+        Layer.succeed(ProviderRuntimeIngestionOptions, {
+          ...(options?.failoverHandoffAdmissionTimeoutMs === undefined
+            ? {}
+            : { failoverHandoffAdmissionTimeoutMs: options.failoverHandoffAdmissionTimeoutMs }),
+        }),
+      ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -794,6 +835,8 @@ describe("ProviderRuntimeIngestion", () => {
       sendTurnCalls: provider.sendTurnCalls,
       interruptTurnCalls: provider.interruptTurnCalls,
       failNextSendTurn: provider.failNextSendTurn,
+      holdNextSendTurn: provider.holdNextSendTurn,
+      heldSendTurns: provider.heldSendTurns,
       runtimeObservations,
       openPreviewTab,
       readBrowserTabCleanupState: (threadId: ThreadId) =>
@@ -1633,6 +1676,193 @@ describe("ProviderRuntimeIngestion", () => {
     expect(handoff.kind).toBe("t3.provider-handoff");
     expect(handoff.handoff?.from?.instanceId).toBe("codex");
     expect(handoff.handoff?.to?.instanceId).toBe("claudeAgent");
+  });
+
+  it("keeps ingesting runtime events while a failover handoff turn is still running", async () => {
+    // Regression for 2026-09-01: a Claude→Grok handoff turn ran for 13m26s
+    // inside the single ingestion worker, so every provider's events for every
+    // thread were persisted up to 13 minutes late. The handoff must run off
+    // the worker and be accepted at prompt admission, not at turn end.
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({ instanceId: "codex", driver: "codex", model: "gpt-5-codex" }),
+        makeProviderSnapshot({ instanceId: "grok", driver: "grok", model: "grok-4.6" }),
+      ],
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-held-failover"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted-held"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-exhausted-held"),
+      cwd: process.cwd(),
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.holdNextSendTurn();
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit-exhausted-held"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted-held"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+    await waitFor(() => harness.heldSendTurns.length === 1);
+    expect(harness.startSessionCalls.map((call) => call.input.providerInstanceId)).toEqual([
+      "grok",
+    ]);
+
+    // The handoff prompt is in flight and not yet admitted. Ingestion must
+    // still be moving: an unrelated runtime event lands while it is pending.
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-thread-metadata-while-handoff-pending"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      payload: { name: "Renamed while the handoff was pending" },
+    });
+    const renamed = await waitForThread(
+      harness.readModel,
+      (entry) => entry.title === "Renamed while the handoff was pending",
+      5_000,
+    );
+    expect(
+      renamed.activities.some((activity) => activity.kind === "provider.failover.completed"),
+    ).toBe(false);
+    expect(renamed.modelSelection.instanceId).toBe("codex");
+
+    // Admission — the prompt entering the provider-native transport — is the
+    // acceptance boundary. The turn itself is still running.
+    const held = harness.heldSendTurns[0];
+    expect(held?.onNativeDispatch).toBeDefined();
+    await Effect.runPromise(held?.onNativeDispatch ?? Effect.void);
+    const switched = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.modelSelection.instanceId === "grok" &&
+        entry.session?.providerInstanceId === "grok" &&
+        entry.activities.some((activity) => activity.kind === "provider.failover.completed"),
+      5_000,
+    );
+    expect(switched.session?.status).toBe("starting");
+    expect(harness.sendTurnCalls).toHaveLength(1);
+
+    await Effect.runPromise(Deferred.succeed(held!.release, undefined));
+  });
+
+  it("gives up on a failover target that never admits the handoff and rolls back", async () => {
+    const harness = await createHarness({
+      providers: [
+        makeProviderSnapshot({ instanceId: "codex", driver: "codex", model: "gpt-5-codex" }),
+        makeProviderSnapshot({ instanceId: "grok", driver: "grok", model: "grok-4.6" }),
+      ],
+      failoverHandoffAdmissionTimeoutMs: 50,
+    });
+    const now = "2026-01-01T00:00:10.000Z";
+    const threadId = asThreadId("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-active-codex-for-timeout-failover"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-exhausted-timeout"),
+          updatedAt: now,
+          lastError: null,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running",
+      runtimeMode: "approval-required",
+      threadId,
+      activeTurnId: asTurnId("turn-exhausted-timeout"),
+      cwd: process.cwd(),
+      resumeCursor: { threadId: "codex-native-thread" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.holdNextSendTurn();
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit-exhausted-timeout"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId,
+      createdAt: now,
+      turnId: asTurnId("turn-exhausted-timeout"),
+      payload: {
+        rateLimits: {
+          rateLimits: {
+            rateLimitReachedType: "rate_limit_reached",
+            primary: { usedPercent: 100, resetsAt: 1_800_000_000 },
+          },
+        },
+      },
+    });
+
+    const rolledBackHandoff = (activity: ProviderRuntimeTestActivity) =>
+      activity.kind === "provider.failover.handoff.failed" &&
+      (activity.payload as { rolledBack?: unknown } | undefined)?.rolledBack === true;
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.activities.some(rolledBackHandoff),
+      5_000,
+    );
+    const handoffFailed = thread.activities.find(rolledBackHandoff);
+    const handoffFailedPayload = handoffFailed?.payload as { detail?: unknown } | undefined;
+    expect(String(handoffFailedPayload?.detail ?? "")).toContain("did not admit the handoff");
+    expect(thread.modelSelection.instanceId).toBe("codex");
+    // Rolled back onto the exhausted source with its resume cursor.
+    expect(harness.startSessionCalls.map((call) => call.input.providerInstanceId)).toEqual([
+      "grok",
+      "codex",
+    ]);
+    expect(harness.startSessionCalls[1]?.input.resumeCursor).toEqual({
+      threadId: "codex-native-thread",
+    });
   });
 
   it("fails over to the next enabled provider when Claude and Grok are not configured", async () => {

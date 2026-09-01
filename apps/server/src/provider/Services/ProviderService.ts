@@ -64,7 +64,12 @@ export interface ProviderServiceSendTurnOptions {
    * received the prompt, rather than a stale obligation owner.
    */
   readonly onNativeDispatchRoute?: (route: ProviderServiceNativeDispatchRoute) => void;
-  /** Runs only after a live steer has entered the provider-native transport. */
+  /**
+   * Runs once the prompt has entered the provider-native transport — for a
+   * live steer or a fresh turn. Adapters whose `sendTurn` resolves only when
+   * the turn ends (ACP) report admission here; others may never call it, in
+   * which case `sendTurn` resolving is the admission boundary.
+   */
   readonly onNativeDispatch?: Effect.Effect<void>;
 }
 

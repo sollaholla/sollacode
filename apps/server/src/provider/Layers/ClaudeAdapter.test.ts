@@ -730,6 +730,27 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("applies the chosen effort verbatim for a custom Claude model id", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), "fable-5.1", [
+          { id: "effort", value: "xhigh" },
+        ]),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.effort, "xhigh");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("routes opted-in Claude sessions through the loopback Token Optimizer", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

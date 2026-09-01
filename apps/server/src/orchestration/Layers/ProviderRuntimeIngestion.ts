@@ -17,13 +17,20 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationProposedPlan,
   type OrchestrationThreadActivity,
+  type ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ProviderSession,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
@@ -42,7 +49,10 @@ import {
   normalizeBrowserTabSet,
 } from "@t3tools/shared/browserTabCleanup";
 
-import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import {
+  ProviderService,
+  type ProviderServiceShape,
+} from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -98,6 +108,19 @@ const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_CAPACITY = 10_000;
 const EXHAUSTED_PROVIDER_INSTANCES_BY_THREAD_TTL = Duration.hours(24);
+/**
+ * How long a usage-limit failover waits for the replacement provider to admit
+ * the handoff prompt before treating the target as unusable. Admission is the
+ * prompt entering the provider's native transport (or `sendTurn` resolving),
+ * never the turn finishing — a handoff turn is a full agentic turn.
+ */
+const PROVIDER_FAILOVER_HANDOFF_ADMISSION_TIMEOUT = Duration.seconds(120);
+/**
+ * A single runtime event holding the ingestion worker longer than this is
+ * logged: the worker is one global FIFO, so one slow event delays every
+ * provider's events for every thread.
+ */
+const INGESTION_SLOW_EVENT_WARNING_AFTER = Duration.seconds(15);
 const CONTEXT_COMPACTION_METRIC_CACHE_CAPACITY = 10_000;
 const CONTEXT_COMPACTION_METRIC_TTL = Duration.hours(2);
 const AGENT_STOP_STREAM_CACHE_CAPACITY = 10_000;
@@ -901,7 +924,26 @@ export function runtimeEventToActivities(
   return [];
 }
 
+export interface ProviderRuntimeIngestionOptionsShape {
+  /**
+   * How long a usage-limit failover waits for the replacement provider to
+   * admit the handoff prompt. Production uses two minutes; tests shorten it.
+   */
+  readonly failoverHandoffAdmissionTimeoutMs?: number;
+}
+
+export const ProviderRuntimeIngestionOptions =
+  Context.Reference<ProviderRuntimeIngestionOptionsShape>(
+    "@t3tools/server/orchestration/ProviderRuntimeIngestionOptions",
+    { defaultValue: () => ({}) },
+  );
+
 const make = Effect.gen(function* () {
+  const options = yield* ProviderRuntimeIngestionOptions;
+  const failoverHandoffAdmissionTimeout =
+    options.failoverHandoffAdmissionTimeoutMs === undefined
+      ? PROVIDER_FAILOVER_HANDOFF_ADMISSION_TIMEOUT
+      : Duration.millis(options.failoverHandoffAdmissionTimeoutMs);
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1779,6 +1821,112 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // The ingestion worker is one global FIFO shared by every provider and
+  // every thread. A usage-limit failover starts a replacement session and
+  // sends it a handoff turn — and for ACP providers (Grok, Cursor) `sendTurn`
+  // does not resolve until that turn ENDS. Run inline, one failover froze
+  // ingestion for the whole app: observed 2026-09-01, a Claude→Grok handoff
+  // turn ran 13m26s inside this worker, so ~1,100 runtime events from six
+  // threads (assistant text, turn.started, delivery receipts) were persisted
+  // up to 13 minutes late. Every affected chat showed "Queued" with no reply,
+  // the fallback thread showed the exhausted provider still "Working", and
+  // Stop — which the user pressed repeatedly because nothing moved — killed
+  // live turns that were in fact answering. Detection stays here; the
+  // handoff runs in its own fiber and only ever waits for prompt ADMISSION.
+  const ingestionScope = yield* Effect.scope;
+  const providerFailoversInFlight = new Set<string>();
+
+  type ProviderFailoverHandoffOutcome =
+    | { readonly _tag: "Accepted"; readonly turnId: TurnId | null }
+    | { readonly _tag: "Rejected"; readonly cause: Cause.Cause<unknown> };
+
+  /**
+   * Send the handoff turn and return as soon as the target provider has
+   * admitted it. `sendTurn` may resolve at admission (Claude, Codex,
+   * OpenCode, mcpBridge) or only at turn end (ACP: Grok, Cursor); the prompt
+   * entering the native transport is reported through `onNativeDispatch`
+   * either way, so whichever signal lands first is the acceptance boundary.
+   * The send fiber keeps running in the ingestion scope afterwards — the turn
+   * belongs to the provider now and its lifecycle arrives as ordinary runtime
+   * events.
+   */
+  const sendProviderFailoverHandoffTurn = Effect.fn("sendProviderFailoverHandoffTurn")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly targetInstanceId: ProviderInstanceId;
+      readonly request: Parameters<ProviderServiceShape["sendTurn"]>[0];
+    }) {
+      const nativelyDispatched = yield* Deferred.make<void>();
+      const sendFiber = yield* providerService
+        .sendTurn(input.request, {
+          onNativeDispatch: Deferred.succeed(nativelyDispatched, undefined).pipe(Effect.asVoid),
+        })
+        .pipe(Effect.forkIn(ingestionScope));
+
+      const outcome = yield* Effect.raceAll([
+        Fiber.await(sendFiber).pipe(Effect.map((exit) => ({ _tag: "Settled" as const, exit }))),
+        Deferred.await(nativelyDispatched).pipe(Effect.as({ _tag: "Dispatched" as const })),
+        Effect.sleep(failoverHandoffAdmissionTimeout).pipe(
+          Effect.as({ _tag: "TimedOut" as const }),
+        ),
+      ]);
+
+      switch (outcome._tag) {
+        case "Settled": {
+          if (Exit.isSuccess(outcome.exit)) {
+            return {
+              _tag: "Accepted",
+              turnId: outcome.exit.value.turnId,
+            } satisfies ProviderFailoverHandoffOutcome;
+          }
+          return {
+            _tag: "Rejected",
+            cause: outcome.exit.cause,
+          } satisfies ProviderFailoverHandoffOutcome;
+        }
+        case "Dispatched": {
+          // The turn now runs detached; a failure after admission reaches
+          // the projection as turn.completed(failed), but name it in the
+          // log too so the handoff can be tied back to this failover.
+          yield* Fiber.await(sendFiber).pipe(
+            Effect.flatMap((exit) =>
+              Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+                ? Effect.logWarning("provider failover handoff turn failed after admission", {
+                    threadId: input.threadId,
+                    targetInstanceId: input.targetInstanceId,
+                    cause: Cause.pretty(exit.cause),
+                  })
+                : Effect.void,
+            ),
+            Effect.forkIn(ingestionScope),
+          );
+          // The adapter binds its active turn id before crossing the native
+          // boundary, so the live session already names the handoff turn.
+          const liveSession = (yield* providerService.listSessions()).find(
+            (session) =>
+              session.threadId === input.threadId &&
+              session.providerInstanceId === input.targetInstanceId,
+          );
+          return {
+            _tag: "Accepted",
+            turnId: liveSession?.activeTurnId ?? null,
+          } satisfies ProviderFailoverHandoffOutcome;
+        }
+        case "TimedOut": {
+          yield* Fiber.interrupt(sendFiber);
+          return {
+            _tag: "Rejected",
+            cause: Cause.fail(
+              new Error(
+                `The replacement provider did not admit the handoff turn within ${Duration.toSeconds(failoverHandoffAdmissionTimeout)}s.`,
+              ),
+            ),
+          } satisfies ProviderFailoverHandoffOutcome;
+        }
+      }
+    },
+  );
+
   const attemptProviderUsageLimitFailover = Effect.fn("attemptProviderUsageLimitFailover")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>) {
       const sourceInstanceId = event.providerInstanceId;
@@ -1831,6 +1979,10 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
+      const threadKey = String(thread.id);
+      if (providerFailoversInFlight.has(threadKey)) {
+        return;
+      }
 
       const providers = yield* providerRegistry.getProviders;
       const excludedInstances = new Set(exhausted.instances);
@@ -1850,6 +2002,64 @@ const make = Effect.gen(function* () {
         models: excludedModels,
       });
 
+      const activeSession = (yield* providerService.listSessions()).find(
+        (session) =>
+          session.threadId === thread.id &&
+          session.providerInstanceId === sourceInstanceId &&
+          session.provider === event.provider,
+      );
+
+      providerFailoversInFlight.add(threadKey);
+      yield* runProviderUsageLimitFailover({
+        event,
+        thread,
+        ingestionContext,
+        exhaustion,
+        sourceInstanceId,
+        providers,
+        excludedInstances,
+        excludedModels,
+        activeSession,
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => providerFailoversInFlight.delete(threadKey))),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("provider usage-limit failover failed", {
+                threadId: thread.id,
+                sourceInstanceId,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+        Effect.forkIn(ingestionScope),
+      );
+    },
+  );
+
+  const runProviderUsageLimitFailover = Effect.fn("runProviderUsageLimitFailover")(
+    function* (input: {
+      readonly event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>;
+      readonly thread: OrchestrationThreadShell;
+      readonly ingestionContext: ProjectionThreadIngestionContext;
+      readonly exhaustion: NonNullable<ReturnType<typeof detectProviderUsageLimitExhaustion>>;
+      readonly sourceInstanceId: ProviderInstanceId;
+      readonly providers: ReadonlyArray<ServerProvider>;
+      readonly excludedInstances: Set<string>;
+      readonly excludedModels: Set<string>;
+      readonly activeSession: ProviderSession | undefined;
+    }) {
+      const {
+        event,
+        thread,
+        ingestionContext,
+        exhaustion,
+        sourceInstanceId,
+        providers,
+        excludedInstances,
+        excludedModels,
+        activeSession,
+      } = input;
+      const currentModel = thread.modelSelection.model;
       const nowEpochMs = Number.isFinite(Date.parse(event.createdAt))
         ? Date.parse(event.createdAt)
         : null;
@@ -1859,20 +2069,13 @@ const make = Effect.gen(function* () {
           models: excludedModels,
         });
 
-      const activeSession = (yield* providerService.listSessions()).find(
-        (session) =>
-          session.threadId === thread.id &&
-          session.providerInstanceId === sourceInstanceId &&
-          session.provider === event.provider,
-      );
-
       const { autoCompactionThresholdPercentage } = yield* serverSettingsService.getSettings;
       const sourceLabel =
         providers
           .find((provider) => provider.instanceId === sourceInstanceId)
           ?.displayName?.trim() || String(event.provider);
       const attemptedTargets = new Set<string>();
-      let didReplaceSession = false;
+      let replacedSourceSession: ProviderSession | null = null;
       let lastHandoffCause: Cause.Cause<unknown> | null = null;
       let lastFailedTargetInstanceId = sourceInstanceId;
 
@@ -1950,34 +2153,40 @@ const make = Effect.gen(function* () {
           yield* persistExhausted();
           continue;
         }
-        didReplaceSession = true;
+        replacedSourceSession = activeSession;
 
-        const handoffTurn = yield* providerService
-          .sendTurn({
+        const handoffOutcome = yield* sendProviderFailoverHandoffTurn({
+          threadId: thread.id,
+          targetInstanceId: target.instanceId,
+          request: {
             threadId: thread.id,
             input: handoffSummary,
             modelSelection: target.modelSelection,
             interactionMode: thread.interactionMode,
-          })
-          .pipe(
-            Effect.map(Option.some),
-            Effect.catchCause((handoffCause) => {
-              lastHandoffCause = handoffCause;
-              lastFailedTargetInstanceId = target.instanceId;
-              return appendProviderFailoverActivity({
-                event,
-                tone: "error",
-                kind: "provider.failover.handoff.failed",
-                summary: "Provider failover handoff failed",
-                payload: {
-                  detail: Cause.pretty(handoffCause),
-                  sourceInstanceId,
-                  targetInstanceId: target.instanceId,
-                  rolledBack: false,
-                },
-              }).pipe(Effect.as(Option.none()));
-            }),
-          );
+          },
+        });
+        const handoffTurn = yield* Effect.gen(function* () {
+          if (handoffOutcome._tag === "Accepted") {
+            return Option.some<Extract<ProviderFailoverHandoffOutcome, { _tag: "Accepted" }>>(
+              handoffOutcome,
+            );
+          }
+          lastHandoffCause = handoffOutcome.cause;
+          lastFailedTargetInstanceId = target.instanceId;
+          yield* appendProviderFailoverActivity({
+            event,
+            tone: "error",
+            kind: "provider.failover.handoff.failed",
+            summary: "Provider failover handoff failed",
+            payload: {
+              detail: Cause.pretty(handoffOutcome.cause),
+              sourceInstanceId,
+              targetInstanceId: target.instanceId,
+              rolledBack: false,
+            },
+          });
+          return Option.none<Extract<ProviderFailoverHandoffOutcome, { _tag: "Accepted" }>>();
+        });
         if (Option.isNone(handoffTurn)) {
           excludedModels.add(targetKey);
           if (target.instanceId !== sourceInstanceId) {
@@ -1993,24 +2202,30 @@ const make = Effect.gen(function* () {
         yield* persistExhausted();
 
         // Only make the new selection durable after the replacement provider
-        // accepted the bounded handoff turn.
+        // admitted the bounded handoff turn. Admission, not completion: the
+        // turn is still running, and its own turn.started/turn.completed
+        // events keep the session row current from here on.
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
           commandId: yield* providerCommandId(event, "provider-failover-model-selection"),
           threadId: thread.id,
           modelSelection: target.modelSelection,
         });
+        const handoffTurnId = handoffTurn.value.turnId;
         yield* orchestrationEngine.dispatch({
           type: "thread.session.set",
           commandId: yield* providerCommandId(event, "provider-failover-session-set"),
           threadId: thread.id,
           session: {
             threadId: thread.id,
-            status: "running",
+            // An adapter that reports admission before binding a turn id has
+            // the turn in flight but not yet named; "starting" keeps the
+            // thread busy without asserting a turn the projection cannot see.
+            status: handoffTurnId === null ? "starting" : "running",
             providerName: replacementSession.provider,
             providerInstanceId: target.instanceId,
             runtimeMode: thread.runtimeMode,
-            activeTurnId: handoffTurn.value.turnId,
+            activeTurnId: handoffTurnId,
             lastError: null,
             updatedAt: event.createdAt,
           },
@@ -2058,16 +2273,16 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      if (didReplaceSession) {
+      if (replacedSourceSession !== null) {
         const rolledBack = yield* providerService
           .startSession(thread.id, {
             threadId: thread.id,
             provider: event.provider,
             providerInstanceId: sourceInstanceId,
-            ...(activeSession.cwd ? { cwd: activeSession.cwd } : {}),
+            ...(replacedSourceSession.cwd ? { cwd: replacedSourceSession.cwd } : {}),
             modelSelection: thread.modelSelection,
-            ...(activeSession.resumeCursor !== undefined
-              ? { resumeCursor: activeSession.resumeCursor }
+            ...(replacedSourceSession.resumeCursor !== undefined
+              ? { resumeCursor: replacedSourceSession.resumeCursor }
               : {}),
             autoCompactionThresholdPercentage,
             runtimeMode: thread.runtimeMode,
@@ -2808,6 +3023,24 @@ const make = Effect.gen(function* () {
           cause: Cause.pretty(cause),
         });
       }),
+      // One global FIFO: a single slow event delays every provider's events
+      // for every thread, and nothing else names the culprit. Log it while it
+      // is still holding the lane rather than only after it lets go.
+      Effect.raceFirst(
+        Effect.sleep(INGESTION_SLOW_EVENT_WARNING_AFTER).pipe(
+          Effect.andThen(
+            Effect.logWarning("provider runtime ingestion event is holding the worker", {
+              source: input.source,
+              eventId: input.event.eventId,
+              eventType: input.event.type,
+              threadId:
+                input.source === "runtime" ? input.event.threadId : input.event.payload.threadId,
+              heldForMs: Duration.toMillis(INGESTION_SLOW_EVENT_WARNING_AFTER),
+            }),
+          ),
+          Effect.andThen(Effect.never),
+        ),
+      ),
     );
 
   const worker = yield* makeDrainableWorker(processInputSafely);

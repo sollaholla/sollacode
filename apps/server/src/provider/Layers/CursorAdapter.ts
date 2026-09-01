@@ -946,7 +946,7 @@ export function makeCursorAdapter(
         }).pipe(Effect.scoped),
       );
 
-    const sendTurn: CursorAdapterShape["sendTurn"] = (input) =>
+    const sendTurn: CursorAdapterShape["sendTurn"] = (input, options) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
         const requireExactLiveSteerTarget = () => {
@@ -1081,10 +1081,18 @@ export function makeCursorAdapter(
           // last possible point before crossing it.
           yield* requireExactLiveSteerTarget();
 
+          // The prompt RPC resolves only when the turn ends; callers that need
+          // the admission boundary (usage-limit failover) get it from the
+          // ACP runtime's request-enqueued hook instead.
           const result = yield* ctx.acp
-            .prompt({
-              prompt: promptParts,
-            })
+            .prompt(
+              {
+                prompt: promptParts,
+              },
+              options?.onNativeDispatch === undefined
+                ? undefined
+                : { onNativeDispatch: options.onNativeDispatch },
+            )
             .pipe(
               Effect.mapError((error) =>
                 mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
