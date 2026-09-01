@@ -1078,7 +1078,12 @@ export function RemoteControlViewerDialog(props: {
               }}
               className={`relative flex touch-none select-none items-center justify-center overflow-hidden bg-black outline-hidden overscroll-none ${
                 pseudoFullScreen
-                  ? "fixed inset-0 z-[120] h-[100dvh] w-screen rounded-none"
+                  ? // svh, not dvh: the dynamic viewport can include the area
+                    // Safari's own chrome sits over, which put the control row
+                    // behind the browser toolbar in landscape and made it look
+                    // like the controls had vanished. The small viewport is the
+                    // one that is always actually visible.
+                    "fixed inset-0 z-[120] h-[100svh] w-screen rounded-none"
                   : "size-full rounded-lg"
               } ${
                 inputCaptured
@@ -1302,7 +1307,17 @@ export function RemoteControlViewerDialog(props: {
                   other, and the clearance needed differed per breakpoint
                   because the buttons reveal their labels at `sm`. Here the
                   pill simply truncates against whatever the buttons take. */}
-              <div className="absolute inset-x-3 bottom-3 flex items-center justify-between gap-2">
+              <div
+                className="absolute inset-x-3 z-40 flex items-center justify-between gap-2"
+                // Clear of the home indicator and any browser chrome when the
+                // surface is filling the viewport; a plain bottom-3 sat under
+                // both.
+                style={{
+                  bottom: pseudoFullScreen
+                    ? "calc(0.75rem + env(safe-area-inset-bottom, 0px))"
+                    : "0.75rem",
+                }}
+              >
                 <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                   <span
                     className={`size-1.5 shrink-0 rounded-full ${
