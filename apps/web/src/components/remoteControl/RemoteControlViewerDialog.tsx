@@ -1233,7 +1233,12 @@ export function RemoteControlViewerDialog(props: {
                   // edits of the field and are mapped back to key taps. Keys
                   // that carry a real `code` are handled by the window-level
                   // capture listener before they reach here.
-                  className="absolute bottom-0 left-0 size-px opacity-0"
+                  // 16px is not cosmetic on a 1px invisible input: iOS Safari
+                  // zooms the whole page whenever it focuses a field whose
+                  // computed font-size is under 16px, so raising the keyboard
+                  // magnified the UI and left the user pinching back out every
+                  // single time.
+                  className="absolute bottom-0 left-0 size-px text-[16px] opacity-0"
                   aria-label="Remote keyboard input"
                   tabIndex={-1}
                   autoCapitalize="none"
