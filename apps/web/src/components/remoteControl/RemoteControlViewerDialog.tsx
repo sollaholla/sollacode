@@ -976,16 +976,18 @@ export function RemoteControlViewerDialog(props: {
         // of padding starts 16px in and runs 16px past the right edge, which
         // clipped the Close button off-screen. Going fixed positions against
         // the viewport instead, the same escape ProviderModelPicker uses.
-        // Full screen has to be escaped at the dialog, not inside it. A phone
-        // in landscape is wider than the `sm` breakpoint, so the popup became
-        // the rounded inset panel below and clipped a `fixed inset-0` child to
-        // its own rounded box — full screen rendered as a masked rectangle
-        // floating in the middle of the screen (reported 2026-09-01).
-        className={
-          pseudoFullScreen
-            ? "fixed inset-0 h-[100svh] max-h-none w-screen max-w-none rounded-none sm:h-[100svh] sm:max-h-none sm:w-screen sm:max-w-none sm:rounded-none"
-            : "h-dvh max-h-none w-screen max-w-none rounded-none max-sm:fixed max-sm:inset-0 sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
-        }
+        // Full-bleed at every size. Controlling a machine is the whole task
+        // while it is on screen, not something to do through a window: the
+        // floating panel spent its edges on nothing and shrank the remote
+        // desktop to fit inside them.
+        //
+        // It also removes a class of bug rather than patching one. As an inset
+        // rounded panel, this clipped any `fixed inset-0` descendant to its own
+        // rounded box — a fixed element is still clipped by an ancestor that
+        // establishes a containing block — so full screen on a phone in
+        // landscape, which is wider than the `sm` breakpoint, rendered as a
+        // masked rectangle floating mid-screen (reported 2026-09-01).
+        className="fixed inset-0 h-[100svh] max-h-none w-screen max-w-none rounded-none"
         showCloseButton={false}
         bottomStickOnMobile={false}
       >
@@ -1085,16 +1087,7 @@ export function RemoteControlViewerDialog(props: {
                   pointerGranted: canPointer,
                 }),
               }}
-              className={`relative flex touch-none select-none items-center justify-center overflow-hidden bg-black outline-hidden overscroll-none ${
-                pseudoFullScreen
-                  ? // The popup above is already filling the viewport, so this
-                    // just fills the popup. It must NOT go fixed itself: a
-                    // fixed child is still clipped by an ancestor that
-                    // establishes a containing block, which is what put full
-                    // screen inside a rounded mask.
-                    "size-full rounded-none"
-                  : "size-full rounded-lg"
-              } ${
+              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
                   : "focus-visible:ring-2 focus-visible:ring-ring"
@@ -1318,14 +1311,10 @@ export function RemoteControlViewerDialog(props: {
                   pill simply truncates against whatever the buttons take. */}
               <div
                 className="absolute inset-x-3 z-40 flex items-center justify-between gap-2"
-                // Clear of the home indicator and any browser chrome when the
-                // surface is filling the viewport; a plain bottom-3 sat under
-                // both.
-                style={{
-                  bottom: pseudoFullScreen
-                    ? "calc(0.75rem + env(safe-area-inset-bottom, 0px))"
-                    : "0.75rem",
-                }}
+                // The surface always reaches the bottom edge now, so the row
+                // always has to clear the home indicator and browser chrome; a
+                // plain bottom-3 sat under both.
+                style={{ bottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
               >
                 <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white">
                   <span
