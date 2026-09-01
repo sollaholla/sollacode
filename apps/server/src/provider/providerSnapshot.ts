@@ -138,6 +138,30 @@ export function parseGenericCliVersion(output: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * Capabilities for a hand-typed custom model id: the option set of the first
+ * built-in model that exposes a reasoning-effort control, so a custom id gets
+ * the same effort picker as the provider's own models instead of no options at
+ * all (Codex already inherits this way; `fallback` covers a provider whose
+ * catalog advertises no effort control).
+ */
+export function customModelCapabilitiesFrom(
+  builtInModels: ReadonlyArray<ServerProviderModel>,
+  fallback: ModelCapabilities,
+): ModelCapabilities {
+  for (const model of builtInModels) {
+    const descriptors = model.capabilities?.optionDescriptors ?? [];
+    if (
+      descriptors.some(
+        (descriptor) => descriptor.id === "effort" || descriptor.id === "reasoningEffort",
+      )
+    ) {
+      return model.capabilities ?? fallback;
+    }
+  }
+  return fallback;
+}
+
 export function providerModelsFromSettings(
   builtInModels: ReadonlyArray<ServerProviderModel>,
   customModels: ReadonlyArray<string>,

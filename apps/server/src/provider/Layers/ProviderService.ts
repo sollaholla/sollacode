@@ -1262,8 +1262,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }
 
       const liveSteerTarget = parsed.liveSteerTarget;
+      // Steers always track native admission (the same-provider FIFO below
+      // releases on it). Any other caller that asks for the boundary gets it
+      // too — a usage-limit failover must learn that its handoff was admitted
+      // without waiting for adapters whose `sendTurn` resolves at turn end.
       const nativeDispatchStarted =
-        liveSteerTarget === undefined ? undefined : yield* Deferred.make<void>();
+        liveSteerTarget === undefined && sendOptions?.onNativeDispatch === undefined
+          ? undefined
+          : yield* Deferred.make<void>();
       const acknowledgeNativeDispatch =
         nativeDispatchStarted === undefined
           ? undefined
