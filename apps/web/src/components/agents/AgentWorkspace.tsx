@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useState } from "react";
 
+import { RemoteConnectionControl } from "../remoteControl/RemoteConnectionControl";
 import { useThreadPreviewState } from "../../previewStateStore";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { vmAgentEnvironment } from "../../state/vmAgents";
@@ -215,6 +216,10 @@ function AgentWorkspaceResolved(props: {
           </div>
         </div>
         <div className="flex min-w-0 items-center justify-end gap-1 md:shrink-0">
+          {/* Agent threads reach the same remote machines as ordinary threads,
+              so the control that connects to one belongs here too — a device
+              driving an agent had no way to start a session from this header. */}
+          <RemoteConnectionControl activeEnvironmentId={environmentId} />
           {browserAvailable ? (
             <Button
               type="button"

@@ -230,6 +230,7 @@ export const RemoteControlHostStatusReason = Schema.Literals([
   "elevated-window",
   "secure-input",
   "capture-interrupted",
+  "input-interrupted",
 ]);
 export type RemoteControlHostStatusReason = typeof RemoteControlHostStatusReason.Type;
 

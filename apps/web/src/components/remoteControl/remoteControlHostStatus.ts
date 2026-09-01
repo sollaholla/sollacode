@@ -89,6 +89,8 @@ const REASON_TEXT: Record<RemoteControlHostStatusReason, string> = {
     "The remote Mac has secure input turned on, which a password field or authorization prompt does. Keystrokes are blocked until it closes.",
   "capture-interrupted":
     "The remote screen stopped being capturable and is being reconnected. This usually means a security prompt or a display change on that computer.",
+  "input-interrupted":
+    "The remote computer is still being watched, but it is not accepting clicks or keystrokes right now. Retrying — if this persists, check that Solla Code has Accessibility permission on that computer.",
 };
 
 /** Viewer-facing text for a status, or null when nothing is wrong. */

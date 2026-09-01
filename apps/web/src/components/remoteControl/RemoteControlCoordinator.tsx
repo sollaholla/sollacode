@@ -178,6 +178,13 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
    */
   const inputBlockRef = useRef<RemoteControlHostStatusReason | null>(null);
   const captureInterruptedRef = useRef(false);
+  /**
+   * Input failing is not capture failing. Reporting them as one condition told
+   * the viewer "the remote screen stopped being capturable" while frames were
+   * arriving perfectly, which sent everyone looking at screen-recording
+   * permission for what was a broken input helper.
+   */
+  const inputInterruptedRef = useRef(false);
 
   /**
    * Tells the controller that the host is temporarily unable to comply, or
@@ -188,7 +195,12 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     const current = activeRef.current;
     if (!current) return;
     const reason =
-      inputBlockRef.current ?? (captureInterruptedRef.current ? "capture-interrupted" : null);
+      inputBlockRef.current ??
+      (captureInterruptedRef.current
+        ? "capture-interrupted"
+        : inputInterruptedRef.current
+          ? "input-interrupted"
+          : null);
     const status: RemoteControlHostStatus = reason
       ? { state: "interrupted", reason }
       : { state: "ok" };
@@ -219,11 +231,12 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         // The host refusing input is a condition, not a failure: a UAC prompt,
         // the lock screen, or an elevated window owns the desktop temporarily.
         inputBlockRef.current = result.blocked ?? null;
+        inputInterruptedRef.current = false;
         syncHostStatus();
       } catch (cause: unknown) {
         const failure = classifyInputFailure(cause);
         if (failure.kind === "transient") {
-          captureInterruptedRef.current = true;
+          inputInterruptedRef.current = true;
           syncHostStatus();
         } else {
           setCaptureError(failure.message);
@@ -277,6 +290,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         // is blocked, so it owns the recovery edge: nobody typing during a UAC
         // prompt would otherwise leave the viewer stuck on the warning.
         inputBlockRef.current = result.blocked ?? null;
+        inputInterruptedRef.current = false;
         syncHostStatus();
       } catch {
         // An unavailable signal must not disturb the stream; absent lock state
