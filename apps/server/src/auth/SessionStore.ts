@@ -405,6 +405,33 @@ export class SessionStore extends Context.Service<
 
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
+/**
+ * A device the user deliberately paired is a trusted device, and its credential
+ * is revocable from the sessions list at any time. Expiring it on a timer only
+ * ever produced one outcome: a machine that had been working for weeks stopped
+ * connecting, with nothing but "the environment credential is invalid" to
+ * explain it and no way back except pairing again. Revocation is the control
+ * here; the clock is not.
+ */
+const DEVICE_SESSION_TTL = Duration.days(365);
+
+type IssueSessionTtlInput =
+  | {
+      readonly kind: "random";
+      readonly ttl?: Duration.Duration;
+      readonly method?: ServerAuthSessionMethod;
+    }
+  | { readonly kind: "desktop-bootstrap" };
+
+export const resolveSessionTtl = (input: IssueSessionTtlInput): Duration.Duration => {
+  if (input.kind !== "random") return DEFAULT_SESSION_TTL;
+  if (input.ttl) return input.ttl;
+  // Only a paired device gets the long credential. Browser cookie sessions and
+  // DPoP access tokens keep their short lives — the first is a browser the user
+  // can sign in to again in one click, and the second is refreshed by its own
+  // grant every hour.
+  return input.method === "bearer-access-token" ? DEVICE_SESSION_TTL : DEFAULT_SESSION_TTL;
+};
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
 const DESKTOP_BOOTSTRAP_SESSION_ID = AuthSessionId.make("desktop-bootstrap-access-token");
 const DESKTOP_BOOTSTRAP_SUBJECT = "desktop-bootstrap";
@@ -605,9 +632,7 @@ export const make = Effect.gen(function* () {
           );
     const issuedAt = yield* DateTime.now;
     const expiresAt = DateTime.add(issuedAt, {
-      milliseconds: Duration.toMillis(
-        input.kind === "random" ? (input.ttl ?? DEFAULT_SESSION_TTL) : DEFAULT_SESSION_TTL,
-      ),
+      milliseconds: Duration.toMillis(resolveSessionTtl(input)),
     });
     const claims: SessionClaims = {
       v: 1,
