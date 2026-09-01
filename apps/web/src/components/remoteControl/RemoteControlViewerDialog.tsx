@@ -976,7 +976,16 @@ export function RemoteControlViewerDialog(props: {
         // of padding starts 16px in and runs 16px past the right edge, which
         // clipped the Close button off-screen. Going fixed positions against
         // the viewport instead, the same escape ProviderModelPicker uses.
-        className="h-dvh max-h-none w-screen max-w-none rounded-none max-sm:fixed max-sm:inset-0 sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
+        // Full screen has to be escaped at the dialog, not inside it. A phone
+        // in landscape is wider than the `sm` breakpoint, so the popup became
+        // the rounded inset panel below and clipped a `fixed inset-0` child to
+        // its own rounded box — full screen rendered as a masked rectangle
+        // floating in the middle of the screen (reported 2026-09-01).
+        className={
+          pseudoFullScreen
+            ? "fixed inset-0 h-[100svh] max-h-none w-screen max-w-none rounded-none sm:h-[100svh] sm:max-h-none sm:w-screen sm:max-w-none sm:rounded-none"
+            : "h-dvh max-h-none w-screen max-w-none rounded-none max-sm:fixed max-sm:inset-0 sm:h-[min(90dvh,900px)] sm:max-h-[90dvh] sm:w-[min(94vw,1500px)] sm:rounded-lg"
+        }
         showCloseButton={false}
         bottomStickOnMobile={false}
       >
@@ -1078,12 +1087,12 @@ export function RemoteControlViewerDialog(props: {
               }}
               className={`relative flex touch-none select-none items-center justify-center overflow-hidden bg-black outline-hidden overscroll-none ${
                 pseudoFullScreen
-                  ? // svh, not dvh: the dynamic viewport can include the area
-                    // Safari's own chrome sits over, which put the control row
-                    // behind the browser toolbar in landscape and made it look
-                    // like the controls had vanished. The small viewport is the
-                    // one that is always actually visible.
-                    "fixed inset-0 z-[120] h-[100svh] w-screen rounded-none"
+                  ? // The popup above is already filling the viewport, so this
+                    // just fills the popup. It must NOT go fixed itself: a
+                    // fixed child is still clipped by an ancestor that
+                    // establishes a containing block, which is what put full
+                    // screen inside a rounded mask.
+                    "size-full rounded-none"
                   : "size-full rounded-lg"
               } ${
                 inputCaptured
