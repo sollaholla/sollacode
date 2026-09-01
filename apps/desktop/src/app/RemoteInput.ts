@@ -21,6 +21,17 @@ try {
 } catch (error) {
   hasCarbon = false;
 }
+// NSScreen is AppKit, not Foundation. Without this import $.NSScreen is
+// undefined and every pointer event dies on "undefined is not an object",
+// which the viewer then reports as a capture problem. Guarded like Carbon so a
+// runtime without AppKit degrades instead of taking the helper down.
+var hasAppKit = false;
+try {
+  ObjC.import("AppKit");
+  hasAppKit = true;
+} catch (error) {
+  hasAppKit = false;
+}
 
 var keyCodes = {
   KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7,
@@ -78,20 +89,36 @@ function writeReply(value) {
   $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
 }
 
+// The union of every display, or the main display alone when AppKit is
+// missing. CGDisplayBounds is ApplicationServices, which is always imported,
+// so the fallback still puts the pointer somewhere sane on one monitor.
+function virtualDesktopBounds() {
+  if (hasAppKit && $.NSScreen !== undefined && $.NSScreen.screens !== undefined) {
+    return $.NSScreen.screens.js.reduce(function (acc, screen) {
+      var frame = screen.frame;
+      return {
+        minX: Math.min(acc.minX, frame.origin.x),
+        minY: Math.min(acc.minY, frame.origin.y),
+        maxX: Math.max(acc.maxX, frame.origin.x + frame.size.width),
+        maxY: Math.max(acc.maxY, frame.origin.y + frame.size.height)
+      };
+    }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+  }
+  var main = $.CGDisplayBounds($.CGMainDisplayID());
+  return {
+    minX: main.origin.x,
+    minY: main.origin.y,
+    maxX: main.origin.x + main.size.width,
+    maxY: main.origin.y + main.size.height
+  };
+}
+
 function displayPoint(input) {
   // Coordinates arrive normalized across the whole virtual desktop, and
   // CGEventPost addresses that same global space, so scale by the union of all
   // displays rather than the main one — otherwise secondary monitors are
   // unreachable.
-  var bounds = $.NSScreen.screens.js.reduce(function (acc, screen) {
-    var frame = screen.frame;
-    return {
-      minX: Math.min(acc.minX, frame.origin.x),
-      minY: Math.min(acc.minY, frame.origin.y),
-      maxX: Math.max(acc.maxX, frame.origin.x + frame.size.width),
-      maxY: Math.max(acc.maxY, frame.origin.y + frame.size.height)
-    };
-  }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+  var bounds = virtualDesktopBounds();
   var width = Math.max(1, bounds.maxX - bounds.minX);
   var height = Math.max(1, bounds.maxY - bounds.minY);
   lastPoint = $.CGPointMake(

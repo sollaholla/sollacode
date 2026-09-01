@@ -270,3 +270,24 @@ public static class SollaRemoteInput {
     assert.include(source, "flags = MOUSEEVENTF_MOVE");
   });
 });
+
+describe("macOS remote input script framework imports", () => {
+  it("imports AppKit, because NSScreen is not in Foundation", () => {
+    const source = remoteInputScriptSource("darwin");
+    // Foundation and ApplicationServices do not define NSScreen. Without an
+    // AppKit import `$.NSScreen` is undefined, so every pointer event died on
+    // "undefined is not an object (evaluating '$.NSScreen.screens')" — and the
+    // viewer reported it as the screen no longer being capturable even though
+    // capture was fine (reported 2026-09-01).
+    assert.include(source, 'ObjC.import("AppKit")');
+    assert.include(source, "$.NSScreen.screens");
+  });
+
+  it("falls back to the main display when AppKit is unavailable", () => {
+    const source = remoteInputScriptSource("darwin");
+    // The import is guarded, so the pointer still has to land somewhere rather
+    // than throwing on every event.
+    assert.include(source, "CGDisplayBounds");
+    assert.include(source, "CGMainDisplayID");
+  });
+});
