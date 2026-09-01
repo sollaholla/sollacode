@@ -52,3 +52,68 @@ describe("previewComputerControlHeading", () => {
     );
   });
 });
+
+describe("codex node_repl computer control", () => {
+  // Verbatim from a real Codex run (2026-09-01): the agent inspecting the Epic
+  // Games launcher. This showed up in the work log as "Node_repl · js".
+  const realSkyCode = [
+    'globalThis.epicState = await sky.get_app_state({ app: "com.epicgames.EpicGamesLauncher", disableDiff: true });',
+    'if (epicState.screenshot) await nodeRepl.emitImage({ bytes: await fsmod.readFile(urlmod.fileURLToPath(epicState.screenshot.url)), mimeType: "image/png" });',
+    "nodeRepl.write(epicState.text);",
+  ].join("\n");
+
+  it("names the sky action instead of the repl transport", () => {
+    expect(
+      previewComputerControlAction({
+        toolTitle: "node_repl · js",
+        toolData: { server: "node_repl", tool: "js", arguments: { code: realSkyCode } },
+      }),
+    ).toBe("get app state");
+  });
+
+  it("reads the snake_case and camelCase spellings the same way", () => {
+    const action = (code: string) =>
+      previewComputerControlAction({
+        toolData: { server: "node_repl", tool: "js", arguments: { code } },
+      });
+    expect(action('await sky.press_key({ key: "Enter" })')).toBe("press key");
+    expect(action("await sky.perform_secondary_action({})")).toBe("perform secondary action");
+    expect(action("await sky.getAppState({})")).toBe("get app state");
+    expect(action("await sky.click({ x: 1, y: 2 })")).toBe("click");
+  });
+
+  it("leaves ordinary node_repl javascript alone", () => {
+    // Not computer control: mislabeling this would claim the agent touched the
+    // machine when it only did arithmetic.
+    expect(
+      previewComputerControlAction({
+        toolTitle: "node_repl · js",
+        toolData: {
+          server: "node_repl",
+          tool: "js",
+          arguments: { code: "nodeRepl.write(1 + 1);" },
+        },
+      }),
+    ).toBeNull();
+    // A `sky` that is only imported, never called, is still not an action.
+    expect(
+      previewComputerControlAction({
+        toolData: {
+          server: "node_repl",
+          tool: "js",
+          arguments: { code: 'globalThis.sky = globalThis.sky || (await import("@oai/sky")).sky;' },
+        },
+      }),
+    ).toBeNull();
+    // Another server's tool that happens to run sky-shaped code is not ours.
+    expect(
+      previewComputerControlAction({
+        toolData: { server: "other", tool: "js", arguments: { code: "await sky.click({})" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("renders as a computer-control heading", () => {
+    expect(previewComputerControlHeading("get app state")).toBe("Computer control · Get app state");
+  });
+});
