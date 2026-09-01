@@ -2833,7 +2833,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (isChildWindow) {
             return {
               action: "allow",
-              overrideBrowserWindowOptions: { autoHideMenuBar: true },
+              // Centred on the app rather than wherever the OS would drop it.
+              // The window itself has to stay real — the OAuth WindowProxy
+              // contract above depends on it — but an unparented sign-in
+              // window opening off to one side is easy to miss entirely, and
+              // is invisible to anyone watching this machine through the
+              // browser panel from another device.
+              overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
             };
           }
           // Browser-style new-tab requests become durable sibling preview
