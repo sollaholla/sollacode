@@ -16,6 +16,8 @@ import {
   MinimizeIcon,
   MonitorIcon,
   ShieldCheckIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
 } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -79,6 +81,9 @@ function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]):
     ? cause.message
     : "Remote control could not be started.";
 }
+
+/** Magnification steps the two magnifier buttons walk between. */
+const ZOOM_STEPS = [1, 1.5, 2, 3, 4] as const;
 
 export function RemoteControlViewerDialog(props: {
   readonly environmentId: EnvironmentId;
@@ -144,6 +149,19 @@ export function RemoteControlViewerDialog(props: {
   const [hasRenderedFrame, setHasRenderedFrame] = useState(false);
   const [firstFrameSlow, setFirstFrameSlow] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
+  /**
+   * iPhone Safari implements the Fullscreen API for <video> only — an
+   * arbitrary element cannot go fullscreen at all, so the button did nothing
+   * on the one device most likely to want it. This fills the viewport with CSS
+   * instead, which is what the user was asking for either way.
+   */
+  const [pseudoFullScreen, setPseudoFullScreen] = useState(false);
+  /** 1 = fit the pane. Above that, the picture is magnified about `zoomOrigin`. */
+  const [zoom, setZoom] = useState(1);
+  const [zoomOrigin, setZoomOrigin] = useState({ x: 50, y: 50 });
+  // Where the last touch landed, so zooming in magnifies what was just tapped
+  // rather than always the middle of the screen.
+  const lastPointerFractionRef = useRef({ x: 0.5, y: 0.5 });
   // Touch devices have no hardware keyboard to capture; this summons the
   // on-screen one via a hidden input and forwards its text natively.
   const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
@@ -634,7 +652,32 @@ export function RemoteControlViewerDialog(props: {
     };
   }, []);
 
+  const zoomIn = useCallback(() => {
+    const next = ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom;
+    if (next === zoom) return;
+    // Anchor on the last touch only when leaving 1x. Re-anchoring on every
+    // step would walk the picture out from under the finger.
+    if (zoom === 1) {
+      const { x, y } = lastPointerFractionRef.current;
+      setZoomOrigin({ x: Math.round(x * 100), y: Math.round(y * 100) });
+    }
+    setZoom(next);
+  }, [zoom]);
+
+  const zoomOut = useCallback(() => {
+    const next = [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? 1;
+    if (next === zoom) return;
+    if (next === 1) setZoomOrigin({ x: 50, y: 50 });
+    setZoom(next);
+  }, [zoom]);
+
   const toggleFullScreen = useCallback(() => {
+    // The CSS fallback owns the toggle once it is on: there is no browser
+    // fullscreen state to exit, so asking the document would leave it stuck.
+    if (pseudoFullScreen) {
+      setPseudoFullScreen(false);
+      return;
+    }
     const doc = document as Document & {
       webkitFullscreenElement?: Element | null;
       webkitExitFullscreen?: () => void;
@@ -671,7 +714,9 @@ export function RemoteControlViewerDialog(props: {
     };
     const reportUnavailable = () => {
       if (enterVideoFullscreen()) return;
-      setInputError("Full screen is not available in this browser.");
+      // Every native rung refused — iPhone Safari, in practice. Fill the
+      // viewport with CSS rather than telling the user it cannot be done.
+      setPseudoFullScreen(true);
     };
     if (surface.requestFullscreen) {
       void Promise.resolve(surface.requestFullscreen({ navigationUI: "hide" })).catch(
@@ -688,7 +733,7 @@ export function RemoteControlViewerDialog(props: {
       }
     }
     reportUnavailable();
-  }, []);
+  }, [pseudoFullScreen]);
 
   // Leaving the dialog while still full screen would strand the browser there.
   useEffect(() => {
@@ -1030,7 +1075,11 @@ export function RemoteControlViewerDialog(props: {
                   pointerGranted: canPointer,
                 }),
               }}
-              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-lg bg-black outline-hidden overscroll-none ${
+              className={`relative flex touch-none select-none items-center justify-center overflow-hidden bg-black outline-hidden overscroll-none ${
+                pseudoFullScreen
+                  ? "fixed inset-0 z-[120] h-[100dvh] w-screen rounded-none"
+                  : "size-full rounded-lg"
+              } ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
                   : "focus-visible:ring-2 focus-visible:ring-ring"
@@ -1073,6 +1122,13 @@ export function RemoteControlViewerDialog(props: {
                   engagePointerLock();
                 }
                 event.currentTarget.setPointerCapture(event.pointerId);
+                const surfaceRect = event.currentTarget.getBoundingClientRect();
+                if (surfaceRect.width > 0 && surfaceRect.height > 0) {
+                  lastPointerFractionRef.current = {
+                    x: (event.clientX - surfaceRect.left) / surfaceRect.width,
+                    y: (event.clientY - surfaceRect.top) / surfaceRect.height,
+                  };
+                }
                 const button = remotePointerButton(event.button);
                 pressedPointerButtonRef.current = button;
                 sendPointer(event, "down", button);
@@ -1112,6 +1168,17 @@ export function RemoteControlViewerDialog(props: {
                     setHasRenderedFrame(true);
                   }}
                   onPlaying={() => setHasRenderedFrame(true)}
+                  // Transform rather than layout: pointer math reads the
+                  // element's bounding rect, which already reflects it, so
+                  // clicks keep landing where the user aimed while zoomed.
+                  style={
+                    zoom === 1
+                      ? undefined
+                      : {
+                          transform: `scale(${zoom})`,
+                          transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%`,
+                        }
+                  }
                   className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : surface.media === "image" ? (
@@ -1124,6 +1191,17 @@ export function RemoteControlViewerDialog(props: {
                   // loading overlay up until the browser has decoded the first
                   // JPEG, otherwise a slow image decode still exposes black.
                   onLoad={() => setHasRenderedFrame(true)}
+                  // Transform rather than layout: pointer math reads the
+                  // element's bounding rect, which already reflects it, so
+                  // clicks keep landing where the user aimed while zoomed.
+                  style={
+                    zoom === 1
+                      ? undefined
+                      : {
+                          transform: `scale(${zoom})`,
+                          transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%`,
+                        }
+                  }
                   className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : null}
@@ -1293,7 +1371,38 @@ export function RemoteControlViewerDialog(props: {
                   ) : null}
                   <button
                     type="button"
-                    aria-label={isFullScreen ? "Exit full screen" : "Enter full screen"}
+                    aria-label="Zoom out"
+                    title="Zoom out"
+                    disabled={zoom === 1}
+                    className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85 disabled:cursor-default disabled:opacity-40"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      zoomOut();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <ZoomOutIcon className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Zoom in"
+                    title="Zoom in"
+                    disabled={zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]!}
+                    className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85 disabled:cursor-default disabled:opacity-40"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      zoomIn();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <ZoomInIcon className="size-3.5" />
+                    {zoom === 1 ? null : <span className="tabular-nums">{zoom}×</span>}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={
+                      isFullScreen || pseudoFullScreen ? "Exit full screen" : "Enter full screen"
+                    }
                     // Bottom right, opposite the status pill: the top edge belongs
                     // to the host/input notices, which span the full width.
                     className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
@@ -1305,13 +1414,13 @@ export function RemoteControlViewerDialog(props: {
                     }}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
-                    {isFullScreen ? (
+                    {isFullScreen || pseudoFullScreen ? (
                       <MinimizeIcon className="size-3.5" />
                     ) : (
                       <MaximizeIcon className="size-3.5" />
                     )}
                     <span className="sr-only sm:not-sr-only">
-                      {isFullScreen ? "Exit full screen" : "Full screen"}
+                      {isFullScreen || pseudoFullScreen ? "Exit full screen" : "Full screen"}
                     </span>
                   </button>
                 </div>
