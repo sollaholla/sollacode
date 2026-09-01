@@ -9221,7 +9221,12 @@ function ChatViewContent(props: ChatViewProps) {
                 deliveryProviderName={deliveryProvider.name}
                 deliveryReceiptsExpected={deliveryProvider.receiptsExpected}
                 newestUserMessageId={newestUserMessageId}
-                isWorking={timelineIsWorking}
+                // Whenever the composer offers a stop button, the transcript has
+                // to say something is running. Interruptible pending work — a
+                // turn being recovered — is not `running`, so the timeline stayed
+                // silent while the composer showed a red stop: a state that
+                // looked active but never said "Working" (reported 2026-09-01).
+                isWorking={timelineIsWorking || isThreadInterruptible}
                 pendingContinuation={
                   visibleAgentAutoResumePending || visibleStartupAutoResumePending
                 }
@@ -9236,12 +9241,18 @@ function ChatViewContent(props: ChatViewProps) {
                           ? "Auto-resuming thread"
                           : visibleAgentAutoResumePending
                             ? "Agent auto-resuming"
-                            : // A turn that happens to have compacted earlier is just a
-                              // turn; labelling the rest of it "Continuing after
-                              // compaction" pins an implementation detail to the status
-                              // line long after it stopped being what is happening. The
-                              // default elapsed "Working for X" is the honest read.
-                              null
+                            : !timelineIsWorking && isThreadInterruptible
+                              ? // Reached only via the branch above: nothing is
+                                // streaming, but an interrupted turn is being
+                                // recovered. "Working for X" would be wrong — no
+                                // work is going out — so say what it is.
+                                "Recovering the interrupted response"
+                              : // A turn that happens to have compacted earlier is just a
+                                // turn; labelling the rest of it "Continuing after
+                                // compaction" pins an implementation detail to the status
+                                // line long after it stopped being what is happening. The
+                                // default elapsed "Working for X" is the honest read.
+                                null
                 }
                 activeTurnInProgress={timelineIsWorking || !latestTurnSettled}
                 activeTurnStartedAt={timelineWorkStartedAt}
