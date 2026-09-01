@@ -2672,9 +2672,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* attemptPromise(
           { operation: "reclaimKeyForUserFocus.restoreElement", tabId, webContentsId: target.id },
           () =>
+            // Visibility is the whole point of these queries: the app keeps
+            // several threads mounted at once, so `querySelector` returns
+            // whichever composer is first in the DOM rather than the one on
+            // screen — switching threads then yanked the caret into a thread
+            // the user had left (reported 2026-09-01). A retained-but-hidden
+            // thread has no offsetParent, which separates them.
             target!.executeJavaScript(`(() => {
-              const marked = document.querySelector('[${APP_FOCUS_MARKER_ATTRIBUTE}]');
-              const composer = document.querySelector('[data-testid="composer-editor"][contenteditable="true"]');
+              const onScreen = (el) => el instanceof HTMLElement && el.isConnected &&
+                el.offsetParent !== null;
+              const marked = [...document.querySelectorAll('[${APP_FOCUS_MARKER_ATTRIBUTE}]')]
+                .find(onScreen) ?? null;
+              const composer =
+                [...document.querySelectorAll('[data-testid="composer-editor"][contenteditable="true"]')]
+                  .find(onScreen) ?? null;
               const markedUsable = marked instanceof HTMLElement && marked.isConnected &&
                 (marked.isContentEditable || marked.matches('input, textarea'));
               const candidate = markedUsable
