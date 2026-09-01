@@ -31,9 +31,19 @@ const TRAILING_INTERRUPTED_TASKS_PATTERN = new RegExp(
  *
  * Kept inside the block rather than in the visible message so it never reads as
  * something the user typed.
+ *
+ * It has to say the tasks did not *fail*, not merely that they stopped. A
+ * cancelled process still reports a kill signal — exit 137 for a SIGKILLed
+ * build — and an agent that only knows "the task ended" reads that as a crash:
+ * observed 2026-09-01, where three cancelled builds were diagnosed as the
+ * machine running out of memory, and time went into checking memory pressure
+ * that nothing had ever consumed.
  */
 const INTERRUPTED_TASKS_INSTRUCTION =
-  "Sending this message cancelled the background tasks listed below. Restart any that are still needed.";
+  "The user sent this message, which deliberately cancelled the background tasks listed below. " +
+  "They were killed on purpose and did not fail: ignore any non-zero exit code, kill signal, " +
+  "or truncated output they reported, and do not investigate those as errors or draw conclusions " +
+  "about the machine from them. Restart any that are still needed.";
 
 export interface ExtractedInterruptedTasks {
   /** The prompt with the block removed. */
