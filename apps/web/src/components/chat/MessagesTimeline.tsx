@@ -3232,7 +3232,16 @@ function ToolReadImagePreview(props: {
 }) {
   const ctx = use(TimelineRowCtx);
   const threadRef = ctx.threadRef;
-  if (!threadRef) return null;
+  // Bailing out with null made the row silently drop its image: no preview, no
+  // spinner, no error, indistinguishable from a tool that produced nothing.
+  // Say it plainly instead so an unparseable route key is visible.
+  if (!threadRef) {
+    return (
+      <div className="mt-1 ms-7 max-w-xl rounded-lg border border-border/60 bg-background/55 px-4 py-3 text-[11px] text-muted-foreground">
+        Image preview unavailable in this view.
+      </div>
+    );
+  }
   return (
     <ToolReadImagePreviewWithThread
       path={props.path}
