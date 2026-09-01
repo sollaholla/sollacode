@@ -2740,7 +2740,7 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
 
@@ -2755,7 +2755,7 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
 
@@ -2768,7 +2768,7 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
 
@@ -2784,7 +2784,7 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
 
@@ -2800,7 +2800,7 @@ describe("PreviewManager", () => {
           }),
         ).toEqual({
           action: "allow",
-          overrideBrowserWindowOptions: { autoHideMenuBar: true },
+          overrideBrowserWindowOptions: { autoHideMenuBar: true, center: true },
         });
         expect(requests).toHaveLength(1);
       }),

@@ -37,13 +37,22 @@ import type {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
+import { buildPreviewContextMenuTemplate, webSearchUrl } from "./contextMenu.ts";
 import {
   collectFrameIdsFromTree,
   isPdfPreviewDocument,
   mergeAccessibilityTrees,
   visibleTextFromAccessibilityTree,
 } from "./previewSnapshotText.ts";
-import { BrowserWindow, type Session, clipboard, nativeImage, shell, webContents } from "electron";
+import {
+  BrowserWindow,
+  Menu,
+  type Session,
+  clipboard,
+  nativeImage,
+  shell,
+  webContents,
+} from "electron";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -2396,6 +2405,105 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const isAgentOriginatedKey = (tabId: string, input: Electron.Input): boolean =>
     isSynchronousAgentKey(tabId, input) || agentInputActiveTabs.has(tabId);
 
+  // Chrome's right-click menu, rebuilt for the embedded browser. The guest is a
+  // <webview> living inside the main window, so the menu pops against that
+  // window; and every item drives this WebContents by hand rather than using
+  // Electron's menu roles, because a role targets whichever WebContents the app
+  // considers focused, which is not reliably the guest the user clicked in.
+  const showGuestContextMenu = Effect.fn("PreviewManager.showGuestContextMenu")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+    params: Electron.ContextMenuParams,
+  ) {
+    if (wc.isDestroyed()) return;
+    const mainWindow = yield* Ref.get(mainWindowRef);
+    const window = Option.getOrElse(mainWindow, () => BrowserWindow.fromWebContents(wc));
+    if (window === null || window.isDestroyed()) return;
+    // Fire-and-forget so a click handler never leaves a native menu on screen
+    // waiting for an Effect: the menu is already gone by the time these run.
+    const guest = (act: (contents: Electron.WebContents) => void) => (): void => {
+      if (wc.isDestroyed()) return;
+      runFork(
+        attempt({ operation: "contextMenuAction", tabId, webContentsId: wc.id }, () =>
+          act(wc),
+        ).pipe(Effect.ignore),
+      );
+    };
+    const openTab = (url: string): void => {
+      runFork(emitNewTabRequest({ sourceTabId: tabId, url }));
+    };
+    const template = buildPreviewContextMenuTemplate(
+      {
+        pageURL: params.pageURL,
+        linkURL: params.linkURL,
+        linkText: params.linkText,
+        srcURL: params.srcURL,
+        mediaType: params.mediaType,
+        isEditable: params.isEditable,
+        selectionText: params.selectionText,
+        misspelledWord: params.misspelledWord,
+        dictionarySuggestions: params.dictionarySuggestions,
+        editFlags: params.editFlags,
+      },
+      {
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward(),
+      },
+      {
+        goBack: guest((contents) => {
+          if (contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+        }),
+        goForward: guest((contents) => {
+          if (contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
+        }),
+        reload: guest((contents) => contents.reload()),
+        openInNewTab: (url) => openTab(url),
+        // Anything leaving for the user's real browser goes through the same
+        // normalizer as an address-bar entry, so a javascript: or file: target
+        // in a page cannot become a shell.openExternal argument.
+        openExternally: (url) => {
+          runFork(
+            attempt({ operation: "contextMenuOpenExternal", tabId }, () =>
+              normalizePreviewUrl(url),
+            ).pipe(
+              Effect.flatMap((normalized) =>
+                attemptPromise({ operation: "contextMenuOpenExternal", tabId }, () =>
+                  shell.openExternal(normalized),
+                ),
+              ),
+              Effect.ignore,
+            ),
+          );
+        },
+        downloadUrl: guest((contents) => contents.downloadURL(params.srcURL)),
+        copyText: (text) => {
+          runFork(
+            attempt({ operation: "contextMenuCopyText", tabId }, () =>
+              clipboard.writeText(text),
+            ).pipe(Effect.ignore),
+          );
+        },
+        copyImage: guest((contents) => contents.copyImageAt(params.x, params.y)),
+        searchWeb: (query) => openTab(webSearchUrl(query)),
+        replaceMisspelling: (word) => guest((contents) => contents.replaceMisspelling(word))(),
+        addToDictionary: (word) =>
+          guest((contents) => contents.session.addWordToSpellCheckerDictionary(word))(),
+        undo: guest((contents) => contents.undo()),
+        redo: guest((contents) => contents.redo()),
+        cut: guest((contents) => contents.cut()),
+        copy: guest((contents) => contents.copy()),
+        paste: guest((contents) => contents.paste()),
+        pasteAndMatchStyle: guest((contents) => contents.pasteAndMatchStyle()),
+        selectAll: guest((contents) => contents.selectAll()),
+        print: guest((contents) => contents.print()),
+        inspect: guest((contents) => contents.inspectElement(params.x, params.y)),
+      },
+    );
+    yield* attempt({ operation: "contextMenu", tabId, webContentsId: wc.id }, () =>
+      Menu.buildFromTemplate(template).popup({ window }),
+    ).pipe(Effect.ignore);
+  });
+
   const attachListeners = Effect.fn("PreviewManager.attachListeners")(function* (
     tabId: string,
     wc: Electron.WebContents,
@@ -2776,6 +2884,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const destroyed = (): void => {
       if (listenersActive) runFork(handleWebContentsDestroyed(tabId, webContentsId));
     };
+    const contextMenu = (_event: Electron.Event, params: Electron.ContextMenuParams): void => {
+      if (!listenersActive) return;
+      runFork(showGuestContextMenu(tabId, wc, params));
+    };
     yield* Scope.addFinalizer(scope, Deferred.succeed(unavailable, undefined).pipe(Effect.asVoid));
     yield* Scope.addFinalizer(
       scope,
@@ -2790,6 +2902,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-stop-loading", sync);
         wc.off("did-fail-load", failed as never);
         wc.off("before-input-event", beforeInput);
+        wc.off("context-menu", contextMenu);
         wc.off("destroyed", destroyed);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
       }).pipe(Effect.ignore),
@@ -2861,6 +2974,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           return { action: "deny" };
         });
         wc.on("before-input-event", beforeInput);
+        wc.on("context-menu", contextMenu);
       });
       yield* Ref.update(attachedRef, (attached) =>
         replaceMap(attached, (copy) => {
