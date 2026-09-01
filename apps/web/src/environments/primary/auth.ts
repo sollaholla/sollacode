@@ -334,7 +334,13 @@ function waitForBootstrapRetry(delayMs: number): Promise<void> {
 
 function isTransientBootstrapError(error: unknown): boolean {
   if (isPrimaryEnvironmentRequestError(error)) {
-    return TRANSIENT_BOOTSTRAP_STATUS_CODES.has(error.status);
+    // A server that never answered is the "not started yet" case this retry
+    // window exists for. `fromCause` files it as status 500 with `unreachable`
+    // set, and matching on the status alone treated it as a broken server and
+    // gave up on the first attempt — so booting the app faster than its own
+    // server threw PrimaryEnvironmentRequestError with a raw stack at the
+    // route loader (observed 2026-09-01, on the restart after an update).
+    return error.unreachable === true || TRANSIENT_BOOTSTRAP_STATUS_CODES.has(error.status);
   }
 
   if (error instanceof TypeError) {
