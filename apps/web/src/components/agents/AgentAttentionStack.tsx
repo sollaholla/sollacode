@@ -21,9 +21,9 @@ import { Button } from "~/components/ui/button";
 import {
   Dialog,
   DialogHeader,
+  DialogPanel,
   DialogPopup,
   DialogTitle,
-  DialogViewport,
 } from "~/components/ui/dialog";
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
@@ -216,7 +216,13 @@ export function AgentAttentionStack(props: {
             {hiddenLabel}
           </span>
         ),
-        description: <AttentionDescription text={item.notification.body} error={error || null} />,
+        description: (
+          <AttentionDescription
+            text={item.notification.body}
+            title={item.notification.title}
+            error={error || null}
+          />
+        ),
         actions: (
           <Button
             type="button"
@@ -340,7 +346,11 @@ function AttentionAction(props: {
  * plain: markdown in three clamped lines reflows and shifts the card, and the
  * point of the preview is to be skimmed, not read.
  */
-function AttentionDescription(props: { readonly text: string; readonly error: string | null }) {
+function AttentionDescription(props: {
+  readonly text: string;
+  readonly error: string | null;
+  readonly title?: string | undefined;
+}) {
   const [expanded, setExpanded] = useState(false);
   const text = props.text.trim();
   // Roughly what survives three clamped lines on a phone. The affordance is
@@ -371,13 +381,16 @@ function AttentionDescription(props: { readonly text: string; readonly error: st
       )}
       {props.error ? <p className="text-xs text-destructive">{props.error}</p> : null}
       <Dialog open={expanded} onOpenChange={setExpanded}>
-        <DialogPopup className="flex max-h-[85dvh] w-[min(94vw,720px)] flex-col overflow-hidden">
+        {/* DialogPopup renders its own viewport; nesting another one put a
+            `fixed inset-0` grid inside the popup and collapsed it to a single
+            clipped line. DialogPanel is the scrolling content slot. */}
+        <DialogPopup className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Notification</DialogTitle>
+            <DialogTitle>{props.title ?? "Notification"}</DialogTitle>
           </DialogHeader>
-          <DialogViewport className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <DialogPanel>
             <ChatMarkdown text={text} cwd={undefined} isStreaming={false} />
-          </DialogViewport>
+          </DialogPanel>
         </DialogPopup>
       </Dialog>
     </>
