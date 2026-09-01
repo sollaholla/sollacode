@@ -183,6 +183,25 @@ export function HostedBrowserWebview(props: {
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
 
+  // Both flags above are read once at mount and then only ever corrected by an
+  // event. Opening the panel while the window had not settled focus — a thread
+  // streaming into the composer was enough — mounted this with
+  // ownerWindowFocused false, and `isHostedBrowserWebviewPresented` gates the
+  // surface on it, so the panel showed its chrome around nothing. No event was
+  // due, so it stayed that way until the user tabbed away and back, which is
+  // precisely what fires visibilitychange (reported 2026-09-01).
+  //
+  // Re-reading a frame after the surface becomes active lets a premature mount
+  // correct itself without waiting for the user to do it.
+  useEffect(() => {
+    if (!active) return;
+    const frame = requestAnimationFrame(() => {
+      setDocumentVisible(document.visibilityState !== "hidden");
+      setOwnerWindowFocused(readHostedBrowserHostWindowPresenting(document));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
+
   useEffect(() => {
     const syncHostWindowPresenting = () => {
       setOwnerWindowFocused(readHostedBrowserHostWindowPresenting(document));
