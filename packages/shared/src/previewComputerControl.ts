@@ -9,6 +9,37 @@
  */
 export const COMPUTER_CONTROL_LABEL = "Computer control";
 
+/**
+ * Codex does not drive the computer through an MCP computer-control tool. It
+ * runs code in its own `node_repl`, which imports `@oai/sky` and calls
+ * `sky.click(...)`, `sky.get_app_state(...)`, `sky.press_key(...)` and friends.
+ * Work logs showed every one of those as "Node_repl · js" — the transport,
+ * with no hint that the agent was clicking around the user's machine.
+ *
+ * Only code that actually reaches for `sky` counts: a `node_repl` call doing
+ * ordinary JavaScript is not computer control and keeps its own name.
+ */
+const SKY_CALL_PATTERN = /\bsky\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+const NODE_REPL_SERVER = "node_repl";
+
+/** `get_app_state` and `getAppState` both read as "get app state". */
+function humanizeSkyMethod(method: string): string {
+  return method
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function actionFromNodeReplCode(server: string, code: string): string | null {
+  if (server.trim().toLowerCase() !== NODE_REPL_SERVER) return null;
+  const method = SKY_CALL_PATTERN.exec(code)?.[1];
+  if (method === undefined) return null;
+  const action = humanizeSkyMethod(method);
+  return action.length === 0 ? null : action;
+}
+
 const PREVIEW_TOOL_PATTERN = /^preview_[a-z0-9_]+$/;
 const RAW_MCP_PREVIEW_TOOL_PATTERN = /^mcp__t3-code__(preview_[a-z0-9_]+)$/;
 
@@ -23,8 +54,9 @@ function actionFromServerAndTool(server: string, tool: string): string | null {
 }
 
 /**
- * The humanized action ("click", "wait for download") when a work-log entry
- * is a t3-code Preview MCP call, else null. Accepts the shapes work logs
+ * The humanized action ("click", "wait for download", "get app state") when a
+ * work-log entry is the agent driving a computer — a t3-code Preview MCP call,
+ * or a Codex `node_repl` call whose code uses `sky` — else null. Accepts the shapes work logs
  * actually carry: a codex `mcpToolCall` item ({server, tool}), a composed
  * "t3-code · preview_click" title, or a raw "mcp__t3-code__preview_click"
  * tool name used as the title.
@@ -40,6 +72,17 @@ export function previewComputerControlAction(input: {
     if (typeof server === "string" && typeof tool === "string") {
       const action = actionFromServerAndTool(server, tool);
       if (action !== null) return action;
+    }
+    if (typeof server === "string") {
+      const args = (data as { readonly arguments?: unknown }).arguments;
+      const code =
+        args !== null && typeof args === "object"
+          ? (args as { readonly code?: unknown }).code
+          : undefined;
+      if (typeof code === "string") {
+        const action = actionFromNodeReplCode(server, code);
+        if (action !== null) return action;
+      }
     }
   }
 
