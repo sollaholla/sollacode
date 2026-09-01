@@ -18,6 +18,14 @@ import {
   type ComposerBannerStackItem,
 } from "~/components/chat/ComposerBannerStack";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+  DialogViewport,
+} from "~/components/ui/dialog";
+import ChatMarkdown from "~/components/ChatMarkdown";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -319,13 +327,59 @@ function AttentionAction(props: {
   );
 }
 
+/**
+ * The card shows three lines; the notification is often much longer than that.
+ *
+ * Truncating was the whole story before — the rest of the message existed only
+ * in a `title` tooltip, which a phone has no way to show at all, so on the
+ * device most likely to receive a notification the text was simply gone. It is
+ * also written as markdown by the model, so the preview showed raw `**bold**`
+ * rather than bold.
+ *
+ * Tapping now opens the full text, scrollable and rendered. The preview stays
+ * plain: markdown in three clamped lines reflows and shifts the card, and the
+ * point of the preview is to be skimmed, not read.
+ */
 function AttentionDescription(props: { readonly text: string; readonly error: string | null }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = props.text.trim();
+  // Roughly what survives three clamped lines on a phone. The affordance is
+  // only worth showing when there is something behind it: offering "Show more"
+  // on a message that already fits reads as a broken link.
+  const canExpand = text.length > 160 || text.includes("\n");
+
   return (
     <>
-      <p className="line-clamp-3 whitespace-pre-wrap break-words" title={props.text}>
-        {props.text}
-      </p>
+      {canExpand ? (
+        <button
+          type="button"
+          className="w-full cursor-pointer text-left"
+          aria-label="Show the full notification"
+          onClick={(event) => {
+            // The card behind this is itself clickable in some stacks.
+            event.stopPropagation();
+            setExpanded(true);
+          }}
+        >
+          <p className="line-clamp-3 whitespace-pre-wrap break-words">{text}</p>
+          <span className="mt-0.5 inline-block text-xs text-muted-foreground underline underline-offset-2">
+            Show more
+          </span>
+        </button>
+      ) : (
+        <p className="line-clamp-3 whitespace-pre-wrap break-words">{text}</p>
+      )}
       {props.error ? <p className="text-xs text-destructive">{props.error}</p> : null}
+      <Dialog open={expanded} onOpenChange={setExpanded}>
+        <DialogPopup className="flex max-h-[85dvh] w-[min(94vw,720px)] flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Notification</DialogTitle>
+          </DialogHeader>
+          <DialogViewport className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <ChatMarkdown text={text} cwd={undefined} isStreaming={false} />
+          </DialogViewport>
+        </DialogPopup>
+      </Dialog>
     </>
   );
 }
