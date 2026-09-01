@@ -63,13 +63,21 @@ vi.mock("~/state/vmAgents", () => ({
   },
 }));
 
+const noopCommand = Object.assign(() => Promise.resolve({ _tag: "Success" as const }), {
+  isPending: false,
+});
+
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: (command: unknown) => {
     if (command === mocks.markReadToken) return mocks.markRead;
     if (command === mocks.resolveBlockerToken) return mocks.resolveBlocker;
     if (command === mocks.updateNotificationToken) return mocks.updateNotification;
     if (command === mocks.openPreviewToken) return mocks.openPreview;
-    throw new Error("Unexpected agent attention command token.");
+    // The expanded notification renders real ChatMarkdown, which reaches for
+    // unrelated commands of its own (opening a file in the preferred editor).
+    // Throwing on those would make this mock assert about markdown internals
+    // rather than about this component's wiring, so they get an inert command.
+    return noopCommand;
   },
 }));
 
@@ -192,6 +200,49 @@ afterEach(async () => {
 });
 
 describe("AgentAttentionStack", () => {
+  it("opens the full notification text, rendered as markdown, when tapped", async () => {
+    // The card clamps to three lines and the rest used to live only in a
+    // `title` tooltip, which a phone cannot show at all — so on the device most
+    // likely to receive a notification, the text was simply unreachable.
+    const body = [
+      "Answering your question directly, with numbers: **yes, he does slow down.**",
+      "",
+      "- first point that runs past the clamp",
+      "- second point",
+    ].join("\n");
+    await renderAttention({
+      items: [notificationItem(notification("notification-md", { body }))],
+      hiddenCount: 0,
+    });
+
+    const trigger = container.querySelector('button[aria-label="Show the full notification"]');
+    if (!(trigger instanceof HTMLButtonElement)) throw new Error("Missing show-more control.");
+
+    await flushAction(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Scoped to the dialog: the card preview stays deliberately plain, so it
+    // still shows the raw asterisks and asserting on the whole document would
+    // be measuring the preview rather than the expanded view.
+    const dialog = document.body.querySelector('[role="dialog"]');
+    if (!(dialog instanceof HTMLElement)) throw new Error("Full notification did not open.");
+    // Rendered, not raw: the asterisks became emphasis rather than being shown.
+    const strong = dialog.querySelector("strong");
+    expect(strong?.textContent).toContain("yes, he does slow down");
+    expect(dialog.textContent).not.toContain("**yes");
+    // And the part past the three-line clamp is now reachable.
+    expect(dialog.textContent).toContain("second point");
+  });
+
+  it("does not offer to expand a notification that already fits", async () => {
+    await renderAttention({
+      items: [notificationItem(notification("notification-short", { body: "All done." }))],
+      hiddenCount: 0,
+    });
+    expect(container.querySelector('button[aria-label="Show the full notification"]')).toBeNull();
+  });
+
   it("marks a stacked notification read only after hover expands it", async () => {
     const alert = notification("notification-1");
     await renderAttention({
