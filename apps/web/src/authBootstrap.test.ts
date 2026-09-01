@@ -497,3 +497,49 @@ describe("resolveInitialServerAuthGateState", () => {
     ]);
   });
 });
+
+describe("retryTransientBootstrap", () => {
+  it("retries a server that never answered, rather than giving up on it", async () => {
+    const { retryTransientBootstrap, PrimaryEnvironmentRequestError } =
+      await import("./environments/primary/auth");
+    // No HTTP response at all: fromCause files this as status 500 with
+    // `unreachable`. Matching on the status alone read it as a broken server
+    // and threw on the first attempt, which is what surfaced a raw
+    // PrimaryEnvironmentRequestError at startup when the app beat its own
+    // server to the port.
+    const unreachable = PrimaryEnvironmentRequestError.fromCause({
+      operation: "fetch-session-state",
+      cause: new Error("connection refused"),
+    });
+    expect(unreachable.unreachable).toBe(true);
+    expect(unreachable.status).toBe(500);
+
+    let attempts = 0;
+    const value = await retryTransientBootstrap(async () => {
+      attempts += 1;
+      if (attempts === 1) throw unreachable;
+      return "started";
+    });
+    expect(value).toBe("started");
+    expect(attempts).toBe(2);
+  });
+
+  it("still gives up on a server that answered with a real failure", async () => {
+    const { retryTransientBootstrap, PrimaryEnvironmentRequestError } =
+      await import("./environments/primary/auth");
+    // A 500 the server actually sent is a broken server, not a starting one.
+    const answered = new PrimaryEnvironmentRequestError({
+      operation: "fetch-session-state",
+      status: 500,
+      cause: new Error("boom"),
+    });
+    let attempts = 0;
+    await expect(
+      retryTransientBootstrap(async () => {
+        attempts += 1;
+        throw answered;
+      }),
+    ).rejects.toBe(answered);
+    expect(attempts).toBe(1);
+  });
+});
