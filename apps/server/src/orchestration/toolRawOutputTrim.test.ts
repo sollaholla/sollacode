@@ -136,3 +136,37 @@ describe("toolCallIdOfToolActivityPayload", () => {
     assert.isNull(toolCallIdOfToolActivityPayload(null));
   });
 });
+
+describe("aggregatedOutput", () => {
+  it("caps aggregatedOutput, not just result", () => {
+    // The field that was actually growing the database. Measured 2026-09-01:
+    // across the 40 largest activity rows it was the only string over the cap.
+    const payload = {
+      data: {
+        item: { type: "commandExecution", result: "ok", aggregatedOutput: "x".repeat(50_000) },
+      },
+    };
+    const trimmed = trimToolRawOutputInPayload(payload, 1_024);
+    assert.isTrue(trimmed.changed);
+    const item = (trimmed.payload as { data: { item: Record<string, unknown> } }).data.item;
+    assert.isAtMost((item.aggregatedOutput as string).length, 1_100);
+    // Sibling fields survive: capping must not drop the row's other content.
+    assert.equal(item.result, "ok");
+    assert.equal(item.type, "commandExecution");
+  });
+
+  it("caps result and aggregatedOutput together in one pass", () => {
+    const payload = {
+      data: { item: { result: "y".repeat(40_000), aggregatedOutput: "z".repeat(40_000) } },
+    };
+    const trimmed = trimToolRawOutputInPayload(payload, 1_024);
+    const item = (trimmed.payload as { data: { item: Record<string, unknown> } }).data.item;
+    assert.isAtMost((item.result as string).length, 1_100);
+    assert.isAtMost((item.aggregatedOutput as string).length, 1_100);
+  });
+
+  it("leaves an activity alone when nothing is oversized", () => {
+    const payload = { data: { item: { result: "small", aggregatedOutput: "also small" } } };
+    assert.isFalse(trimToolRawOutputInPayload(payload, 1_024).changed);
+  });
+});

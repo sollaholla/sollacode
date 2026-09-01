@@ -101,14 +101,20 @@ export function trimToolRawOutputInPayload(
 
   const item = (data as { readonly item?: unknown }).item;
   if (item !== null && typeof item === "object") {
-    const result = (item as { readonly result?: unknown }).result;
-    if (result !== null && result !== undefined) {
-      const trimmed = trimValue(result, maxChars, 0);
+    // `result` and `aggregatedOutput` are separate fields, and capping only the
+    // first left the larger one uncapped. Measured 2026-09-01 on the live
+    // database, after the one-time sweep had already reclaimed 3.7 GB: of the
+    // 40 largest activity rows, `aggregatedOutput` was the ONLY string over the
+    // cap in any of them — 40 MB across those rows alone, 284 MB across every
+    // row above 100 KB. A cap that misses the field doing the growing is a cap
+    // in name only, and the backlog rebuilds behind it.
+    for (const field of ["result", "aggregatedOutput"] as const) {
+      const current = (nextData.item ?? item) as Record<string, unknown>;
+      const value = current[field];
+      if (value === null || value === undefined) continue;
+      const trimmed = trimValue(value, maxChars, 0);
       if (trimmed.changed) {
-        nextData = {
-          ...nextData,
-          item: { ...(item as Record<string, unknown>), result: trimmed.value },
-        };
+        nextData = { ...nextData, item: { ...current, [field]: trimmed.value } };
         changed = true;
       }
     }
