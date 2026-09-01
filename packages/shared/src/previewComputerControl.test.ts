@@ -71,6 +71,50 @@ describe("codex node_repl computer control", () => {
     ).toBe("get app state");
   });
 
+  it("shows the method and then the title codex wrote for the call", () => {
+    // "Open Lyra project installer" is what the agent was actually doing;
+    // the sky method it opens with is an implementation detail.
+    expect(
+      previewComputerControlAction({
+        toolTitle: "node_repl · js",
+        toolData: {
+          server: "node_repl",
+          tool: "js",
+          arguments: { title: "Open Lyra project installer", code: realSkyCode },
+        },
+      }),
+    ).toBe("get app state — Open Lyra project installer");
+    // Action first, intent last: you can see it was a click, and what for.
+    expect(previewComputerControlHeading("click — Open Lyra project installer")).toBe(
+      "Computer control · Click — Open Lyra project installer",
+    );
+  });
+
+  it("falls back to the method when the title is blank", () => {
+    expect(
+      previewComputerControlAction({
+        toolData: {
+          server: "node_repl",
+          tool: "js",
+          arguments: { title: "   ", code: realSkyCode },
+        },
+      }),
+    ).toBe("get app state");
+  });
+
+  it("does not let a title alone claim computer control", () => {
+    // No sky call means no computer control, however descriptive the title.
+    expect(
+      previewComputerControlAction({
+        toolData: {
+          server: "node_repl",
+          tool: "js",
+          arguments: { title: "Open Lyra project installer", code: "nodeRepl.write(1);" },
+        },
+      }),
+    ).toBeNull();
+  });
+
   it("reads the snake_case and camelCase spellings the same way", () => {
     const action = (code: string) =>
       previewComputerControlAction({

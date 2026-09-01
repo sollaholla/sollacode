@@ -1001,7 +1001,7 @@ export function RemoteControlViewerDialog(props: {
               <p className="text-sm text-muted-foreground">
                 The remote computer must be online with the latest Solla Code open. On macOS, the
                 host may also need to enable System Settings → Privacy &amp; Security → Screen
-                Recording. No GitHub sign-in is required.
+                Recording.
               </p>
             </div>
           ) : isWaiting ? (

@@ -28,6 +28,7 @@ import {
   supportsRemoteControlVideo,
 } from "./remoteControlEncoder";
 import {
+  REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS,
   classifyCaptureFailure,
   classifyInputFailure,
   isSameHostStatus,
@@ -411,6 +412,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     // When the current outage began, so a host that never comes back is still
     // eventually given up on.
     let outageStartedAt: number | null = null;
+    // Permission failures get a budget rather than ending the session on the
+    // first frame; see REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS.
+    let permissionAttempts = 0;
     // Identifies the capture attempt an event belongs to. A recorder we tore
     // down ourselves fires its own stop/error afterwards, and without this its
     // late events would restart capture a second time.
@@ -472,8 +476,13 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
       if (cancelled) return;
       const failure = classifyCaptureFailure(cause);
       if (failure.kind === "fatal") {
-        endSession(failure.message);
-        return;
+        permissionAttempts += 1;
+        if (permissionAttempts > REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS) {
+          endSession(failure.message);
+          return;
+        }
+        // Otherwise fall through and rebuild capture on the same backoff a
+        // transient failure uses.
       }
       const now = performance.now();
       outageStartedAt ??= now;
@@ -685,6 +694,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
     let inFlight: Promise<void> | null = null;
     let recoveryAttempt = 0;
     let outageStartedAt: number | null = null;
+    // Permission failures get a budget rather than ending the session on the
+    // first frame; see REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS.
+    let permissionAttempts = 0;
 
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
@@ -755,6 +767,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
           if (outageStartedAt !== null) {
             outageStartedAt = null;
             recoveryAttempt = 0;
+            permissionAttempts = 0;
             captureInterruptedRef.current = false;
             syncHostStatus();
           }
@@ -766,8 +779,9 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
           const failure = classifyCaptureFailure(cause);
           const now = performance.now();
           outageStartedAt ??= now;
+          if (failure.kind === "fatal") permissionAttempts += 1;
           if (
-            failure.kind === "fatal" ||
+            permissionAttempts > REMOTE_CONTROL_PERMISSION_RETRY_ATTEMPTS ||
             now - outageStartedAt > REMOTE_CONTROL_RECOVERY_GIVE_UP_MS
           ) {
             endSession(failure.message);
@@ -975,7 +989,7 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
             <p className="text-sm text-muted-foreground">
               On macOS, open System Settings → Privacy &amp; Security → Screen Recording, enable
               Solla Code, and also enable Accessibility for keyboard and pointer control. Then
-              completely quit and reopen it. No GitHub sign-in is required.
+              completely quit and reopen it.
             </p>
           </DialogPanel>
           <DialogFooter>

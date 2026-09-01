@@ -32,12 +32,26 @@ function humanizeSkyMethod(method: string): string {
     .toLowerCase();
 }
 
-function actionFromNodeReplCode(server: string, code: string): string | null {
+/**
+ * Both halves, in that order: what the agent did, then why. "Click" alone
+ * loses the intent, and "Open Lyra project installer" alone hides that this
+ * particular step was a click — so the row reads
+ * "Click — Open Lyra project installer".
+ */
+function actionFromNodeReplCode(
+  server: string,
+  code: string,
+  title: string | undefined,
+): string | null {
   if (server.trim().toLowerCase() !== NODE_REPL_SERVER) return null;
   const method = SKY_CALL_PATTERN.exec(code)?.[1];
   if (method === undefined) return null;
   const action = humanizeSkyMethod(method);
-  return action.length === 0 ? null : action;
+  if (action.length === 0) return null;
+  const suppliedTitle = title?.trim();
+  return suppliedTitle !== undefined && suppliedTitle.length > 0
+    ? `${action} — ${suppliedTitle}`
+    : action;
 }
 
 const PREVIEW_TOOL_PATTERN = /^preview_[a-z0-9_]+$/;
@@ -80,7 +94,15 @@ export function previewComputerControlAction(input: {
           ? (args as { readonly code?: unknown }).code
           : undefined;
       if (typeof code === "string") {
-        const action = actionFromNodeReplCode(server, code);
+        const suppliedTitle =
+          args !== null && typeof args === "object"
+            ? (args as { readonly title?: unknown }).title
+            : undefined;
+        const action = actionFromNodeReplCode(
+          server,
+          code,
+          typeof suppliedTitle === "string" ? suppliedTitle : undefined,
+        );
         if (action !== null) return action;
       }
     }
