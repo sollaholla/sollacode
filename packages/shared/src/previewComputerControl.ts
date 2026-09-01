@@ -108,7 +108,12 @@ export function previewComputerControlAction(input: {
     }
   }
 
-  const title = input.toolTitle?.trim();
+  const rawTitle = input.toolTitle?.trim();
+  if (!rawTitle) return null;
+  // Some providers render the row as "<tool>: {\"url\": …}". The arguments are
+  // not part of the name, and leaving them attached made every one of these
+  // calls fall through to the raw MCP rendering again.
+  const title = (rawTitle.split(": ")[0] ?? rawTitle).trim();
   if (!title) return null;
   const middotParts = title.split(" · ");
   if (middotParts.length === 2) {

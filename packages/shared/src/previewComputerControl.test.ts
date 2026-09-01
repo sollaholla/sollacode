@@ -24,6 +24,17 @@ describe("previewComputerControlAction", () => {
   });
 
   it("detects a raw mcp__ tool name used as the title", () => {
+    // The row title arrives with the call's arguments appended.
+    expect(
+      previewComputerControlAction({
+        toolTitle: 'mcp__t3-code__preview_open: {"url":"https://www.fab.com/library","open":false}',
+      }),
+    ).toBe("open");
+    expect(
+      previewComputerControlAction({
+        toolTitle: 't3-code · preview_scroll: {"tabId":"tab_d9a6d86f","deltaY":300}',
+      }),
+    ).toBe("scroll");
     expect(previewComputerControlAction({ toolTitle: "mcp__t3-code__preview_snapshot" })).toBe(
       "snapshot",
     );
