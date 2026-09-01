@@ -16,6 +16,7 @@ import {
   MinimizeIcon,
   MonitorIcon,
   ShieldCheckIcon,
+  SquareStackIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react";
@@ -1367,6 +1368,23 @@ export function RemoteControlViewerDialog(props: {
                     >
                       <KeyboardIcon className="size-3.5" />
                       <span className="sr-only sm:not-sr-only">Keyboard</span>
+                    </button>
+                  ) : null}
+                  {canControl ? (
+                    <button
+                      type="button"
+                      aria-label="Show windows"
+                      title="Show windows"
+                      className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        // The host picks the gesture for its own OS.
+                        enqueueInput({ type: "show-window-switcher" });
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <SquareStackIcon className="size-3.5" />
+                      <span className="sr-only sm:not-sr-only">Windows</span>
                     </button>
                   ) : null}
                   <button

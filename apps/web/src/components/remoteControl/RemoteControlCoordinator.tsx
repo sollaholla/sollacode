@@ -327,6 +327,32 @@ function RemoteControlHostCoordinator(props: { readonly environmentId: Environme
         setImageFallback(true);
         return;
       }
+      // Expanded here rather than on the controller, because the right gesture
+      // depends on the OS this host is running. Task View instead of Alt+Tab on
+      // Windows: Alt+Tab only stays open while Alt is held, so a single tap
+      // from a phone would flip to the last window instead of offering a
+      // choice. Both of these open an overlay the user can then tap.
+      if (event.input.type === "show-window-switcher") {
+        const platform = hostPlatform();
+        const modifier = platform === "macos" ? "ControlLeft" : "MetaLeft";
+        const modifierKey = platform === "macos" ? "Control" : "Meta";
+        const trigger = platform === "macos" ? "ArrowUp" : "Tab";
+        for (const step of [
+          { code: modifier, key: modifierKey, action: "down" as const },
+          { code: trigger, key: trigger, action: "down" as const },
+          { code: trigger, key: trigger, action: "up" as const },
+          { code: modifier, key: modifierKey, action: "up" as const },
+        ]) {
+          hostInputScheduler.enqueue({
+            type: "key",
+            action: step.action,
+            code: step.code,
+            key: step.key,
+            repeat: false,
+          });
+        }
+        return;
+      }
       hostInputScheduler.enqueue(event.input);
       return;
     }
