@@ -547,7 +547,7 @@ describe("previewAutomationRequestConsumer", () => {
     });
   });
 
-  it("rejects another agent's dedicated tab with an instruction to use this agent's tabs", () => {
+  it("rejects another thread's tab with an instruction to use this thread's tabs", () => {
     const foreignTabId = PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4");
     const error = new PreviewAutomationForeignAgentTabHostError({
       requestId: "request-gmail",
@@ -568,7 +568,7 @@ describe("previewAutomationRequestConsumer", () => {
     ).toEqual({
       _tag: "PreviewAutomationForeignAgentTabError",
       message:
-        "Tab tab_70d23993-1e1d-4caf-b190-0265822665c4 belongs to another agent's dedicated browser and cannot be used for snapshot. Use this agent's own tabs only. Do not reuse tab IDs from other agents. Omit tabId to use this agent's current tab, or call preview_open without that tabId (reuseExistingTab: false creates a new tab in this agent's browser).",
+        "Tab tab_70d23993-1e1d-4caf-b190-0265822665c4 belongs to another thread and cannot be used for snapshot. Use only tabs listed by preview_status for the current thread. Omit tabId to use this thread's current tab, or call preview_open without that tabId to create or reuse a tab inside this thread.",
       detail: {
         requestId: "request-gmail",
         operation: "snapshot",
@@ -776,6 +776,24 @@ describe("previewAutomationRequestConsumer", () => {
       },
     });
     expect(JSON.stringify(response)).not.toContain("preview-secret");
+  });
+
+  it("still explains a real desktop failure that arrived over IPC", () => {
+    // Sanitising unknown causes must not silence the ones an agent can act on.
+    // A desktop preview error keeps its tag through Electron IPC, which is what
+    // marks its text as ours rather than arbitrary content.
+    const cause = new Error(
+      "Error invoking remote method 'preview:automation': PreviewAutomationDevToolsOpenError: devtools are open",
+    );
+    const response = serializePreviewAutomationError(cause, {
+      requestId: "request-3",
+      operation: "snapshot" as const,
+      environmentId,
+      threadId,
+      tabId,
+    });
+
+    expect(response.message).toContain("devtools are open");
   });
 
   it("sanitizes unexpected handler failures at the response boundary", async () => {

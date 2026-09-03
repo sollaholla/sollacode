@@ -7,6 +7,7 @@ import type {
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import {
+  isCuratedPreviewFailureCause,
   PreviewAutomationOperationError,
   type PreviewAutomationOperationContext,
   serializePreviewAutomationHostError,
@@ -20,8 +21,18 @@ export function serializePreviewAutomationError(
   error: unknown,
   context: PreviewAutomationOperationContext,
 ): NonNullable<PreviewAutomationResponse["error"]> {
+  if (isCuratedPreviewFailureCause(error)) {
+    return serializePreviewAutomationHostError(
+      PreviewAutomationOperationError.fromCause({ ...context, cause: error }),
+    );
+  }
+  // This response crosses to an agent. An unrecognised failure's message is
+  // arbitrary text - a bridge token, an IPC secret, a local path - so drop it
+  // and let the request id correlate the response to the full error in our own
+  // logs. Reported at the boundary rather than in `fromCause`, which stays
+  // faithful for logging.
   return serializePreviewAutomationHostError(
-    PreviewAutomationOperationError.fromCause({ ...context, cause: error }),
+    PreviewAutomationOperationError.fromCause({ ...context, cause: undefined }),
   );
 }
 

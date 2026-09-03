@@ -135,8 +135,11 @@ describe("resolveSidebarV2Default", () => {
     expect(resolveSidebarV2Default(stage)).toBe(true);
   });
 
-  it.each(["Alpha", "Latest", ""])("leaves the beta off for %s builds", (stage) => {
-    expect(resolveSidebarV2Default(stage)).toBe(false);
+  // The flat thread list became the default on every stage with the Obsidian &
+  // Gold redesign. The stage label is still threaded through so a per-stage
+  // rollback stays a one-line change, which is what these cases pin.
+  it.each(["Alpha", "Latest", ""])("enables the beta for %s builds too", (stage) => {
+    expect(resolveSidebarV2Default(stage)).toBe(true);
   });
 });
 
@@ -175,7 +178,7 @@ describe("resolveSidebarV2Enabled", () => {
         configuredByUser: false,
         stageLabel: "Latest",
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("honors an explicit opt-out over the stage default", () => {
