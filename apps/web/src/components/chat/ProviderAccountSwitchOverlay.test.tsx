@@ -70,6 +70,7 @@ describe("ProviderAccountSwitchOverlay", () => {
     );
 
     expect(isProviderAccountSwitchActive(waitingForCode)).toBe(true);
+    expect(markup).toContain("max-w-xl");
     expect(markup).toContain("Enter authentication code");
     expect(markup).toContain('name="authenticationCode"');
     expect(markup).toContain("Paste authentication code");

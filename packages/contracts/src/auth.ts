@@ -196,6 +196,21 @@ export const AuthAccessTokenResult = Schema.Struct({
 });
 export type AuthAccessTokenResult = typeof AuthAccessTokenResult.Type;
 
+/**
+ * Offering a lapsed device credential back to the environment it was issued by,
+ * to be exchanged for a current one after the user confirms.
+ */
+export const AuthRenewCredentialInput = Schema.Struct({
+  credential: TrimmedNonEmptyString,
+});
+export type AuthRenewCredentialInput = typeof AuthRenewCredentialInput.Type;
+
+export const AuthRenewCredentialResult = Schema.Struct({
+  credential: TrimmedNonEmptyString,
+  expiresAt: Schema.DateTimeUtc,
+});
+export type AuthRenewCredentialResult = typeof AuthRenewCredentialResult.Type;
+
 export const AuthWebSocketTicketResult = Schema.Struct({
   ticket: TrimmedNonEmptyString,
   expiresAt: Schema.DateTimeUtc,

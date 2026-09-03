@@ -1222,7 +1222,9 @@ function deriveTimelineMinimapItems(
     items.push({
       id: row.id,
       rowIndex: index,
-      userText: compactMinimapPreview(row.message.text),
+      userText: compactMinimapPreview(
+        extractTrailingInterruptedTasksNotice(row.message.text).promptText,
+      ),
       assistantText: compactMinimapPreview(resolveFinalAssistantTextForTurn(rows, index)),
     });
   }
@@ -2985,9 +2987,24 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { workEntry, workspaceRoot } = props;
   const activity = use(TimelineRowActivityCtx);
   const [expanded, setExpanded] = useState(false);
+  const isInlineReasoning =
+    workEntry.sourceActivityKind === "reasoning.updated" &&
+    workEntry.label.trim().toLowerCase() === "thinking";
+  if (isInlineReasoning) {
+    const thought = workEntry.detail?.trim();
+    if (!thought) return null;
+    return (
+      <p className="px-1 py-0.5 whitespace-pre-wrap text-[12px] leading-5 text-muted-foreground/70">
+        {thought}
+      </p>
+    );
+  }
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  // A red X reads as "this failed and your turn stopped". A runtime.warning is
+  // a degradation the run continued through, and its heading is already
+  // text-warning — so the icon matches it instead of contradicting it.
+  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -3006,7 +3023,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
-      ? "text-destructive"
+      ? "text-warning"
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator

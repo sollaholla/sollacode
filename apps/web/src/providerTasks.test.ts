@@ -4,6 +4,7 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 import {
   PROVIDER_TASK_FINISHED_MAX_COUNT,
+  applyProviderTaskDismissals,
   canStopProviderTask,
   countActiveProviderTasks,
   describeSendOverRunningTasks,
@@ -312,6 +313,28 @@ describe("deriveProviderTasks", () => {
     NodeAssert.ok(task);
     NodeAssert.equal(providerTaskTypeLabel(task), "Background command");
     NodeAssert.equal(providerTaskStatusLabel(task), "Running · Bash");
+  });
+});
+
+describe("provider task dismissals", () => {
+  it("keeps a model-switch dismissal hidden until newer runtime activity proves the task is alive", () => {
+    const running: ProviderTask = {
+      taskId: "ghost",
+      taskType: "local_agent",
+      title: "Old model task",
+      summary: null,
+      lastToolName: null,
+      status: "running",
+      startedAt: "2026-09-01T12:00:00Z",
+      updatedAt: "2026-09-01T12:00:05Z",
+      toolUses: null,
+    };
+    const dismissals = { ghost: "2026-09-01T12:00:10Z" };
+    NodeAssert.deepEqual(applyProviderTaskDismissals([running], dismissals), []);
+    NodeAssert.deepEqual(
+      applyProviderTaskDismissals([{ ...running, updatedAt: "2026-09-01T12:00:11Z" }], dismissals),
+      [{ ...running, updatedAt: "2026-09-01T12:00:11Z" }],
+    );
   });
 });
 

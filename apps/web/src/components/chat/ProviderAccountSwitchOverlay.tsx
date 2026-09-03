@@ -68,7 +68,7 @@ export const ProviderAccountSwitchOverlay = memo(function ProviderAccountSwitchO
       role={active ? "status" : "alert"}
       aria-live="assertive"
     >
-      <div className="w-full max-w-sm rounded-2xl border border-border/75 bg-popover p-5 shadow-2xl">
+      <div className="w-full max-w-xl rounded-2xl border border-border/75 bg-popover p-5 shadow-2xl">
         <div className="flex items-start gap-3">
           <div className="flex shrink-0 items-center gap-2">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">

@@ -7,7 +7,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import { environmentMismatchError, mapRemoteEnvironmentError } from "../connection/errors.ts";
 import type { ConnectionAttemptError, PreparedHttpAuthorization } from "../connection/model.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
-import { resolveRemoteWebSocketConnectionUrl } from "./remote.ts";
+import { renewRemoteCredential, resolveRemoteWebSocketConnectionUrl } from "./remote.ts";
 
 export interface AuthorizedRemoteEnvironment {
   readonly environmentId: EnvironmentId;
@@ -25,6 +25,14 @@ export class RemoteEnvironmentAuthorization extends Context.Service<
       readonly httpBaseUrl: string;
       readonly wsBaseUrl: string;
       readonly bearerToken: string;
+      /**
+       * When the offered credential is past its life but still inside the
+       * environment's grace window, renew succeeds and this callback persists
+       * the replacement before the websocket ticket is issued.
+       */
+      readonly onCredentialRenewed?: (
+        credential: string,
+      ) => Effect.Effect<void, ConnectionAttemptError>;
     }) => Effect.Effect<AuthorizedRemoteEnvironment, ConnectionAttemptError>;
   }
 >()("@t3tools/client-runtime/authorization/service/RemoteEnvironmentAuthorization") {}
@@ -46,6 +54,9 @@ export const make = Effect.gen(function* () {
       readonly httpBaseUrl: string;
       readonly wsBaseUrl: string;
       readonly bearerToken: string;
+      readonly onCredentialRenewed?: (
+        credential: string,
+      ) => Effect.Effect<void, ConnectionAttemptError>;
     }) {
       const descriptor = yield* fetchDescriptor(input.httpBaseUrl).pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
@@ -56,22 +67,50 @@ export const make = Effect.gen(function* () {
           actual: descriptor.environmentId,
         });
       }
-      const socketUrl = yield* resolveRemoteWebSocketConnectionUrl({
-        wsBaseUrl: input.wsBaseUrl,
-        httpBaseUrl: input.httpBaseUrl,
-        bearerToken: input.bearerToken,
-      }).pipe(
-        Effect.mapError(mapRemoteEnvironmentError),
-        Effect.provideService(HttpClient.HttpClient, httpClient),
+      const issueSocket = (bearerToken: string) =>
+        resolveRemoteWebSocketConnectionUrl({
+          wsBaseUrl: input.wsBaseUrl,
+          httpBaseUrl: input.httpBaseUrl,
+          bearerToken,
+        }).pipe(
+          Effect.mapError(mapRemoteEnvironmentError),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        );
+
+      const authorized = yield* issueSocket(input.bearerToken).pipe(
+        Effect.map((socketUrl) => ({ bearerToken: input.bearerToken, socketUrl })),
+        Effect.catchIf(
+          (error) =>
+            error._tag === "ConnectionBlockedError" &&
+            error.reason === "authentication" &&
+            input.onCredentialRenewed !== undefined,
+          (authError) =>
+            Effect.gen(function* () {
+              // Device was paired once; within the grace window a reconnect is
+              // enough to mint a fresh credential. Outside it, renew fails and
+              // the original "pair again" error stands.
+              const renewed = yield* renewRemoteCredential({
+                httpBaseUrl: input.httpBaseUrl,
+                credential: input.bearerToken,
+              }).pipe(
+                Effect.provideService(HttpClient.HttpClient, httpClient),
+                Effect.mapError(() => authError),
+              );
+              yield* input.onCredentialRenewed!(renewed.credential);
+              const socketUrl = yield* issueSocket(renewed.credential);
+              return { bearerToken: renewed.credential, socketUrl };
+            }),
+        ),
       );
+
       return {
         environmentId: descriptor.environmentId,
         label: descriptor.label,
         httpBaseUrl: input.httpBaseUrl,
-        socketUrl,
+        socketUrl: authorized.socketUrl,
         httpAuthorization: {
           _tag: "Bearer" as const,
-          token: input.bearerToken,
+          token: authorized.bearerToken,
         },
       };
     },

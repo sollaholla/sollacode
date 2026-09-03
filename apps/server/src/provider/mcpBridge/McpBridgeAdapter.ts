@@ -24,13 +24,18 @@ import * as NodeTimersPromises from "node:timers/promises";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import type { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
-import { isMcpBridgeTransportCause, type McpBridgeClient } from "./McpBridgeConnection.ts";
+import {
+  isMcpBridgeTransportCause,
+  McpBridgeRequestTimeoutError,
+  type McpBridgeClient,
+} from "./McpBridgeConnection.ts";
 import {
   MCP_BRIDGE_PROTOCOL_VERSION,
   decodeMcpBridgeEventsPage,
@@ -70,6 +75,8 @@ interface SessionContext {
   readonly seenEventIds: Set<string>;
   readonly seenEventOrder: string[];
   readonly terminalTurnIds: Set<string>;
+  /** Last event-pump failure message published; identical repeats stay in logs only. */
+  lastReportedFailure?: string;
   readonly terminalTurnOrder: string[];
   pump?: Promise<void> | undefined;
 }
@@ -388,7 +395,19 @@ export function mapMcpBridgeEvent(
         },
       };
     case "reasoning.status":
-    case "runtime.status":
+    case "runtime.status": {
+      // Both land as reasoning rows in the work log. A thought keeps the
+      // default "Thinking" heading; a runtime status is the bridge narrating
+      // its own state ("Delivering your message to the browser"), and now that
+      // each reasoning item is its own durable row it must not wear the
+      // model's heading — it is titled by its phase instead.
+      const phase = stringValue(payload.phase);
+      const statusTitle =
+        event.type === "runtime.status"
+          ? phase && phase.length > 0
+            ? `${phase.charAt(0).toUpperCase()}${phase.slice(1)}`
+            : "Status"
+          : undefined;
       return {
         ...base,
         itemId: base.itemId ?? RuntimeItemId.make(`${event.turnId ?? event.sessionId}:status`),
@@ -396,10 +415,12 @@ export function mapMcpBridgeEvent(
         payload: {
           itemType: "reasoning",
           status: "inProgress",
+          ...(statusTitle ? { title: statusTitle } : {}),
           detail: stringValue(payload.text) ?? stringValue(payload.phase) ?? "Provider is working.",
           data: payload,
         },
       };
+    }
     case "item.started":
     case "item.updated":
     case "item.completed": {
@@ -546,6 +567,27 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
     return context;
   };
 
+  /**
+   * The host mints a thread-scoped MCP credential (endpoint + bearer header)
+   * before every startSession — the same pair every other provider consumes
+   * (Codex via env+config args, Cursor/Grok via ACP mcpServers, Claude via an
+   * in-process proxy). The bridge child is spawned once per provider instance,
+   * long before any thread exists, so the credential can only travel
+   * per-session: on session_start, and on its recovery twin so a reconnect
+   * does not lose the token. The raw token is registered for stderr redaction.
+   */
+  const mcpServerArguments = (threadId: ThreadId) => {
+    const mcpSession = McpProviderSession.readMcpProviderSession(threadId);
+    if (!mcpSession) return {};
+    input.connection.addSensitiveValue?.(mcpSession.authorizationHeader.replace(/^Bearer\s+/i, ""));
+    return {
+      mcpServer: {
+        url: mcpSession.endpoint,
+        authorizationHeader: mcpSession.authorizationHeader,
+      },
+    };
+  };
+
   const bridgeSessionArguments = (context: SessionContext) => ({
     protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
     sessionId: String(context.session.threadId),
@@ -553,6 +595,7 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
     workspace: context.workspace,
     runtimeMode: context.runtimeMode,
     resumeCursor: context.resumeCursor,
+    ...mcpServerArguments(context.session.threadId),
   });
 
   const recoverSession = async (context: SessionContext): Promise<void> => {
@@ -743,14 +786,24 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
           // sequences, a crossed session boundary) is a real defect in what the
           // bridge sent, and retrying it forever would hide it.
           const transport = isMcpBridgeTransportCause(cause);
-          const givingUp = !transport || failures > MAX_TRANSPORT_FAILURES_BEFORE_TURN_LOSS;
+          const requestTimeout = cause instanceof McpBridgeRequestTimeoutError;
+          const retryable = transport || requestTimeout;
+          const givingUp = !retryable || failures > MAX_TRANSPORT_FAILURES_BEFORE_TURN_LOSS;
           // Reconnecting is internal. The turn is still running and the pipe is
           // expected to come back, so there is nothing here for the user to act
           // on — and anything published lands in the work log with an error
           // tone, which is how "the turn is still running" came to be rendered
           // as a red failure while the turn was, in fact, still running.
           // Nothing is emitted until the retries are actually exhausted.
-          if (givingUp) {
+          // The same cause repeating on every poll is one fact, not a feed:
+          // a protocol defect in one event re-fails identically until the
+          // event ages out, and painting it every backoff filled a thread
+          // with 32 red rows in two minutes (2026-09-02). Report each distinct
+          // cause once; the retry loop itself stays exactly as bounded.
+          const causeMessage = cause instanceof Error ? cause.message : String(cause);
+          const alreadyReported = givingUp && context.lastReportedFailure === causeMessage;
+          if (givingUp && !alreadyReported) {
+            context.lastReportedFailure = causeMessage;
             failActiveTurn(context, cause);
             emit({
               eventId: EventId.make(NodeCrypto.randomUUID()),
@@ -769,11 +822,13 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
           }
           await NodeTimersPromises.setTimeout(Math.min(4_000, 250 * 2 ** failures));
           if (!context.active) break;
-          try {
-            await recoverSession(context);
-          } catch {
-            // The next bounded iteration reports and retries. This loop never
-            // launches or signals any process outside this instance transport.
+          if (transport) {
+            try {
+              await recoverSession(context);
+            } catch {
+              // The next bounded iteration reports and retries. This loop never
+              // launches or signals any process outside this instance transport.
+            }
           }
         }
       }
@@ -813,6 +868,7 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
             workspace,
             runtimeMode: sessionInput.runtimeMode,
             resumeCursor: sessionInput.resumeCursor,
+            ...mcpServerArguments(sessionInput.threadId),
           },
           60_000,
         ),
@@ -997,6 +1053,14 @@ export const makeMcpBridgeAdapter = Effect.fn("makeMcpBridgeAdapter")(function* 
             runtimeMode: context.runtimeMode,
             interactionMode: turnInput.interactionMode ?? "default",
             attachments,
+            // Re-send the credential on every turn, not only on session_start.
+            // A thread-scoped credential can be revoked and re-minted while a
+            // bridge session stays alive (any restart of this session's
+            // provider does it), and session_start-only delivery left the
+            // bridge holding a dead token for the life of the thread: every
+            // message answered with the same HTTP 401 and the host tools never
+            // came back. This makes at most one turn run degraded.
+            ...mcpServerArguments(turnInput.threadId),
           },
           30_000,
         ),

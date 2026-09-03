@@ -7171,6 +7171,8 @@ export class PreviewManager extends Context.Service<
     readonly openDevTools: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly clearCookies: () => Effect.Effect<void, PreviewManagerError>;
     readonly clearCache: () => Effect.Effect<void, PreviewManagerError>;
+    /** Forget every site remembered by "Allow for this domain". */
+    readonly forgetDownloadDomains: () => Effect.Effect<void>;
     readonly getBrowserPartition: (scope: string) => Effect.Effect<string, PreviewManagerError>;
     readonly adoptLegacyBrowserProfile: (scope: string) => Effect.Effect<void, PreviewManagerError>;
     readonly setDownloadDirectory: (
@@ -7323,6 +7325,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         .pipe(
           Effect.mapError((cause) => new PreviewOperationError({ operation: "clearCache", cause })),
         );
+    }),
+    forgetDownloadDomains: Effect.fn("PreviewManager.forgetDownloadDomains")(function* () {
+      yield* Effect.sync(() => browserSession.forgetDownloadDomains());
     }),
     adoptLegacyBrowserProfile: Effect.fn("PreviewManager.adoptLegacyBrowserProfile")(
       function* (scope) {

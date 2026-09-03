@@ -31,6 +31,20 @@ export function shouldForwardRemoteSurfaceInput(input: {
   return input.inputCaptured;
 }
 
+export function requestPointerLockIfSupported(
+  target: {
+    readonly requestPointerLock?: (() => void | Promise<void>) | undefined;
+  } | null,
+): void {
+  if (!target || typeof target.requestPointerLock !== "function") return;
+  try {
+    void Promise.resolve(target.requestPointerLock()).catch(() => undefined);
+  } catch {
+    // Pointer lock is optional. Touch browsers such as iPhone Safari omit it,
+    // and desktop browsers may still refuse it without a qualifying gesture.
+  }
+}
+
 export function shouldForwardEscapeOnPointerUnlock(input: {
   readonly wasLocked: boolean;
   readonly isLocked: boolean;

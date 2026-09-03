@@ -66,6 +66,7 @@ import {
 } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import {
+  ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON,
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   ThreadWorkObligationRepository,
   type ThreadWorkObligation,
@@ -655,6 +656,31 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       );
 
     const threadModelSelections = new Map<string, ModelSelection>();
+    const modelSelectionsEqual = (left: ModelSelection, right: ModelSelection): boolean =>
+      left.instanceId === right.instanceId &&
+      left.model === right.model &&
+      JSON.stringify(left.options ?? null) === JSON.stringify(right.options ?? null);
+    /**
+     * Whether a send's model selection is still the newest one on its thread.
+     *
+     * A provider can hold a send for the whole turn — ACP adapters resolve
+     * `sendTurn` only when the turn ends — and the selection-accepted
+     * bookkeeping runs when it resolves. Writing the request's selection back
+     * at that point clobbered whatever the user had chosen in the meantime.
+     * Observed 2026-09-01: a message queued into a Grok turn at 19:44 resolved
+     * at 19:49:16, one second after the user switched the thread to Claude,
+     * and wrote Grok back over the switch — the picker flipped back and the
+     * switch had to be applied twice. The cache holds the last selection any
+     * command put on the thread, so a mismatch means something newer landed
+     * and the stale write must be skipped.
+     */
+    const modelSelectionStillRequested = (
+      threadId: ThreadId,
+      requested: ModelSelection,
+    ): boolean => {
+      const latest = threadModelSelections.get(threadId);
+      return latest === undefined || modelSelectionsEqual(latest, requested);
+    };
     // Desired thread metadata can advance before the provider has applied it.
     // Keep the selection used to configure the live session separately so a
     // metadata update cannot make a stale Claude session look current.
@@ -1595,12 +1621,20 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             return Effect.succeed(turn);
           }
           return Effect.gen(function* () {
-            yield* orchestrationEngine.dispatch({
-              type: "thread.meta.update",
-              commandId: yield* serverCommandId("provider-selection-accepted"),
-              threadId: input.thread.id,
-              modelSelection: requestedModelSelection,
-            });
+            if (modelSelectionStillRequested(input.thread.id, requestedModelSelection)) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.meta.update",
+                commandId: yield* serverCommandId("provider-selection-accepted"),
+                threadId: input.thread.id,
+                modelSelection: requestedModelSelection,
+              });
+            } else {
+              yield* Effect.logInfo("provider.selection-accepted.superseded", {
+                threadId: input.thread.id,
+                messageId: input.message.id,
+                requestedInstanceId: requestedModelSelection.instanceId,
+              });
+            }
             if (providerSwitched) {
               const sourceInfo = yield* providerService.getInstanceInfo(sourceInstanceId);
               const targetInfo = yield* providerService.getInstanceInfo(
@@ -1744,6 +1778,73 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         thread.session.providerInstanceId ?? thread.modelSelection.instanceId,
       );
     });
+
+    /**
+     * Durable half of interrupting a live turn on the server's own initiative
+     * (provider handoff, mid-turn settings update). Mirrors what the Stop
+     * button's `thread.turn-interrupt-requested` projection and
+     * `processTurnInterruptRequested` do together: cancel the turn's active
+     * scheduler owners while sparing queued user deliveries, and clear the
+     * session row so the turn settles and the composer stops reading
+     * "Working". Both steps are best-effort — a failure is logged and the
+     * caller still wakes the scheduler.
+     */
+    const releaseInterruptedTurnOwnership = Effect.fn("releaseInterruptedTurnOwnership")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly interruptedTurnId: TurnId;
+        readonly session: OrchestrationSession | null | undefined;
+        readonly reason: string;
+      }) {
+        const releasedAt = yield* nowIso;
+        yield* threadWorkObligations
+          .cancelByThread({
+            threadId: input.threadId,
+            updatedAt: releasedAt,
+            blockedReason: input.reason,
+            mode: "turn-interrupt",
+          })
+          .pipe(
+            Effect.tap((cancelled) =>
+              Effect.logInfo("provider.turn-replacement.released-owners", {
+                threadId: input.threadId,
+                interruptedTurnId: input.interruptedTurnId,
+                cancelled,
+              }),
+            ),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+              return Effect.logWarning("provider.turn-replacement.release-failed", {
+                threadId: input.threadId,
+                cause: Cause.pretty(cause),
+              });
+            }),
+          );
+        const session = input.session;
+        if (!session || (session.status === "stopped" && session.activeTurnId === null)) {
+          return;
+        }
+        yield* setThreadSession({
+          threadId: input.threadId,
+          session: {
+            ...session,
+            status: "stopped",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: releasedAt,
+          },
+          createdAt: releasedAt,
+        }).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+            return Effect.logWarning("provider.turn-replacement.session-terminalize-failed", {
+              threadId: input.threadId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
+      },
+    );
 
     const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
       event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
@@ -1900,6 +2001,25 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             });
           }),
         );
+        // Stopping the provider is not enough to let the parked replacement
+        // run. The scheduler admits one active obligation per thread, and the
+        // dying turn's own supervisor (its startup-resume / continuation /
+        // delivery row) keeps that slot until something durable ends it — and
+        // `stopSession` leaves no projected session change behind for every
+        // adapter (mcpBridge emits none). Observed 2026-09-02 on threads
+        // 66e462cc and 92806586: a Claude switch sat "Queued" for four minutes
+        // until the user pressed Stop, whose interrupt projection ran exactly
+        // this bookkeeping and released the handoff within 70ms. Do the same
+        // here: release the interrupted turn's owners (queued user deliveries
+        // are spared, and a claimed one is handed back to pending), then
+        // terminalize the session row so the interrupted turn settles instead
+        // of showing "Working" against a provider that is gone.
+        yield* releaseInterruptedTurnOwnership({
+          threadId: event.payload.threadId,
+          interruptedTurnId,
+          session: thread.session,
+          reason: "thread.turn-replacement-requested",
+        });
         yield* threadWorkScheduler.wake(
           event.payload.modelSelection?.instanceId ??
             liveProviderSession?.providerInstanceId ??
@@ -2073,7 +2193,16 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           // post-accept bookkeeping action: failure is logged and can never
           // turn an accepted prompt back into queued work.
           const requestedModelSelection = event.payload.modelSelection;
-          if (requestedModelSelection !== undefined) {
+          if (
+            requestedModelSelection !== undefined &&
+            !modelSelectionStillRequested(event.payload.threadId, requestedModelSelection)
+          ) {
+            yield* Effect.logInfo("provider.steer.model-selection-superseded", {
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              requestedInstanceId: requestedModelSelection.instanceId,
+            });
+          } else if (requestedModelSelection !== undefined) {
             threadModelSelections.set(event.payload.threadId, requestedModelSelection);
             yield* serverCommandId("provider-selection-accepted").pipe(
               Effect.flatMap((commandId) =>
@@ -3644,6 +3773,29 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             // means a hung upstream request is never noticed, never restarted,
             // and — because the scheduler admits one active obligation per
             // thread — every later send on the thread starves behind it.
+            // Leave a durable marker first: a Stop (or a provider handoff)
+            // sweeping this thread must hand this claim back to pending
+            // rather than cancel it with the blocking turn, because our
+            // message has not been sent. Best-effort — a failed mark only
+            // costs the message its protection from that sweep.
+            yield* threadWorkObligations
+              .markExecutingReason({
+                obligationId: obligation.obligationId,
+                expectedAttempt: obligation.attempt,
+                blockedReason: ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON,
+                updatedAt: yield* nowIso,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause)
+                    : Effect.logWarning("thread-work.active-turn.queued-marker-failed", {
+                        obligationId: obligation.obligationId,
+                        threadId: obligation.threadId,
+                        cause: Cause.pretty(cause),
+                      }),
+                ),
+              );
             const blocking = yield* waitForProviderTurnTerminal({
               threadId: obligation.threadId,
               turnId: runningBeforeSend.activeTurnId,
@@ -3653,6 +3805,21 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
             // message still has not been sent. Re-attempt the delivery, but
             // propagate anything non-completed (auth block, watchdog restart)
             // unchanged so those signals are not swallowed.
+            if (blocking.state === "cancelled") {
+              // The blocking turn was interrupted or its session stopped.
+              // That ends *that* turn; it does not un-send this message,
+              // which the user still sees as queued. Cancelling here lost it
+              // for good (thread 3112ffe4, 2026-09-02). Only a vanished
+              // thread retires the delivery.
+              const stillExists = yield* resolveThread(obligation.threadId);
+              if (!stillExists || stillExists.settledOverride === "settled") return blocking;
+              const retryAt = yield* DateTime.now;
+              return {
+                state: "sleeping" as const,
+                nextAttemptAt: DateTime.formatIso(DateTime.add(retryAt, { seconds: 1 })),
+                reason: `the active turn ended (${blocking.reason ?? "cancelled"}) before the queued message was delivered; redelivering`,
+              };
+            }
             if (blocking.state !== "completed") return blocking;
             return yield* retryWorkAfter15Seconds(
               "waiting for the active turn to finish before delivering the queued message",

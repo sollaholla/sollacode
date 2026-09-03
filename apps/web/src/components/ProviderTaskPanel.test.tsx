@@ -35,6 +35,14 @@ describe("ProviderTaskPanel", () => {
     expect(markup).not.toContain('aria-label="Task pages"');
   });
 
+  it("always exposes Dismiss even when the provider can also Stop a running task", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderTaskPanel tasks={[task]} driverKind="claudeAgent" onStopTask={() => undefined} />,
+    );
+    expect(markup).toContain(`aria-label="Stop ${task.title}"`);
+    expect(markup).toContain(`aria-label="Dismiss ${task.title}"`);
+  });
+
   it("starts collapsed when it is bound to a thread", () => {
     const markup = renderToStaticMarkup(
       <ProviderTaskPanel tasks={[task]} threadKey="environment:thread" />,

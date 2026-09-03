@@ -280,6 +280,47 @@ describe("AcpRuntimeModel", () => {
     });
   });
 
+  it("keeps the read-file label when a content-only completion frame follows", () => {
+    // Grok's completion frame carries the file text and nothing else. On its
+    // own it derives the generic "Tool" label, and taking that over the label
+    // the first frame earned rendered every read in a long run as "Tool".
+    const created = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-grok-read",
+        title: "Tool",
+        kind: "read",
+        status: "pending",
+        rawInput: { variant: "ReadFile", target_file: "/tmp/app.ts", offset: 1, limit: 50 },
+        locations: [{ path: "/tmp/app.ts", line: 1 }],
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    const completed = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-grok-read",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "1\u2192import x" } }],
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    const createdEvent = created.events[0];
+    const completedEvent = completed.events[0];
+    if (createdEvent?._tag !== "ToolCallUpdated" || completedEvent?._tag !== "ToolCallUpdated") {
+      throw new Error("expected tool call events");
+    }
+    expect(createdEvent.toolCall.title).toBe("Read file");
+    expect(completedEvent.toolCall.title).toBe("Tool");
+    expect(mergeToolCallState(createdEvent.toolCall, completedEvent.toolCall)).toMatchObject({
+      toolCallId: "tool-grok-read",
+      kind: "read",
+      status: "completed",
+      title: "Read file",
+      detail: "/tmp/app.ts",
+    });
+  });
+
   it("trims padded current mode updates before emitting a mode change", () => {
     const result = parseSessionUpdateEvent({
       sessionId: "session-1",

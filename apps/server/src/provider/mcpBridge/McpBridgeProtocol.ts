@@ -145,7 +145,46 @@ function optionalBoundedString(value: unknown, label: string, maximum: number): 
   return value;
 }
 
-function validateEventPayload(type: McpBridgeEventType, payload: Record<string, unknown>): void {
+/**
+ * Replace an oversized event payload with a bounded stand-in.
+ *
+ * Rejecting the event used to be fatal for the whole session: the adapter's
+ * pump re-reads the same sequence on every poll, fails on it again, and the
+ * thread fills with "External provider event stream interrupted:
+ * event.payload exceeds 2097152 characters" every few seconds until the app
+ * is relaunched (observed live 2026-09-02 on a preview_snapshot tool result
+ * of ~2 MB). One over-large work-log row is not worth a dead session: keep
+ * the fields the work log keys on, drop the bulk, and say so in the row.
+ */
+function boundedEventPayload(
+  type: McpBridgeEventType,
+  payload: Record<string, unknown>,
+  serializedLength: number,
+): Record<string, unknown> {
+  const keep: Record<string, unknown> = {};
+  for (const key of ["kind", "itemType", "name", "phase", "code"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.length <= 1_000) keep[key] = value;
+  }
+  const note = `event payload of ${serializedLength} characters exceeded the ${MAX_EVENT_PAYLOAD_CHARACTERS} character limit and was reduced by the host; the provider kept the full content.`;
+  switch (type) {
+    case "content.delta":
+      return { ...keep, text: note };
+    case "turn.failed":
+      return { ...keep, error: note };
+    case "item.started":
+    case "item.updated":
+    case "item.completed":
+      return { ...keep, result: { ok: true, truncated: true, value: note } };
+    default:
+      return { ...keep, message: note };
+  }
+}
+
+function validateEventPayload(
+  type: McpBridgeEventType,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
   let serialized: string;
   try {
     serialized = JSON.stringify(payload);
@@ -155,9 +194,7 @@ function validateEventPayload(type: McpBridgeEventType, payload: Record<string, 
     );
   }
   if (serialized.length > MAX_EVENT_PAYLOAD_CHARACTERS) {
-    throw new McpBridgeProtocolError(
-      `event.payload exceeds ${MAX_EVENT_PAYLOAD_CHARACTERS} characters.`,
-    );
+    payload = boundedEventPayload(type, payload, serialized.length);
   }
 
   switch (type) {
@@ -173,17 +210,17 @@ function validateEventPayload(type: McpBridgeEventType, payload: Record<string, 
       if (payload.authoritative !== undefined) {
         booleanValue(payload.authoritative, "event.payload.authoritative");
       }
-      return;
+      return payload;
     }
     case "turn.failed":
       nonEmptyString(payload.error, "event.payload.error", 100_000);
-      return;
+      return payload;
     case "item.started":
     case "item.updated":
     case "item.completed":
       nonEmptyString(payload.kind, "event.payload.kind", 128);
       optionalBoundedString(payload.name, "event.payload.name", 512);
-      return;
+      return payload;
     case "reasoning.status":
     case "runtime.status":
       if (
@@ -192,30 +229,30 @@ function validateEventPayload(type: McpBridgeEventType, payload: Record<string, 
       ) {
         throw new McpBridgeProtocolError(`${type} requires payload.text or payload.phase.`);
       }
-      return;
+      return payload;
     case "request.opened":
       nonEmptyString(payload.kind, "event.payload.kind", 128);
       optionalBoundedString(payload.toolName, "event.payload.toolName", 512);
-      return;
+      return payload;
     case "request.resolved":
       booleanValue(payload.approved, "event.payload.approved");
-      return;
+      return payload;
     case "user-input.requested":
       if (!Array.isArray(payload.questions) || payload.questions.length > 100) {
         throw new McpBridgeProtocolError(
           "user-input.requested payload.questions must be an array containing at most 100 entries.",
         );
       }
-      return;
+      return payload;
     case "user-input.resolved":
       record(payload.answers ?? payload.response, "event.payload.answers");
-      return;
+      return payload;
     case "message.delivered":
       nonEmptyString(payload.messageId, "event.payload.messageId", 512);
-      return;
+      return payload;
     case "runtime.warning":
       nonEmptyString(payload.message, "event.payload.message", 100_000);
-      return;
+      return payload;
     case "runtime.error":
       if (
         optionalBoundedString(payload.message, "event.payload.message", 100_000) === undefined &&
@@ -225,7 +262,7 @@ function validateEventPayload(type: McpBridgeEventType, payload: Record<string, 
           "runtime.error requires payload.message or payload.error.",
         );
       }
-      return;
+      return payload;
     case "session.started":
     case "session.stopped":
     case "turn.started":
@@ -233,7 +270,7 @@ function validateEventPayload(type: McpBridgeEventType, payload: Record<string, 
     case "turn.interrupted":
       optionalBoundedString(payload.model, "event.payload.model", 256);
       optionalBoundedString(payload.finishReason, "event.payload.finishReason", 128);
-      return;
+      return payload;
   }
 }
 
@@ -359,8 +396,10 @@ export function decodeMcpBridgeEvent(value: unknown): McpBridgeEvent {
   if (sequence === 0) {
     throw new McpBridgeProtocolError("event.sequence must be greater than zero.");
   }
-  const payload = record(input.payload ?? {}, "event.payload");
-  validateEventPayload(type as McpBridgeEventType, payload);
+  const payload = validateEventPayload(
+    type as McpBridgeEventType,
+    record(input.payload ?? {}, "event.payload"),
+  );
   return {
     eventId: nonEmptyString(input.eventId, "event.eventId", 256),
     sequence,

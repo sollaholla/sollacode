@@ -239,6 +239,10 @@
       "types": "./src/previewComputerControl.ts",
       "import": "./src/previewComputerControl.ts"
     },
+    "./interruptedTasksNotice": {
+      "types": "./src/interruptedTasksNotice.ts",
+      "import": "./src/interruptedTasksNotice.ts"
+    },
     "./remoteFrameGestures": {
       "types": "./src/remoteFrameGestures.ts",
       "import": "./src/remoteFrameGestures.ts"

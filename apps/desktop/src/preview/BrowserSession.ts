@@ -21,8 +21,10 @@ import type { PreviewDownload, PreviewDownloadApproval } from "@t3tools/contract
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import {
   downloadDomain,
+  parseDownloadAllowlist,
   resolveDownloadApproval,
   resolveDownloadApprovalEffects,
+  serializeDownloadAllowlist,
 } from "./downloadApproval.ts";
 import { resolveDownloadFileName, resolveUniqueDownloadPath } from "./downloadPaths.ts";
 import {
@@ -166,6 +168,27 @@ export const BrowserSessionError = Schema.Union([
 export type BrowserSessionError = typeof BrowserSessionError.Type;
 export const isBrowserSessionError = Schema.is(BrowserSessionError);
 
+/** Where the remembered "Allow for this domain" answers live, under the state dir. */
+export const DOWNLOAD_ALLOWLIST_FILE_NAME = "preview-download-allowlist.json";
+
+function readDownloadAllowlist(path: string): Set<string> {
+  let raw: string;
+  try {
+    raw = NodeFS.readFileSync(path, "utf8");
+  } catch {
+    return new Set();
+  }
+  return new Set(parseDownloadAllowlist(raw));
+}
+
+/** Written whole into a sibling and renamed, so a crash mid-write cannot leave a half file. */
+function writeDownloadAllowlist(path: string, domains: ReadonlySet<string>): void {
+  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+  const staging = `${path}.tmp`;
+  NodeFS.writeFileSync(staging, serializeDownloadAllowlist(domains), "utf8");
+  NodeFS.renameSync(staging, path);
+}
+
 /**
  * A download held for the user's answer, or the end of that hold.
  *
@@ -224,6 +247,11 @@ export class BrowserSession extends Context.Service<
       id: string,
       decision: "allow-domain" | "allow-once" | "deny",
     ) => void;
+    /**
+     * Forget every site remembered by "Allow for this domain", in memory and
+     * on disk, so each asks again on its next download.
+     */
+    readonly forgetDownloadDomains: () => void;
     readonly clearCookies: () => Effect.Effect<void, BrowserSessionStorageClearError>;
     readonly clearCache: () => Effect.Effect<void, BrowserSessionCacheClearError>;
   }
@@ -270,10 +298,31 @@ export const make = Effect.gen(function* BrowserSessionMake() {
   const RECENT_DOWNLOAD_LIMIT = 20;
   const downloadListeners = new Set<(webContentsId: number, download: PreviewDownload) => void>();
   /**
-   * Sites the user has said may write into the workspace, for this run of the
-   * app only. See `downloadApproval.ts` for why this is not persisted.
+   * Sites the user has said may write into the workspace.
+   *
+   * Loaded from and written back to disk, so an answer survives the restart
+   * every update forces. See `downloadApproval.ts` for the file format and
+   * for why an unreadable file means "ask", not "allow".
    */
-  const allowedDownloadDomains = new Set<string>();
+  const allowedDownloadDomainsPath = NodePath.join(
+    environment.stateDir,
+    DOWNLOAD_ALLOWLIST_FILE_NAME,
+  );
+  const allowedDownloadDomains = readDownloadAllowlist(allowedDownloadDomainsPath);
+  const persistAllowedDownloadDomains = () => {
+    try {
+      writeDownloadAllowlist(allowedDownloadDomainsPath, allowedDownloadDomains);
+    } catch (cause) {
+      // The answer still holds for this run; only its memory across restarts
+      // is lost, which is worth a log line and not a failed download.
+      runFork(
+        Effect.logWarning("Could not persist the download allowlist.", {
+          path: allowedDownloadDomainsPath,
+          cause,
+        }),
+      );
+    }
+  };
   const approvalListeners = new Set<
     (webContentsId: number, event: DownloadApprovalEvent) => void
   >();
@@ -368,7 +417,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     if (decision === null || !held.landed) return;
     heldDownloads.delete(id);
     const { keepFile, rememberDomain } = resolveDownloadApprovalEffects(decision);
-    if (rememberDomain && held.domain.length > 0) allowedDownloadDomains.add(held.domain);
+    if (rememberDomain && held.domain.length > 0 && !allowedDownloadDomains.has(held.domain)) {
+      allowedDownloadDomains.add(held.domain);
+      persistAllowedDownloadDomains();
+    }
     notifyApproval(held.webContentsId, { kind: "settled", id });
     if (!keepFile) {
       try {
@@ -720,6 +772,11 @@ export const make = Effect.gen(function* BrowserSessionMake() {
     },
     onDownloadApproval: (listener) => {
       approvalListeners.add(listener);
+    },
+    forgetDownloadDomains: () => {
+      if (allowedDownloadDomains.size === 0) return;
+      allowedDownloadDomains.clear();
+      persistAllowedDownloadDomains();
     },
     answerDownloadApproval: (id, decision) => {
       const held = heldDownloads.get(id);

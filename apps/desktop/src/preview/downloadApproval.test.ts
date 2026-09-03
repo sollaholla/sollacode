@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DOWNLOAD_ALLOWLIST_VERSION,
   downloadDomain,
+  parseDownloadAllowlist,
   registrableDomain,
   resolveDownloadApproval,
   resolveDownloadApprovalEffects,
+  serializeDownloadAllowlist,
 } from "./downloadApproval.ts";
 
 describe("downloadDomain", () => {
@@ -122,5 +125,40 @@ describe("registrableDomain", () => {
 
   it("normalises case and a trailing root dot", () => {
     expect(registrableDomain("CDN1.Suno.AI.")).toBe("suno.ai");
+  });
+});
+
+describe("download allowlist file", () => {
+  it("round-trips the remembered sites", () => {
+    const raw = serializeDownloadAllowlist(["grok.com", "suno.com"]);
+    expect(parseDownloadAllowlist(raw)).toEqual(["grok.com", "suno.com"]);
+  });
+
+  it("writes a stable, sorted, versioned document", () => {
+    expect(JSON.parse(serializeDownloadAllowlist(["suno.com", "grok.com", "grok.com"]))).toEqual({
+      version: DOWNLOAD_ALLOWLIST_VERSION,
+      domains: ["grok.com", "suno.com"],
+    });
+  });
+
+  it("normalises stored entries onto their site", () => {
+    // A hand-edited or older file may hold a bare host; it still has to line
+    // up with the domain a download is attributed to.
+    const raw = JSON.stringify({ version: 1, domains: ["CDN1.Suno.AI.", "", 42, null] });
+    expect(parseDownloadAllowlist(raw)).toEqual(["suno.ai"]);
+  });
+
+  it("treats anything it cannot read as no answers at all", () => {
+    // Failing toward "ask" is the only safe direction for a file that gates
+    // writes into the workspace.
+    expect(parseDownloadAllowlist("")).toEqual([]);
+    expect(parseDownloadAllowlist("not json")).toEqual([]);
+    expect(parseDownloadAllowlist("null")).toEqual([]);
+    expect(parseDownloadAllowlist('["grok.com"]')).toEqual([]);
+    expect(parseDownloadAllowlist(JSON.stringify({ domains: ["grok.com"] }))).toEqual([]);
+    expect(parseDownloadAllowlist(JSON.stringify({ version: 2, domains: ["grok.com"] }))).toEqual(
+      [],
+    );
+    expect(parseDownloadAllowlist(JSON.stringify({ version: 1, domains: "grok.com" }))).toEqual([]);
   });
 });

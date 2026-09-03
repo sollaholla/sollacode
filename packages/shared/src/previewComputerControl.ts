@@ -58,13 +58,21 @@ const PREVIEW_TOOL_PATTERN = /^preview_[a-z0-9_]+$/;
 const RAW_MCP_PREVIEW_TOOL_PATTERN = /^mcp__t3-code__(preview_[a-z0-9_]+)$/;
 
 function actionFromPreviewTool(tool: string): string | null {
-  if (!PREVIEW_TOOL_PATTERN.test(tool)) return null;
-  const action = tool.slice("preview_".length).replaceAll("_", " ").trim();
+  const trimmed = tool.trim();
+  const preview =
+    RAW_MCP_PREVIEW_TOOL_PATTERN.exec(trimmed)?.[1] ??
+    (PREVIEW_TOOL_PATTERN.test(trimmed) ? trimmed : null);
+  if (preview === null) return null;
+  const action = preview.slice("preview_".length).replaceAll("_", " ").trim();
   return action.length === 0 ? null : action;
 }
 
 function actionFromServerAndTool(server: string, tool: string): string | null {
-  return server.trim().toLowerCase() === "t3-code" ? actionFromPreviewTool(tool.trim()) : null;
+  const trimmedTool = tool.trim();
+  if (RAW_MCP_PREVIEW_TOOL_PATTERN.test(trimmedTool)) {
+    return actionFromPreviewTool(trimmedTool);
+  }
+  return server.trim().toLowerCase() === "t3-code" ? actionFromPreviewTool(trimmedTool) : null;
 }
 
 /**
@@ -110,18 +118,32 @@ export function previewComputerControlAction(input: {
 
   const rawTitle = input.toolTitle?.trim();
   if (!rawTitle) return null;
-  // Some providers render the row as "<tool>: {\"url\": …}". The arguments are
-  // not part of the name, and leaving them attached made every one of these
-  // calls fall through to the raw MCP rendering again.
-  const title = (rawTitle.split(": ")[0] ?? rawTitle).trim();
+  const title = titleWithoutCallArguments(rawTitle);
   if (!title) return null;
   const middotParts = title.split(" · ");
   if (middotParts.length === 2) {
     const action = actionFromServerAndTool(middotParts[0]!, middotParts[1]!);
     if (action !== null) return action;
   }
-  const rawToolName = RAW_MCP_PREVIEW_TOOL_PATTERN.exec(title)?.[1];
+  const rawToolName =
+    RAW_MCP_PREVIEW_TOOL_PATTERN.exec(title)?.[1] ?? PREVIEW_TOOL_PATTERN.exec(title)?.[0];
   return rawToolName === undefined ? null : actionFromPreviewTool(rawToolName);
+}
+
+/**
+ * Providers append the call payload to the row title: either
+ * `mcp__t3-code__preview_evaluate: {"expression":…}` (colon-space) or
+ * `mcp__t3-code__preview_evaluate:{…}` (no space). The arguments are not the
+ * name. Cutting at `": "` missed the no-space form, so Grok's preview calls
+ * rendered as the raw MCP string instead of "Computer control".
+ */
+function titleWithoutCallArguments(rawTitle: string): string {
+  const mcp = /^(mcp__t3-code__preview_[a-z0-9_]+)/i.exec(rawTitle);
+  if (mcp) return mcp[1]!;
+  const middot = /^(t3-code)\s*·\s*(preview_[a-z0-9_]+)/i.exec(rawTitle);
+  if (middot) return `${middot[1]} · ${middot[2]}`;
+  const colon = rawTitle.search(/:\s*/);
+  return colon === -1 ? rawTitle : rawTitle.slice(0, colon).trim();
 }
 
 /** "Computer control · Click" — the row heading for a detected action. */

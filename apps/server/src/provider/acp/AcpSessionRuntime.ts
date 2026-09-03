@@ -1237,11 +1237,12 @@ const handleSessionUpdate = ({
           const previous = current.get(event.toolCall.toolCallId);
           const nextToolCall = mergeToolCallState(previous, event.toolCall);
           const next = new Map(current);
-          if (nextToolCall.status === "completed" || nextToolCall.status === "failed") {
-            next.delete(nextToolCall.toolCallId);
-          } else {
-            next.set(nextToolCall.toolCallId, nextToolCall);
-          }
+          // Settled calls stay in the map for a while. Grok can follow a
+          // completion with a second, nearly empty frame for the same id;
+          // merging that against nothing re-emitted the call as a bare
+          // "Tool" row. Bounded so a long session cannot grow without limit.
+          next.set(nextToolCall.toolCallId, nextToolCall);
+          pruneSettledToolCalls(next);
           return [{ previous, merged: nextToolCall }, next] as const;
         });
         if (!shouldEmitToolCallUpdate(previous, merged)) {
@@ -1290,12 +1291,35 @@ function updateModeState(modeState: AcpSessionModeState, nextModeId: string): Ac
     : modeState;
 }
 
+const MAX_RETAINED_SETTLED_TOOL_CALLS = 64;
+
+const isSettledToolCall = (state: AcpToolCallState | undefined): boolean =>
+  state?.status === "completed" || state?.status === "failed";
+
+/** Drop the oldest settled calls once more than the retention bound remain. */
+function pruneSettledToolCalls(toolCalls: Map<string, AcpToolCallState>): void {
+  let settled = 0;
+  for (const state of toolCalls.values()) {
+    if (isSettledToolCall(state)) settled += 1;
+  }
+  if (settled <= MAX_RETAINED_SETTLED_TOOL_CALLS) return;
+  for (const [toolCallId, state] of toolCalls) {
+    if (!isSettledToolCall(state)) continue;
+    toolCalls.delete(toolCallId);
+    settled -= 1;
+    if (settled <= MAX_RETAINED_SETTLED_TOOL_CALLS) return;
+  }
+}
+
 function shouldEmitToolCallUpdate(
   previous: AcpToolCallState | undefined,
   next: AcpToolCallState,
 ): boolean {
   if (next.status === "completed" || next.status === "failed") {
-    return true;
+    // A repeated completion frame that adds nothing visible is not a second
+    // tool call; re-emitting it doubled the row in the timeline.
+    if (!isSettledToolCall(previous)) return true;
+    return previous?.title !== next.title || previous?.detail !== next.detail;
   }
   if (!next.detail) {
     return false;

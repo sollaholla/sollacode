@@ -6465,6 +6465,246 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("does not let a late steer acceptance revert a newer model selection", async () => {
+    // ACP providers resolve a mid-turn send only when the turn ends. The
+    // selection-accepted bookkeeping that runs on that resolution used to write
+    // the send's selection back unconditionally — minutes later, over a switch
+    // the user had made in the meantime (2026-09-01: Grok written back over a
+    // switch to Claude one second after it was made).
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const codex = ProviderInstanceId.make("codex");
+    const originalSelection: ModelSelection = { instanceId: codex, model: "gpt-5.4" };
+    const switchedSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-4-6",
+    };
+    const releaseSteer = await Effect.runPromise(Deferred.make<void>());
+    let startedTurns = 0;
+    harness.sendTurn.mockImplementation(
+      (
+        _rawInput: unknown,
+        options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+        Effect.sync(() =>
+          options?.onNativeDispatchRoute?.({
+            providerInstanceId: codex,
+            sessionGeneration: null,
+            messageDeliveryReceipts: false,
+          }),
+        ).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const index = harness.runtimeSessions.findIndex(
+                (session) => session.threadId === threadId,
+              );
+              const live = index >= 0 ? harness.runtimeSessions[index] : undefined;
+              const liveTurnId = live?.activeTurnId ?? undefined;
+              if (live?.status === "running" && liveTurnId !== undefined) {
+                // The steer is admitted at once but, like Grok, only resolves
+                // when the turn it joined ends.
+                return (options?.onNativeDispatch ?? Effect.void).pipe(
+                  Effect.andThen(Deferred.await(releaseSteer)),
+                  Effect.as({ threadId, turnId: liveTurnId }),
+                );
+              }
+              startedTurns += 1;
+              const turnId = asTurnId(`turn-stale-steer-${startedTurns}`);
+              if (index >= 0 && live !== undefined) {
+                harness.runtimeSessions[index] = {
+                  ...live,
+                  status: "running",
+                  activeTurnId: turnId,
+                };
+              }
+              return Effect.succeed({ threadId, turnId });
+            }),
+          ),
+        ),
+    );
+    const dispatchTurn = (commandId: string, messageId: string, text: string, createdAt: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId,
+          message: { messageId: asMessageId(messageId), role: "user", text, attachments: [] },
+          modelSelection: originalSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        }),
+      );
+    const projectedSelection = async () =>
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.modelSelection;
+    const obligationState = async (messageId: string) => {
+      const row = await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId,
+          sourceTurnId: activeTurnWorkSourceId(asMessageId(messageId)),
+          kind: "active-turn-recovery",
+        }),
+      );
+      return Option.getOrUndefined(row)?.state;
+    };
+
+    await dispatchTurn(
+      "cmd-stale-steer-msg1",
+      "stale-steer-msg-1",
+      "start working",
+      "2026-01-01T00:00:01.000Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-stale-steer-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: codex,
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-stale-steer-1"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    // A mid-turn message steers into the live turn and is held there.
+    await dispatchTurn(
+      "cmd-stale-steer-msg2",
+      "stale-steer-msg-2",
+      "keep going",
+      "2026-01-01T00:00:03.000Z",
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    // The user switches providers while the provider still holds that steer.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-stale-steer-switch"),
+        threadId,
+        modelSelection: switchedSelection,
+      }),
+    );
+    await waitFor(async () => Equal.equals(await projectedSelection(), switchedSelection));
+
+    await Effect.runPromise(Deferred.succeed(releaseSteer, undefined));
+    await waitFor(async () => (await obligationState("stale-steer-msg-2")) === "completed");
+    await harness.drain();
+
+    // The late acceptance must not write the steer's older selection back.
+    expect(await projectedSelection()).toEqual(switchedSelection);
+  });
+
+  it("does not let a late originating sendTurn acceptance revert a newer model selection", async () => {
+    // Grok (and other ACP adapters) resolve the first sendTurn only when the
+    // turn ends. Switching providers mid-turn used to lose to that resolution
+    // writing the originating selection back after the picker had already
+    // moved — the same "had to apply it twice" failure as a late steer.
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const grok = ProviderInstanceId.make("grok");
+    const originalSelection: ModelSelection = { instanceId: grok, model: "grok-4" };
+    const switchedSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-4-6",
+    };
+    const releaseTurn = await Effect.runPromise(Deferred.make<void>());
+    harness.sendTurn.mockImplementation(
+      (
+        _rawInput: unknown,
+        options?: ProviderServiceSendTurnOptions,
+      ): Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, never> =>
+        Effect.sync(() =>
+          options?.onNativeDispatchRoute?.({
+            providerInstanceId: grok,
+            sessionGeneration: null,
+            messageDeliveryReceipts: false,
+          }),
+        ).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const index = harness.runtimeSessions.findIndex(
+                (session) => session.threadId === threadId,
+              );
+              const live = index >= 0 ? harness.runtimeSessions[index] : undefined;
+              const turnId = live?.activeTurnId ?? asTurnId("turn-stale-origin-1");
+              if (index >= 0 && live !== undefined && live.activeTurnId === undefined) {
+                harness.runtimeSessions[index] = {
+                  ...live,
+                  status: "running",
+                  activeTurnId: turnId,
+                };
+              }
+              return (options?.onNativeDispatch ?? Effect.void).pipe(
+                Effect.andThen(Deferred.await(releaseTurn)),
+                Effect.as({ threadId, turnId }),
+              );
+            }),
+          ),
+        ),
+    );
+    const projectedSelection = async () =>
+      (await harness.readModel()).threads.find((entry) => entry.id === threadId)?.modelSelection;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-stale-origin-msg1"),
+        threadId,
+        message: {
+          messageId: asMessageId("stale-origin-msg-1"),
+          role: "user",
+          text: "start working",
+          attachments: [],
+        },
+        modelSelection: originalSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-stale-origin-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "grok",
+          providerInstanceId: grok,
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-stale-origin-1"),
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-stale-origin-switch"),
+        threadId,
+        modelSelection: switchedSelection,
+      }),
+    );
+    await waitFor(async () => Equal.equals(await projectedSelection(), switchedSelection));
+
+    await Effect.runPromise(Deferred.succeed(releaseTurn, undefined));
+    await harness.drain();
+    expect(await projectedSelection()).toEqual(switchedSelection);
+  });
+
   it("parks a Default-mode settings update instead of steering it into the Agent turn", async () => {
     const harness = await createHarness();
     const threadId = ThreadId.make("thread-1");
@@ -6558,6 +6798,16 @@ describe("ProviderCommandReactor", () => {
       threadId,
       turnId: activeTurnId,
     });
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    // The settings message is never steered into the dying turn. Once the
+    // reactor has stopped that turn it also releases the turn's durable
+    // owners and clears the session row itself, so the parked delivery starts
+    // a fresh turn without a provider session event or a Stop click.
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const replacement = harness.sendTurn.mock.calls[1]?.[0] as Record<string, unknown> | undefined;
+    expect(replacement).not.toHaveProperty("liveSteerTarget");
+    expect(JSON.stringify(replacement)).toContain("Settings updated: interaction mode to Default.");
+    await harness.drain();
     const obligation = Option.getOrUndefined(
       await Effect.runPromise(
         harness.threadWorkObligations.getByKey({
@@ -6567,12 +6817,11 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
     );
-    expect(obligation?.state).toBe("pending");
-    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    expect(obligation?.state).toBe("completed");
     const readModel = await harness.readModel();
-    expect(readModel.threads.find((thread) => thread.id === threadId)?.interactionMode).toBe(
-      "default",
-    );
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.interactionMode).toBe("default");
+    expect(thread?.session?.activeTurnId ?? null).not.toBe(activeTurnId);
   });
 
   it("generates a thread title on the first turn", async () => {
@@ -7768,27 +8017,25 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.make("thread-1"),
     });
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-ready-after-provider-switch-interrupt"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
-          threadId: ThreadId.make("thread-1"),
-          status: "ready",
-          providerName: "codex",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: "2026-01-01T00:00:01.000Z",
-        },
-        createdAt: "2026-01-01T00:00:01.000Z",
-      }),
-    );
-
+    // No provider session event follows on purpose. The source turn's own
+    // delivery row is still its executing supervisor, and the scheduler
+    // admits one active obligation per thread — so unless the reactor
+    // releases that row and terminalizes the session itself, the parked
+    // switch cannot be claimed until the user presses Stop (observed
+    // 2026-09-02 on threads 66e462cc and 92806586: four minutes of "Queued").
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const sourceDelivery = Option.getOrUndefined(
+      await Effect.runPromise(
+        harness.threadWorkObligations.getByKey({
+          threadId: ThreadId.make("thread-1"),
+          sourceTurnId: activeTurnWorkSourceId(asMessageId("user-message-provider-switch-1")),
+          kind: "active-turn-recovery",
+        }),
+      ),
+    );
+    expect(sourceDelivery?.state).toBe("cancelled");
+    expect(sourceDelivery?.blockedReason).toBe("thread.turn-replacement-requested");
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       provider: ProviderDriverKind.make("claudeAgent"),
       providerInstanceId: ProviderInstanceId.make("claudeAgent"),

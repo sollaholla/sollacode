@@ -60,7 +60,22 @@ const MAX_RESTART_DELAY = Duration.seconds(10);
 // failures may instead provide their own larger retryLimit when they should
 // self-heal for a while but must not leave the app connecting forever.
 const MAX_PREFLIGHT_FAILURE_ATTEMPTS = 5;
-const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
+// Readiness is bounded by how long the persistence layer takes to read, which
+// scales with state size and with how much of the database the OS still has
+// cached — not by a fixed startup cost. Measured 2026-09-01 against a 10 GB
+// state.sqlite: ~54s warm but ~300s cold, spread across ~500 statements
+// (160s of sql.execute) rather than one slow query, so no index removes it.
+// An app update is the worst case on both counts: it restarts the backend and
+// its own file copying evicts the page cache first.
+//
+// A one-minute budget killed a backend that was still making progress; the
+// supervisor restarted it, and the restart contended with the dying process on
+// the same database, so every retry got slower and the app never came up (seen
+// as the 0.1.356 update rolling back, then 0.1.354 failing to launch). The
+// budget therefore has to clear a cold start with room to spare — a slow start
+// must be allowed to finish, since retrying is what makes it unrecoverable.
+// The restart loop still catches a backend that is genuinely wedged.
+const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(10);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(2);

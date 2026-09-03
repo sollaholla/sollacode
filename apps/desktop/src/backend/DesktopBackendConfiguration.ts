@@ -419,6 +419,17 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       env: {
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
+        // Persist V8's compiled bytecode for the server bundle across launches
+        // (Node >= 22.1). The bundle is compiled from source on every boot
+        // otherwise, and that compile sits on the critical path in front of
+        // the readiness probe the main window waits on. The cache lives with
+        // the rest of the app's regenerable caches; Node creates it on demand
+        // and silently falls back to no cache if it cannot.
+        NODE_COMPILE_CACHE: environment.path.join(
+          environment.baseDir,
+          "caches",
+          "node-compile-cache",
+        ),
         T3CODE_DESKTOP_UPDATER_DIR: updaterDir,
         T3CODE_DESKTOP_APP_PATH: resolveDesktopApplicationPath(
           environment.platform,

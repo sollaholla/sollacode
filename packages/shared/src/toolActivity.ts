@@ -1,4 +1,8 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  previewComputerControlAction,
+  previewComputerControlHeading,
+} from "./previewComputerControl.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -309,6 +313,14 @@ export function deriveToolActivityPresentation(
   const fallbackSummary = isGenericToolTitle(rawFallback) ? undefined : rawFallback;
   const data = asRecord(input.data);
   const declaredName = extractDeclaredToolName(data);
+  const computerControlAction = previewComputerControlAction({
+    ...(rawTitle !== undefined ? { toolTitle: rawTitle } : {}),
+    ...(declaredName !== undefined && rawTitle === undefined ? { toolTitle: declaredName } : {}),
+    toolData: data,
+  });
+  if (computerControlAction !== null) {
+    return { summary: previewComputerControlHeading(computerControlAction) };
+  }
   const namedSummary = declaredName ? humanizeToolName(declaredName) : undefined;
   const command = extractToolCommand(data, title);
   const primaryPath = extractPrimaryPath(data);

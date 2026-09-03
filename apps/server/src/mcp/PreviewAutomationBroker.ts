@@ -2,6 +2,7 @@ import {
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
+  PREVIEW_AUTOMATION_REASON_MAX_LENGTH,
   PreviewAutomationExecutionError,
   PreviewAutomationForeignAgentTabError,
   PreviewAutomationHumanVerificationRequiredError,
@@ -157,7 +158,7 @@ const selectorDiagnosticsFromInput = (
 };
 
 const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.providerSessionId}`;
+  `${scope.environmentId}\u0000${scope.threadId}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const isPreviewHumanVerification = Schema.is(PreviewHumanVerification);
@@ -190,10 +191,28 @@ function remoteDetailKind(detail: unknown): RemoteDetailKind {
   }
 }
 
+/**
+ * The client composes `detail.reason` from its error's structured fields (never
+ * page text); it is the one remote string allowed into a model-facing message,
+ * bounded and stripped of control characters here again.
+ */
+const remoteReason = (detail: unknown): string | undefined => {
+  if (typeof detail !== "object" || detail === null || !("reason" in detail)) return undefined;
+  const raw = (detail as { reason?: unknown }).reason;
+  if (typeof raw !== "string") return undefined;
+  const text = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  if (text.length === 0) return undefined;
+  return text.length > PREVIEW_AUTOMATION_REASON_MAX_LENGTH
+    ? `${text.slice(0, PREVIEW_AUTOMATION_REASON_MAX_LENGTH - 1)}…`
+    : text;
+};
+
 const classifyResponseError = (
   context: PreviewAutomationRequestErrorContext,
   error: NonNullable<PreviewAutomationResponse["error"]>,
 ): PreviewAutomationError => {
+  const reason = remoteReason(error.detail);
+  const executionReason = reason === undefined ? {} : { reason };
   const remoteDiagnostics = {
     remoteTag: error._tag,
     remoteMessageLength: error.message.length,
@@ -247,6 +266,7 @@ const classifyResponseError = (
         : new PreviewAutomationExecutionError({
             ...context,
             ...remoteDiagnostics,
+            ...executionReason,
           });
     }
     case "PreviewAutomationInvalidSelectorError": {
@@ -316,6 +336,7 @@ const classifyResponseError = (
       return new PreviewAutomationExecutionError({
         ...context,
         ...remoteDiagnostics,
+        ...executionReason,
       });
   }
 };

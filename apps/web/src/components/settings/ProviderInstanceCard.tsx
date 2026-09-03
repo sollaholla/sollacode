@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   isProviderDriverKind,
   type ProviderInstanceConfig,
@@ -44,14 +44,34 @@ import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import {
+  describeProviderStatus,
+  describeProviderUpdateOutcome,
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
 } from "./providerStatus";
+import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+const isInvalidEnvironmentVariableName = (name: string): boolean => {
+  const trimmed = name.trim();
+  return trimmed.length > 0 && !ENVIRONMENT_VARIABLE_NAME_PATTERN.test(trimmed);
+};
+
+const environmentFingerprint = (
+  environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>,
+): string =>
+  JSON.stringify(
+    environment.map((variable) => [
+      variable.name,
+      variable.value,
+      variable.sensitive,
+      variable.valueRedacted ?? null,
+    ]),
+  );
 
 let environmentVariableDraftId = 0;
 const nextEnvironmentVariableDraftId = () => `provider-env-${environmentVariableDraftId++}`;
@@ -160,25 +180,31 @@ function ProviderEnvironmentSection(props: {
   const [rows, setRows] = useState<ReadonlyArray<EnvironmentDraftRow>>(() =>
     props.environment.map(makeEnvironmentDraftRow),
   );
+  // What this table last handed to the parent. The parent echoes it back as
+  // `environment`, and that echo must not reset the draft — but a value that
+  // arrived from anywhere else (reset to defaults, another client) must, or
+  // the table keeps showing rows the settings no longer contain.
+  const publishedFingerprintRef = useRef(environmentFingerprint(props.environment));
+  const incomingFingerprint = environmentFingerprint(props.environment);
+  useEffect(() => {
+    if (incomingFingerprint === publishedFingerprintRef.current) return;
+    publishedFingerprintRef.current = incomingFingerprint;
+    setRows(props.environment.map(makeEnvironmentDraftRow));
+  }, [incomingFingerprint, props.environment]);
 
   const publishRows = (nextRows: ReadonlyArray<EnvironmentDraftRow>) => {
+    // A row whose name is not a valid variable name is flagged inline and
+    // left out of what is saved. Bailing out entirely, as this used to,
+    // silently stopped persisting every other row's edits for as long as one
+    // name was mid-edit — with nothing on screen to say so.
     const published: ProviderInstanceEnvironmentVariable[] = [];
     for (const row of nextRows) {
       const name = row.name.trim();
-      if (!ENVIRONMENT_VARIABLE_NAME_PATTERN.test(name)) {
-        if (
-          name.length > 0 ||
-          row.value.length > 0 ||
-          row.sensitive !== true ||
-          row.valueRedacted !== undefined
-        ) {
-          return;
-        }
-        continue;
-      }
+      if (!ENVIRONMENT_VARIABLE_NAME_PATTERN.test(name)) continue;
       const { id: _id, ...rest } = row;
       published.push({ ...rest, name });
     }
+    publishedFingerprintRef.current = environmentFingerprint(published);
     props.onChange(published);
   };
 
@@ -257,7 +283,17 @@ function ProviderEnvironmentSection(props: {
                       placeholder="VARIABLE_NAME"
                       spellCheck={false}
                       aria-label={`Environment variable name ${index + 1}`}
+                      aria-invalid={isInvalidEnvironmentVariableName(variable.name) || undefined}
                     />
+                    {isInvalidEnvironmentVariableName(variable.name) ? (
+                      <span
+                        role="alert"
+                        className="mt-1 block text-[11px] leading-snug text-destructive"
+                      >
+                        Not saved: use letters, digits, and underscores, and do not start with a
+                        digit.
+                      </span>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     <DraftInput
@@ -404,6 +440,7 @@ export function ProviderInstanceCard({
   const statusKey: ProviderStatusKey =
     (liveProvider?.status as ProviderStatusKey | undefined) ?? (enabled ? "warning" : "disabled");
   const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
+  const statusLabel = describeProviderStatus(statusKey);
   const rawSummary = getProviderSummary(liveProvider);
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
@@ -417,7 +454,23 @@ export function ProviderInstanceCard({
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const versionAdvisory = getProviderVersionAdvisoryPresentation(liveProvider?.versionAdvisory);
   const runtimeCapabilities = liveProvider?.runtimeCapabilities;
+  const capabilityEntries: ReadonlyArray<readonly [string, boolean]> = runtimeCapabilities
+    ? [
+        ["Turn stop", runtimeCapabilities.taskStop],
+        ["Text generation", runtimeCapabilities.textGeneration],
+        ["Rollback", runtimeCapabilities.threadRollback],
+        ["Fork", runtimeCapabilities.threadFork],
+      ]
+    : [];
+  const supportedCapabilities = capabilityEntries
+    .filter(([, supported]) => supported)
+    .map(([label]) => label);
+  const unsupportedCapabilities = capabilityEntries
+    .filter(([, supported]) => !supported)
+    .map(([label]) => label);
+  const updateOutcome = describeProviderUpdateOutcome(liveProvider?.updateState);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
+  const detailsId = `provider-instance-${instanceId}-details`;
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() ||
@@ -548,6 +601,10 @@ export function ProviderInstanceCard({
           {instanceId}
         </code>
       ) : null}
+      <span className="sr-only">{statusLabel}</span>
+      {statusKey !== "ready" ? (
+        <span className="shrink-0 text-[11px] text-muted-foreground">{statusLabel}</span>
+      ) : null}
       {driverOption?.badgeLabel ? (
         <Badge variant="warning" size="sm" className="shrink-0">
           {driverOption.badgeLabel}
@@ -587,7 +644,7 @@ export function ProviderInstanceCard({
   );
 
   const authRowNode = (
-    <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
+    <p className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-[13px] leading-[1.45] text-muted-foreground/80">
       {hasAuthenticatedEmail ? (
         <>
           <span>Authenticated as</span>
@@ -616,7 +673,7 @@ export function ProviderInstanceCard({
           ) : null}
         </>
       )}
-      {summary.detail ? <span>- {summary.detail}</span> : null}
+      {summary.detail ? <span>· {summary.detail}</span> : null}
     </p>
   );
 
@@ -625,9 +682,17 @@ export function ProviderInstanceCard({
   ) : null;
 
   return (
-    <div className="rounded-xl transition-colors hover:bg-muted/20">
-      <div className="px-3 py-3 sm:px-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div
+      className={cn(
+        "rounded-xl transition-colors",
+        // An open card stacks six sections; without an edge it ran straight
+        // into the next provider's row four pixels below.
+        isExpanded ? "bg-muted/15 ring-1 ring-border/60" : "hover:bg-muted/20",
+      )}
+      data-expanded={isExpanded ? "true" : undefined}
+    >
+      <div className={ITEM_ROW_CLASSNAME}>
+        <div className={ITEM_ROW_INNER_CLASSNAME}>
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {titleHeadNode}
@@ -646,9 +711,9 @@ export function ProviderInstanceCard({
                             ? "text-warning hover:text-warning"
                             : "text-primary hover:text-primary",
                         )}
-                        aria-label="Update available — view details"
+                        aria-label={`${displayName}: update available`}
                       >
-                        <ArrowUpCircleIcon className="size-3.5 [animation:bounce_2.4s_ease-in-out_infinite] motion-reduce:animate-none" />
+                        <ArrowUpCircleIcon className="size-3.5" />
                       </Button>
                     }
                   />
@@ -673,6 +738,19 @@ export function ProviderInstanceCard({
                           {versionAdvisory.detail}
                         </p>
                       </div>
+                      {updateOutcome ? (
+                        <p
+                          role={updateOutcome.tone === "error" ? "alert" : "status"}
+                          className={cn(
+                            "rounded-md px-2 py-1.5 text-xs leading-snug",
+                            updateOutcome.tone === "error"
+                              ? "border border-destructive/30 bg-destructive/5 text-destructive"
+                              : "bg-muted/60 text-muted-foreground",
+                          )}
+                        >
+                          {updateOutcome.text}
+                        </p>
+                      ) : null}
                       {onRunUpdate ? (
                         <Button
                           type="button"
@@ -730,15 +808,23 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {updateOutcome?.tone === "error" ? (
+              <p role="alert" className="text-[13px] leading-[1.45] text-destructive">
+                {updateOutcome.text}
+              </p>
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button
               size="sm"
               variant="ghost"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+              className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={() => onExpandedChange(!isExpanded)}
-              aria-label={`Toggle ${displayName} details`}
+              aria-expanded={isExpanded}
+              aria-controls={detailsId}
+              aria-label={`${isExpanded ? "Hide" : "Show"} ${displayName} settings`}
             >
+              Configure
               <ChevronDownIcon
                 className={cn("size-3.5 transition-transform", isExpanded && "rotate-180")}
               />
@@ -757,7 +843,7 @@ export function ProviderInstanceCard({
 
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
-          <div className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
+          <div id={detailsId} className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
             <div>
               <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
                 <span className="text-xs font-medium text-foreground">Display name</span>
@@ -805,26 +891,23 @@ export function ProviderInstanceCard({
             {runtimeCapabilities ? (
               <div aria-label="Provider runtime capabilities">
                 <div className="text-xs font-medium text-foreground">Capabilities</div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {[
-                    ["Turn stop", runtimeCapabilities.taskStop],
-                    ["Text generation", runtimeCapabilities.textGeneration],
-                    ["Rollback", runtimeCapabilities.threadRollback],
-                    ["Fork", runtimeCapabilities.threadFork],
-                  ].map(([label, supported]) => (
-                    <Badge
-                      key={String(label)}
-                      variant={supported ? "secondary" : "outline"}
-                      size="sm"
-                    >
-                      {label}: {supported ? "yes" : "no"}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {supportedCapabilities.map((label) => (
+                    <Badge key={label} variant="secondary" size="sm">
+                      {label}
                     </Badge>
                   ))}
                   <Badge variant="outline" size="sm">
-                    Model switch:{" "}
-                    {runtimeCapabilities.modelSwitchRequiresNewThread ? "new thread" : "in session"}
+                    {runtimeCapabilities.modelSwitchRequiresNewThread
+                      ? "Model switch starts a new thread"
+                      : "Model switch stays in the session"}
                   </Badge>
                 </div>
+                {unsupportedCapabilities.length > 0 ? (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Not supported: {unsupportedCapabilities.join(", ")}
+                  </p>
+                ) : null}
               </div>
             ) : null}
 

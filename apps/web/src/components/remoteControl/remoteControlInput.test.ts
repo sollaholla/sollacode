@@ -8,9 +8,44 @@ import {
   normalizedRemotePoint,
   remotePointerButton,
   remoteSurfaceCursorStyle,
+  requestPointerLockIfSupported,
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
+
+describe("requestPointerLockIfSupported", () => {
+  it("is a no-op when Safari does not expose Pointer Lock", () => {
+    expect(() => requestPointerLockIfSupported({})).not.toThrow();
+    expect(() => requestPointerLockIfSupported(null)).not.toThrow();
+  });
+
+  it("swallows a synchronous browser refusal", () => {
+    expect(() =>
+      requestPointerLockIfSupported({
+        requestPointerLock: () => {
+          throw new TypeError("Pointer Lock unavailable");
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  it("swallows an asynchronous browser refusal", async () => {
+    requestPointerLockIfSupported({
+      requestPointerLock: () => Promise.reject(new DOMException("Not allowed", "NotAllowedError")),
+    });
+    await Promise.resolve();
+  });
+
+  it("requests pointer lock when the capability exists", () => {
+    let calls = 0;
+    requestPointerLockIfSupported({
+      requestPointerLock: () => {
+        calls += 1;
+      },
+    });
+    expect(calls).toBe(1);
+  });
+});
 
 describe("remote-control input mapping", () => {
   it("lets global shortcuts detect when the remote surface owns keyboard input", () => {

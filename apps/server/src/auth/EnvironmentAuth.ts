@@ -15,6 +15,8 @@ import {
   type AuthSessionState,
   type ServerAuthDescriptor,
   type ServerAuthSessionMethod,
+  type AuthRenewCredentialInput,
+  type AuthRenewCredentialResult,
   type AuthWebSocketTicketResult,
 } from "@t3tools/contracts";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
@@ -486,6 +488,12 @@ export class EnvironmentAuth extends Context.Service<
     readonly issueWebSocketTicket: (
       session: Pick<AuthenticatedSession, "sessionId">,
     ) => Effect.Effect<AuthWebSocketTicketResult, ServerAuthInternalError>;
+    readonly renewCredential: (
+      input: AuthRenewCredentialInput,
+    ) => Effect.Effect<
+      AuthRenewCredentialResult,
+      ServerAuthInvalidCredentialError | ServerAuthInternalError
+    >;
     readonly issueStartupPairingUrl: (
       baseUrl: string,
     ) => Effect.Effect<string, ServerAuthInternalError>;
@@ -945,6 +953,19 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.issueWebSocketTicket"),
     );
 
+  const renewCredential: EnvironmentAuth["Service"]["renewCredential"] = (input) =>
+    sessions.renew(input.credential).pipe(
+      mapSessionVerificationErrors,
+      Effect.map(
+        (issued) =>
+          ({
+            credential: issued.token,
+            expiresAt: DateTime.toUtc(issued.expiresAt),
+          }) satisfies AuthRenewCredentialResult,
+      ),
+      Effect.withSpan("EnvironmentAuth.renewCredential"),
+    );
+
   const authenticateHttpRequest: EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
     request,
   ) =>
@@ -993,6 +1014,7 @@ export const make = Effect.gen(function* () {
     authenticateHttpRequest,
     authenticateWebSocketUpgrade,
     issueWebSocketTicket,
+    renewCredential,
     issueStartupPairingUrl,
   });
 });

@@ -1251,18 +1251,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               AND later.stream_id = events.stream_id
               AND later.event_type = 'thread.turn-start-requested'
               AND later.sequence > events.sequence
+              -- Delivery receipts come from the activity projection, indexed by
+              -- (thread, kind). The same test against the raw event stream walked
+              -- every activity event of the thread — an 8-second scan on a
+              -- 550k-event thread, paid on every queued delivery before the
+              -- provider was even started (2026-09-01), long enough for the user
+              -- to press Stop and cancel the message.
               AND NOT EXISTS (
                 SELECT 1
-                FROM orchestration_events AS absorbed
-                WHERE absorbed.aggregate_kind = 'thread'
-                  AND absorbed.stream_id = later.stream_id
-                  AND absorbed.event_type = 'thread.activity-appended'
-                  AND json_extract(absorbed.payload_json, '$.activity.kind') =
-                    'message.delivered'
-                  AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                FROM projection_thread_activities AS absorbed
+                WHERE absorbed.thread_id = later.stream_id
+                  AND absorbed.kind = 'message.delivered'
+                  AND json_extract(absorbed.payload_json, '$.messageId') =
                     json_extract(later.payload_json, '$.messageId')
-                  AND json_extract(absorbed.payload_json, '$.activity.turnId') =
-                    source_turn.turn_id
+                  AND absorbed.turn_id = source_turn.turn_id
               )
           ) AS "hasLaterRealUserTurn",
           source_turn.turn_id AS "providerTurnId",

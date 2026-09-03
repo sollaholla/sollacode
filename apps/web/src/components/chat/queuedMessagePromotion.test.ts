@@ -5,7 +5,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   expireStaleQueuedMessagePromotion,
+  nextQueuedMessageToPromote,
+  QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS,
   QUEUED_MESSAGE_PROMOTION_STALE_MS,
+  queuedMessageAutoPromoteDelayMs,
   runQueuedMessagePromotion,
   settleQueuedMessagePromotion,
   type QueuedMessagePromotionPhases,
@@ -483,5 +486,26 @@ describe("queued-message promotion lifecycle", () => {
     expect(phasesRef.current).toEqual({});
     expect(onSuccess).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("sends one queued row and waits for its read receipt before the next", () => {
+    expect(queuedMessageAutoPromoteDelayMs(false)).toBe(QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS);
+    expect(queuedMessageAutoPromoteDelayMs(true)).toBe(0);
+    expect(
+      nextQueuedMessageToPromote({
+        queuedMessageIds: ["message-b"],
+        deliveredMessageIds: new Set(["message-a"]),
+        promotionInFlight: false,
+        awaitingDeliveryMessageIds: ["message-a"],
+      }),
+    ).toBe("message-b");
+    expect(
+      nextQueuedMessageToPromote({
+        queuedMessageIds: ["message-b"],
+        deliveredMessageIds: new Set(),
+        promotionInFlight: false,
+        awaitingDeliveryMessageIds: ["message-a"],
+      }),
+    ).toBeNull();
   });
 });

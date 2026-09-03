@@ -110,22 +110,24 @@ under a false live-turn identity.
 Provider switches and settings changes remain explicit turn replacements. Automated continuation
 prompts do not use the human steering lane.
 
-## Send queued Grok messages now
+## Send queued Grok messages
 
 Pressing Enter while Grok is already working adds the message to Grok's native prompt queue without
-stopping the active turn or its background commands. Once Grok acknowledges that queue entry, the
-empty composer shows an outlined **Send queued now** action alongside the red **Stop** action. The
-blue send arrow is not used for an empty queued composer. Press Enter again, or choose **Send queued
-now**, to promote every waiting message in send order without stopping the current session or its
+stopping the active turn or its background commands. About a second after the last waiting message
+lands, Solla Code sends those queued follow-ups on its own: one message, then its read receipt, then
+the next. Sending the whole queue as one insert stalls Grok, so the drain never bulk-inserts.
+
+The empty composer still shows an outlined **Send queued now** action alongside the red **Stop**
+action if you want them sent immediately instead of waiting that second. The blue send arrow is not
+used for an empty queued composer. Press Enter again, or choose **Send queued now**, to start the
+same one-at-a-time drain without the idle delay, still without stopping the current session or its
 background work.
 
-While that request is being accepted, the action reads **Sending queued…** and cannot be triggered a
-second time. It disappears only after Grok confirms that it adopted or consumed every message in the
-exact batch and Solla Code projects the matching completion; a queue row merely disappearing is not
-enough. If the session stops, Grok rejects the promotion, or only part of the batch is confirmed, the
-action unlocks and the failure is shown so the same messages can be retried. A completion from another
-request, thread, or environment cannot clear the lock. Retrying the same exact batch after a reload,
-restart, or ambiguous connection failure is safe: Solla Code reuses durable delivery evidence and
-asks Grok only about messages that remain unconfirmed. The action returns when a newer message enters
-the queue, including after a reload or reconnect. Web and mobile clients use the same separate queue,
-Stop, and draft-send actions.
+While a row is being accepted, the action reads **Sending queued…**. It stays locked until that
+message's read receipt lands, then continues with any remaining rows. If the session stops, Grok
+rejects the promotion, or a receipt never arrives, the action unlocks and the failure is shown so
+the remaining messages can be retried. A completion from another request, thread, or environment
+cannot clear the lock. Retrying after a reload, restart, or ambiguous connection failure is safe:
+Solla Code reuses durable delivery evidence and asks Grok only about messages that remain
+unconfirmed. The action returns when a newer message enters the queue, including after a reload or
+reconnect. Web and mobile clients use the same separate queue, Stop, and draft-send actions.

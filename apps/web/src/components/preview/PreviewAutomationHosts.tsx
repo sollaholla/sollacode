@@ -101,6 +101,7 @@ import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 import {
   isExclusiveAgentBrowserProfile,
   previewAutomationBrowserProfileRoot,
+  previewAutomationThreadTabs,
   resolvePreviewAutomationThreadTarget,
 } from "./previewAutomationThreadTarget";
 
@@ -246,9 +247,11 @@ const currentStatus = async (
 ): Promise<PreviewAutomationStatus> => {
   const state = readThreadPreviewState(threadRef);
   const { snapshot, tabId } = resolvePreviewAutomationTarget(state, requestedTabId);
+  const presentationsByRuntimeTabId = useBrowserSurfaceStore.getState().byTabId;
+  const tabs = previewAutomationThreadTabs({ threadRef, state, presentationsByRuntimeTabId });
   const runtimeTabId = tabId ? previewRuntimeTabId(threadRef, state.serverEpoch, tabId) : null;
   const visible = runtimeTabId
-    ? (useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible ?? false)
+    ? (presentationsByRuntimeTabId[runtimeTabId]?.visible ?? false)
     : false;
   const viewportSetting = snapshot ? (snapshot.viewport ?? FILL_PREVIEW_VIEWPORT) : undefined;
   const viewport = runtimeTabId ? await readRenderedViewport(runtimeTabId).catch(() => null) : null;
@@ -262,6 +265,7 @@ const currentStatus = async (
       ...status,
       tabId,
       visible,
+      tabs,
       ...viewportStatus,
       humanVerification: getPreviewHumanVerification(runtimeTabId),
     };
@@ -274,6 +278,7 @@ const currentStatus = async (
     url: navStatus && navStatus._tag !== "Idle" ? navStatus.url : null,
     title: navStatus && navStatus._tag !== "Idle" ? navStatus.title : null,
     loading: navStatus?._tag === "Loading",
+    tabs,
     humanVerification: runtimeTabId ? getPreviewHumanVerification(runtimeTabId) : null,
     ...viewportStatus,
   };
@@ -689,7 +694,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                     outcome: "reused",
                     tabId: activeTabId,
                     status,
-                    message: `Reused tab ${activeTabId}. This tab was not created by this call, so do not close it merely as cleanup.${presentationNotice}`,
+                    message: `Reused tab ${activeTabId}. This tab is owned by the thread; close it with preview_close when it becomes stale or no longer serves the current thread context.${presentationNotice}`,
                   } satisfies PreviewAutomationOpenResult)
                 : ({
                     outcome: "created",

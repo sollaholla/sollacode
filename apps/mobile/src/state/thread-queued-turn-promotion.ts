@@ -15,6 +15,13 @@ import { Atom } from "effect/unstable/reactivity";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 
+export {
+  collectDeliveredMessageIds,
+  nextQueuedMessageToPromote,
+  QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS,
+  queuedMessageAutoPromoteDelayMs,
+} from "@t3tools/client-runtime/state/queued-turn-promotion";
+
 const MESSAGE_DELIVERED_ACTIVITY_KIND = "message.delivered";
 const QUEUED_MESSAGES_PROMOTED_ACTIVITY_KIND = "provider.queue.promoted";
 

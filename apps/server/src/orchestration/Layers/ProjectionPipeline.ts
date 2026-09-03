@@ -470,18 +470,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 -- into the in-flight turn. That is not newer intent that
                 -- supersedes a restart resume (observed 2026-08-28 on
                 -- e526d4c2: queued aisle-board notes blocked auto-resume).
+                -- Delivery receipts come from the activity projection, indexed by
+                -- (thread, kind). The same test against the raw event stream walked
+                -- every activity event of the thread — an 8-second scan on a
+                -- 550k-event thread, paid on every queued delivery before the
+                -- provider was even started (2026-09-01), long enough for the user
+                -- to press Stop and cancel the message.
                 AND NOT EXISTS (
                   SELECT 1
-                  FROM orchestration_events AS absorbed
-                  WHERE absorbed.aggregate_kind = 'thread'
-                    AND absorbed.stream_id = later.stream_id
-                    AND absorbed.event_type = 'thread.activity-appended'
-                    AND json_extract(absorbed.payload_json, '$.activity.kind') =
-                      'message.delivered'
-                    AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
+                  FROM projection_thread_activities AS absorbed
+                  WHERE absorbed.thread_id = later.stream_id
+                    AND absorbed.kind = 'message.delivered'
+                    AND json_extract(absorbed.payload_json, '$.messageId') =
                       json_extract(later.payload_json, '$.messageId')
-                    AND json_extract(absorbed.payload_json, '$.activity.turnId') =
-                      source_turn.turn_id
+                    AND absorbed.turn_id = source_turn.turn_id
                 )
             ) AS "hasLaterRealUserTurn"
           FROM orchestration_events AS source
@@ -1587,17 +1589,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       ) {
         return;
       }
-      yield* threadWorkObligationRepository.transition({
-        obligationId: obligation.value.obligationId,
-        expectedState: obligation.value.state,
-        expectedAttempt: obligation.value.attempt,
-        state: "completed",
-        nextAttemptAt: null,
-        claimedAt: null,
-        leaseExpiresAt: null,
-        blockedReason: null,
-        updatedAt: input.occurredAt,
-      });
+      // Housekeeping must never fail the projection it rides on. This runs
+      // inside the `thread.session.set` transaction that settles the turn;
+      // when the transition below aborted (live 2026-09-02: the obligation
+      // table's timestamp trigger rejected a provider's 27-character
+      // microsecond stamp), the whole command rolled back, the session stayed
+      // "running", and the thread showed "Working" after its reply had
+      // finished with no way to auto-continue. The owner row is retired again
+      // by the boot-time reconcile, so a missed retirement here is recoverable;
+      // a stranded turn is not.
+      yield* threadWorkObligationRepository
+        .transition({
+          obligationId: obligation.value.obligationId,
+          expectedState: obligation.value.state,
+          expectedAttempt: obligation.value.attempt,
+          state: "completed",
+          nextAttemptAt: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          blockedReason: null,
+          updatedAt: input.occurredAt,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("resume owner could not be retired on turn completion", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              obligationId: obligation.value.obligationId,
+              cause,
+            }),
+          ),
+        );
     });
 
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
@@ -3317,6 +3339,71 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       ),
     );
 
+    // Whether a real user turn was requested after this turn's own start.
+    //
+    // Evaluated on demand, per candidate, rather than as a column of the
+    // backfill query: the lookup walks the thread's turn-start events and
+    // json_extracts their payloads, and as a column it ran for the latest
+    // turn of EVERY live thread on every boot -- some 170 threads, each
+    // pulling pages of the multi-gigabyte event table into a cold cache.
+    // Measured 2026-09-02: 9.4 s of the 10 s between migrations and
+    // readiness on a relaunch, with the correlated activity counts already
+    // indexed. Only a handful of threads ever pass the cheap predicates
+    // below, and only those need this answer. Same SQL, same semantics.
+    const laterRealUserTurnExists = Effect.fn("laterRealUserTurnExists")(function* (input: {
+      readonly threadId: string;
+      readonly turnId: string;
+      readonly pendingMessageId: string | null;
+    }) {
+      const rows = yield* sql<{ readonly hasLaterRealUserTurn: number }>`
+        SELECT
+          EXISTS (
+            SELECT 1
+            -- INDEXED BY pins the partial expression index from migration
+            -- 072: both lookups are then answered from the index alone, with
+            -- no payload page reads. The planner does not always prefer it on
+            -- its own (it has no statistics for a freshly built index), and
+            -- the whole point of this query's placement is to never touch
+            -- the event table's pages on a cold boot.
+            FROM orchestration_events AS later INDEXED BY idx_orch_events_turn_start_message
+            WHERE later.aggregate_kind = 'thread'
+              AND later.stream_id = ${input.threadId}
+              AND later.event_type = 'thread.turn-start-requested'
+              AND later.sequence > (
+                SELECT MAX(source_start.sequence)
+                FROM orchestration_events AS source_start
+                  INDEXED BY idx_orch_events_turn_start_message
+                WHERE source_start.aggregate_kind = 'thread'
+                  AND source_start.stream_id = ${input.threadId}
+                  AND source_start.event_type = 'thread.turn-start-requested'
+                  AND json_extract(source_start.payload_json, '$.messageId') =
+                    ${input.pendingMessageId}
+              )
+              AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                'agent-auto-resume-message:%'
+              AND json_extract(later.payload_json, '$.messageId') NOT LIKE
+                'startup-auto-resume-message:%'
+              -- Follow-ups delivered into this turn are not a later user
+              -- turn. Counting them skipped restart auto-resume (e526d4c2).
+              -- Read from the projected activities, which the projector has
+              -- fully caught up by the time this runs: keyed by this turn's
+              -- id they are a handful of small rows, where the event-store
+              -- form json_extracted every activity the thread ever appended
+              -- for every later start.
+              AND NOT EXISTS (
+                SELECT 1
+                FROM projection_thread_activities AS absorbed
+                WHERE absorbed.turn_id = ${input.turnId}
+                  AND absorbed.kind = 'message.delivered'
+                  AND absorbed.thread_id = later.stream_id
+                  AND json_extract(absorbed.payload_json, '$.messageId') =
+                    json_extract(later.payload_json, '$.messageId')
+              )
+          ) AS "hasLaterRealUserTurn"
+      `;
+      return rows[0]?.hasLaterRealUserTurn ?? 0;
+    });
+
     const backfillCurrentThreadWork = Effect.gen(function* () {
       let afterThreadId = "";
       while (true) {
@@ -3327,10 +3414,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           readonly completedAt: string | null;
           readonly assistantText: string | null;
           readonly assistantUpdatedAt: string | null;
+          readonly pendingMessageId: string | null;
           readonly sourceMessageId: string | null;
           readonly sourceMessageText: string | null;
           readonly latestUserMessageAt: string | null;
-          readonly hasLaterRealUserTurn: number;
           readonly sessionStatus: string | null;
           readonly sessionUpdatedAt: string | null;
           readonly sessionLastError: string | null;
@@ -3369,44 +3456,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             COALESCE(json_array_length(assistant.attachments_json), 0)
               AS "assistantAttachmentCount",
             assistant.updated_at AS "assistantUpdatedAt",
+            turns.pending_message_id AS "pendingMessageId",
             source.message_id AS "sourceMessageId",
             source.text AS "sourceMessageText",
             threads.latest_user_message_at AS "latestUserMessageAt",
-            EXISTS (
-              SELECT 1
-              FROM orchestration_events AS later
-              WHERE later.aggregate_kind = 'thread'
-                AND later.stream_id = threads.thread_id
-                AND later.event_type = 'thread.turn-start-requested'
-                AND later.sequence > (
-                  SELECT MAX(source_start.sequence)
-                  FROM orchestration_events AS source_start
-                  WHERE source_start.aggregate_kind = 'thread'
-                    AND source_start.stream_id = threads.thread_id
-                    AND source_start.event_type = 'thread.turn-start-requested'
-                    AND json_extract(source_start.payload_json, '$.messageId') =
-                      turns.pending_message_id
-                )
-                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
-                  'agent-auto-resume-message:%'
-                AND json_extract(later.payload_json, '$.messageId') NOT LIKE
-                  'startup-auto-resume-message:%'
-                -- Follow-ups delivered into this turn are not a later user
-                -- turn. Counting them skipped restart auto-resume (e526d4c2).
-                AND NOT EXISTS (
-                  SELECT 1
-                  FROM orchestration_events AS absorbed
-                  WHERE absorbed.aggregate_kind = 'thread'
-                    AND absorbed.stream_id = later.stream_id
-                    AND absorbed.event_type = 'thread.activity-appended'
-                    AND json_extract(absorbed.payload_json, '$.activity.kind') =
-                      'message.delivered'
-                    AND json_extract(absorbed.payload_json, '$.activity.payload.messageId') =
-                      json_extract(later.payload_json, '$.messageId')
-                    AND json_extract(absorbed.payload_json, '$.activity.turnId') =
-                      turns.turn_id
-                )
-            ) AS "hasLaterRealUserTurn",
             sessions.status AS "sessionStatus",
             sessions.updated_at AS "sessionUpdatedAt",
             sessions.last_error AS "sessionLastError",
@@ -3456,21 +3509,49 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const authenticationFailure =
             isProviderAuthenticationFailure(row.assistantText ?? "") ||
             isProviderAuthenticationFailure(row.sessionLastError ?? "");
-          const isAuthenticationPause =
+          // Every branch below requires "no later real user turn". The cheap
+          // predicates are evaluated first so the event-store lookup runs
+          // only for rows that could otherwise be recovered.
+          const mayPauseForAuthentication =
             row.interactionMode === "agent" &&
-            row.hasLaterRealUserTurn === 0 &&
             authenticationFailure &&
             (row.sessionStatus === "error" ||
               row.turnState === "incomplete" ||
               row.turnState === "error");
-          const isAgentContinuation =
+          const mayContinueAgent =
             row.interactionMode === "agent" &&
             !authenticationFailure &&
             row.turnState === "completed" &&
             row.completedAt !== null &&
             row.sessionStatus === "ready" &&
-            row.sessionUpdatedAt === row.completedAt &&
-            row.hasLaterRealUserTurn === 0 &&
+            row.sessionUpdatedAt === row.completedAt;
+          // A turn killed before it produced a single assistant token settles
+          // as "completed" with the failure recorded beside it (see the
+          // startup-resume comment below); it is a resume candidate too.
+          const diedBeforeProducingOutput =
+            row.turnState === "completed" &&
+            (row.assistantText === null || row.assistantText.trim().length === 0) &&
+            row.assistantAttachmentCount === 0 &&
+            row.turnOutputActivities === 0 &&
+            row.turnRuntimeErrors > 0;
+          const mayResumeAtStartup =
+            !authenticationFailure &&
+            row.sessionFailureKind !== "local-control-timeout" &&
+            (row.turnState === "incomplete" ||
+              row.turnState === "error" ||
+              diedBeforeProducingOutput);
+          const hasLaterRealUserTurn =
+            mayPauseForAuthentication || mayContinueAgent || mayResumeAtStartup
+              ? yield* laterRealUserTurnExists({
+                  threadId: row.threadId,
+                  turnId: row.turnId,
+                  pendingMessageId: row.pendingMessageId,
+                })
+              : 1;
+          const isAuthenticationPause = mayPauseForAuthentication && hasLaterRealUserTurn === 0;
+          const isAgentContinuation =
+            mayContinueAgent &&
+            hasLaterRealUserTurn === 0 &&
             // Cleanup continuation is decided transactionally while the live
             // projection still has the substantive predecessor available.
             // Boot recovery intentionally fails closed here: synthesizing a
@@ -3501,16 +3582,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // CLI 68s into a turn, the turn settled "completed" with zero
           // assistant messages, and the thread sat on an unanswered user
           // message with no obligation of any kind ever created.
-          const diedBeforeProducingOutput =
-            row.turnState === "completed" &&
-            (row.assistantText === null || row.assistantText.trim().length === 0) &&
-            row.assistantAttachmentCount === 0 &&
-            row.turnOutputActivities === 0 &&
-            row.turnRuntimeErrors > 0;
           const isStartupResume =
             !authenticationFailure &&
             !isAgentContinuation &&
-            row.hasLaterRealUserTurn === 0 &&
+            hasLaterRealUserTurn === 0 &&
             row.sessionFailureKind !== "local-control-timeout" &&
             (row.turnState === "incomplete" ||
               row.turnState === "error" ||
@@ -3549,21 +3624,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // restart) must not abort the scan: every thread after it in
           // thread-id order would silently get no recovery at all.
           yield* threadWorkObligationRepository
-            .insert({
-              obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
-              threadId,
-              sourceTurnId,
-              kind,
-              state: isAuthenticationPause ? "blocked-authentication" : "pending",
-              providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
-              attempt: 0,
-              nextAttemptAt: null,
-              claimedAt: null,
-              leaseExpiresAt: null,
-              blockedReason: isAuthenticationPause ? "provider authentication required" : null,
-              createdAt: recordedAt,
-              updatedAt: recordedAt,
-            })
+            .insert(
+              {
+                obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
+                threadId,
+                sourceTurnId,
+                kind,
+                state: isAuthenticationPause ? "blocked-authentication" : "pending",
+                providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
+                attempt: 0,
+                nextAttemptAt: null,
+                claimedAt: null,
+                leaseExpiresAt: null,
+                blockedReason: isAuthenticationPause ? "provider authentication required" : null,
+                createdAt: recordedAt,
+                updatedAt: recordedAt,
+              },
+              {
+                // A startup-resume for this same turn that was CANCELLED earlier
+                // ("superseded by user turn", "gave up after N attempts") is no
+                // receipt of recovery: the turn ran on and was killed again.
+                // Live 2026-09-02 17:08, thread 66e462cc: its resume of turn
+                // 841cef5e had been cancelled at 16:46 when a follow-up arrived,
+                // the relaunch killed that turn at 17:08, and the conflict
+                // no-op here left the thread stopped on a queued "Resume" while
+                // four sibling threads recovered. Revive it. Completed and live
+                // rows still win; continuations are never revived here.
+                reviveCancelled: kind === "startup-resume",
+              },
+            )
             .pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("boot recovery scan could not enqueue thread work", {
@@ -3718,23 +3807,31 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           const kind = "startup-resume" as const;
           // Keyed on the settled turn, so a thread recovered once is not
           // recovered again on the next boot: the obligation row survives as
-          // completed and the insert is a no-op.
+          // completed and the insert is a no-op. A row that ended CANCELLED is
+          // revived instead: live 2026-09-02 the Open World thread's resume of
+          // turn 3d09f567 had given up after 11 attempts during an earlier
+          // restart storm, the turn ran on until the 16:56 relaunch killed it
+          // again, and the plain insert's conflict no-op left it with no
+          // resume at all while its siblings recovered.
           yield* threadWorkObligationRepository
-            .insert({
-              obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
-              threadId,
-              sourceTurnId,
-              kind,
-              state: "pending",
-              providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
-              attempt: 0,
-              nextAttemptAt: null,
-              claimedAt: null,
-              leaseExpiresAt: null,
-              blockedReason: null,
-              createdAt: row.completedAt,
-              updatedAt: row.completedAt,
-            })
+            .insert(
+              {
+                obligationId: threadWorkObligationId({ threadId, sourceTurnId, kind }),
+                threadId,
+                sourceTurnId,
+                kind,
+                state: "pending",
+                providerInstanceId: ProviderInstanceId.make(row.providerInstanceId),
+                attempt: 0,
+                nextAttemptAt: null,
+                claimedAt: null,
+                leaseExpiresAt: null,
+                blockedReason: null,
+                createdAt: row.completedAt,
+                updatedAt: row.completedAt,
+              },
+              { reviveCancelled: true },
+            )
             .pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("boot recovery scan could not enqueue killed-task resume", {

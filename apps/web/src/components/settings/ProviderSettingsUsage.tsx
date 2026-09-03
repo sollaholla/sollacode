@@ -1,4 +1,4 @@
-import { LoaderIcon, RefreshCwIcon } from "lucide-react";
+import { LoaderIcon } from "lucide-react";
 import type {
   ProviderDriverKind,
   ProviderUsageResetOutcome,
@@ -13,7 +13,6 @@ import {
 } from "../chat/ProviderUsageBar";
 import { useProviderUsageStore } from "../../providerUsageStore";
 import { Button } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { isProviderUsageRefreshEligible } from "./providerUsageRefresh";
 
 export type ProviderUsageRefreshState =
@@ -72,8 +71,14 @@ export function ProviderSettingsUsage(props: {
   return (
     <section
       aria-label={`${displayName} account usage`}
-      className="relative rounded-lg border border-border/60 bg-muted/20 p-3"
+      className="rounded-lg border border-border/60 bg-muted/20 p-3"
     >
+      {/*
+       * The refresh control belongs to the usage header, which already
+       * renders one when given `onRefresh`. A second, absolutely positioned
+       * copy used to land on top of the status pill in that header, and
+       * announced its own "Refreshing" beside the header's "Loading".
+       */}
       <ProviderUsageDetails
         name={displayName}
         state={summary.state}
@@ -81,6 +86,7 @@ export function ProviderSettingsUsage(props: {
         reportedAt={summary.reportedAt}
         resetCredits={summary.resetCredits ?? null}
         externalUsageLink={providerUsageExternalLink(driverKind)}
+        {...(canRefresh && onRefresh !== undefined ? { onRefresh, isRefreshing: refreshing } : {})}
         {...(onUseReset ? { onUseReset } : {})}
         {...(summary.accountKey
           ? {
@@ -90,48 +96,23 @@ export function ProviderSettingsUsage(props: {
             }
           : {})}
       />
-      <div className="absolute right-2.5 top-2.5 flex items-center gap-1.5">
-        {refreshing ? (
-          <span
-            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
-            role="status"
-            aria-live="polite"
-          >
-            <LoaderIcon className="size-3 animate-spin" aria-hidden />
-            Refreshing
-          </span>
-        ) : null}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                className="size-6 rounded-sm text-muted-foreground hover:text-foreground"
-                aria-label={`Refresh ${displayName} usage`}
-                disabled={!canRefresh || refreshing}
-                onClick={onRefresh}
-              >
-                {refreshing ? (
-                  <LoaderIcon className="size-3 animate-spin" aria-hidden />
-                ) : (
-                  <RefreshCwIcon className="size-3" aria-hidden />
-                )}
-              </Button>
-            }
-          />
-          <TooltipPopup side="top">
-            {canRefresh
-              ? summary.state === "stale"
-                ? `Refresh stale ${displayName} usage`
-                : `Refresh ${displayName} usage`
-              : provider.auth.status === "unauthenticated"
-                ? `Sign in to ${displayName} to refresh usage`
-                : `${displayName} does not expose refreshable account usage`}
-          </TooltipPopup>
-        </Tooltip>
-      </div>
+      {refreshing ? (
+        <p
+          className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderIcon className="size-3 animate-spin" aria-hidden />
+          Refreshing {displayName} usage
+        </p>
+      ) : null}
+      {!canRefresh ? (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          {provider.auth.status === "unauthenticated"
+            ? `Sign in to ${displayName} to refresh usage.`
+            : `${displayName} does not expose refreshable account usage.`}
+        </p>
+      ) : null}
       {refreshState.status === "error" ? (
         <div
           role="alert"

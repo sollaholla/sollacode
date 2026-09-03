@@ -32,6 +32,12 @@ import {
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { RESUME_PROMPT } from "../resumePrompt";
 
+export {
+  QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS,
+  nextQueuedMessageToPromote,
+  queuedMessageAutoPromoteDelayMs,
+} from "@t3tools/client-runtime/state/queued-turn-promotion";
+
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
@@ -338,6 +344,21 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+/**
+ * Provider model-fallback notices (e.g. Claude saying Opus 4.6 is unavailable
+ * and it is continuing on 4.1). Those are not turn failures — treating them as
+ * sticky lastError left the banner up while the harness kept working, and Stop
+ * looked like the only way to unstick the UI.
+ */
+export function isModelFallbackNotice(error: string | null | undefined): boolean {
+  if (!error) return false;
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("falling back to") ||
+    (normalized.includes("temporarily unavailable") && normalized.includes("falling back"))
+  );
+}
+
 export function resolveVisibleServerThreadError(
   localEntry: { readonly message: string | null } | undefined,
   serverLastError: string | null | undefined,
@@ -347,7 +368,9 @@ export function resolveVisibleServerThreadError(
     return localEntry.message;
   }
   const serverError = serverLastError ?? null;
-  return serverError !== null && serverError === dismissedServerError ? null : serverError;
+  if (serverError !== null && serverError === dismissedServerError) return null;
+  if (isModelFallbackNotice(serverError)) return null;
+  return serverError;
 }
 
 /**
@@ -411,6 +434,48 @@ export function isThreadWorkInterruptible(input: {
     (input.pendingWork?.kind === "active-turn-recovery" &&
       INTERRUPTIBLE_PENDING_WORK_STATES.has(input.pendingWork.state))
   );
+}
+
+/**
+ * What the status line should call a queued user send that has no provider
+ * turn yet.
+ *
+ * Between the send and the provider accepting it the thread has no running
+ * session, so nothing else says anything is happening. That window is where
+ * a provider switch starts the new provider, and it can run for seconds
+ * (spawning a CLI, building the handoff digest). Left silent, it reads as a
+ * dead thread: on 2026-09-01 a user pressed Stop twelve seconds into it, which
+ * cancelled the very message they were waiting on. Returns null when nothing
+ * is queued, so callers fall back to their own wording.
+ */
+export function describePendingTurnStart(input: {
+  readonly pendingWork: OrchestrationThreadPendingWork | null | undefined;
+  readonly latestTurnState: string | null | undefined;
+  readonly sessionProviderInstanceId: string | null | undefined;
+  readonly requestedProviderInstanceId: string | null | undefined;
+  readonly providerName: string;
+}): string | null {
+  if (
+    input.pendingWork?.kind !== "active-turn-recovery" ||
+    !INTERRUPTIBLE_PENDING_WORK_STATES.has(input.pendingWork.state)
+  ) {
+    return null;
+  }
+  if (
+    input.latestTurnState === "incomplete" ||
+    input.latestTurnState === "interrupted" ||
+    input.latestTurnState === "error"
+  ) {
+    return "Recovering the interrupted response";
+  }
+  if (
+    input.sessionProviderInstanceId != null &&
+    input.requestedProviderInstanceId != null &&
+    input.sessionProviderInstanceId !== input.requestedProviderInstanceId
+  ) {
+    return `Switching to ${input.providerName}`;
+  }
+  return `Starting ${input.providerName}`;
 }
 
 export function reconcileRetainedMountedThreadIds(input: {

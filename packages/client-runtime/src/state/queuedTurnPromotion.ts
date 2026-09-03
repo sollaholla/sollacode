@@ -69,3 +69,46 @@ export function resolveQueuedTurnPromotionOutcome(input: {
   }
   return null;
 }
+
+/** Idle debounce before the client starts draining Grok's native follow-up queue. */
+export const QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS = 1_000;
+
+export function queuedMessageAutoPromoteDelayMs(drainActive: boolean): number {
+  return drainActive ? 0 : QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS;
+}
+
+export function collectDeliveredMessageIds(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlySet<string> {
+  const delivered = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "message.delivered") continue;
+    const payload = payloadRecord(activity.payload);
+    const messageId = payload?.messageId;
+    if (typeof messageId === "string" && messageId.length > 0) delivered.add(messageId);
+  }
+  return delivered;
+}
+
+/**
+ * Next Grok follow-up to interject. Returns null while a promote is in flight
+ * or the previous row still lacks its `message.delivered` read receipt —
+ * sending the whole queued batch at once stalls Grok.
+ */
+export function nextQueuedMessageToPromote(input: {
+  readonly queuedMessageIds: ReadonlyArray<string>;
+  readonly deliveredMessageIds: ReadonlySet<string>;
+  readonly promotionInFlight: boolean;
+  readonly awaitingDeliveryMessageIds: ReadonlyArray<string>;
+}): string | null {
+  if (input.promotionInFlight) return null;
+  for (const messageId of input.awaitingDeliveryMessageIds) {
+    if (!input.deliveredMessageIds.has(messageId)) return null;
+  }
+  const awaiting = new Set(input.awaitingDeliveryMessageIds);
+  for (const messageId of input.queuedMessageIds) {
+    if (awaiting.has(messageId) || input.deliveredMessageIds.has(messageId)) continue;
+    return messageId;
+  }
+  return null;
+}

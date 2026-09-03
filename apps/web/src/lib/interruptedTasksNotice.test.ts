@@ -53,10 +53,12 @@ describe("interrupted tasks notice", () => {
     expect(extracted.titles).toEqual(["Ran command"]);
   });
 
-  it("ignores a block that is not at the end", () => {
-    // Only a trailing block is ours; anything else is the user's own text.
+  it("still strips a block that is no longer trailing so the XML never reaches the bubble", () => {
     const text = `${buildInterruptedTasksNotice(["Ran command"])}\n\nand then I typed more`;
-    expect(extractTrailingInterruptedTasksNotice(text).titles).toEqual([]);
+    const extracted = extractTrailingInterruptedTasksNotice(text);
+    expect(extracted.titles).toEqual(["Ran command"]);
+    expect(extracted.promptText).toBe("and then I typed more");
+    expect(extracted.promptText).not.toContain("interrupted_background_tasks");
   });
 });
 

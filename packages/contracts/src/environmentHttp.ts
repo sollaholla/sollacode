@@ -21,6 +21,8 @@ import {
   AuthEnvironmentScope,
   AuthTokenExchangeRequest,
   AuthSessionState,
+  AuthRenewCredentialInput,
+  AuthRenewCredentialResult,
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
@@ -68,6 +70,7 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "browser_session_issuance_failed",
   "browser_session_cookie_failed",
   "access_token_issuance_failed",
+  "credential_renewal_failed",
   "websocket_ticket_issuance_failed",
   "pairing_credential_issuance_failed",
   "pairing_links_load_failed",
@@ -342,6 +345,16 @@ export class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       headers: OptionalDpopProofHeaders,
       payload: AuthTokenExchangeRequest,
       success: AuthAccessTokenResult,
+      error: EnvironmentTokenExchangeErrors,
+    }),
+  )
+  .add(
+    // Deliberately unauthenticated: the whole point is that the credential
+    // being offered no longer authenticates anything. It is checked by the
+    // handler, which requires a real signature and an unrevoked session.
+    HttpApiEndpoint.post("renewCredential", "/api/auth/renew", {
+      payload: AuthRenewCredentialInput,
+      success: AuthRenewCredentialResult,
       error: EnvironmentTokenExchangeErrors,
     }),
   )

@@ -505,54 +505,53 @@ it.effect("classifies a remote non-editable target without collapsing it to exec
   );
 });
 
-it.effect(
-  "rejects another agent's dedicated tab with an instruction to use this agent's tabs",
-  () => {
-    const foreignTabId = PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4");
-    const remoteMessage = previewForeignAgentTabErrorMessage(foreignTabId, "snapshot");
-    const remoteError = {
-      _tag: "PreviewAutomationForeignAgentTabError",
-      message: remoteMessage,
-      detail: { tabId: foreignTabId },
-    } as const;
+it.effect("rejects another thread's tab with an instruction to use this thread's tabs", () => {
+  const foreignTabId = PreviewTabId.make("tab_70d23993-1e1d-4caf-b190-0265822665c4");
+  const remoteMessage = previewForeignAgentTabErrorMessage(foreignTabId, "snapshot");
+  const remoteError = {
+    _tag: "PreviewAutomationForeignAgentTabError",
+    message: remoteMessage,
+    detail: { tabId: foreignTabId },
+  } as const;
 
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const broker = yield* makeBroker;
-        const requests = requestsFrom(yield* broker.connect(makeHost()));
-        yield* Stream.runForEach(requests, (request) =>
-          broker.respond({
-            clientId: "client-1",
-            connectionId: request.connectionId,
-            requestId: request.requestId,
-            ok: false,
-            error: remoteError,
-          }),
-        ).pipe(Effect.forkScoped);
-        yield* Effect.yieldNow;
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
 
-        const error = yield* broker
-          .invoke<void>({
-            scope,
-            operation: "snapshot",
-            input: {},
-            tabId: foreignTabId,
-          })
-          .pipe(Effect.flip);
-
-        expect(error).toBeInstanceOf(PreviewAutomationForeignAgentTabError);
-        expect(error.message).toBe(remoteMessage);
-        expect(error.message).toContain("Use this agent's own tabs only");
-        expect(error.message).toContain("Do not reuse tab IDs from other agents");
-        expect(error).toMatchObject({
+      const error = yield* broker
+        .invoke<void>({
+          scope,
           operation: "snapshot",
+          input: {},
           tabId: foreignTabId,
-          remoteTag: "PreviewAutomationForeignAgentTabError",
-        });
-      }),
-    );
-  },
-);
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationForeignAgentTabError);
+      expect(error.message).toBe(remoteMessage);
+      expect(error.message).toContain("belongs to another thread");
+      expect(error.message).toContain(
+        "Use only tabs listed by preview_status for the current thread",
+      );
+      expect(error).toMatchObject({
+        operation: "snapshot",
+        tabId: foreignTabId,
+        remoteTag: "PreviewAutomationForeignAgentTabError",
+      });
+    }),
+  );
+});
 
 it.effect("preserves a remote human-verification gate", () => {
   const verification = {
@@ -799,7 +798,7 @@ it.effect("never routes a provider session to a host from another environment", 
   ),
 );
 
-it.effect("pins a provider session to its initial host despite later focus changes", () =>
+it.effect("pins a thread to its initial host across provider-session changes", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* makeBroker;
@@ -837,43 +836,72 @@ it.effect("pins a provider session to its initial host despite later focus chang
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
+      // A focus report for a connection the host no longer has is ignored, so
+      // it must not decide where this thread lands.
       yield* broker.focusHost({
-        clientId: "client-first",
+        clientId: "client-second",
         environmentId: scope.environmentId,
         connectionId: "connection-stale",
         focused: true,
       });
-      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
-        "second",
-      );
       yield* broker.focusHost({
         clientId: "client-first",
         environmentId: scope.environmentId,
         connectionId: firstConnectionId,
         focused: true,
       });
+      // The thread's first request establishes its host.
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe("first");
 
-      const firstPinnedScope = {
-        ...scope,
-        providerSessionId: "provider-session-first-pinned",
-      };
-      expect(
-        yield* broker.invoke<string>({ scope: firstPinnedScope, operation: "status", input: {} }),
-      ).toBe("first");
-
+      // Host ownership belongs to the thread, not to the provider session that
+      // happened to issue the first request: switching Claude/Grok/etc. inside
+      // the thread keeps every later request on the same desktop runtime even
+      // after the user's focus moves to another host.
       yield* broker.focusHost({
         clientId: "client-second",
         environmentId: scope.environmentId,
         connectionId: secondConnectionId,
         focused: true,
       });
-
       expect(
-        yield* broker.invoke<string>({ scope: firstPinnedScope, operation: "status", input: {} }),
+        yield* broker.invoke<string>({
+          scope: { ...scope, providerSessionId: "provider-session-after-switch" },
+          operation: "status",
+          input: {},
+        }),
       ).toBe("first");
       expect(
         yield* broker.invoke<string>({
-          scope: { ...scope, providerSessionId: "provider-session-second-pinned" },
+          scope: {
+            ...scope,
+            providerSessionId: "provider-session-after-second-switch",
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          },
+          operation: "status",
+          input: {},
+        }),
+      ).toBe("first");
+
+      // A different thread is pinned independently and lands on the host the
+      // user is focused on now.
+      expect(
+        yield* broker.invoke<string>({
+          scope: {
+            ...scope,
+            threadId: ThreadId.make("thread-second-pinned"),
+            providerSessionId: "provider-session-other-thread",
+          },
+          operation: "status",
+          input: {},
+        }),
+      ).toBe("second");
+      expect(
+        yield* broker.invoke<string>({
+          scope: {
+            ...scope,
+            threadId: ThreadId.make("thread-second-pinned"),
+            providerSessionId: "provider-session-other-thread-switched",
+          },
           operation: "status",
           input: {},
         }),

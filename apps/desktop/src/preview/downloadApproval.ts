@@ -16,11 +16,50 @@
  * domain" reads as and what browsers scope their own automatic-download
  * permission to.
  *
- * Answers live for as long as the app runs and are deliberately not persisted.
- * A standing grant that outlives the session is a bigger promise than "yes,
- * download that", and re-asking once per launch is cheap.
+ * Answers are kept on disk and survive a restart. They used to live only as
+ * long as the app ran, on the theory that re-asking once per launch was
+ * cheap — but the app relaunches on every update, and being asked about the
+ * same site after each one made "Allow for this domain" read as a button that
+ * did nothing. The grant is still revocable: "Forget allowed download sites"
+ * in the preview menu clears every remembered answer.
  */
 export type DownloadApproval = "allowed" | "ask";
+
+/**
+ * On-disk shape of the remembered "Allow for this domain" answers.
+ *
+ * Versioned so a later change to what is stored (say, per-profile grants)
+ * can tell an old file from a new one instead of misreading it. Anything
+ * that does not parse as this shape counts as no answers at all: an
+ * unreadable allowlist must fail toward asking, never toward allowing.
+ */
+export const DOWNLOAD_ALLOWLIST_VERSION = 1;
+
+export function parseDownloadAllowlist(raw: string): ReadonlyArray<string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object") return [];
+  const record = parsed as { readonly version?: unknown; readonly domains?: unknown };
+  if (record.version !== DOWNLOAD_ALLOWLIST_VERSION || !Array.isArray(record.domains)) {
+    return [];
+  }
+  const domains = new Set<string>();
+  for (const entry of record.domains) {
+    if (typeof entry !== "string") continue;
+    const domain = registrableDomain(entry);
+    if (domain.length > 0) domains.add(domain);
+  }
+  return [...domains];
+}
+
+export function serializeDownloadAllowlist(domains: Iterable<string>): string {
+  const sorted = [...new Set(domains)].toSorted();
+  return `${JSON.stringify({ version: DOWNLOAD_ALLOWLIST_VERSION, domains: sorted }, null, 2)}\n`;
+}
 
 export function resolveDownloadApproval(input: {
   readonly domain: string;

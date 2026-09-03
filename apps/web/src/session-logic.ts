@@ -287,6 +287,13 @@ export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolea
   if (!workLogEntryIsToolLike(entry)) {
     return false;
   }
+  // A thought has no lifecycle to be neutral about. It is tool-like only so
+  // it sits in the work log next to the calls it narrates; treating it as an
+  // incomplete tool dropped every reasoning row from grouped timelines, so a
+  // browser model's comments were stored but never shown (reported 2026-09-01).
+  if (entry.tone === "thinking") {
+    return false;
+  }
   if (workEntryIndicatesToolFailure(entry)) {
     return false;
   }
@@ -700,6 +707,15 @@ export function deriveWorkLogEntries(
       continue;
     }
     if (activity.kind === "provider.usage.updated") continue;
+    // "Generating" is only the provider saying the turn is still alive. The
+    // existing Working row already communicates that, so rendering another
+    // activity row adds noise without new information.
+    if (
+      activity.kind === "reasoning.updated" &&
+      activity.summary.trim().toLowerCase() === "generating"
+    ) {
+      continue;
+    }
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));

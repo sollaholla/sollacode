@@ -2,6 +2,7 @@ import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   isAgentsProjectId,
   PreviewTabId,
+  type PreviewAutomationTabSummary,
   type EnvironmentId,
   type ScopedThreadRef,
   type ThreadId,
@@ -42,24 +43,13 @@ export function isExclusiveAgentBrowserProfile(
   return isAgentsProjectId(projectId) && browserProfileThreadId == null;
 }
 
-/**
- * Dedicated custom-agent browsers stay private. Delegated project threads that
- * inherit an agent's profile may keep using it. Ordinary user threads may still
- * share each other's visible browsers.
- */
+/** Preview automation is owned by the thread, never by a provider session. */
 export function canReusePreviewAutomationBrowser(input: {
   readonly requestThreadId: ThreadId;
   readonly ownerThreadId: ThreadId;
   readonly profiles?: Readonly<Record<string, PreviewAutomationThreadProfile>>;
 }): boolean {
-  if (input.requestThreadId === input.ownerThreadId) return true;
-  const profiles = input.profiles ?? {};
-  const request = profiles[input.requestThreadId];
-  const owner = profiles[input.ownerThreadId];
-  const requestRoot = request?.profileRootThreadId ?? input.requestThreadId;
-  const ownerRoot = owner?.profileRootThreadId ?? input.ownerThreadId;
-  if (requestRoot === ownerRoot) return true;
-  return !request?.exclusiveAgentBrowser && !owner?.exclusiveAgentBrowser;
+  return input.requestThreadId === input.ownerThreadId;
 }
 
 /**
@@ -73,6 +63,40 @@ export function canReusePreviewAutomationBrowser(input: {
  * The returned `tabId` is that visible tab so later open/status/snapshot calls
  * without an explicit id do not fall through to a hidden agent snapshot.
  */
+export function previewAutomationThreadTabs(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly state: ThreadPreviewState;
+  readonly presentationsByRuntimeTabId: Readonly<Record<string, BrowserSurfacePresentation>>;
+}): ReadonlyArray<PreviewAutomationTabSummary> {
+  const snapshots = { ...input.state.sessions, ...input.state.hostedSessions };
+  return Object.values(snapshots)
+    .filter((snapshot) => !input.state.suppressedTabIds.has(snapshot.tabId))
+    .map((snapshot) => {
+      const runtimeTabId = previewRuntimeTabId(
+        input.threadRef,
+        input.state.serverEpoch,
+        snapshot.tabId,
+      );
+      const visible = input.presentationsByRuntimeTabId[runtimeTabId]?.visible ?? false;
+      const navStatus = snapshot.navStatus;
+      return {
+        tabId: snapshot.tabId,
+        url: navStatus._tag === "Idle" ? null : navStatus.url,
+        title: navStatus._tag === "Idle" ? null : navStatus.title,
+        loading: navStatus._tag === "Loading",
+        visible,
+        active: input.state.activeTabId === snapshot.tabId,
+        updatedAt: snapshot.updatedAt,
+      } satisfies PreviewAutomationTabSummary;
+    })
+    .toSorted(
+      (left, right) =>
+        Number(right.active) - Number(left.active) ||
+        Number(right.visible) - Number(left.visible) ||
+        right.updatedAt.localeCompare(left.updatedAt),
+    );
+}
+
 export function resolvePreviewAutomationThreadTarget(input: {
   readonly environmentId: EnvironmentId;
   readonly requestThreadRef: ScopedThreadRef;

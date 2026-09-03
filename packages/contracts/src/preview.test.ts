@@ -450,7 +450,7 @@ describe("PreviewAutomationError", () => {
     }
   });
 
-  it("tells an agent not to reuse another agent's dedicated tab", () => {
+  it("tells an agent not to reuse another thread's tab", () => {
     const error = decodeAutomationError({
       _tag: "PreviewAutomationForeignAgentTabError",
       operation: "snapshot",
@@ -469,9 +469,10 @@ describe("PreviewAutomationError", () => {
     });
 
     expect(error._tag).toBe("PreviewAutomationForeignAgentTabError");
-    expect(error.message).toContain("another agent's dedicated browser");
-    expect(error.message).toContain("Use this agent's own tabs only");
-    expect(error.message).toContain("Do not reuse tab IDs from other agents");
+    expect(error.message).toContain("belongs to another thread");
+    expect(error.message).toContain(
+      "Use only tabs listed by preview_status for the current thread",
+    );
     expect(error.message).toContain("tab_70d23993-1e1d-4caf-b190-0265822665c4");
   });
 });
@@ -569,6 +570,30 @@ describe("PreviewAutomationStatus", () => {
       kind: "bot-detection",
       code: "600010",
     });
+  });
+
+  it("accepts a thread-wide tab inventory while remaining compatible with old hosts", () => {
+    const tabs = [
+      {
+        tabId: "tab-thread-1",
+        url: "https://example.com/",
+        title: "Example",
+        loading: false,
+        visible: false,
+        active: true,
+        updatedAt: "2026-09-02T00:00:00.000Z",
+      },
+    ];
+    const status = decodeAutomationStatus({
+      available: true,
+      visible: false,
+      tabId: "tab-thread-1",
+      url: "https://example.com/",
+      title: "Example",
+      loading: false,
+      tabs,
+    });
+    expect(status.tabs).toEqual(tabs);
   });
 
   it("accepts a download-approval flag while remaining compatible with old hosts", () => {

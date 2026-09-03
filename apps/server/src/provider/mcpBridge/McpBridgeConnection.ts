@@ -33,6 +33,12 @@ export interface McpBridgeClient {
   readonly descriptor: McpBridgeDescriptor | null;
   readonly pid: number | null;
   readonly stderr: string;
+  /**
+   * Register a runtime secret (e.g. a per-thread MCP bearer token minted long
+   * after the process was spawned) for stderr redaction. Optional so test
+   * fakes need not implement it.
+   */
+  readonly addSensitiveValue?: (value: string) => void;
   call(
     tool: McpBridgeToolName,
     argumentsValue: Readonly<Record<string, unknown>>,
@@ -57,6 +63,11 @@ export class McpBridgeRemoteToolError extends Error {
  */
 export class McpBridgeTransportError extends Error {
   override readonly name = "McpBridgeTransportError";
+}
+
+/** A request exceeded its own deadline; the stdio child may still be healthy. */
+export class McpBridgeRequestTimeoutError extends Error {
+  override readonly name = "McpBridgeRequestTimeoutError";
 }
 
 /** True when `cause`, or anything it wraps, is a bridge transport failure. */
@@ -86,14 +97,16 @@ function errorDetail(cause: unknown): string {
 function isTransportFailure(cause: unknown): boolean {
   return (
     (cause instanceof McpError &&
-      (cause.code === ErrorCode.ConnectionClosed ||
-        cause.code === ErrorCode.RequestTimeout ||
-        cause.code === ErrorCode.ParseError)) ||
+      (cause.code === ErrorCode.ConnectionClosed || cause.code === ErrorCode.ParseError)) ||
     // StdioClientTransport.send() throws this plain Error when its child has
     // already closed. It is not wrapped as McpError, so omitting this exact
     // transport diagnostic leaves a dead Client cached forever.
     (cause instanceof Error && cause.message === "Not connected")
   );
+}
+
+function isRequestTimeout(cause: unknown): boolean {
+  return cause instanceof McpError && cause.code === ErrorCode.RequestTimeout;
 }
 
 export class McpBridgeConnection {
@@ -106,10 +119,15 @@ export class McpBridgeConnection {
   private nextConnectAt = 0;
   private stderrBuffer = "";
   private descriptorValue: McpBridgeDescriptor | null = null;
+  private readonly extraSensitiveValues = new Set<string>();
 
   constructor(options: McpBridgeConnectionOptions) {
     this.options = options;
   }
+
+  readonly addSensitiveValue = (value: string): void => {
+    if (value.length >= 4) this.extraSensitiveValues.add(value);
+  };
 
   get pid(): number | null {
     return this.transport?.pid ?? null;
@@ -117,7 +135,10 @@ export class McpBridgeConnection {
 
   get stderr(): string {
     let value = this.stderrBuffer;
-    for (const sensitive of this.options.sensitiveValues ?? []) {
+    for (const sensitive of [
+      ...(this.options.sensitiveValues ?? []),
+      ...this.extraSensitiveValues,
+    ]) {
       if (sensitive.length >= 4) value = value.split(sensitive).join("[REDACTED]");
     }
     return value;
@@ -244,13 +265,16 @@ export class McpBridgeConnection {
       // instance-owned transport only for SDK transport/timeout/framing
       // failures; the next operation then reconnects after bounded backoff.
       const transport = isTransportFailure(cause);
+      const requestTimeout = isRequestTimeout(cause);
       if (transport) await this.retire(client);
       const message = `${tool} request failed: ${errorDetail(cause)}${
         this.stderr.trim() ? `\nBridge stderr:\n${this.stderr.trim()}` : ""
       }`;
       throw transport
         ? new McpBridgeTransportError(message, { cause })
-        : new Error(message, { cause });
+        : requestTimeout
+          ? new McpBridgeRequestTimeoutError(message, { cause })
+          : new Error(message, { cause });
     }
 
     const callResult = result as {

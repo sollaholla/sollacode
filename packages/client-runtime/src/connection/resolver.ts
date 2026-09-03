@@ -117,6 +117,8 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
       httpBaseUrl: profile.httpBaseUrl,
       wsBaseUrl: profile.wsBaseUrl,
       bearerToken: credential.token,
+      onCredentialRenewed: (nextToken) =>
+        credentials.put(target.connectionId, new BearerConnectionCredential({ token: nextToken })),
     });
     return {
       environmentId: authorized.environmentId,

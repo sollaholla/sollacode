@@ -3,6 +3,26 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveToolActivityPresentation } from "./toolActivity.ts";
 
 describe("toolActivity", () => {
+  it("names t3-code preview MCP calls as computer control", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "mcp_tool_call",
+        title:
+          'mcp__t3-code__preview_evaluate:{"expression":"() => document.querySelector(\\".Download\\")"}',
+      }),
+    ).toEqual({
+      summary: "Computer control · Evaluate",
+    });
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "dynamic_tool_call",
+        title: "mcp__t3-code__preview_snapshot",
+      }),
+    ).toEqual({
+      summary: "Computer control · Snapshot",
+    });
+  });
+
   it("normalizes command tools to a stable ran-command label", () => {
     expect(
       deriveToolActivityPresentation({

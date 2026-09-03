@@ -159,6 +159,7 @@ const browserSessionLayer = Layer.succeed(
     answerDownloadApproval: (id, decision) => {
       answeredDownloadApprovals.push({ id, decision });
     },
+    forgetDownloadDomains: () => undefined,
     getPartition: () => Effect.succeed("persist:t3code-preview-test"),
     isPartition: (partition) => partition.startsWith("persist:t3code-preview-"),
     adoptLegacyProfile: () => Effect.void,

@@ -52,7 +52,7 @@ const PreviewActionResult = Schema.Struct({});
 
 export const PreviewStatusTool = Tool.make("preview_status", {
   description:
-    "Report whether a collaborative browser tab is automation-capable, including its URL, title, loading state, viewport mode, measured CSS-pixel size, downloadApprovalRequired, and any human-verification gate. `available: true` means every automation call works right now; it is the only readiness flag here. `visible` reports only whether the tab is currently painted on the user's screen, so `visible: false` is a normal background tab and is NOT a blocker: keep clicking, typing, and snapshotting it. Never stop, ask the user, or report work as impossible because a tab is not visible. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Tab IDs from other custom agents are rejected — use this agent's own tabs. If the viewport is under 240px on either axis (often ~320×200), call preview_resize before clicking. If downloadApprovalRequired is true, call preview_wait_for_download and do not retry the fetch. If humanVerification is required, keep the tab staged for the user and do not automate or retry the challenge.",
+    "Report whether a collaborative browser tab is automation-capable, plus a `tabs` inventory of every browser tab owned by the current thread with tabId, URL, title, loading, visibility, active state, and updatedAt. `available: true` means every automation call works right now; it is the only readiness flag here. `visible` reports only whether the selected tab is painted on the user's screen, so `visible: false` is a normal background tab and is NOT a blocker: keep clicking, typing, and snapshotting it. Any agent/provider working this thread may target or close any tab listed here, including stale tabs opened by an earlier agent; tabs outside this thread are never listed or targetable. Pass tabId to inspect a specific thread tab. If the viewport is under 240px on either axis, call preview_resize before clicking. If downloadApprovalRequired is true, call preview_wait_for_download and do not retry the fetch. If humanVerification is required, keep the tab staged for the user and do not automate or retry the challenge.",
   parameters: PreviewAutomationTabTargetInput,
   success: PreviewAutomationStatus,
   failure: PreviewAutomationError,
@@ -66,7 +66,7 @@ export const PreviewStatusTool = Tool.make("preview_status", {
 export const PreviewOpenTool = browserTool(
   Tool.make("preview_open", {
     description:
-      "Initialize a collaborative browser tab and open its thread-bound inline preview by default. When the requested domain is already open, the first call can return selection-required with matching tab IDs: retry with tabId to reuse one, or with reuseExistingTab=false to explicitly create another. A created result includes the exact preview_close cleanup call; close that created tab when its browsing task is finished, but never close a reused tab merely as cleanup. Set open=false for background-only automation.",
+      "Initialize a collaborative browser tab and open its thread-bound inline preview by default. When the requested domain is already open, the first call can return selection-required with matching tab IDs: retry with tabId to reuse one, or with reuseExistingTab=false to explicitly create another. Tabs are owned by the current thread, not by the agent/provider that opened them. Use preview_status to inspect the thread's tabs and close stale or unused tabs when they are no longer relevant, even if an earlier agent opened or reused them. Never target or close tabs outside the current thread. Set open=false for background-only automation.",
     parameters: PreviewAutomationOpenInput,
     success: PreviewAutomationOpenResult,
     failure: PreviewAutomationError,
@@ -79,7 +79,7 @@ export const PreviewOpenTool = browserTool(
 export const PreviewCloseTool = browserTool(
   Tool.make("preview_close", {
     description:
-      "Close one collaborative browser tab by its exact tabId. Use this to clean up a tab that preview_open reported as newly created after that browsing task is finished. Never close a tab that preview_open reported as reused merely as cleanup.",
+      "Close one collaborative browser tab in the current thread by its exact tabId. Any agent/provider working this thread may close any of the thread's tabs, including stale tabs opened or reused by an earlier agent. Use preview_status to list the current thread's tabs before cleanup. Never close a tab outside the current thread.",
     parameters: PreviewAutomationCloseInput,
     success: PreviewAutomationCloseResult,
     failure: PreviewAutomationError,
@@ -127,7 +127,7 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Do not pass tab IDs from other custom agents — use this agent's own tabs. Returns page state, semantic elements, diagnostics, action history, a PNG screenshot, pending download approvals, documentKind (pdf when Chromium's PDF viewer is showing), and any human-verification gate. PDF viewers often have empty DOM text; use visibleText. When verification is required, stop automated interaction and leave the same tab staged for the user.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this thread's current tab. Use only tab IDs listed by preview_status for the current thread; tabs from other threads are off-limits. Returns page state, semantic elements, diagnostics, action history, a PNG screenshot, pending download approvals, documentKind (pdf when Chromium's PDF viewer is showing), and any human-verification gate. PDF viewers often have empty DOM text; use visibleText. When verification is required, stop automated interaction and leave the same tab staged for the user.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,
@@ -138,7 +138,7 @@ export const PreviewSnapshotTool = readonlyBrowserTool(
 export const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
-      "Click exactly one target in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together.",
+      "Click exactly one target in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together, and they are viewport CSS pixels of the CURRENT scroll position: a point below or beside the visible area is rejected as outside the viewport, so scroll the target into view (preview_scroll, or window.scrollTo via preview_evaluate) and re-read its box from a fresh preview_snapshot first, or click by locator, which needs no coordinates. Every failure names its exact reason and what to do next; read it before retrying.",
     parameters: PreviewAutomationClickInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -149,7 +149,7 @@ export const PreviewClickTool = browserTool(
 export const PreviewDragTool = browserTool(
   Tool.make("preview_drag", {
     description:
-      "Draw a click-and-drag or freeform stroke of trusted pointer events across a path in the tab selected by tabId, or this agent session's current tab when omitted. The button presses at the first point, drags through interpolated moves with the button held, and releases at the last, so canvas games (Phaser and friends), drawing tools, sliders, and drag-and-drop targets receive a continuous trusted stroke. Provide {from:{x,y}, to:{x,y}} for a straight drag or {path:[{x,y},...]} for a freeform stroke; give coordinates in viewport CSS pixels from preview_snapshot. Optional steps controls interpolation density (default 8), holdMs pauses before release, and button selects left/middle/right.",
+      "Draw a click-and-drag or freeform stroke of trusted pointer events across a path in the tab selected by tabId, or this thread's current tab when omitted. The button presses at the first point, drags through interpolated moves with the button held, and releases at the last, so canvas games (Phaser and friends), drawing tools, sliders, and drag-and-drop targets receive a continuous trusted stroke. Provide {from:{x,y}, to:{x,y}} for a straight drag or {path:[{x,y},...]} for a freeform stroke; give coordinates in viewport CSS pixels from preview_snapshot. Optional steps controls interpolation density (default 8), holdMs pauses before release, and button selects left/middle/right.",
     parameters: PreviewAutomationDragInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -160,7 +160,7 @@ export const PreviewDragTool = browserTool(
 export const PreviewTypeTool = browserTool(
   Tool.make("preview_type", {
     description:
-      "Insert literal text into one input in the tab selected by tabId, or this agent session's current tab when omitted. Prefer a Playwright locator; set clear=true to replace existing text.",
+      "Insert literal text into one input in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; set clear=true to replace existing text.",
     parameters: PreviewAutomationTypeInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -182,7 +182,7 @@ export const PreviewUploadTool = browserTool(
 export const PreviewSelectOptionTool = browserTool(
   Tool.make("preview_select_option", {
     description:
-      "Choose an option in a <select> in the tab selected by tabId, or this agent session's current tab when omitted. Use this instead of preview_click for any <select>: clicking one opens a menu Chromium draws outside the page, which no snapshot or screenshot can see and no key press can dismiss, so the click reports success while leaving a dropdown open over the user's screen. Target the <select> itself with locator or selector, then name the option with exactly one of value, label, or index; preview_snapshot lists every option and which is selected. Sets the selection and fires the page's input and change handlers, so framework state updates as it would for a person.",
+      "Choose an option in a <select> in the tab selected by tabId, or this thread's current tab when omitted. Use this instead of preview_click for any <select>: clicking one opens a menu Chromium draws outside the page, which no snapshot or screenshot can see and no key press can dismiss, so the click reports success while leaving a dropdown open over the user's screen. Target the <select> itself with locator or selector, then name the option with exactly one of value, label, or index; preview_snapshot lists every option and which is selected. Sets the selection and fires the page's input and change handlers, so framework state updates as it would for a person.",
     parameters: PreviewAutomationSelectOptionInput,
     success: PreviewAutomationSelectOptionResult,
     failure: PreviewAutomationError,
@@ -193,7 +193,7 @@ export const PreviewSelectOptionTool = browserTool(
 export const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
-      "Press one keyboard key in the tab selected by tabId, or this agent session's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
+      "Press one keyboard key in the tab selected by tabId, or this thread's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
     parameters: PreviewAutomationPressInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -204,7 +204,7 @@ export const PreviewPressTool = browserTool(
 export const PreviewScrollTool = safeBrowserTool(
   Tool.make("preview_scroll", {
     description:
-      "Scroll the tab selected by tabId, or this agent session's current tab when omitted. Positive deltaY scrolls down and positive deltaX scrolls right; a locator/selector targets a container.",
+      "Scroll the tab selected by tabId, or this thread's current tab when omitted. Positive deltaY scrolls down and positive deltaX scrolls right; a locator/selector targets a container.",
     parameters: PreviewAutomationScrollInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -215,7 +215,7 @@ export const PreviewScrollTool = safeBrowserTool(
 export const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Evaluate read-only diagnostic JavaScript in the tab selected by tabId, or this agent session's current tab when omitted. Returns a serializable result up to 64 KB. Prefer snapshot and semantic actions; do not dispatch synthetic events, patch browser APIs, hide automation, or use evaluation to interact with human-verification challenges.",
+      "Evaluate read-only diagnostic JavaScript in the tab selected by tabId, or this thread's current tab when omitted. Returns a serializable result up to 64 KB. Prefer snapshot and semantic actions; do not dispatch synthetic events, patch browser APIs, hide automation, or use evaluation to interact with human-verification challenges.",
     parameters: PreviewAutomationEvaluateInput,
     success: Schema.Unknown,
     failure: PreviewAutomationError,
@@ -226,7 +226,7 @@ export const PreviewEvaluateTool = browserTool(
 export const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
-      "Wait in the tab selected by tabId, or this agent session's current tab when omitted, until all supplied locator, selector, text, and URL conditions match.",
+      "Wait in the tab selected by tabId, or this thread's current tab when omitted, until all supplied locator, selector, text, and URL conditions match.",
     parameters: PreviewAutomationWaitForInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -248,7 +248,7 @@ export const PreviewWaitForDownloadTool = readonlyBrowserTool(
 export const PreviewRecordingStartTool = safeBrowserTool(
   Tool.make("preview_recording_start", {
     description:
-      "Start recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted.",
+      "Start recording the collaborative browser tab selected by tabId, or this thread's current tab when omitted.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationRecordingStatus,
     failure: PreviewAutomationError,
@@ -259,7 +259,7 @@ export const PreviewRecordingStartTool = safeBrowserTool(
 export const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted, and save it as a local evidence artifact.",
+      "Stop recording the collaborative browser tab selected by tabId, or this thread's current tab when omitted, and save it as a local evidence artifact.",
     parameters: PreviewAutomationTabTargetInput,
     success: PreviewAutomationRecordingArtifact,
     failure: PreviewAutomationError,

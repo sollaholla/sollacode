@@ -234,6 +234,16 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
+const REASONING_DETAIL_LIMIT = 600;
+
+/**
+ * Activity id shared by a task's progress frames and its completion, so the
+ * timeline carries one row per task that moves from "Running <step>" to its
+ * outcome. `task.started` keeps its own row as the fixed anchor.
+ */
+const taskLifecycleActivityId = (threadId: string, taskId: string): EventId =>
+  EventId.make(`task:${threadId}:${taskId}`);
+
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
@@ -674,7 +684,14 @@ export function runtimeEventToActivities(
     case "task.progress": {
       return [
         {
-          id: event.eventId,
+          // One live row per task, not one per progress frame. A subagent
+          // (Claude's Agent tool) reports every tool call it makes as
+          // task_progress; appending each as its own activity left a
+          // permanent "Running <step>" row per call in the timeline — nine
+          // for one short agent on 2026-09-02. The projection and client
+          // both replace by id, so the row updates in place and the
+          // completion below overwrites it with the outcome.
+          id: taskLifecycleActivityId(event.threadId, event.payload.taskId),
           createdAt: event.createdAt,
           tone: "info",
           kind: "task.progress",
@@ -701,7 +718,7 @@ export function runtimeEventToActivities(
     case "task.completed": {
       return [
         {
-          id: event.eventId,
+          id: taskLifecycleActivityId(event.threadId, event.payload.taskId),
           createdAt: event.createdAt,
           tone: event.payload.status === "failed" ? "error" : "info",
           kind: "task.completed",
@@ -832,9 +849,17 @@ export function runtimeEventToActivities(
         return [
           {
             // Thought chunks arrive many times a second. One durable row per
-            // turn is what the timeline should show — "Grok is thinking" —
-            // not a flood of identical updates.
-            id: EventId.make(`reasoning:${event.threadId}:${event.turnId ?? "session"}`),
+            // reasoning item is what the timeline should show — "Grok is
+            // thinking" — not a flood of identical updates. ACP adapters key
+            // every chunk to one item per thread, so they still collapse to a
+            // single row; a bridge that publishes each of the model's comments
+            // under its own item id gets one row per comment instead of every
+            // thought overwriting the last (reported 2026-09-01).
+            id: EventId.make(
+              `reasoning:${event.threadId}:${event.turnId ?? "session"}${
+                event.itemId ? `:${event.itemId}` : ""
+              }`,
+            ),
             createdAt: event.createdAt,
             tone: "info",
             kind: "reasoning.updated",
@@ -842,7 +867,11 @@ export function runtimeEventToActivities(
             payload: {
               itemType: "reasoning",
               ...(event.payload.title ? { title: event.payload.title } : {}),
-              ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+              // A thought is a sentence or two the model wrote for the user;
+              // the 180-character tool-detail cap cut most of them mid-clause.
+              ...(event.payload.detail
+                ? { detail: truncateDetail(event.payload.detail, REASONING_DETAIL_LIMIT) }
+                : {}),
             },
             turnId: toTurnId(event.turnId) ?? null,
             ...maybeSequence,
@@ -2950,7 +2979,14 @@ const make = Effect.gen(function* () {
 
       if (event.type === "task.started" || event.type === "task.progress") {
         const description = event.payload.description?.trim();
-        if (description) {
+        // task.started names the task; task.progress carries the subagent's
+        // current step ("Running <tool>"). Keep the first name so the
+        // completion row is titled after the task, not after its last step.
+        if (
+          description &&
+          (event.type === "task.started" ||
+            (yield* lookupTaskDescription(thread.id, event.payload.taskId)) === undefined)
+        ) {
           yield* rememberTaskDescription(thread.id, event.payload.taskId, description);
         }
       }

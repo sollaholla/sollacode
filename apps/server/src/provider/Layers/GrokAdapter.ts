@@ -526,10 +526,45 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           // interruptTurn already consumed every prompt slot for this turn. A
           // late prompt result must neither emit a second terminal event nor
           // consume a slot belonging to a newer turn on the same ACP session.
-          if (
-            liveCtx.acpSessionId !== expectedAcpSessionId ||
-            liveCtx.interruptedTurnIds.has(turnId)
-          ) {
+          if (liveCtx.acpSessionId !== expectedAcpSessionId) {
+            return;
+          }
+          if (liveCtx.interruptedTurnIds.has(turnId)) {
+            // Still collapse a zombie "running" session left behind when the
+            // active turn id was cleared before status flipped to ready —
+            // otherwise Stop leaves the UI queuing forever.
+            if (
+              options?.settleAllPrompts &&
+              (liveCtx.session.status === "running" || liveCtx.session.status === "connecting") &&
+              liveCtx.activeTurnId === undefined &&
+              liveCtx.session.activeTurnId === undefined
+            ) {
+              liveCtx.promptsInFlight = 0;
+              const updatedAt = yield* nowIso;
+              const { activeTurnId: _activeTurnId, ...readySession } = liveCtx.session;
+              liveCtx.session = {
+                ...readySession,
+                status: "ready",
+                updatedAt,
+              };
+              yield* signalQueueOrLifecycleChange(liveCtx);
+              if (
+                options.emitTurnCompletion !== false &&
+                options.completedStopReason !== undefined
+              ) {
+                yield* offerRuntimeEvent({
+                  type: "turn.completed",
+                  ...(yield* makeEventStamp()),
+                  provider: PROVIDER,
+                  threadId,
+                  turnId,
+                  payload: {
+                    state: options.completedStopReason === "cancelled" ? "cancelled" : "completed",
+                    stopReason: options.completedStopReason ?? null,
+                  },
+                });
+              }
+            }
             return;
           }
           if (options?.emitTurnCompletion !== false) {
@@ -1643,12 +1678,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 if (liveCtx?.acpSessionId === prepared.acpSessionId) {
                   liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
                 }
-                yield* Ref.set(promptSettled, true);
                 if (
                   !prepared.isSteering &&
                   liveCtx?.acpSessionId === prepared.acpSessionId &&
                   liveCtx.interruptedTurnIds.has(prepared.turnId)
                 ) {
+                  yield* settlePromptInFlight(
+                    input.threadId,
+                    prepared.turnId,
+                    prepared.acpSessionId,
+                    {
+                      completedStopReason: "cancelled",
+                      settleAllPrompts: true,
+                    },
+                  );
+                  yield* Ref.set(promptSettled, true);
                   return {
                     _tag: "CancelledBeforeAdmission" as const,
                     turn: {
@@ -1658,6 +1702,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     },
                   };
                 }
+                yield* Ref.set(promptSettled, true);
                 return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: prepared.isSteering ? "turn/steer" : "session/prompt",
@@ -1781,6 +1826,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 }
                 yield* prepared.acp.drainEvents;
                 if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                  // Do not mark settled until the session is actually ready —
+                  // otherwise Stop can race the ensuring block and leave a
+                  // zombie "running" turn that queues every follow-up forever.
+                  yield* settlePromptInFlight(
+                    input.threadId,
+                    prepared.turnId,
+                    prepared.acpSessionId,
+                    {
+                      completedStopReason: "cancelled",
+                      settleAllPrompts: true,
+                    },
+                  );
                   yield* Ref.set(promptSettled, true);
                   return {
                     threadId: input.threadId,
@@ -1931,6 +1988,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       return;
                     }
                     if (ctx.interruptedTurnIds.has(prepared.turnId)) {
+                      yield* settlePromptInFlight(
+                        input.threadId,
+                        prepared.turnId,
+                        prepared.acpSessionId,
+                        {
+                          completedStopReason: "cancelled",
+                          settleAllPrompts: true,
+                        },
+                      );
                       return;
                     }
                     if (
@@ -2249,15 +2315,55 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         });
       });
 
+      const waitForPromotedDelivery = (
+        messageId: string,
+      ): Effect.Effect<void, ProviderAdapterSessionNotFoundError | ProviderAdapterRequestError> =>
+        Effect.suspend(() =>
+          withThreadLock(
+            threadId,
+            Effect.gen(function* () {
+              const liveCtx = yield* requireSession(threadId);
+              // `confirmedQueuedPromotionIds` is set in the same queue snapshot
+              // that emits `message.delivered`. Waiting here is the read receipt
+              // the next interject must not race: bulk-inserting queued prompts
+              // into Grok's running turn stalls the native queue.
+              if (liveCtx.confirmedQueuedPromotionIds.has(messageId)) {
+                return { _tag: "Ready" as const };
+              }
+              const activeTurnId = liveCtx.activeTurnId ?? liveCtx.session.activeTurnId;
+              if (liveCtx.session.status !== "running" || !activeTurnId) {
+                return yield* new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "x.ai/queue/interject",
+                  detail: `Grok's running turn ended before queued message '${messageId}' was delivered.`,
+                  failureKind: "retryable-upstream",
+                });
+              }
+              return { _tag: "Waiting" as const, signal: liveCtx.queueChangedSignal };
+            }),
+          ).pipe(
+            Effect.flatMap((result) =>
+              result._tag === "Ready"
+                ? Effect.void
+                : Deferred.await(result.signal).pipe(
+                    Effect.andThen(waitForPromotedDelivery(messageId)),
+                  ),
+            ),
+          ),
+        );
+
       const promoteAll = Effect.gen(function* () {
         const targets = yield* waitForTargets();
-        // Promote and confirm one row at a time. Grok may publish one snapshot
-        // per interject, so batching notifications lets an early partial
-        // snapshot look like a failed or successful whole batch.
+        // One interject, then its read receipt, then the next. Grok's native
+        // queue breaks when several queued prompts are inserted at once, and a
+        // snapshot mid-batch can look like the whole promote succeeded or failed.
         yield* Effect.forEach(
           targets.messageIds,
-          (messageId) => promoteMessage({ ctx: targets.ctx, messageId }),
-          { discard: true },
+          (messageId) =>
+            promoteMessage({ ctx: targets.ctx, messageId }).pipe(
+              Effect.andThen(waitForPromotedDelivery(messageId)),
+            ),
+          { concurrency: 1, discard: true },
         );
         return targets.receiptMessageIds.map((messageId) => MessageId.make(messageId));
       });

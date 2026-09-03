@@ -713,6 +713,11 @@ describe("workEntryIndicatesToolFailure", () => {
       }),
     ).toBe(false);
     expect(workEntryIndicatesToolSuccess({ ...base, tone: "thinking", detail: "…" })).toBe(false);
+    // Thoughts are neither successes nor incomplete tools: a neutral verdict
+    // would filter them out of every grouped work log.
+    expect(workEntryIndicatesToolNeutralStatus({ ...base, tone: "thinking", detail: "…" })).toBe(
+      false,
+    );
     expect(
       workEntryIndicatesToolNeutralStatus({
         ...base,
@@ -757,6 +762,32 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.tone).toBe("thinking");
     expect(entry?.label).toBe("Thinking");
     expect(workEntryIndicatesToolSuccess(entry!)).toBe(false);
+  });
+
+  it("hides generic Generating reasoning status while keeping useful reasoning/status rows", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "generating",
+        kind: "reasoning.updated",
+        summary: "Generating",
+        tone: "info",
+        payload: { itemType: "reasoning", title: "Generating", detail: "Generating" },
+      }),
+      makeActivity({
+        id: "working-status",
+        kind: "reasoning.updated",
+        summary: "Working",
+        tone: "info",
+        payload: {
+          itemType: "reasoning",
+          title: "Working",
+          detail: "Follow-up queued until the current response finishes",
+        },
+      }),
+    ]);
+
+    expect(entries.map((entry) => entry.label)).toEqual(["Working"]);
+    expect(entries[0]?.detail).toBe("Follow-up queued until the current response finishes");
   });
 
   it("keeps Token Optimizer summaries out of the visible work log", () => {
