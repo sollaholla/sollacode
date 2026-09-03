@@ -1,3 +1,5 @@
+import { Fragment } from "react";
+
 import { cn } from "~/lib/utils";
 
 import { bracketedPaste, TERMINAL_MOBILE_KEYS, type TerminalMobileKey } from "./mobileKeys";
@@ -41,29 +43,33 @@ export function TerminalMobileKeyBar(props: {
       data-terminal-mobile-keys=""
       role="toolbar"
     >
-      {TERMINAL_MOBILE_KEYS.map((key) => (
-        <button
-          aria-label={key.title}
-          className={cn(
-            "inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-[6px] px-2",
-            "border border-[var(--line)] bg-surface text-xs font-medium text-foreground",
-            "active:bg-surface-hover",
-          )}
-          data-terminal-mobile-key={key.id}
-          key={key.id}
-          // The terminal keeps focus, so the keyboard does not collapse and
-          // reopen between presses.
-          onMouseDown={(event) => {
-            event.preventDefault();
-          }}
-          onClick={() => {
-            press(key);
-          }}
-          title={key.title}
-          type="button"
-        >
-          {key.label}
-        </button>
+      {TERMINAL_MOBILE_KEYS.map((key, index) => (
+        <Fragment key={key.id}>
+          {index > 0 && TERMINAL_MOBILE_KEYS[index - 1]?.group !== key.group ? (
+            <span aria-hidden className="my-1 w-px shrink-0 bg-[var(--line)]" />
+          ) : null}
+          <button
+            aria-label={key.title}
+            className={cn(
+              "inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-[6px] px-2",
+              "border border-[var(--line)] bg-surface text-xs font-medium text-foreground",
+              "active:bg-surface-hover",
+            )}
+            data-terminal-mobile-key={key.id}
+            // The terminal keeps focus, so the keyboard does not collapse and
+            // reopen between presses.
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            onClick={() => {
+              press(key);
+            }}
+            title={key.title}
+            type="button"
+          >
+            {key.label}
+          </button>
+        </Fragment>
       ))}
     </div>
   );

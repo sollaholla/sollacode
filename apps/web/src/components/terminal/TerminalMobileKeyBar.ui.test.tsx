@@ -89,6 +89,24 @@ describe("TerminalMobileKeyBar", () => {
     expect(ids).toEqual([...new Set(ids)]);
   });
 
+  it("sends digits so answering a numbered TUI prompt is one tap", () => {
+    const onSend = vi.fn();
+    const host = render({ onSend, onReadClipboard: async () => "" });
+
+    pressKey(host, "digit-2");
+    expect(onSend).toHaveBeenCalledWith("2");
+
+    pressKey(host, "digit-0");
+    expect(onSend).toHaveBeenCalledWith("0");
+  });
+
+  it("offers every digit, in reading order", () => {
+    const digits = TERMINAL_MOBILE_KEYS.filter((key) => key.group === "digit").map(
+      (key) => key.label,
+    );
+    expect(digits).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]);
+  });
+
   it("keeps the terminal focused so the keyboard does not collapse", () => {
     const onSend = vi.fn();
     const host = render({ onSend, onReadClipboard: async () => "" });

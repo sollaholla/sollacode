@@ -17,7 +17,7 @@ export type TerminalMobileKey = {
   /** Bytes to write to the PTY, or `paste` for the clipboard. */
   readonly data: string | { readonly clipboard: true };
   /** Grouped so the row can breathe on narrow screens. */
-  readonly group: "control" | "motion" | "edit";
+  readonly group: "control" | "motion" | "edit" | "digit";
 };
 
 /** ESC as a lone byte; shells and TUIs both read it as Escape. */
@@ -62,6 +62,19 @@ export const TERMINAL_MOBILE_KEYS: readonly TerminalMobileKey[] = [
     data: { clipboard: true },
     group: "edit",
   },
+  // A TUI that asks you to pick option 2 is two taps away on a phone: the
+  // digits live behind the keyboard's 123 layer, and switching back afterwards
+  // is a third. One tap each instead.
+  ...Array.from({ length: 10 }, (_, index) => {
+    const digit = String((index + 1) % 10);
+    return {
+      id: `digit-${digit}`,
+      label: digit,
+      title: `Digit ${digit}`,
+      data: digit,
+      group: "digit" as const,
+    };
+  }),
 ];
 
 /**

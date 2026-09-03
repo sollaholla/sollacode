@@ -2178,8 +2178,12 @@ export function TerminalViewport({
           // from under whatever the dictation buffer last contributed, so stop
           // reconciling against it.
           terminalDictationStateRef.current = emptyTerminalDictationState;
+          // Deliberately no focus() here. These bytes go straight to the PTY,
+          // so the terminal does not need the caret - and focusing it on a
+          // phone raises the software keyboard, which is the opposite of what
+          // this bar is for. Whatever had focus keeps it: the keyboard stays
+          // down if it was down, and up if it was up.
           void writeTerminal(data);
-          terminalRef.current?.focus();
         }}
       />
       <div

@@ -1608,6 +1608,11 @@ function ComposerPromptEditorInner({
         expandedCursor: nextExpandedCursor,
         terminalContextIds,
       };
+      emittedEchoesRef.current = rememberComposerEmittedValue(
+        emittedEchoesRef.current,
+        nextValue,
+        performance.now(),
+      );
       onChangeRef.current(nextValue, nextCursor, nextExpandedCursor, false, terminalContextIds);
     });
   }, [editor]);
@@ -1774,6 +1779,11 @@ function ComposerPromptEditorInner({
         expandedCursor: expandCollapsedComposerCursor(snapshotRef.current.value, boundedCursor),
         terminalContextIds: snapshotRef.current.terminalContextIds,
       };
+      emittedEchoesRef.current = rememberComposerEmittedValue(
+        emittedEchoesRef.current,
+        snapshotRef.current.value,
+        performance.now(),
+      );
       onChangeRef.current(
         snapshotRef.current.value,
         boundedCursor,
@@ -1883,6 +1893,11 @@ function ComposerPromptEditorInner({
         expandedCursor: nextExpandedCursor,
         terminalContextIds,
       };
+      emittedEchoesRef.current = rememberComposerEmittedValue(
+        emittedEchoesRef.current,
+        nextValue,
+        performance.now(),
+      );
       const cursorAdjacentToMention =
         isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "left") ||
         isCollapsedCursorAdjacentToInlineToken(nextValue, nextCursor, "right");
