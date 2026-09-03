@@ -219,12 +219,46 @@ export type ComposerReplacementDecision =
    */
   | { readonly kind: "insert"; readonly text: string };
 
-export function resolveComposerReplacement(input: {
-  /** `event.dataTransfer`, or null when the event carries none. */
+/**
+ * Input types that can arrive carrying a replacement rather than a keystroke.
+ *
+ * `insertText` is on the list because of a second, separate path in Lexical's
+ * core - see `resolveComposerBeforeInput`.
+ */
+export const COMPOSER_REPLACING_INPUT_TYPES = [
+  "insertReplacementText",
+  "insertFromComposition",
+  "insertText",
+  "insertTranspose",
+] as const;
+
+export function resolveComposerBeforeInput(input: {
+  readonly inputType: string;
+  /** Text in `event.dataTransfer`, or null when the event carries none. */
   readonly dataTransferText: string | null;
   /** `event.data`. */
   readonly data: string | null;
 }): ComposerReplacementDecision {
+  if (input.inputType === "insertText" || input.inputType === "insertTranspose") {
+    // Ordinary typing always carries `data`, and Lexical's fast path for it is
+    // the one thing we must never disturb.
+    if (input.data !== null) return { kind: "allow" };
+    // With `data == null` and a dataTransfer, Lexical core runs its own Safari
+    // replacement workaround:
+    //
+    //     const text = event.dataTransfer.getData('text/plain');
+    //     event.preventDefault();
+    //     selection.insertRawText(text);
+    //
+    // and just above it `selection.applyDOMRange(targetRange)` has widened the
+    // selection to whatever the input method is revising - which can span
+    // several words. An empty transfer therefore deletes all of them.
+    if (input.dataTransferText === null) return { kind: "allow" };
+    return input.dataTransferText.length > 0 ? { kind: "allow" } : { kind: "block" };
+  }
+  if (input.inputType !== "insertReplacementText" && input.inputType !== "insertFromComposition") {
+    return { kind: "allow" };
+  }
   const fromTransfer = input.dataTransferText ?? "";
   const fromData = input.data ?? "";
   if (input.dataTransferText === null) {
