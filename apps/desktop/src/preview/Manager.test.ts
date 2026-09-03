@@ -3935,6 +3935,75 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("refuses to call into a guest destroyed after the handle was taken", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // The crash window is narrow and real: we resolve a WebContents, then
+        // suspend, and the guest is freed before the native call lands. Calling
+        // into it is a use-after-free in the browser process rather than a
+        // throw, so it took the whole app down with SIGSEGV at 0x10 on
+        // CrBrowserMain (0.1.332, again on 0.1.399). Report the guest alive for
+        // exactly the one check that hands out the handle, then dead for every
+        // check after it.
+        let aliveReports = Number.POSITIVE_INFINITY;
+        let destroyed = false;
+        const capturePage = vi.fn(async () => ({ toPNG: () => Buffer.from("never-captured") }));
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => {
+            if (aliveReports > 0) {
+              aliveReports -= 1;
+              return false;
+            }
+            return destroyed;
+          },
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+          capturePage,
+        } as never);
+
+        yield* manager.createTab("tab_1");
+        yield* manager.registerWebview("tab_1", 42);
+
+        aliveReports = 1;
+        destroyed = true;
+
+        const exit = yield* Effect.exit(manager.captureScreenshot("tab_1"));
+
+        expect(capturePage).not.toHaveBeenCalled();
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) return;
+        const error = Option.getOrThrow(Cause.findErrorOption(exit.cause));
+        expect(error).toMatchObject({
+          _tag: "PreviewOperationError",
+          operation: "captureScreenshot.capturePage",
+          tabId: "tab_1",
+          webContentsId: 42,
+        });
+        expect(String((error as { readonly cause?: unknown }).cause)).toContain(
+          "was destroyed before captureScreenshot.capturePage",
+        );
+      }),
+    ),
+  );
+
   effectIt.effect("stages a hidden tab until its compositor surface is ready", () =>
     withManager((manager) =>
       Effect.gen(function* () {
