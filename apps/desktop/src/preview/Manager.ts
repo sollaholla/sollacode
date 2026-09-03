@@ -993,19 +993,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     { readonly semaphore: Semaphore.Semaphore; users: number }
   >();
   const tabLifecycleGenerations = new Map<string, number>();
-  const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
-    Effect.try({
-      try: evaluate,
-      catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
+  /**
+   * A guest can be torn down at any suspension point: the user closes a tab,
+   * switches threads, the renderer crashes, or we remount the webview. Calling
+   * into a destroyed WebContents is a use-after-free in the browser process,
+   * not a catchable exception — it takes the whole app down with SIGSEGV at
+   * 0x10 on CrBrowserMain (seen on 0.1.332 and again on 0.1.399, both moments
+   * after an agent woke the guest fleet at once). Every native call in this
+   * file routes through the helpers below and names the WebContents it targets,
+   * so the liveness check belongs here rather than at each of the call sites.
+   */
+  const isWebContentsGone = (errorContext: PreviewOperationContext): boolean => {
+    const webContentsId = errorContext.webContentsId;
+    if (webContentsId === undefined) return false;
+    const target = webContents.fromId(webContentsId);
+    return target === undefined || target === null || target.isDestroyed();
+  };
+  const webContentsGoneError = (errorContext: PreviewOperationContext) =>
+    new PreviewOperationError({
+      ...errorContext,
+      cause: new Error(
+        `WebContents ${String(errorContext.webContentsId)} was destroyed before ${errorContext.operation}`,
+      ),
     });
+  const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
+    Effect.suspend(() =>
+      isWebContentsGone(errorContext)
+        ? Effect.fail(webContentsGoneError(errorContext))
+        : Effect.try({
+            try: evaluate,
+            catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
+          }),
+    );
   const attemptPromise = <A>(
     errorContext: PreviewOperationContext,
     evaluate: () => PromiseLike<A>,
   ) =>
-    Effect.tryPromise({
-      try: evaluate,
-      catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
-    });
+    Effect.suspend(() =>
+      isWebContentsGone(errorContext)
+        ? Effect.fail(webContentsGoneError(errorContext))
+        : Effect.tryPromise({
+            try: evaluate,
+            catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
+          }),
+    );
   const attemptPromiseWithin = <A>(
     errorContext: PreviewOperationContext,
     evaluate: () => PromiseLike<A>,
@@ -3926,13 +3957,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   )(function* (tabId: string, wc: Electron.WebContents) {
     yield* ensureCurrentWebContents(tabId, wc);
     if (automationForegroundWebContentsIds.has(wc.id)) return;
+    // Every touch of `wc` below happens after an await, and a guest can be
+    // torn down at any point in between — a thread switch, a closed tab, a
+    // crashed renderer, or our own remount. Calling into a destroyed
+    // WebContents is a use-after-free in the browser process, not an
+    // exception: it took the app down with SIGSEGV at 0x10 on CrBrowserMain
+    // on 0.1.332 and again on 0.1.399, both times moments after an agent
+    // connected and woke the whole guest fleet at once. A dead guest simply
+    // has no foreground to activate, so bail rather than fail.
+    if (wc.isDestroyed()) return;
     yield* attempt(
       {
         operation: "automationForeground.setBackgroundThrottling",
         tabId,
         webContentsId: wc.id,
       },
-      () => wc.setBackgroundThrottling(false),
+      () => {
+        if (wc.isDestroyed()) return;
+        wc.setBackgroundThrottling(false);
+      },
     );
     activityLeases.acquire(
       tabId,
@@ -3941,6 +3984,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
 
     const control = yield* ensureControlSession(tabId, wc);
+    if (wc.isDestroyed()) return;
     const focused = yield* Effect.exit(
       control.semaphore
         .withPermit(
@@ -3950,10 +3994,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               tabId,
               webContentsId: wc.id,
             },
-            () =>
-              wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
+            async () => {
+              // Attaching the debugger is what makes this reachable at all;
+              // upstream electron#43452 reports the same fault from
+              // setFocusEmulationEnabled racing teardown.
+              if (wc.isDestroyed()) return undefined;
+              return await wc.debugger.sendCommand("Emulation.setFocusEmulationEnabled", {
                 enabled: true,
-              }),
+              });
+            },
             AUTOMATION_SNAPSHOT_COMMAND_TIMEOUT_MS,
           ),
         )
@@ -3971,6 +4020,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           ),
         ),
     );
+    if (wc.isDestroyed()) return;
     if (Exit.isFailure(focused)) {
       if (wc.isDevToolsOpened()) {
         return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
@@ -3986,12 +4036,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         tabId,
         webContentsId: wc.id,
       },
-      () => wc.invalidate(),
+      () => {
+        if (wc.isDestroyed()) return;
+        wc.invalidate();
+      },
     );
     // Detach can fire during focus emulation or invalidate even when the
     // Chromium command itself resolves. Check after the last callback-capable
     // operation and publish readiness in the same JavaScript turn. A later
     // detach synchronously removes the id again in onDetach.
+    if (wc.isDestroyed()) return;
     if (wc.isDevToolsOpened()) {
       return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
     }
