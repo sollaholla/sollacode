@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   COMPOSER_ECHO_MEMORY_MS,
+  resolveComposerReplacement,
   isComposerStaleEcho,
   rememberComposerEmittedValue,
   resolveComposerControlledSync,
@@ -208,5 +209,42 @@ describe("resolveComposerControlledSync with a stale echo", () => {
         isDictating: true,
       }),
     ).toEqual({ kind: "defer" });
+  });
+});
+
+describe("resolveComposerReplacement", () => {
+  it("lets a replacement through when the clipboard payload has the new text", () => {
+    expect(resolveComposerReplacement({ dataTransferText: "their", data: null })).toEqual({
+      kind: "allow",
+    });
+  });
+
+  it("lets a replacement through when there is no dataTransfer and data has the text", () => {
+    expect(resolveComposerReplacement({ dataTransferText: null, data: "their" })).toEqual({
+      kind: "allow",
+    });
+  });
+
+  it("blocks a replacement that carries no replacement text at all", () => {
+    // The selection already covers the word. Letting this through replaces it
+    // with nothing, which is the word loss with the spaces left behind.
+    expect(resolveComposerReplacement({ dataTransferText: "", data: null })).toEqual({
+      kind: "block",
+    });
+    expect(resolveComposerReplacement({ dataTransferText: null, data: null })).toEqual({
+      kind: "block",
+    });
+    expect(resolveComposerReplacement({ dataTransferText: "", data: "" })).toEqual({
+      kind: "block",
+    });
+  });
+
+  it("applies the text itself when an empty dataTransfer would win over data", () => {
+    // Lexical prefers a non-null dataTransfer, so an empty one erases the word
+    // even though the replacement text is sitting in `data`.
+    expect(resolveComposerReplacement({ dataTransferText: "", data: "their" })).toEqual({
+      kind: "insert",
+      text: "their",
+    });
   });
 });
