@@ -37,6 +37,8 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { resolveOwningThreadIdWith } from "./owningThread.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
@@ -384,6 +386,7 @@ const classifyResponseError = (
 };
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
+  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
@@ -525,8 +528,21 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   });
 
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
-    input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
+    rawInput: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
+    // A side chat browses in its PARENT's tab strip, not a private one. The
+    // parent is the surface the user actually watches, so a tab an assistant
+    // opens from a side chat is visible to them instead of hidden behind a
+    // chat they may never open. Side chats already inherit the parent's
+    // browserProfileThreadId, so this is the same browser session either way.
+    // Routing here rather than in the toolkit covers every preview operation
+    // and every caller, and keeps the host-assignment key consistent with the
+    // thread the tabs actually belong to.
+    const owningThreadId = yield* resolveOwningThreadIdWith(projections, rawInput.scope.threadId);
+    const input =
+      owningThreadId === rawInput.scope.threadId
+        ? rawInput
+        : { ...rawInput, scope: { ...rawInput.scope, threadId: owningThreadId } };
     const timeoutMs = input.timeoutMs ?? 15_000;
     const deadlineMs = previewRequestDeadlineMs(input.operation, timeoutMs);
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
