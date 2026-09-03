@@ -2192,7 +2192,7 @@ describe("ProviderRuntimeIngestion", () => {
       providerInstanceId: ProviderInstanceId.make("claudeAgent"),
       threadId,
       createdAt: "2026-01-01T00:00:20.000Z",
-      turnId: opusTurnId,
+      turnId: opusTurnId ?? undefined,
       payload: {
         rateLimits: {
           type: "rate_limit_event",
@@ -2232,7 +2232,7 @@ describe("ProviderRuntimeIngestion", () => {
       providerInstanceId: ProviderInstanceId.make("codex"),
       threadId,
       createdAt: "2026-01-01T00:00:30.000Z",
-      turnId: codexTurnId,
+      turnId: codexTurnId ?? undefined,
       payload: {
         rateLimits: {
           rateLimits: {
@@ -2271,7 +2271,7 @@ describe("ProviderRuntimeIngestion", () => {
       providerInstanceId: ProviderInstanceId.make("grok"),
       threadId,
       createdAt: "2026-01-01T00:00:40.000Z",
-      turnId: grokTurnId,
+      turnId: grokTurnId ?? undefined,
       payload: {
         rateLimits: {
           config: {

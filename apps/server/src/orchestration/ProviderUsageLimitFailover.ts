@@ -576,7 +576,7 @@ export function selectProviderFailoverTarget(input: {
         provider: currentProvider,
         currentInstanceId: input.currentInstanceId,
         currentModel,
-        excludedModels: input.excludedModels,
+        ...(input.excludedModels ? { excludedModels: input.excludedModels } : {}),
       }),
     );
     if (currentTarget && currentTarget.modelSelection.model !== currentModel) {
@@ -602,7 +602,7 @@ export function selectProviderFailoverTarget(input: {
         provider,
         currentInstanceId: input.currentInstanceId,
         currentModel,
-        excludedModels: input.excludedModels,
+        ...(input.excludedModels ? { excludedModels: input.excludedModels } : {}),
       }),
     );
     if (target) {
