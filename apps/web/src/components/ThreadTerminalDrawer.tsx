@@ -88,6 +88,11 @@ import { readLocalApi } from "~/localApi";
 import { clientOwnsTerminalGeometry, terminalClientId } from "../terminalClientIdentity";
 import { useAttachedTerminalSession, useKnownTerminalSessions } from "../state/terminalSessions";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
+import {
+  emptyTerminalDictationState,
+  resolveTerminalDictationInput,
+  type TerminalDictationState,
+} from "./terminal/dictationInput";
 import { TerminalLaunchPad, type TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { terminalCommandProviderDriver } from "@t3tools/shared/terminalProvider";
@@ -1104,6 +1109,8 @@ export function TerminalViewport({
   });
   const terminalHasRunningSubprocessRef = useRef(terminalHasRunningSubprocess);
   terminalHasRunningSubprocessRef.current = terminalHasRunningSubprocess;
+  // What the live input-method buffer has already contributed to the PTY.
+  const terminalDictationStateRef = useRef<TerminalDictationState>(emptyTerminalDictationState);
   const serverCols = terminalSession.summary?.cols;
   const serverRows = terminalSession.summary?.rows;
   const serverGeometryRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -1695,11 +1702,24 @@ export function TerminalViewport({
       writeSystemMessage(terminal, message);
     };
     const inputDisposable = terminal.onData((data) => {
+      // While an input method holds text in the textarea, xterm's own diff is
+      // unreliable: iOS dictation rewrites words it already committed, and
+      // xterm answers by re-sending the entire buffer. Reconcile against the
+      // textarea, which holds exactly what has been dictated so far.
+      const dictation = resolveTerminalDictationInput({
+        payload: data,
+        textareaValue: terminal.textarea?.value ?? "",
+        state: terminalDictationStateRef.current,
+      });
+      terminalDictationStateRef.current = dictation.state;
+      if (dictation.payload.length === 0) {
+        return;
+      }
       // Preserve actionable TUI mouse input, but never forward no-button
       // pointer motion. Multiple attached clients can otherwise produce a
       // write/repaint loop quickly enough to make the whole terminal UI
       // unresponsive, including its split and stop controls.
-      const actionableData = stripTerminalUnbuttonedMouseMotionReports(data);
+      const actionableData = stripTerminalUnbuttonedMouseMotionReports(dictation.payload);
       // A bare shell never wants mouse/focus reports; dropping them here is
       // the backstop for tracking modes the local resets could not reach.
       const payload = terminalHasRunningSubprocessRef.current
