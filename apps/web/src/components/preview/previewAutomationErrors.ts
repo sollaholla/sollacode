@@ -323,6 +323,30 @@ const desktopMessageReason = (message: string): string | undefined => {
   return guidance === undefined ? body : `${body.replace(/[.\s]+$/, "")}. ${guidance}`;
 };
 
+/**
+ * Whether a cause identifies itself as one of our preview failures.
+ *
+ * Curated causes carry a `Preview*Error` tag - as a `_tag` field, or as the
+ * message prefix that survives the trip over Electron IPC - and everything we
+ * say about them comes from the switch below rather than from their text.
+ * Anything else is an arbitrary Error whose message is unknown content.
+ */
+export function isCuratedPreviewFailureCause(cause: unknown): boolean {
+  const message =
+    typeof cause === "string"
+      ? cause
+      : typeof cause === "object" && cause !== null
+        ? (() => {
+            const record = cause as Record<string, unknown>;
+            if (typeof record._tag === "string" && TAG_PREFIX.test(`${record._tag}: x`)) return "";
+            return typeof record.message === "string" ? record.message : null;
+          })()
+        : null;
+  if (message === null) return false;
+  if (message === "") return true;
+  return TAG_PREFIX.test(message.replace(IPC_PREFIX, "").trim());
+}
+
 const desktopFailureReason = (cause: unknown): string | undefined => {
   if (typeof cause === "string") return desktopMessageReason(cause);
   if (typeof cause !== "object" || cause === null) return undefined;
