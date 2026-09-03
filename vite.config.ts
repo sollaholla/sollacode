@@ -12,6 +12,12 @@ export default defineConfig({
     environment: "node",
     exclude: [
       "**/.repos/**",
+      // Nested git worktrees are full checkouts of this repo, so the default
+      // globs collect every one of their test files too. Their dependencies
+      // are not installed, so they all fail to collect: a run from the primary
+      // worktree reported 698 failed FILES against 7 failed tests, which is
+      // exactly the noise that hides a real regression.
+      "**/.claude/worktrees/**",
       "**/node_modules/**",
       "**/dist/**",
       "**/dist-electron/**",
