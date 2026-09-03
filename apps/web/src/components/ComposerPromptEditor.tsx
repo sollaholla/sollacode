@@ -84,6 +84,9 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
 import {
   COMPOSER_DICTATION_SETTLE_MS,
+  isComposerStaleEcho,
+  rememberComposerEmittedValue,
+  type ComposerEmittedEcho,
   resolveComposerControlledSync,
   resolveComposerDictationFlush,
 } from "./composerDictationSync";
@@ -1567,6 +1570,10 @@ function ComposerPromptEditorInner({
   // currently mid-edit. See composerDictationSync for why that blocks
   // controlled write-backs.
   const dictationRef = useRef({ composing: false, settleUntil: 0 });
+  // Values this editor recently sent upward. iOS keyboard dictation commits
+  // words directly instead of opening a composition, so there is no event that
+  // marks it as in flight; recognising our own echo does not need one.
+  const emittedEchoesRef = useRef<readonly ComposerEmittedEcho[]>([]);
   // Set when a controlled write-back was skipped because dictation was active,
   // so the settle-window re-run knows to resolve the divergence rather than
   // blindly applying a stale value.
@@ -1683,6 +1690,12 @@ function ComposerPromptEditorInner({
       skillsChanged,
       isFocused,
       isDictating: isDictating(),
+      isStaleEcho: isComposerStaleEcho({
+        history: emittedEchoesRef.current,
+        incomingValue: value,
+        snapshotValue: previousSnapshot.value,
+        now: performance.now(),
+      }),
     });
 
     if (decision.kind === "skip") {
@@ -1803,6 +1816,11 @@ function ComposerPromptEditorInner({
       };
     });
     snapshotRef.current = snapshot;
+    emittedEchoesRef.current = rememberComposerEmittedValue(
+      emittedEchoesRef.current,
+      snapshot.value,
+      performance.now(),
+    );
     return snapshot;
   }, [editor]);
 

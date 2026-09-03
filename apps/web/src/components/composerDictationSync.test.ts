@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  COMPOSER_ECHO_MEMORY_MS,
+  isComposerStaleEcho,
+  rememberComposerEmittedValue,
   resolveComposerControlledSync,
   resolveComposerDictationFlush,
 } from "./composerDictationSync";
@@ -14,6 +17,7 @@ const base = {
   skillsChanged: false,
   isFocused: true,
   isDictating: false,
+  isStaleEcho: false,
 };
 
 describe("resolveComposerControlledSync", () => {
@@ -110,5 +114,99 @@ describe("resolveComposerDictationFlush", () => {
         valueDiverged: false,
       }),
     ).toEqual({ kind: "none" });
+  });
+});
+
+describe("isComposerStaleEcho", () => {
+  const now = 10_000;
+
+  it("recognises a value the editor emitted a moment ago", () => {
+    // iOS dictation streams "hello", then "hello there". The store hands back
+    // "hello" one render later, which is the write-back that reverts the word.
+    const history = rememberComposerEmittedValue([], "hello", now - 20);
+    expect(
+      isComposerStaleEcho({
+        history,
+        incomingValue: "hello",
+        snapshotValue: "hello there",
+        now,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat the editor agreeing with its props as an echo", () => {
+    const history = rememberComposerEmittedValue([], "hello", now - 20);
+    expect(
+      isComposerStaleEcho({ history, incomingValue: "hello", snapshotValue: "hello", now }),
+    ).toBe(false);
+  });
+
+  it("lets a genuine external set through", () => {
+    const history = rememberComposerEmittedValue([], "hello", now - 20);
+    expect(
+      isComposerStaleEcho({
+        history,
+        incomingValue: "a transcript arrived",
+        snapshotValue: "hello there",
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("forgets an echo old enough to be a deliberate reset", () => {
+    const history = rememberComposerEmittedValue([], "hello", now - COMPOSER_ECHO_MEMORY_MS - 1);
+    expect(
+      isComposerStaleEcho({
+        history,
+        incomingValue: "hello",
+        snapshotValue: "hello there",
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("bounds the history over a long dictation", () => {
+    let history = rememberComposerEmittedValue([], "start", now);
+    for (let index = 0; index < 200; index += 1) {
+      history = rememberComposerEmittedValue(history, `word ${String(index)}`, now + index);
+    }
+    expect(history.length).toBeLessThanOrEqual(32);
+  });
+});
+
+describe("resolveComposerControlledSync with a stale echo", () => {
+  it("keeps the dictated text instead of rebuilding from the lagging value", () => {
+    expect(
+      resolveComposerControlledSync({
+        ...base,
+        incomingValue: "hello",
+        snapshotValue: "hello there",
+        isStaleEcho: true,
+      }),
+    ).toEqual({ kind: "skip" });
+  });
+
+  it("still applies a chip change that arrived alongside the echo", () => {
+    expect(
+      resolveComposerControlledSync({
+        ...base,
+        incomingValue: "hello",
+        snapshotValue: "hello there",
+        isStaleEcho: true,
+        contextsChanged: true,
+      }),
+    ).toEqual({ kind: "apply", rewrite: true, setSelection: true });
+  });
+
+  it("defers to dictation before considering the echo", () => {
+    expect(
+      resolveComposerControlledSync({
+        ...base,
+        incomingValue: "hello",
+        snapshotValue: "hello there",
+        isStaleEcho: true,
+        isDictating: true,
+      }),
+    ).toEqual({ kind: "defer" });
   });
 });

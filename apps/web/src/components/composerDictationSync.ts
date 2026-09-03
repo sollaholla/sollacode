@@ -40,6 +40,12 @@ export type ComposerControlledSyncInput = {
   readonly isFocused: boolean;
   /** A composition is open, or we are inside the post-composition settle window. */
   readonly isDictating: boolean;
+  /**
+   * `incomingValue` is a value this editor emitted a moment ago rather than
+   * anything external, so it is a lagging echo of an edit the editor has
+   * already moved past.
+   */
+  readonly isStaleEcho: boolean;
 };
 
 export type ComposerControlledSyncDecision =
@@ -70,6 +76,14 @@ export function resolveComposerControlledSync(
   // selection underneath it is what deletes words mid-sentence.
   if (input.isDictating) {
     return { kind: "defer" };
+  }
+
+  // The editor already moved past this text, so rebuilding it would undo an
+  // edit the user has made and hand the input method a set of nodes it never
+  // wrote. Chips are the exception: they exist only as nodes, so a structural
+  // change still has to be applied.
+  if (input.isStaleEcho && !structureChanged) {
+    return { kind: "skip" };
   }
 
   // An unfocused editor has no caret worth restoring, so a cursor-only change
@@ -116,4 +130,58 @@ export function resolveComposerDictationFlush(
     return { kind: "adopt-editor" };
   }
   return { kind: "none" };
+}
+
+/**
+ * How long an emitted value stays recognisable as our own echo.
+ *
+ * Long enough to cover a state round trip through the draft store and back
+ * down as a prop, short enough that a deliberate external set - restoring a
+ * draft, injecting a transcript, a slash command rewriting the prompt - still
+ * applies even when it happens to match something typed earlier.
+ */
+export const COMPOSER_ECHO_MEMORY_MS = 1_500;
+
+/** Values the editor recently sent upward, oldest first. */
+export type ComposerEmittedEcho = {
+  readonly value: string;
+  readonly at: number;
+};
+
+/** Bound the history so a long dictation cannot grow it without limit. */
+const COMPOSER_ECHO_MEMORY_ENTRIES = 32;
+
+export function rememberComposerEmittedValue(
+  history: readonly ComposerEmittedEcho[],
+  value: string,
+  now: number,
+): readonly ComposerEmittedEcho[] {
+  const fresh = history.filter((entry) => now - entry.at < COMPOSER_ECHO_MEMORY_MS);
+  return [...fresh, { value, at: now }].slice(-COMPOSER_ECHO_MEMORY_ENTRIES);
+}
+
+/**
+ * Whether an incoming `value` prop is this editor's own output coming back.
+ *
+ * The editor emits on every edit, and that value returns as a prop a render
+ * later. While the user is still typing - or while an input method is
+ * streaming words in and then rewriting them - the value that arrives is one
+ * or more edits behind. Writing it back rebuilds the editor from stale text:
+ * the visible words revert, and any node the input method was anchored to is
+ * replaced, which is how a dictated word disappears and leaves its spaces.
+ *
+ * The current snapshot is excluded because that is the editor agreeing with
+ * its props, not lagging behind them.
+ */
+export function isComposerStaleEcho(input: {
+  readonly history: readonly ComposerEmittedEcho[];
+  readonly incomingValue: string;
+  readonly snapshotValue: string;
+  readonly now: number;
+}): boolean {
+  if (input.incomingValue === input.snapshotValue) return false;
+  return input.history.some(
+    (entry) =>
+      entry.value === input.incomingValue && input.now - entry.at < COMPOSER_ECHO_MEMORY_MS,
+  );
 }
