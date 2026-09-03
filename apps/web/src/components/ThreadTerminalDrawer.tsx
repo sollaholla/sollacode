@@ -93,6 +93,7 @@ import {
   resolveTerminalDictationInput,
   type TerminalDictationState,
 } from "./terminal/dictationInput";
+import { TerminalMobileKeyBar } from "./terminal/TerminalMobileKeyBar";
 import { TerminalLaunchPad, type TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { terminalCommandProviderDriver } from "@t3tools/shared/terminalProvider";
@@ -2160,7 +2161,7 @@ export function TerminalViewport({
 
   return (
     <div
-      className="relative h-full w-full overflow-hidden rounded-[4px] bg-background"
+      className="relative flex h-full w-full flex-col overflow-hidden rounded-[4px] bg-background"
       onDragEnter={handleFileDragOver}
       onDragOver={handleFileDragOver}
       onDragLeave={handleFileDragLeave}
@@ -2168,7 +2169,18 @@ export function TerminalViewport({
     >
       <div
         ref={containerRef}
-        className="h-full w-full overflow-hidden rounded-[4px] bg-background"
+        className="min-h-0 w-full flex-1 overflow-hidden rounded-[4px] bg-background"
+      />
+      <TerminalMobileKeyBar
+        onReadClipboard={() => navigator.clipboard.readText()}
+        onSend={(data) => {
+          // An interrupt, a history recall or a paste all change the line out
+          // from under whatever the dictation buffer last contributed, so stop
+          // reconciling against it.
+          terminalDictationStateRef.current = emptyTerminalDictationState;
+          void writeTerminal(data);
+          terminalRef.current?.focus();
+        }}
       />
       <div
         aria-hidden={!replayOverlayVisible}

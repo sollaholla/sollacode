@@ -109,6 +109,35 @@ describe("isTextareaExplicablePayload", () => {
   });
 });
 
+/**
+ * Captured from the user's iPhone on 0.1.400, dictating "this is a test to see
+ * if terminal properly" into Terminal 1 with the iOS keyboard mic.
+ *
+ * `emitted` is what xterm actually sent, recovered by segmenting the corrupted
+ * shell line; `textarea` is what the dictation buffer held at that moment.
+ * From the third word on, every emission is the entire buffer again.
+ */
+const IPHONE_CAPTURE = [
+  { emitted: "th", textarea: "th" },
+  { emitted: "ith is i", textarea: "this is i" },
+  { emitted: "this is", textarea: "this is" },
+  { emitted: "this is a test", textarea: "this is a test" },
+  { emitted: "this is a test to", textarea: "this is a test to" },
+  { emitted: "this is a test to see if", textarea: "this is a test to see if" },
+  { emitted: "this is a test to see if term", textarea: "this is a test to see if term" },
+  { emitted: "this is a test to see if terminal", textarea: "this is a test to see if terminal" },
+  {
+    emitted: "this is a test to see if terminal properly",
+    textarea: "this is a test to see if terminal properly",
+  },
+] as const;
+
+/** Exactly what the screenshot shows at the prompt. */
+const IPHONE_CORRUPTED_LINE =
+  "thith is ithis isthis is a testthis is a test tothis is a test to see if" +
+  "this is a test to see if termthis is a test to see if terminal" +
+  "this is a test to see if terminal properly";
+
 describe("resolveTerminalDictationInput", () => {
   it("reproduces the exponential duplication xterm produces today", () => {
     const { xtermSent } = replay(IOS_DICTATION_TRANSCRIPT);
@@ -121,6 +150,29 @@ describe("resolveTerminalDictationInput", () => {
   it("sends the dictated line exactly once through the reconciliation", () => {
     const { reconciledSent } = replay(IOS_DICTATION_TRANSCRIPT);
     expect(applyToShellLine(reconciledSent)).toBe("run these tests now");
+  });
+
+  it("reproduces the line the user's iPhone actually left at the prompt", () => {
+    expect(applyToShellLine(IPHONE_CAPTURE.map((step) => step.emitted))).toBe(
+      IPHONE_CORRUPTED_LINE,
+    );
+  });
+
+  it("leaves the sentence the user actually dictated", () => {
+    // The emissions are ignored while the textarea holds text, so the garbled
+    // second one costs nothing: the buffer is what the correction is built from.
+    let state: TerminalDictationState = emptyTerminalDictationState;
+    const sent: string[] = [];
+    for (const step of IPHONE_CAPTURE) {
+      const resolved = resolveTerminalDictationInput({
+        payload: step.emitted,
+        textareaValue: step.textarea,
+        state,
+      });
+      state = resolved.state;
+      if (resolved.payload.length > 0) sent.push(resolved.payload);
+    }
+    expect(applyToShellLine(sent)).toBe("this is a test to see if terminal properly");
   });
 
   it("passes ordinary typing straight through when no buffer is held", () => {
