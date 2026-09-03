@@ -104,11 +104,102 @@ export type VmAgentStatus = typeof VmAgentStatus.Type;
 export const VmControlMode = Schema.Literals(["agent", "user"]);
 export type VmControlMode = typeof VmControlMode.Type;
 
+/**
+ * Outlined, uncoloured glyphs an agent can wear in the sidebar and header —
+ * the monochrome equivalent of an emoji. Names are lucide icon ids; the web
+ * client maps them onto components statically, so the set is closed here and
+ * the AI that creates or first runs an agent picks from it.
+ */
+export const VM_AGENT_ICONS = [
+  "anchor",
+  "atom",
+  "bike",
+  "book-open",
+  "bot",
+  "brain",
+  "briefcase",
+  "bug",
+  "calculator",
+  "calendar",
+  "camera",
+  "car",
+  "chart-line",
+  "clapperboard",
+  "cloud",
+  "code",
+  "coffee",
+  "compass",
+  "cpu",
+  "database",
+  "dna",
+  "dumbbell",
+  "eye",
+  "feather",
+  "film",
+  "flame",
+  "flask-conical",
+  "gamepad-2",
+  "gem",
+  "globe",
+  "graduation-cap",
+  "hammer",
+  "headphones",
+  "heart-pulse",
+  "house",
+  "image",
+  "key-round",
+  "landmark",
+  "languages",
+  "leaf",
+  "lightbulb",
+  "mail",
+  "map",
+  "megaphone",
+  "mic",
+  "monitor",
+  "music",
+  "newspaper",
+  "package",
+  "palette",
+  "paw-print",
+  "pencil-ruler",
+  "phone",
+  "piggy-bank",
+  "plane",
+  "radio",
+  "rocket",
+  "scale",
+  "scissors",
+  "search",
+  "shield",
+  "shopping-cart",
+  "sparkles",
+  "stethoscope",
+  "sun",
+  "telescope",
+  "terminal",
+  "trophy",
+  "truck",
+  "umbrella",
+  "user-round",
+  "wand-2",
+  "wrench",
+  "zap",
+] as const;
+export const VmAgentIcon = Schema.Literals(VM_AGENT_ICONS);
+export type VmAgentIcon = typeof VmAgentIcon.Type;
+
 export const VmAgent = Schema.Struct({
   vmAgentId: VmAgentId,
   name: VmAgentName,
   handle: VmAgentHandle,
   purpose: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+  /**
+   * The agent's outlined glyph. Null until the AI that created it, or the
+   * first run of its own chat, chooses one; the client falls back to a
+   * name-derived glyph meanwhile.
+   */
+  icon: Schema.NullOr(VmAgentIcon),
   vmId: VmId,
   /** The agent's dedicated single chat thread (null only if creation failed). */
   threadId: Schema.NullOr(ThreadId),
@@ -130,6 +221,8 @@ export type VmAgent = typeof VmAgent.Type;
 export const VmAgentCreateInput = Schema.Struct({
   name: VmAgentName,
   purpose: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+  /** Optional at creation; the agent's first run picks one when absent. */
+  icon: Schema.optional(VmAgentIcon),
 });
 export type VmAgentCreateInput = Schema.Codec.Encoded<typeof VmAgentCreateInput>;
 

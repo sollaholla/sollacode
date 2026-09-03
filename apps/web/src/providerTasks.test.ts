@@ -7,6 +7,8 @@ import {
   applyProviderTaskDismissals,
   canStopProviderTask,
   countActiveProviderTasks,
+  UNANSWERED_CONFIRM_MS,
+  confirmDestructiveSend,
   describeSendOverRunningTasks,
   deriveProviderTasks,
   providerTaskStatusLabel,
@@ -394,3 +396,73 @@ describe("describeSendOverRunningTasks", () => {
     );
   });
 });
+
+describe("confirmDestructiveSend", () => {
+  function withConfirm<T>(stub: ((message: string) => boolean) | undefined, run: () => T): T {
+    const globalScope = globalThis as {
+      window?: { confirm?: unknown } | undefined;
+    };
+    const hadWindow = "window" in globalScope;
+    const previousWindow = globalScope.window;
+    globalScope.window = { ...(previousWindow ?? {}), confirm: stub };
+    try {
+      return run();
+    } finally {
+      if (hadWindow) globalScope.window = previousWindow;
+      else delete globalScope.window;
+    }
+  }
+
+  it("sends when the person accepts", () => {
+    const asked: string[] = [];
+    const sent = withConfirm(
+      (message) => {
+        asked.push(message);
+        return true;
+      },
+      () => confirmDestructiveSend("cancel them?", stepClock([0, 900])),
+    );
+    NodeAssert.equal(sent, true);
+    NodeAssert.deepEqual(asked, ["cancel them?"]);
+  });
+
+  it("stops when the person reads the dialog and refuses", () => {
+    const sent = withConfirm(
+      () => false,
+      () => confirmDestructiveSend("cancel them?", stepClock([0, UNANSWERED_CONFIRM_MS + 50])),
+    );
+    NodeAssert.equal(sent, false);
+  });
+
+  it("sends anyway when the dialog was suppressed", () => {
+    // A browser blocking further dialogs from the page returns false at once.
+    // Nobody was asked, so the message must not be dropped on their behalf.
+    const sent = withConfirm(
+      () => false,
+      () => confirmDestructiveSend("cancel them?", stepClock([0, 1])),
+    );
+    NodeAssert.equal(sent, true);
+  });
+
+  it("sends anyway when the webview throws instead of prompting", () => {
+    const sent = withConfirm(
+      () => {
+        throw new Error("dialogs are disabled");
+      },
+      () => confirmDestructiveSend("cancel them?", stepClock([0, 1])),
+    );
+    NodeAssert.equal(sent, true);
+  });
+
+  it("sends anyway where there is no confirm at all", () => {
+    const sent = withConfirm(undefined, () =>
+      confirmDestructiveSend("cancel them?", stepClock([0, 1])),
+    );
+    NodeAssert.equal(sent, true);
+  });
+});
+
+function stepClock(readings: ReadonlyArray<number>): () => number {
+  let index = 0;
+  return () => readings[Math.min(index++, readings.length - 1)] ?? 0;
+}

@@ -41,8 +41,32 @@ export const HOSTED_BROWSER_WEBVIEW_BACKGROUND_Z_INDEX = -1;
  * Zero opacity removes an Electron guest from Chromium's compositor, which
  * defers first paint and navigation until the tab is focused. This alpha is
  * still invisible, including behind the opaque app shell.
+ *
+ * It is also what every background tab costs. A compositor-active layer is
+ * rasterized and blended every frame for as long as it is mounted, and this
+ * host mounts a guest for every tab of every thread, not only the visible one.
+ * Measured 2026-09-03: 21 full-window layers repainting forever across ten
+ * threads, including a video still decoding in a thread nobody had open. So
+ * this alpha is now the WARM-UP state only — held long enough to cover the
+ * first paint and auth hydration it was introduced for, not the resting state.
  */
 export const HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA = 0.001;
+
+/**
+ * The resting state for a background guest: removed from Chromium's
+ * compositor, so it stops rasterizing, blending, and decoding video. The page
+ * stays alive — this is opacity, not unmounting, so the live document and its
+ * authenticated session survive exactly as they did before.
+ */
+export const HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA = 0;
+
+/**
+ * How long a background guest stays compositor-active after it mounts or
+ * navigates. Chromium defers first paint and navigation for a zero-opacity
+ * guest, so a tab opened behind the user's back still needs a window in which
+ * to load and let auth SDKs hydrate; that window just must not be unbounded.
+ */
+export const HOSTED_BROWSER_WEBVIEW_WARMUP_MS = 10_000;
 
 export interface HostedBrowserWebviewAccessibilityState {
   readonly "aria-hidden"?: true;
@@ -129,6 +153,12 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
    * non-interactively and promotes to the right panel to be used.
    */
   readonly interactive?: boolean;
+  /**
+   * Whether this background guest still needs the compositor: it is loading or
+   * has just navigated, or automation is driving it while its thread is off
+   * screen. Resting background guests are parked instead.
+   */
+  readonly warming?: boolean;
 }): HostedBrowserWebviewWrapperStyle {
   const {
     active,
@@ -138,6 +168,7 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
     interactive = true,
     rect,
     snapshotStaged = false,
+    warming = false,
   } = input;
   if (active && rect) {
     return {
@@ -154,12 +185,15 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
   const backgroundRect = resolveHostedBrowserWebviewBackgroundRect(rect, hiddenSize, hostSize);
 
   return {
-    // Keep the whole guest at its last presented geometry. A clipped,
-    // offscreen, or zero-opacity Electron guest can defer its first paint and
-    // can return with a stale compositor clip after focus. Park the layer
-    // behind the opaque app shell at compositor-active alpha so a newly opened
-    // background tab loads without focusing its thread and without stacking
-    // translucent pages over chat or files.
+    // Keep the whole guest at its last presented geometry. A clipped or
+    // offscreen Electron guest can return with a stale compositor clip after
+    // focus, so geometry stays put in every state and only the alpha changes.
+    //
+    // A guest that is warming, or staging a native snapshot, keeps the
+    // compositor-active alpha: Chromium defers first paint and navigation for
+    // a zero-opacity guest, which is what that alpha was introduced to avoid.
+    // Everything at rest is parked off the compositor instead of repainting
+    // behind the opaque app shell for the lifetime of the app.
     left: backgroundRect.x,
     top: backgroundRect.y,
     width: backgroundRect.width,
@@ -168,7 +202,10 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
       ? HOSTED_BROWSER_WEBVIEW_STAGED_Z_INDEX
       : HOSTED_BROWSER_WEBVIEW_BACKGROUND_Z_INDEX,
     pointerEvents: "none",
-    opacity: HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
+    opacity:
+      warming || snapshotStaged
+        ? HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA
+        : HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA,
     visibility: "visible",
     ...(cornerRadius > 0 ? { borderRadius: cornerRadius } : {}),
   };

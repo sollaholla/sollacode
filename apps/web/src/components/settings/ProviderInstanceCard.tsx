@@ -385,8 +385,10 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
-  /** Account-scoped usage details shown directly below the enable controls. */
+  /** Account-scoped usage details, revealed by the Usage toggle. */
   readonly usage?: ReactNode | undefined;
+  /** Compact usage figure shown in the header row next to the Usage toggle. */
+  readonly usageBadge?: ReactNode | undefined;
 }
 
 /**
@@ -432,6 +434,7 @@ export function ProviderInstanceCard({
   onRunUpdate,
   isUpdating = false,
   usage,
+  usageBadge,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -471,6 +474,9 @@ export function ProviderInstanceCard({
   const updateOutcome = describeProviderUpdateOutcome(liveProvider?.updateState);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const detailsId = `provider-instance-${instanceId}-details`;
+  const usageId = `${detailsId}-usage`;
+  // Usage starts folded: the header badge carries the headline number.
+  const [usageOpen, setUsageOpen] = useState(false);
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() ||
@@ -815,11 +821,39 @@ export function ProviderInstanceCard({
             ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {enabled && usage ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn(
+                  "h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground",
+                  usageOpen && "bg-surface-hover text-foreground",
+                )}
+                onClick={() =>
+                  setUsageOpen((open) => {
+                    // One disclosure at a time: opening usage folds settings.
+                    if (!open && isExpanded) onExpandedChange(false);
+                    return !open;
+                  })
+                }
+                aria-expanded={usageOpen}
+                aria-controls={usageId}
+                aria-label={`${usageOpen ? "Hide" : "Show"} ${displayName} usage`}
+              >
+                {usageBadge ?? "Usage"}
+                <ChevronDownIcon
+                  className={cn("size-3.5 transition-transform", usageOpen && "rotate-180")}
+                />
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
               className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => onExpandedChange(!isExpanded)}
+              onClick={() => {
+                if (!isExpanded) setUsageOpen(false);
+                onExpandedChange(!isExpanded);
+              }}
               aria-expanded={isExpanded}
               aria-controls={detailsId}
               aria-label={`${isExpanded ? "Hide" : "Show"} ${displayName} settings`}
@@ -836,10 +870,17 @@ export function ProviderInstanceCard({
             />
           </div>
         </div>
-        {enabled && usage ? (
-          <div className="mt-3 border-t border-border/50 pt-3">{usage}</div>
-        ) : null}
       </div>
+
+      {enabled && usage ? (
+        <Collapsible open={usageOpen} onOpenChange={setUsageOpen}>
+          <CollapsibleContent>
+            <div id={usageId} className="px-3 pb-4 sm:px-4">
+              {usage}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
 
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>

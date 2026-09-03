@@ -34,8 +34,11 @@ import {
   THREAD_SIDEBAR_MIN_WIDTH,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./threadSidebarWidth";
+import { MobileTabBar } from "./mobile/MobileTabBar";
+import { MobileTopBar } from "./mobile/MobileTopBar";
 import {
   Sidebar,
+  SidebarInsetChromeProvider,
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
@@ -216,7 +219,9 @@ function SidebarControl() {
 
   return (
     <div
-      className="pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 flex h-[var(--workspace-topbar-height)] items-center"
+      // Phones get the sheet trigger in the mobile top bar instead, so the
+      // floating control would only double it (and sit on top of the brand).
+      className="pointer-events-none fixed left-[var(--workspace-controls-left)] top-[var(--workspace-controls-top)] z-50 flex h-[var(--workspace-topbar-height)] items-center max-md:hidden"
       data-sidebar-control=""
     >
       <Tooltip>
@@ -354,7 +359,9 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
         <SidebarRail />
       </Sidebar>
-      {children}
+      <SidebarInsetChromeProvider top={<MobileTopBar />} bottom={<MobileTabBar />}>
+        {children}
+      </SidebarInsetChromeProvider>
       <SidebarControl />
     </SidebarProvider>
   );

@@ -9,6 +9,7 @@ import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import {
   agentBrowserCursorOffset,
   agentBrowserCursorOpacity,
+  agentBrowserCursorPoint,
   type BrowserController,
 } from "./agentBrowserCursorLogic";
 
@@ -79,29 +80,57 @@ function AgentBrowserCursorEvent(props: {
   // device-independent size; the guest reports CSS pixels, so its viewport is
   // that divided by the zoom factor. Fraction of the guest maps to the same
   // fraction of the drawn rect.
+  //
+  // Newer desktop builds send the guest's own viewport size with the point,
+  // which makes the mapping a pure fraction of the drawn rect — exact under
+  // any zoom, fit scale or letterbox. Without a `<webview>` (a slot-presented
+  // native view, or the web client) the slot the guest is drawn into is the
+  // rect instead. Re-measured on resize so a re-laid-out panel cannot leave
+  // the cursor where the guest used to be.
   useLayoutEffect(() => {
-    const node = nodeRef.current;
-    const parent = node?.offsetParent;
-    const guest = document.querySelector<HTMLElement>(
-      `[data-preview-viewport="${CSS.escape(tabId)}"] webview`,
-    );
-    if (!node || !(parent instanceof HTMLElement) || !guest) {
-      setMeasured(null);
-      return;
-    }
-    const guestRect = guest.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-    const cssWidth = guest.offsetWidth;
-    const cssHeight = guest.offsetHeight;
-    if (cssWidth <= 0 || cssHeight <= 0 || guestRect.width <= 0 || guestRect.height <= 0) {
-      setMeasured(null);
-      return;
-    }
-    setMeasured({
-      x: ((event.x * zoomFactor) / cssWidth) * guestRect.width + (guestRect.left - parentRect.left),
-      y: ((event.y * zoomFactor) / cssHeight) * guestRect.height + (guestRect.top - parentRect.top),
-    });
-  }, [event.x, event.y, tabId, zoomFactor]);
+    const measure = () => {
+      const node = nodeRef.current;
+      const parent = node?.offsetParent;
+      const escaped = CSS.escape(tabId);
+      const guest =
+        document.querySelector<HTMLElement>(`[data-preview-viewport="${escaped}"] webview`) ??
+        document.querySelector<HTMLElement>(`[data-browser-surface-slot="${escaped}"]`);
+      if (!node || !(parent instanceof HTMLElement) || !guest) {
+        setMeasured(null);
+        return;
+      }
+      const guestRect = guest.getBoundingClientRect();
+      const parentRect = parent.getBoundingClientRect();
+      if (guestRect.width <= 0 || guestRect.height <= 0) {
+        setMeasured(null);
+        return;
+      }
+      // The guest's viewport in its own CSS pixels: reported with the event
+      // when available, otherwise the element's untransformed box divided by
+      // the zoom the guest is rendered at.
+      const viewportWidth =
+        event.viewportWidth !== undefined && event.viewportWidth > 0
+          ? event.viewportWidth
+          : guest.offsetWidth / zoomFactor;
+      const viewportHeight =
+        event.viewportHeight !== undefined && event.viewportHeight > 0
+          ? event.viewportHeight
+          : guest.offsetHeight / zoomFactor;
+      setMeasured(
+        agentBrowserCursorPoint({
+          x: event.x,
+          y: event.y,
+          viewportWidth,
+          viewportHeight,
+          drawn: guestRect,
+          parent: parentRect,
+        }),
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [event.viewportHeight, event.viewportWidth, event.x, event.y, tabId, zoomFactor]);
 
   // Fall back to the computed offset when the guest element is not reachable
   // (no webview yet, or a non-Electron host).

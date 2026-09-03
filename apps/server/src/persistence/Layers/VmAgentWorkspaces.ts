@@ -263,6 +263,13 @@ const make = Effect.gen(function* () {
           WHERE active_run.vm_agent_id = task.vm_agent_id
             AND active_run.status IN ('queued', 'booting', 'running')
         )
+        -- A stopped agent's due work stays due (next_run_at untouched) but is
+        -- never claimed; it resumes the moment the agent is started again.
+        AND NOT EXISTS (
+          SELECT 1 FROM vm_agents AS agent
+          WHERE agent.vm_agent_id = task.vm_agent_id
+            AND agent.status <> 'running'
+        )
       ORDER BY task.next_run_at ASC, task.created_at ASC
       LIMIT 1
     `,

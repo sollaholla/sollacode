@@ -7,7 +7,7 @@ import type {
   ProviderUsageResetOutcome,
   ServerProvider,
 } from "@t3tools/contracts";
-import { ExternalLinkIcon } from "lucide-react";
+import { ExternalLinkIcon, RefreshCwIcon, UserRoundIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -67,6 +67,19 @@ export function providerUsageDetailsSide(isDraftHeroState: boolean): "top" | "bo
   // In the New Thread view, the usage badge sits at the top of the main pane.
   // Opening downward keeps the shared details popup inside the viewport.
   return isDraftHeroState ? "bottom" : "top";
+}
+
+/**
+ * Providers name their windows inconsistently ("weekly", "nimbus quill",
+ * "seven day overage included"); show every word capitalised so the list
+ * reads as one voice.
+ */
+export function titleCaseUsageLabel(label: string): string {
+  return label
+    .trim()
+    .split(/\s+/)
+    .map((word) => (word.length === 0 ? word : word.charAt(0).toLocaleUpperCase() + word.slice(1)))
+    .join(" ");
 }
 
 export interface ProviderUsageSummary {
@@ -410,7 +423,7 @@ function UsageWindowProgressLine({
         : // aria-valuetext only — a native `title` here doubles up with the
           // custom Tooltip below and both render at once.
           { "aria-valuetext": paceDescription })}
-      className="relative block h-1.5 overflow-hidden rounded-full bg-foreground/10"
+      className="relative block h-1.5 overflow-hidden rounded-full bg-foreground/8"
     >
       <span
         className={`block h-full rounded-full ${usageProgressClass(window.usedPercent)}`}
@@ -746,6 +759,22 @@ export function deriveProviderUsageReports(
   return reports;
 }
 
+const USAGE_CARD_ACTION_CLASS =
+  "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-[var(--line)] bg-surface-row px-2.5 font-medium text-[11px] text-foreground/80 transition-[background-color,border-color,color] duration-150 hover:border-gold-500/50 hover:bg-gold-500/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-500/40 disabled:cursor-wait disabled:opacity-60";
+
+function formatRemaining(resetAt: number | null, nowMs: number): string | null {
+  if (resetAt === null) return null;
+  const remainingMs = resetAt - nowMs;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
+  const totalMinutes = Math.ceil(remainingMs / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h left`;
+  if (hours > 0) return `${hours}h ${minutes}m left`;
+  return `${minutes}m left`;
+}
+
 function formatReset(resetAt: number | null): string | null {
   if (resetAt === null) return null;
   return new Intl.DateTimeFormat(undefined, {
@@ -799,7 +828,7 @@ function usageProgressClass(usedPercent: number): string {
     case "warning":
       return "bg-amber-500 dark:bg-amber-400";
     case "neutral":
-      return "bg-foreground/55";
+      return "bg-gold-500";
   }
 }
 
@@ -947,8 +976,11 @@ export function ProviderUsageDetails({
   onUseReset,
   onDismissResetCredit,
   externalUsageLink = null,
+  creditsOnly = false,
 }: Pick<ProviderUsageSummary, "state" | "windows" | "reportedAt"> & {
   name: string;
+  /** Skip the header and window bars; render only reset credits and the external link. */
+  creditsOnly?: boolean;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   refreshError?: string | null;
@@ -1014,125 +1046,148 @@ export function ProviderUsageDetails({
       data-provider-usage-state={visibleState}
       aria-busy={isRefreshing || undefined}
     >
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold text-foreground text-sm leading-none">{name} usage</h3>
-        <div className="flex items-center gap-1.5">
-          {statusLabel ? (
-            <span
-              className={`rounded-full px-2 py-0.5 font-medium text-xs ${
-                visibleState === "stale"
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-200"
-                  : "bg-muted text-muted-foreground"
-              }`}
-            >
-              {statusLabel}
-            </span>
-          ) : null}
-          {onRefresh ? (
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={isRefreshing}
-              aria-label={`Refresh ${name} usage`}
-              aria-busy={isRefreshing}
-              className="rounded-md border border-border/70 px-2 py-0.5 font-medium text-foreground/80 text-xs hover:bg-muted disabled:cursor-wait disabled:opacity-60"
-            >
-              {isRefreshing ? "Refreshing…" : "Refresh"}
-            </button>
-          ) : null}
-          {onSwitchUser ? (
-            <button
-              type="button"
-              onClick={onSwitchUser}
-              className="rounded-md border border-border/70 px-2 py-0.5 font-medium text-foreground/80 text-xs hover:bg-muted"
-            >
-              Switch user
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <p className="mt-1 text-muted-foreground text-xs">
-        {reportedAt
-          ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
-          : isRefreshing
-            ? "Waiting for provider usage"
-            : "Account-level provider usage"}
-      </p>
-      {refreshError ? (
-        <p className="mt-2 text-red-700 text-xs dark:text-red-300" role="alert">
-          {refreshError}
-        </p>
-      ) : null}
-      {hasUsage ? (
-        <ul className="mt-3 space-y-3" aria-label={`${name} usage windows`}>
-          {windows.map((window) => {
-            const reset = formatReset(window.resetAt);
-            const detail = usageDetail(window);
-            const elapsedPercent = resolveUsageWindowElapsedPercent({
-              resetAt: window.resetAt,
-              windowDurationMs: window.windowDurationMs,
-              nowMs,
-            });
-            const paceDelta = formatUsageWindowPaceDelta(
-              resolveUsageWindowPaceDeltaMs({
-                usedPercent: window.usedPercent,
-                resetAt: window.resetAt,
-                windowDurationMs: window.windowDurationMs,
-                nowMs,
-              }),
-            );
-            const paceDescription =
-              elapsedPercent === null
-                ? null
-                : `${Math.round(window.usedPercent ?? 0)}% used · ${Math.round(elapsedPercent)}% of the window elapsed${paceDelta === null ? "" : ` · ${paceDelta}`}`;
-            return (
-              <li key={window.key} className="space-y-1">
-                <div className="flex items-start justify-between gap-3 text-xs">
-                  <span className="font-medium text-foreground">{window.label}</span>
-                  <span
-                    className={
-                      window.usedPercent === null
-                        ? "text-foreground/80"
-                        : usageValueClass(window.usedPercent)
-                    }
-                  >
-                    {detail}
-                  </span>
-                </div>
-                {window.usedPercent !== null ? (
-                  <UsageWindowProgressLine
-                    name={name}
-                    window={{ ...window, usedPercent: window.usedPercent }}
-                    elapsedPercent={elapsedPercent}
-                    paceDelta={paceDelta}
-                    paceDescription={paceDescription}
+      {creditsOnly ? null : (
+        <>
+          <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-semibold text-[13px] text-foreground leading-tight tracking-[-0.01em]">
+                {name} usage
+              </h3>
+              <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">
+                {reportedAt
+                  ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
+                  : isRefreshing
+                    ? "Waiting for provider usage"
+                    : "Account-level provider usage"}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              {statusLabel ? (
+                <span
+                  className={`inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-full px-2 font-medium text-[11px] ${
+                    visibleState === "stale"
+                      ? "bg-amber-500/12 text-amber-700 dark:text-amber-300"
+                      : "bg-foreground/6 text-muted-foreground"
+                  }`}
+                >
+                  {statusLabel}
+                </span>
+              ) : null}
+              {onRefresh ? (
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  disabled={isRefreshing}
+                  aria-label={`Refresh ${name} usage`}
+                  aria-busy={isRefreshing}
+                  className={USAGE_CARD_ACTION_CLASS}
+                >
+                  <RefreshCwIcon
+                    className={`size-3 ${isRefreshing ? "animate-spin" : ""}`}
+                    aria-hidden
                   />
-                ) : null}
-                {reset ? (
-                  <div className="text-[11px] text-muted-foreground">Resets {reset}</div>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="mt-3 text-muted-foreground text-xs">
-          {isRefreshing
-            ? "Loading usage…"
-            : state === "unsupported"
-              ? "This provider does not expose account usage."
-              : "Usage has not been reported for this provider account yet."}
-        </p>
+                  <span>{isRefreshing ? "Refreshing…" : "Refresh"}</span>
+                </button>
+              ) : null}
+              {onSwitchUser ? (
+                <button type="button" onClick={onSwitchUser} className={USAGE_CARD_ACTION_CLASS}>
+                  <UserRoundIcon className="size-3" aria-hidden />
+                  <span>Switch user</span>
+                </button>
+              ) : null}
+            </div>
+          </header>
+          {refreshError ? (
+            <p
+              className="mt-2 rounded-[8px] border border-red-500/30 bg-red-500/8 px-2.5 py-1.5 text-[11px] text-red-700 leading-snug dark:text-red-300"
+              role="alert"
+            >
+              {refreshError}
+            </p>
+          ) : null}
+          {hasUsage ? (
+            <ul className="mt-3 space-y-2" aria-label={`${name} usage windows`}>
+              {windows.map((window) => {
+                const reset = formatReset(window.resetAt);
+                const remaining = formatRemaining(window.resetAt, nowMs);
+                const detail = usageDetail(window);
+                const elapsedPercent = resolveUsageWindowElapsedPercent({
+                  resetAt: window.resetAt,
+                  windowDurationMs: window.windowDurationMs,
+                  nowMs,
+                });
+                const paceDelta = formatUsageWindowPaceDelta(
+                  resolveUsageWindowPaceDeltaMs({
+                    usedPercent: window.usedPercent,
+                    resetAt: window.resetAt,
+                    windowDurationMs: window.windowDurationMs,
+                    nowMs,
+                  }),
+                );
+                const paceDescription =
+                  elapsedPercent === null
+                    ? null
+                    : `${Math.round(window.usedPercent ?? 0)}% used · ${Math.round(elapsedPercent)}% of the window elapsed${paceDelta === null ? "" : ` · ${paceDelta}`}`;
+                return (
+                  <li
+                    key={window.key}
+                    className="rounded-[10px] border border-[var(--line)] bg-surface-row/60 px-3 py-2.5"
+                  >
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="min-w-0 break-words font-medium text-[12.5px] text-foreground leading-snug">
+                        {titleCaseUsageLabel(window.label)}
+                      </span>
+                      <span
+                        className={`shrink-0 whitespace-nowrap font-mono text-[12px] tabular-nums ${
+                          window.usedPercent === null
+                            ? "text-muted-foreground"
+                            : usageValueClass(window.usedPercent)
+                        }`}
+                      >
+                        {detail}
+                      </span>
+                    </div>
+                    {window.usedPercent !== null ? (
+                      <div className="mt-2">
+                        <UsageWindowProgressLine
+                          name={name}
+                          window={{ ...window, usedPercent: window.usedPercent }}
+                          elapsedPercent={elapsedPercent}
+                          paceDelta={paceDelta}
+                          paceDescription={paceDescription}
+                        />
+                      </div>
+                    ) : null}
+                    {reset ? (
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground tabular-nums">
+                        <span>{remaining ?? ""}</span>
+                        <span className="whitespace-nowrap">Resets {reset}</span>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="mt-3 rounded-[10px] border border-[var(--line)] border-dashed px-3 py-3 text-center text-[11.5px] text-muted-foreground leading-snug">
+              {isRefreshing
+                ? "Loading usage…"
+                : state === "unsupported"
+                  ? "This provider does not expose account usage."
+                  : "Usage has not been reported for this provider account yet."}
+            </p>
+          )}
+        </>
       )}
       {resetCredits ? (
         <section
-          className="mt-4 border-border/60 border-t pt-3"
+          className="mt-4 border-[var(--line)] border-t pt-3"
           aria-label={`${name} usage resets`}
         >
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h4 className="font-medium text-foreground text-xs">Usage limit resets</h4>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
+              <h4 className="font-medium text-[12.5px] text-foreground">Usage limit resets</h4>
+              <p className="mt-0.5 text-[11px] text-muted-foreground tabular-nums">
                 {resetCredits.availableCount} available
               </p>
             </div>
@@ -1143,9 +1198,9 @@ export function ProviderUsageDetails({
               return (
                 <li
                   key={credit.id ?? `next-reset-${index}`}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/25 px-2.5 py-2"
+                  className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-[10px] border border-[var(--line)] bg-surface-row/60 px-3 py-2"
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="truncate font-medium text-foreground text-xs">
                       {credit.title}
                     </div>
@@ -1212,7 +1267,7 @@ export function ProviderUsageDetails({
         <Button
           size="xs"
           variant="link"
-          className="mt-3 h-auto justify-start px-0 text-xs"
+          className="mt-3 h-auto justify-start px-0 text-[11.5px] text-gold-700 hover:text-gold-800 dark:text-gold-300 dark:hover:text-gold-200"
           render={
             <a
               href={externalUsageLink.href}
@@ -1415,7 +1470,7 @@ function ProviderUsageBadge({
         side={detailsSide}
         sideOffset={8}
         aria-label={usageDetailsLabel}
-        className="border border-border/70 bg-popover shadow-xl"
+        className="border border-gold-500/30 bg-popover shadow-[0_24px_64px_-24px_rgba(0,0,0,0.75),0_0_0_1px_rgba(217,169,58,0.06)]"
       >
         <ProviderUsageBadgeDetails
           summary={summary}

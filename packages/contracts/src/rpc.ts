@@ -323,6 +323,8 @@ export const WS_METHODS = {
   vmAgentCreate: "vmAgent.create",
   vmAgentBuilderOpen: "vmAgent.builder.open",
   vmAgentDelete: "vmAgent.delete",
+  vmAgentStart: "vmAgent.start",
+  vmAgentStop: "vmAgent.stop",
   vmAgentSubscribe: "vmAgent.subscribe",
   vmAgentWorkspaceSubscribe: "vmAgent.workspace.subscribe",
   vmAgentRulesGet: "vmAgent.rules.get",
@@ -959,6 +961,23 @@ export const WsVmAgentDeleteRpc = Rpc.make(WS_METHODS.vmAgentDelete, {
   error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
 });
 
+/** Switch an agent on: scheduled tasks resume and the scheduler is woken. */
+export const WsVmAgentStartRpc = Rpc.make(WS_METHODS.vmAgentStart, {
+  payload: VmAgentRef,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
+/**
+ * Switch an agent off: its in-flight turn is interrupted, due scheduled tasks
+ * are ignored and run-now is refused until it is started again.
+ */
+export const WsVmAgentStopRpc = Rpc.make(WS_METHODS.vmAgentStop, {
+  payload: VmAgentRef,
+  success: VmAgent,
+  error: Schema.Union([VmAgentError, EnvironmentAuthorizationError]),
+});
+
 export const WsVmAgentSubscribeRpc = Rpc.make(WS_METHODS.vmAgentSubscribe, {
   payload: Schema.Struct({}),
   success: VmAgentStreamItem,
@@ -1369,6 +1388,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVmAgentCreateRpc,
   WsVmAgentBuilderOpenRpc,
   WsVmAgentDeleteRpc,
+  WsVmAgentStartRpc,
+  WsVmAgentStopRpc,
   WsVmAgentSubscribeRpc,
   WsVmAgentWorkspaceSubscribeRpc,
   WsVmAgentRulesGetRpc,

@@ -122,7 +122,7 @@ function BackgroundPolicyTooltip({ children }: { readonly children: string }) {
         render={
           <button
             type="button"
-            className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
             aria-label="Background policy details"
           >
             <InfoIcon className="size-3.5" />
@@ -553,7 +553,11 @@ export function SourceControlSettingsPanel() {
       ) : hasDiscoveryItems ? (
         <>
           {result.versionControlSystems.length > 0 ? (
-            <SettingsSection title="Version Control" headerAction={scanButton}>
+            <SettingsSection
+              id="setting-version-control"
+              title="Version Control"
+              headerAction={scanButton}
+            >
               {result.versionControlSystems.map((item) => (
                 <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
                   {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}

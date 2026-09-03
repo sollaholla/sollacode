@@ -67,6 +67,7 @@ import {
 import {
   getPreviewHumanVerification,
   inspectPreviewHumanVerification,
+  reinspectPreviewHumanVerificationForAutomation,
 } from "./previewHumanVerification";
 import {
   previewAutomationOpenNeedsOverlay,
@@ -495,7 +496,18 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           });
         const requireAutomatableTab = async () => {
           const ready = await requireReadyTab();
-          const verification = getPreviewHumanVerification(ready.runtimeTabId);
+          // A latched tab is looked at again before it is refused: the user
+          // may have completed the challenge since, and nothing else clears
+          // the latch on their behalf.
+          const verification = await reinspectPreviewHumanVerificationForAutomation({
+            runtimeTabId: ready.runtimeTabId,
+            evaluate: (expression) =>
+              ready.bridge.automation.evaluate(ready.runtimeTabId, {
+                expression,
+                awaitPromise: true,
+                returnByValue: true,
+              }),
+          }).catch(() => getPreviewHumanVerification(ready.runtimeTabId));
           if (verification) {
             throw new PreviewAutomationHumanVerificationHostError({
               requestId: request.requestId,

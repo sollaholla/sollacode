@@ -138,7 +138,7 @@ export const PreviewSnapshotTool = readonlyBrowserTool(
 export const PreviewClickTool = browserTool(
   Tool.make("preview_click", {
     description:
-      "Click exactly one target in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together, and they are viewport CSS pixels of the CURRENT scroll position: a point below or beside the visible area is rejected as outside the viewport, so scroll the target into view (preview_scroll, or window.scrollTo via preview_evaluate) and re-read its box from a fresh preview_snapshot first, or click by locator, which needs no coordinates. Every failure names its exact reason and what to do next; read it before retrying.",
+      "Click exactly one target in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; selector accepts legacy CSS; x and y must be supplied together, and they are viewport CSS pixels of the CURRENT scroll position: a point below or beside the visible area is rejected as outside the viewport, so scroll the target into view (preview_scroll, or window.scrollTo via preview_evaluate) and re-read its box from a fresh preview_snapshot first, or click by locator, which needs no coordinates. Every failure names its exact reason and what to do next; read it before retrying. While the user is typing or clicking, the action waits for them to pause; a 'deferred to user input' failure means it never reached the page, so retry the same call after a moment instead of changing approach.",
     parameters: PreviewAutomationClickInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -149,7 +149,7 @@ export const PreviewClickTool = browserTool(
 export const PreviewDragTool = browserTool(
   Tool.make("preview_drag", {
     description:
-      "Draw a click-and-drag or freeform stroke of trusted pointer events across a path in the tab selected by tabId, or this thread's current tab when omitted. The button presses at the first point, drags through interpolated moves with the button held, and releases at the last, so canvas games (Phaser and friends), drawing tools, sliders, and drag-and-drop targets receive a continuous trusted stroke. Provide {from:{x,y}, to:{x,y}} for a straight drag or {path:[{x,y},...]} for a freeform stroke; give coordinates in viewport CSS pixels from preview_snapshot. Optional steps controls interpolation density (default 8), holdMs pauses before release, and button selects left/middle/right.",
+      "Draw a click-and-drag or freeform stroke of trusted pointer events across a path in the tab selected by tabId, or this thread's current tab when omitted. The button presses at the first point, drags through interpolated moves with the button held, and releases at the last, so canvas games (Phaser and friends), drawing tools, sliders, and drag-and-drop targets receive a continuous trusted stroke. Provide {from:{x,y}, to:{x,y}} for a straight drag or {path:[{x,y},...]} for a freeform stroke; give coordinates in viewport CSS pixels from preview_snapshot. Optional steps controls interpolation density (default 8), holdMs pauses before release, and button selects left/middle/right. While the user is typing or clicking, the action waits for them to pause; a 'deferred to user input' failure means it never reached the page, so retry the same call after a moment instead of changing approach.",
     parameters: PreviewAutomationDragInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -160,7 +160,7 @@ export const PreviewDragTool = browserTool(
 export const PreviewTypeTool = browserTool(
   Tool.make("preview_type", {
     description:
-      "Insert literal text into one input in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; set clear=true to replace existing text.",
+      "Insert literal text into one input in the tab selected by tabId, or this thread's current tab when omitted. Prefer a Playwright locator; set clear=true to replace existing text. While the user is typing or clicking, the action waits for them to pause; a 'deferred to user input' failure means it never reached the page, so retry the same call after a moment instead of changing approach.",
     parameters: PreviewAutomationTypeInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -193,7 +193,7 @@ export const PreviewSelectOptionTool = browserTool(
 export const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
-      "Press one keyboard key in the tab selected by tabId, or this thread's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}.",
+      "Press one keyboard key in the tab selected by tabId, or this thread's current tab when omitted. Examples: {key:'Enter'}, {key:'Escape'}, or {key:'a',modifiers:['Meta']}. While the user is typing or clicking, the action waits for them to pause; a 'deferred to user input' failure means it never reached the page, so retry the same call after a moment instead of changing approach.",
     parameters: PreviewAutomationPressInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -226,7 +226,7 @@ export const PreviewEvaluateTool = browserTool(
 export const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
-      "Wait in the tab selected by tabId, or this thread's current tab when omitted, until all supplied locator, selector, text, and URL conditions match.",
+      "Wait in the tab selected by tabId, or this thread's current tab when omitted, until all supplied locator, selector, text, and URL conditions match. One call waits at most 50 seconds; for a longer wait, call again.",
     parameters: PreviewAutomationWaitForInput,
     success: PreviewActionResult,
     failure: PreviewAutomationError,
@@ -237,7 +237,7 @@ export const PreviewWaitForTool = readonlyBrowserTool(
 export const PreviewWaitForDownloadTool = readonlyBrowserTool(
   Tool.make("preview_wait_for_download", {
     description:
-      "Wait for a download started in this tab to finish, including the time a download from a site the user has not approved yet spends waiting for their answer. Downloads from a new domain are held until the user allows or denies them. Call this after clicking a download — do not treat an empty pending list at the start as a denial. Returns outcome downloaded, denied, waiting, or none, plus the files that landed. If outcome is waiting, the user still has the Allow/Deny question: do not retry the fetch. End the turn; in Agent mode emit AGENT_STOP.",
+      "Wait for a download started in this tab to finish, including the time a download from a site the user has not approved yet spends waiting for their answer. Downloads from a new domain are held until the user allows or denies them. Call this after clicking a download — do not treat an empty pending list at the start as a denial. Returns outcome downloaded, denied, waiting, or none, plus the files that landed. One call waits at most 50 seconds: outcome none with a message saying to call again means the wait ran out with nothing to report yet, so call again to keep waiting. If outcome is waiting, the user still has the Allow/Deny question: do not retry the fetch. End the turn; in Agent mode emit AGENT_STOP.",
     parameters: PreviewAutomationWaitForDownloadInput,
     success: PreviewAutomationWaitForDownloadResult,
     failure: PreviewAutomationError,

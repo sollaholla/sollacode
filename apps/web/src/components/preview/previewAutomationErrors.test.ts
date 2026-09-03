@@ -61,6 +61,42 @@ describe("PreviewAutomationOperationError.fromCause", () => {
     expect(reason).toContain("preview_scroll");
   });
 
+  it("says the action was held for the user, not that the page failed", () => {
+    // Live 2026-09-03: two clicks expired inside the wait for a typing user and
+    // reached the model as "timed out after 15000ms"; it then concluded the
+    // site's menus rejected automation and spent its remaining attempts.
+    const error = PreviewAutomationOperationError.fromCause({
+      ...context,
+      cause: {
+        _tag: "PreviewAutomationDeferredToUserInputError",
+        operation: "click",
+        tabId: "tab_1",
+        waitedMs: 14_956,
+      },
+    });
+    const reason =
+      (serializePreviewAutomationHostError(error).detail as { reason?: string } | undefined)
+        ?.reason ?? "";
+    expect(reason).toContain("held for 15s because the user is typing or clicking");
+    expect(reason).toContain("never reached the page");
+    expect(reason).toContain("retry the same action unchanged");
+    expect(reason).not.toContain("timed out");
+
+    const overIpc = PreviewAutomationOperationError.fromCause({
+      ...context,
+      cause: new Error(
+        'Error invoking remote method \'desktop:preview-automation-click\': PreviewAutomationDeferredToUserInputError: Preview automation click waited 14956ms for the user to stop typing or clicking and was still waiting when the request expired; nothing was dispatched to tab ["c7aa9515-0f3f","d10325f1-cef1",null,"tab_dd02d62c-6d02"]',
+      ),
+    });
+    const ipcReason =
+      (serializePreviewAutomationHostError(overIpc).detail as { reason?: string } | undefined)
+        ?.reason ?? "";
+    expect(ipcReason).toContain("waited 14956ms for the user");
+    expect(ipcReason).toContain("tab tab_dd02d62c-6d02");
+    expect(ipcReason).toContain("retry the same action unchanged");
+    expect(ipcReason.length).toBeLessThanOrEqual(400);
+  });
+
   it("reads the desktop tag out of an IPC error string and adds guidance", () => {
     const error = PreviewAutomationOperationError.fromCause({
       ...context,

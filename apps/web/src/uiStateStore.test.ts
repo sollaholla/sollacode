@@ -28,7 +28,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadChangedFilesExpandedById: {},
     threadPanelExpandedById: {},
     defaultAdvertisedEndpointKey: null,
-    showProviderUsageBar: false,
+    showProviderUsageBar: true,
     settledShelfExpanded: false,
     agentsSectionExpanded: true,
     threadsSectionExpanded: true,
@@ -245,13 +245,13 @@ describe("parsePersistedState", () => {
     expect(parsed.threadChangedFilesExpandedById).toEqual({});
   });
 
-  it("defaults the provider usage bar off and hydrates only an explicit true", () => {
-    expect(parsePersistedState({}).showProviderUsageBar).toBe(false);
-    expect(parsePersistedState({ showProviderUsageBar: true }).showProviderUsageBar).toBe(true);
+  it("defaults the provider usage bar on and hides it only for an explicit false", () => {
+    expect(parsePersistedState({}).showProviderUsageBar).toBe(true);
+    expect(parsePersistedState({ showProviderUsageBar: false }).showProviderUsageBar).toBe(false);
     expect(
       parsePersistedState({ showProviderUsageBar: "yes" as unknown as boolean })
         .showProviderUsageBar,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("migrates legacy CWD project preferences into local alias keys", () => {
@@ -353,7 +353,7 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
-      showProviderUsageBar: false,
+      showProviderUsageBar: true,
       settledShelfExpanded: false,
       agentsSectionExpanded: true,
       threadsSectionExpanded: true,

@@ -45,6 +45,39 @@ export function SettingsRouteLayout() {
     void navigate({ to: "/" });
   }, [canGoBack, navigate]);
 
+  // A search result navigates with the row id as the hash: once the lazy
+  // panel has rendered that row, bring it into view and flash it gold.
+  const targetRowId = typeof location.hash === "string" ? location.hash.replace(/^#/, "") : "";
+  useEffect(() => {
+    if (targetRowId.length === 0) return;
+    let cancelled = false;
+    let attempts = 0;
+    let clearHighlight: (() => void) | null = null;
+    const tick = () => {
+      if (cancelled) return;
+      const row = document.getElementById(targetRowId);
+      if (row) {
+        row.scrollIntoView({ block: "center" });
+        row.setAttribute("data-settings-highlight", "");
+        const timer = setTimeout(() => row.removeAttribute("data-settings-highlight"), 2400);
+        clearHighlight = () => {
+          clearTimeout(timer);
+          row.removeAttribute("data-settings-highlight");
+        };
+        return;
+      }
+      attempts += 1;
+      if (attempts < 60) {
+        requestAnimationFrame(tick);
+      }
+    };
+    tick();
+    return () => {
+      cancelled = true;
+      clearHighlight?.();
+    };
+  }, [location.pathname, targetRowId]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;

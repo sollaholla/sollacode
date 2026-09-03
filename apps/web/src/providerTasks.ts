@@ -382,3 +382,44 @@ export function describeSendOverRunningTasks(count: number): string {
   const object = count === 1 ? "it" : "them";
   return `${subject} still running. Sending now will cancel ${object}. Send anyway?`;
 }
+
+/**
+ * The shortest time a real person could plausibly read a dialog and answer it.
+ * Anything faster than this did not involve a person.
+ */
+export const UNANSWERED_CONFIRM_MS = 250;
+
+/**
+ * Ask before destroying visible background work, but never lose the message.
+ *
+ * `window.confirm` is not guaranteed to appear. A mobile browser that has been
+ * told to block further dialogs from a page, an in-app webview, or a browser
+ * refusing a dialog raised outside a user gesture all return `false`
+ * immediately without showing anything. Read literally that is "the user said
+ * no", so the send returned early and the typed message vanished with no
+ * explanation and nothing in the transcript — reported live from a phone on
+ * 2026-09-02, against a thread that had a background task running.
+ *
+ * A decision nobody was asked for is not a decision. If the answer comes back
+ * faster than a person could have given it, no dialog happened and the send
+ * proceeds; the background tasks are then cancelled explicitly and named in
+ * the message, which is how the user finds out either way. Only an answer slow
+ * enough to have been read and refused stops the send.
+ */
+export function confirmDestructiveSend(
+  message: string,
+  clock: () => number = () => Date.now(),
+): boolean {
+  const ask = typeof window === "undefined" ? undefined : window.confirm;
+  if (typeof ask !== "function") return true;
+  const askedAt = clock();
+  let answer: boolean;
+  try {
+    answer = ask.call(window, message);
+  } catch {
+    // A webview that throws rather than prompting has still not asked anyone.
+    return true;
+  }
+  if (answer) return true;
+  return clock() - askedAt < UNANSWERED_CONFIRM_MS;
+}

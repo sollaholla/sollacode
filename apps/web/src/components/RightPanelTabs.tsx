@@ -456,7 +456,7 @@ export function RightPanelEmptyState(props: {
                     key={action.label}
                     type="button"
                     onClick={action.onClick}
-                    className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                    className="flex min-h-28 w-full flex-col items-start rounded-lg border border-border bg-card p-4 text-left transition hover:border-border hover:bg-accent/60 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
                   >
                     {content}
                   </button>
@@ -465,7 +465,7 @@ export function RightPanelEmptyState(props: {
               const disabledCard = (
                 <button
                   type="button"
-                  className="flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border/80 bg-card p-4 text-left opacity-40 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
+                  className="flex min-h-28 w-full cursor-not-allowed flex-col items-start rounded-lg border border-border bg-card p-4 text-left opacity-40 dark:border-transparent dark:shadow-none dark:inset-ring-1 dark:inset-ring-white/5"
                   aria-disabled="true"
                 >
                   {content}
@@ -640,7 +640,7 @@ function SurfaceIcon({
         return (
           <Cast
             aria-label="Floating browser preview"
-            className="size-3.5 shrink-0 text-sky-500 dark:text-sky-400"
+            className="size-3.5 shrink-0 text-gold-500 dark:text-gold-400"
           />
         );
       }
@@ -696,7 +696,7 @@ function SurfaceIcon({
           {sideChatStatus?.isWorking ? (
             <span
               aria-label="Side chat working"
-              className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-sky-500 ring-1 ring-background"
+              className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-gold-500 ring-1 ring-background"
               role="status"
             />
           ) : null}
@@ -840,7 +840,7 @@ function SortableTab(props: {
               <span className="block text-xs opacity-70">Side chat</span>
             ) : null}
             {floatingPreview ? (
-              <span className="block text-xs text-sky-500 dark:text-sky-400">
+              <span className="block text-xs text-gold-500 dark:text-gold-400">
                 Floating browser preview
               </span>
             ) : null}

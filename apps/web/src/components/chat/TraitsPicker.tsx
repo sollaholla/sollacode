@@ -508,7 +508,7 @@ export const TraitsPicker = memo(function TraitsPicker({
             data-chat-composer-control-display={iconOnly ? "icon" : "label"}
             className={cn(
               iconOnly
-                ? "size-7 shrink-0 justify-center px-0"
+                ? "size-8 shrink-0 justify-center px-0"
                 : isCodexStyle
                   ? "min-w-0 max-w-40 shrink-0 justify-start overflow-hidden whitespace-nowrap sm:max-w-48"
                   : "shrink-0 whitespace-nowrap",

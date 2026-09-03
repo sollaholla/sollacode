@@ -10,27 +10,29 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ProviderUsageBadgeDetails,
+  ProviderUsageBar,
+  ProviderUsageDetails,
+  ProviderUsagePlacementRow,
   claudePopupWindows,
   compactProviderUsageMetric,
   deriveProviderUsageReports,
   deriveProviderUsageSummaries,
-  ProviderUsageBar,
-  ProviderUsageBadgeDetails,
-  ProviderUsageDetails,
-  ProviderUsagePlacementRow,
+  formatUsageWindowPaceDelta,
+  providerUsageBadgeTriggerOpen,
   providerUsageDetailsSide,
   providerUsageExternalLink,
   resolveProviderUsagePlacement,
   resolveUsageWindowElapsedPercent,
   resolveUsageWindowPaceDeltaMs,
-  formatUsageWindowPaceDelta,
+  titleCaseUsageLabel,
   usageThreshold,
-  providerUsageBadgeTriggerOpen,
 } from "./ProviderUsageBar";
 import {
   dismissProviderUsageResetCredit,
   mergeProviderUsageEntry,
   providerUsageAccountKey,
+  pruneStaleUsageWindows,
 } from "../../providerUsageStore";
 
 const makeProvider = (driver: string, instanceId = driver, email?: string): ServerProvider => ({
@@ -1092,7 +1094,7 @@ describe("provider usage summaries", () => {
     expect(markup).toContain("50% used");
     expect(markup).toContain("75% used");
     expect(markup).toContain("Stale");
-    expect(markup).toContain("bg-foreground/55");
+    expect(markup).toContain("bg-gold-500");
     expect(markup).toContain("bg-amber-500");
     expect(markup).toContain("bg-red-600");
     expect(markup).toContain('aria-label="Claude usage windows"');
@@ -1132,7 +1134,7 @@ describe("provider usage summaries", () => {
     expect(markup).toContain('data-provider-usage-card="Claude"');
     expect(markup).toContain('data-provider-instance-id="claudeAgent"');
     expect(markup.match(/>Claude usage</g)).toHaveLength(1);
-    expect(markup.match(/>Current session</g)).toHaveLength(1);
+    expect(markup.match(/>Current Session</g)).toHaveLength(1);
     expect(markup.match(/>Weekly</g)).toHaveLength(1);
     expect(markup.match(/>Fable</g)).toHaveLength(1);
     expect(markup.match(/role="progressbar"/g)).toHaveLength(3);
@@ -1626,5 +1628,76 @@ describe("usage-window pace delta", () => {
     expect(markup).toContain("aria-valuetext=");
     expect(markup).toContain('data-usage-window-elapsed-marker="dots"');
     expect(markup).toContain("provider-usage-elapsed-dots");
+  });
+});
+
+describe("titleCaseUsageLabel", () => {
+  it("capitalises every word of a provider-reported label", () => {
+    expect(titleCaseUsageLabel("nimbus quill")).toBe("Nimbus Quill");
+    expect(titleCaseUsageLabel("seven day overage included")).toBe("Seven Day Overage Included");
+    expect(titleCaseUsageLabel("  Weekly ")).toBe("Weekly");
+  });
+});
+
+describe("stale usage windows", () => {
+  const window = (key: string, lastSeenAt?: string) => ({
+    key,
+    label: key,
+    usedPercent: 10,
+    resetAt: null,
+    ...(lastSeenAt ? { lastSeenAt } : {}),
+  });
+
+  it("prunes windows the provider stopped reporting a week ago, keeping the current ones", () => {
+    const kept = pruneStaleUsageWindows(
+      [
+        window("weekly", "2026-09-02T00:00:00.000Z"),
+        window("nimbus quill", "2026-08-20T00:00:00.000Z"),
+      ],
+      new Set(["weekly"]),
+      "2026-09-03T00:00:00.000Z",
+      undefined,
+    );
+    expect(kept.map((entry) => entry.key)).toEqual(["weekly"]);
+  });
+
+  it("falls back to the previous report time for windows persisted before lastSeenAt existed", () => {
+    const fresh = pruneStaleUsageWindows(
+      [window("fable")],
+      new Set(),
+      "2026-09-03T00:00:00.000Z",
+      "2026-09-01T00:00:00.000Z",
+    );
+    expect(fresh).toHaveLength(1);
+    const stale = pruneStaleUsageWindows(
+      [window("fable")],
+      new Set(),
+      "2026-09-03T00:00:00.000Z",
+      "2026-08-01T00:00:00.000Z",
+    );
+    expect(stale).toHaveLength(0);
+  });
+
+  it("stamps merged windows with the report time and drops long-unseen ones on merge", () => {
+    const accountKey = "env\u0000claudeAgent:test";
+    const first = mergeProviderUsageEntry(
+      {},
+      {
+        accountKey,
+        driver: "claudeAgent" as never,
+        reportedAt: "2026-08-01T00:00:00.000Z",
+        windows: [window("weekly"), window("nimbus quill")],
+      },
+    );
+    expect(
+      first[accountKey]?.windows.every((entry) => entry.lastSeenAt === "2026-08-01T00:00:00.000Z"),
+    ).toBe(true);
+    const later = mergeProviderUsageEntry(first, {
+      accountKey,
+      driver: "claudeAgent" as never,
+      reportedAt: "2026-09-03T00:00:00.000Z",
+      windows: [window("weekly")],
+    });
+    expect(later[accountKey]?.windows.map((entry) => entry.key)).toEqual(["weekly"]);
   });
 });

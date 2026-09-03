@@ -2,8 +2,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type VmAgent, VmAgentId } from "@t3tools/contracts";
 import {
+  ChevronDownIcon,
   ChevronLeftIcon,
-  EllipsisIcon,
   GitForkIcon,
   GlobeIcon,
   LayoutDashboardIcon,
@@ -24,6 +24,8 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar"
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { AgentChatSurface } from "./AgentChatSurface";
+import { AgentGlyph } from "./AgentGlyph";
+import { AgentPowerToggle } from "./AgentPowerToggle";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { AgentRulesPanel } from "./AgentRulesPanel";
 import { AgentAttentionStack } from "./AgentAttentionStack";
@@ -181,8 +183,13 @@ function AgentWorkspaceResolved(props: {
           reserve it lands on top of the agent's name and purpose. */}
       <header
         className={cn(
-          "@container/header-actions flex min-w-0 flex-col gap-2 border-b px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3",
-          COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+          "@container/header-actions flex min-w-0 flex-col gap-2 px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:gap-3 md:border-b",
+          // On a phone the header is the project card from the mockup: a
+          // rounded turn-box card under the top bar rather than a full-width
+          // band. The floating sidebar control is hidden there too, so the
+          // collapsed-sidebar reserve is only wanted from `md` up.
+          "max-md:mx-3 max-md:mt-2 max-md:rounded-[14px] max-md:border max-md:border-[var(--line)] max-md:bg-card max-md:p-3",
+          "md:" + COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
           // This header spans the window even when the browser panel is open,
           // so unlike ChatHeader the reserve cannot ever drop to pr-0: on
           // Windows the native window controls overlay this row's right edge,
@@ -194,7 +201,7 @@ function AgentWorkspaceResolved(props: {
           "md:pr-[var(--workspace-titlebar-content-right)]",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
+        <div className="flex min-w-0 items-center gap-3 pr-[var(--workspace-titlebar-content-right)] md:flex-1 md:pr-0">
           {view !== "chat" ? (
             <Button
               type="button"
@@ -208,75 +215,104 @@ function AgentWorkspaceResolved(props: {
               <ChevronLeftIcon />
             </Button>
           ) : null}
+          {/* The agent's outlined glyph in a tile, then name and purpose. The
+              name is the tools-menu trigger: the chevron beside it says so,
+              and the menu is where Activity, Scheduled work, Rules and the
+              Dashboard live. */}
+          <span
+            aria-hidden
+            className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--line)] bg-surface-tile text-foreground/85"
+          >
+            <AgentGlyph name={agent.name} icon={agent.icon} className="size-[18px]" />
+          </span>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold">{agent.name}</h1>
-            <p className="truncate text-xs text-muted-foreground">
-              {view === "chat" ? agent.purpose : VIEW_LABELS[view]}
+            <Menu>
+              <MenuTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Agent tools"
+                    title="Agent tools"
+                    className="flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm text-left outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                }
+              >
+                <h1 className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                  {agent.name}
+                </h1>
+                <ChevronDownIcon
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                  strokeWidth={2.25}
+                  aria-hidden
+                />
+              </MenuTrigger>
+              <MenuPopup align="start" className="w-52">
+                <MenuItem
+                  className={view === "activity" ? "bg-foreground/[0.08]" : undefined}
+                  onClick={() => setView("activity")}
+                >
+                  <GitForkIcon /> Activity
+                </MenuItem>
+                <MenuItem
+                  className={view === "tasks" ? "bg-foreground/[0.08]" : undefined}
+                  onClick={() => setView("tasks")}
+                >
+                  <ListTodoIcon /> Scheduled work
+                </MenuItem>
+                <MenuItem
+                  className={view === "rules" ? "bg-foreground/[0.08]" : undefined}
+                  onClick={() => setView("rules")}
+                >
+                  <ScrollTextIcon /> Rules
+                </MenuItem>
+                {dashboardAvailable ? (
+                  <MenuItem
+                    className={view === "dashboard" ? "bg-foreground/[0.08]" : undefined}
+                    onClick={() => setView("dashboard")}
+                  >
+                    <LayoutDashboardIcon /> Dashboard
+                  </MenuItem>
+                ) : null}
+              </MenuPopup>
+            </Menu>
+            <p className="truncate text-xs leading-4 text-muted-foreground">
+              {view !== "chat"
+                ? VIEW_LABELS[view]
+                : agent.status === "stopped"
+                  ? `Stopped · scheduled tasks paused · ${agent.purpose}`
+                  : agent.purpose}
             </p>
           </div>
         </div>
-        <div className="flex min-w-0 items-center justify-end gap-1 md:shrink-0">
+        <div className="flex min-w-0 items-center justify-end gap-2 md:shrink-0">
+          <AgentPowerToggle agent={agent} environmentId={environmentId} />
           {/* Agent threads reach the same remote machines as ordinary threads,
               so the control that connects to one belongs here too — a device
               driving an agent had no way to start a session from this header. */}
-          <RemoteConnectionControl activeEnvironmentId={environmentId} />
+          <RemoteConnectionControl
+            activeEnvironmentId={environmentId}
+            className="h-7 rounded-full border-[var(--line)] bg-surface-row px-2.5 text-[12px] hover:bg-surface-hover"
+          />
           {browserAvailable ? (
-            <Button
+            <button
               type="button"
-              size="xs"
-              variant={view === "chat" && browserPanelOpen ? "secondary" : "outline"}
               aria-label="Browser"
               aria-pressed={view === "chat" && browserPanelOpen}
               title="Browser"
               onClick={toggleBrowserPanel}
+              className={cn(
+                "inline-flex h-7 cursor-pointer items-stretch overflow-hidden rounded-full border border-[var(--line)] text-xs font-medium outline-hidden transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+                view === "chat" && browserPanelOpen
+                  ? "border-[var(--gold-line)] bg-[var(--gold-tint)] text-foreground"
+                  : "bg-surface-row text-foreground/85 hover:bg-surface-hover hover:text-foreground",
+              )}
             >
-              <GlobeIcon className="size-3.5" />
-              <span className="hidden @3xl/header-actions:inline">Browser</span>
-            </Button>
+              <span className="flex items-center border-r border-[var(--line)] px-2">
+                <GlobeIcon className="size-3.5" aria-hidden />
+              </span>
+              <span className="flex items-center px-2.5">Browser</span>
+            </button>
           ) : null}
-          <Menu>
-            <MenuTrigger
-              render={
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  aria-label="Agent tools"
-                  title="Agent tools"
-                />
-              }
-            >
-              <EllipsisIcon />
-            </MenuTrigger>
-            <MenuPopup align="end" className="w-52">
-              <MenuItem
-                className={view === "activity" ? "bg-foreground/[0.08]" : undefined}
-                onClick={() => setView("activity")}
-              >
-                <GitForkIcon /> Activity
-              </MenuItem>
-              <MenuItem
-                className={view === "tasks" ? "bg-foreground/[0.08]" : undefined}
-                onClick={() => setView("tasks")}
-              >
-                <ListTodoIcon /> Scheduled work
-              </MenuItem>
-              <MenuItem
-                className={view === "rules" ? "bg-foreground/[0.08]" : undefined}
-                onClick={() => setView("rules")}
-              >
-                <ScrollTextIcon /> Rules
-              </MenuItem>
-              {dashboardAvailable ? (
-                <MenuItem
-                  className={view === "dashboard" ? "bg-foreground/[0.08]" : undefined}
-                  onClick={() => setView("dashboard")}
-                >
-                  <LayoutDashboardIcon /> Dashboard
-                </MenuItem>
-              ) : null}
-            </MenuPopup>
-          </Menu>
         </div>
       </header>
 

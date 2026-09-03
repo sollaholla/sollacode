@@ -1482,6 +1482,115 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(toggle).toMatchObject({ hiddenCount: 1, onlyToolEntries: true });
   });
 
+  it("draws a thought outside the work group and splits the tool-call chain", () => {
+    // A thought explains the calls around it, so it has to be readable without
+    // opening the disclosure that hides them. Grouped with the calls it was
+    // folded behind the "N tool calls" toggle and never seen, which is how LAN
+    // Chat reasoning went missing (reported 2026-09-03).
+    const before = {
+      id: "work-tool-before",
+      createdAt: "2026-09-03T04:00:00.000Z",
+      label: "read_file",
+      detail: "harness.py",
+      tone: "tool" as const,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const thought = {
+      id: "work-thought",
+      createdAt: "2026-09-03T04:00:01.000Z",
+      label: "Thinking",
+      detail: "Checking whether the live run cleared preflight.",
+      tone: "thinking" as const,
+      sourceActivityKind: "reasoning.updated" as const,
+    };
+    const after = {
+      id: "work-tool-after",
+      createdAt: "2026-09-03T04:00:02.000Z",
+      label: "exec_command",
+      detail: "cat /tmp/result.json",
+      tone: "tool" as const,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        { id: "entry-tool-before", kind: "work", createdAt: before.createdAt, entry: before },
+        { id: "entry-thought", kind: "work", createdAt: thought.createdAt, entry: thought },
+        { id: "entry-tool-after", kind: "work", createdAt: after.createdAt, entry: after },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["work", "thought", "work"]);
+    const thoughtRow = rows.find((row) => row.kind === "thought");
+    expect(thoughtRow).toMatchObject({
+      id: "entry-thought",
+      text: "Checking whether the live run cleared preflight.",
+    });
+    // Nothing collapsed: the thought ended the run of calls before it, so
+    // neither side reaches the two entries a toggle needs.
+    expect(rows.some((row) => row.kind === "work-toggle")).toBe(false);
+  });
+
+  it("leaves a titled placeholder reasoning row in the work group", () => {
+    // The host defaults an untitled reasoning row's summary to "Thinking", so
+    // a row that carries "Thinking" as its literal title over a placeholder
+    // body looks identical by heading — and drew a transcript paragraph
+    // reading only "Thinking" (seen live from the bridge 2026-09-03).
+    const placeholder = {
+      id: "work-placeholder",
+      createdAt: "2026-09-03T05:01:20.000Z",
+      label: "Thinking",
+      toolTitle: "Thinking",
+      detail: "Thinking",
+      tone: "thinking" as const,
+      sourceActivityKind: "reasoning.updated" as const,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "entry-placeholder",
+          kind: "work",
+          createdAt: placeholder.createdAt,
+          entry: placeholder,
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["work"]);
+  });
+
+  it("leaves subagent progress in the work group", () => {
+    // Only untitled reasoning is the model thinking. Task progress wears the
+    // same thinking tone but it is work, and pulling it into the timeline
+    // would put a running subagent's every step in the transcript.
+    const progress = {
+      id: "work-progress",
+      createdAt: "2026-09-03T04:00:00.000Z",
+      label: "Explored the provider adapters",
+      detail: "12 files read",
+      tone: "thinking" as const,
+      sourceActivityKind: "task.progress" as const,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        { id: "entry-progress", kind: "work", createdAt: progress.createdAt, entry: progress },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["work"]);
+  });
+
   it("returns a new result when row order changes without content changes", () => {
     const firstUserMessage = {
       id: "user-1" as never,

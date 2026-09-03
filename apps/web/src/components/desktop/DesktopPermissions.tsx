@@ -485,7 +485,11 @@ export function DesktopPermissionsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection title="Permissions" icon={<ShieldCheckIcon className="size-5" />}>
+      <SettingsSection
+        id="setting-permissions"
+        title="Permissions"
+        icon={<ShieldCheckIcon className="size-5" />}
+      >
         {content}
       </SettingsSection>
     </SettingsPageContainer>

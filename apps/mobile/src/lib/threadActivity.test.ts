@@ -56,6 +56,111 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("carries a thought outside the activity group and splits the tool-call chain", () => {
+    // A thought explains the calls around it, so it has to be readable without
+    // opening the work disclosure. Grouped with the calls it was folded behind
+    // the "N tool calls" toggle and never seen (reported 2026-09-03).
+    const turnId = TurnId.make("turn-thought");
+    const thread = makeThread({
+      id: ThreadId.make("thread-thought"),
+      projectId: ProjectId.make("project-1"),
+      title: "Thoughts",
+      activities: [
+        makeActivity({
+          id: EventId.make("tool-before"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read file",
+          turnId,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { itemType: "dynamic_tool_call", title: "Read file", status: "completed" },
+        }),
+        makeActivity({
+          id: EventId.make("thought"),
+          kind: "reasoning.updated",
+          summary: "Thinking",
+          turnId,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          payload: {
+            itemType: "reasoning",
+            detail: "Checking whether the live run cleared preflight.",
+          },
+        }),
+        makeActivity({
+          id: EventId.make("tool-after"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Ran command",
+          turnId,
+          createdAt: "2026-04-01T00:00:03.000Z",
+          payload: { itemType: "command_execution", title: "Ran command", status: "completed" },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+
+    expect(feed.map((entry) => entry.type)).toEqual([
+      "activity-group",
+      "thought",
+      "activity-group",
+    ]);
+    const thought = feed.find((entry) => entry.type === "thought");
+    expect(thought).toMatchObject({
+      turnId,
+      text: "Checking whether the live run cleared preflight.",
+    });
+  });
+
+  it("leaves titled reasoning in the activity group", () => {
+    // A titled reasoning row is a bridge narrating its own state, not the
+    // model thinking, so it stays ordinary work.
+    const thread = makeThread({
+      id: ThreadId.make("thread-runtime-status"),
+      projectId: ProjectId.make("project-1"),
+      title: "Runtime status",
+      activities: [
+        makeActivity({
+          id: EventId.make("status"),
+          kind: "reasoning.updated",
+          summary: "Working",
+          turnId: TurnId.make("turn-status"),
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: {
+            itemType: "reasoning",
+            title: "Working",
+            detail: "Delivering your message to the browser",
+          },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread).map((entry) => entry.type)).toEqual(["activity-group"]);
+  });
+
+  it("leaves a titled placeholder reasoning row in the activity group", () => {
+    // "Thinking" as a literal title over a placeholder body reads the same as
+    // the default heading an untitled row gets, so matching on the heading
+    // drew a feed paragraph saying only "Thinking".
+    const thread = makeThread({
+      id: ThreadId.make("thread-placeholder"),
+      projectId: ProjectId.make("project-1"),
+      title: "Placeholder reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("placeholder"),
+          kind: "reasoning.updated",
+          summary: "Thinking",
+          turnId: TurnId.make("turn-placeholder"),
+          createdAt: "2026-04-01T00:00:01.000Z",
+          payload: { itemType: "reasoning", title: "Thinking", detail: "Thinking" },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread).map((entry) => entry.type)).toEqual(["activity-group"]);
+  });
+
   it("hides provider usage refresh success activities while keeping other activity rows", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-provider-usage"),

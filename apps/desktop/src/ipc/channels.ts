@@ -122,6 +122,8 @@ export const ORCHESTRATOR_BUBBLE_MOVE_CHANNEL = "desktop:orchestrator-bubble-mov
 export const ORCHESTRATOR_BUBBLE_DRAG_START_CHANNEL = "desktop:orchestrator-bubble-drag-start";
 export const ORCHESTRATOR_BUBBLE_DRAG_END_CHANNEL = "desktop:orchestrator-bubble-drag-end";
 export const ORCHESTRATOR_BUBBLE_OPEN_CHANNEL = "desktop:orchestrator-bubble-open";
+export const ORCHESTRATOR_BUBBLE_SET_INTERACTIVE_CHANNEL =
+  "desktop:orchestrator-bubble-set-interactive";
 export const ORCHESTRATOR_BUBBLE_TOGGLE_VOICE_CHANNEL = "desktop:orchestrator-bubble-toggle-voice";
 /** Main-process → main-window push. The bubble cannot host a voice session. */
 export const ORCHESTRATOR_VOICE_TOGGLE_CHANNEL = "desktop:orchestrator-voice-toggle";

@@ -134,7 +134,7 @@ export const ChatHeader = memo(function ChatHeader({
                     type="button"
                     aria-label={`New thread in ${activeProjectName}`}
                     onClick={onNewThreadInProject}
-                    className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                    className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 }
               >
@@ -190,7 +190,7 @@ export const ChatHeader = memo(function ChatHeader({
                     onMainSurfaceChange(mainSurface === "terminal" ? "chat" : "terminal")
                   }
                   className={cn(
-                    "inline-flex cursor-pointer items-center rounded-sm p-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+                    "inline-flex cursor-pointer items-center rounded-md p-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
                     mainSurface === "terminal"
                       ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground",

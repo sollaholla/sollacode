@@ -124,11 +124,57 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-native-controls-inset: 0px;
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.75rem;
+
+  /* Obsidian & Gold palette. Scheme-independent so a light window still gets
+     gold primaries; the dark scheme maps every surface variable onto it. */
+  --gold-300: #f5d77a;
+  --gold-400: #eac45a;
+  --gold-500: #d9a93a;
+  --gold-600: #b98a26;
+  --gold-700: #8c6718;
+  --gold-glow: rgb(185 138 38 / 30%);
+  --gold-tint: rgb(185 138 38 / 9%);
+  --gold-tint-strong: rgb(185 138 38 / 15%);
+  --gold-line: rgb(185 138 38 / 32%);
+  /* Surface levels and the single edge colour, per scheme: light here, dark
+     in the `.dark` block below. Components only ever name the level. */
+  --surface-page: #fafafa;
+  --surface-card: #ffffff;
+  --surface-row: #f5f5f6;
+  --surface-tile: #ececef;
+  --surface-hover: #e6e6e9;
+  --line: rgb(0 0 0 / 9%);
+  --line-strong: rgb(0 0 0 / 15%);
+  --text-1: #18181b;
+  --text-2: #3f3f46;
+  --text-3: #71717a;
+  --text-4: #a1a1aa;
+  --ok: #059669;
+  --danger: #dc2626;
+  --warn: #ea580c;
 }
 
 .dark {
-  --app-scrollbar-thumb: rgb(255 255 255 / 8%);
-  --app-scrollbar-thumb-hover: rgb(255 255 255 / 12%);
+  --surface-page: #050505;
+  --ok: #34d399;
+  --danger: #f87171;
+  --warn: #fb923c;
+  --surface-card: #0f0f11;
+  --surface-row: #0a0a0b;
+  --surface-tile: #151517;
+  --surface-hover: #1b1b1e;
+  --line: rgb(255 255 255 / 8%);
+  --line-strong: rgb(255 255 255 / 14%);
+  --text-1: #f4f4f5;
+  --text-2: #b4b4bb;
+  --text-3: #7c7c85;
+  --text-4: #55555c;
+  --gold-glow: rgb(217 169 58 / 35%);
+  --gold-tint: rgb(217 169 58 / 10%);
+  --gold-tint-strong: rgb(217 169 58 / 16%);
+  --gold-line: rgb(217 169 58 / 28%);
+  --app-scrollbar-thumb: rgb(255 255 255 / 10%);
+  --app-scrollbar-thumb-hover: rgb(255 255 255 / 16%);
   --glass-blur: 16px;
   --glass-saturation: 1.08;
 }
@@ -183,6 +229,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     sans-serif;
   --font-mono:
     "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --color-gold-300: var(--gold-300);
+  --color-gold-400: var(--gold-400);
+  --color-gold-500: var(--gold-500);
+  --color-gold-600: var(--gold-600);
+  --color-gold-700: var(--gold-700);
+  --color-surface-page: var(--surface-page);
+  --color-surface-card: var(--surface-card);
+  --color-surface-row: var(--surface-row);
+  --color-surface-tile: var(--surface-tile);
+  --color-surface-hover: var(--surface-hover);
+  --color-ok: var(--ok);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -354,9 +411,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .dark .stage-blueprint {
-    --stage-bp-top: #3a7ad1;
-    --stage-bp-mid: #2050ae;
-    --stage-bp-bottom: #101f6e;
+    /* Gold-on-black blueprint so the Dev stage art stays on brand. */
+    --stage-bp-top: #7a5c17;
+    --stage-bp-mid: #4a370d;
+    --stage-bp-bottom: #1c1506;
   }
 
   .workspace-topbar {
@@ -575,7 +633,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     position: absolute;
     z-index: 0;
     inset: 0;
-    border-radius: 22px;
+    border-radius: 16px;
     background: color-mix(
       in srgb,
       var(--chat-composer-glass-surface) var(--glass-opacity),
@@ -674,8 +732,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 
   .dark .chat-composer-glass-shell {
-    --chat-composer-glass-surface: color-mix(in srgb, var(--background) 96%, var(--color-white));
-    --chat-composer-outline: color-mix(in srgb, var(--color-white) 5%, transparent);
+    --chat-composer-glass-surface: var(--surface-row);
+    --chat-composer-outline: var(--line-strong);
     --chat-composer-highlight: rgb(255 255 255 / 3%);
   }
 
@@ -703,7 +761,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   @supports not (clip-path: shape(from 0 0, line to 1px 1px)) {
     .chat-composer-glass-shell-with-context::before {
       inset-block-end: var(--chat-composer-context-extension);
-      border-radius: 22px;
+      border-radius: 16px;
       clip-path: none;
     }
 
@@ -730,17 +788,13 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
+  /* Banner cards are flat since the Obsidian & Gold redesign: the turn-box
+     surface and edge, no glass tint. The variant colour survives on the icon
+     and title only (see the .alert-glass rules at the end of this file). */
   .alert-glass {
     --alert-glass-tint: transparent;
 
-    background:
-      linear-gradient(
-        color-mix(in srgb, var(--alert-glass-tint) 4%, transparent),
-        color-mix(in srgb, var(--alert-glass-tint) 4%, transparent)
-      ),
-      color-mix(in srgb, var(--background) var(--glass-opacity), transparent) !important;
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
-    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    background: var(--card) !important;
   }
 
   .alert-glass[data-variant="error"] {
@@ -1006,7 +1060,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --card-foreground: var(--color-zinc-800);
   --popover: var(--color-white);
   --popover-foreground: var(--color-zinc-800);
-  --primary: oklch(0.488 0.217 264);
+  --primary: var(--gold-600);
   --primary-foreground: var(--color-white);
   --secondary: var(--color-zinc-50);
   --secondary-foreground: var(--color-zinc-800);
@@ -1017,7 +1071,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --destructive: var(--color-red-500);
   --border: var(--color-zinc-200);
   --input: var(--color-zinc-300);
-  --ring: oklch(0.488 0.217 264);
+  --ring: var(--gold-600);
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -1039,44 +1093,46 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
   @variant dark {
     color-scheme: dark;
-    /* Keep the workspace in the same neutral-black family as sidebar v2.
-       Surfaces lift from this base instead of starting from a milky gray. */
-    --background: var(--color-neutral-950);
+    /* Obsidian & Gold: one near-black base for the whole app. Surfaces step
+       up through the ink scale instead of mixing white into the background,
+       and the only chromatic accent is gold. Warnings are orange on purpose so
+       they can never be mistaken for the accent. */
+    --background: var(--surface-page);
     --app-chrome-background: var(--background);
-    --surface-raised: var(--secondary);
-    --foreground: var(--color-neutral-100);
-    --card: color-mix(in srgb, var(--background) 97%, var(--color-white));
-    --card-foreground: var(--color-neutral-100);
-    --popover: color-mix(in srgb, var(--background) 94%, var(--color-white));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: oklch(0.588 0.217 264);
-    --primary-foreground: var(--color-white);
-    --secondary: --alpha(var(--color-white) / 4%);
-    --secondary-foreground: var(--color-neutral-100);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
-    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-    --border: --alpha(var(--color-white) / 6%);
-    --input: --alpha(var(--color-white) / 8%);
-    --ring: oklch(0.588 0.217 264);
-    --destructive-foreground: var(--color-red-400);
-    --info: var(--color-blue-500);
-    --info-foreground: var(--color-blue-400);
-    --success: var(--color-emerald-500);
-    --success-foreground: var(--color-emerald-400);
-    --warning: var(--color-amber-500);
-    --warning-foreground: var(--color-amber-400);
-    --sidebar: var(--card);
+    --surface-raised: var(--surface-tile);
+    --foreground: var(--text-1);
+    --card: var(--surface-card);
+    --card-foreground: var(--text-1);
+    --popover: var(--surface-tile);
+    --popover-foreground: var(--text-1);
+    --primary: var(--gold-500);
+    --primary-foreground: #0b0b0b;
+    --secondary: rgb(255 255 255 / 5%);
+    --secondary-foreground: var(--text-1);
+    --muted: var(--surface-tile);
+    --muted-foreground: var(--text-2);
+    --accent: var(--surface-hover);
+    --accent-foreground: var(--text-1);
+    --destructive: var(--danger);
+    --border: var(--line);
+    --input: var(--line-strong);
+    --ring: var(--gold-500);
+    --destructive-foreground: var(--danger);
+    --info: #60a5fa;
+    --info-foreground: #93c5fd;
+    --success: var(--ok);
+    --success-foreground: #6ee7b7;
+    --warning: var(--warn);
+    --warning-foreground: #fdba74;
+    --sidebar: var(--surface-row);
     --sidebar-foreground: var(--foreground);
     --sidebar-muted-foreground: var(--muted-foreground);
-    --sidebar-control-surface: var(--muted);
-    --sidebar-row-hover: var(--accent);
-    --sidebar-row-active: var(--accent);
-    --sidebar-row-selected: var(--muted);
+    --sidebar-control-surface: var(--surface-tile);
+    --sidebar-row-hover: rgb(255 255 255 / 5%);
+    --sidebar-row-active: var(--gold-tint-strong);
+    --sidebar-row-selected: var(--gold-tint);
     --sidebar-border: var(--border);
-    --sidebar-stage-fade: var(--card);
+    --sidebar-stage-fade: var(--sidebar);
   }
 }
 
@@ -1110,28 +1166,30 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 
 .dark [data-sidebar-version="v1"],
 .dark [data-sidebar-version="v2"] {
-  --background: #000;
-  --foreground: #f1f3f7;
-  --card: #000;
+  /* The sidebar shares the workspace's ink scale one step up from the app
+     background, so the two never show a seam and selection reads as gold. */
+  --background: var(--surface-row);
+  --foreground: var(--text-1);
+  --card: var(--surface-row);
   --card-foreground: var(--foreground);
-  --accent: #191a1d;
-  --accent-foreground: #f7f9ff;
-  --muted: #0a0a0a;
-  --muted-foreground: #a3a3a3;
-  --border: rgb(255 255 255 / 8%);
-  --input: rgb(255 255 255 / 18%);
-  --sidebar: var(--card);
+  --accent: var(--surface-hover);
+  --accent-foreground: var(--text-1);
+  --muted: var(--surface-tile);
+  --muted-foreground: var(--text-2);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --sidebar: var(--surface-row);
   --sidebar-foreground: var(--foreground);
   --sidebar-muted-foreground: var(--muted-foreground);
-  --sidebar-control-surface: var(--muted);
-  --sidebar-row-hover: color-mix(in srgb, var(--foreground) 8%, transparent);
-  --sidebar-row-active: color-mix(in srgb, var(--foreground) 11%, transparent);
-  --sidebar-row-selected: color-mix(in srgb, var(--foreground) 7%, transparent);
+  --sidebar-control-surface: var(--surface-tile);
+  --sidebar-row-hover: rgb(255 255 255 / 5%);
+  --sidebar-row-active: var(--gold-tint-strong);
+  --sidebar-row-selected: var(--gold-tint);
   --sidebar-border: var(--border);
   /* The stage-channel header art must ramp to THIS panel's surface, not the
      global chrome background, or the fade shows a seam (same rule as the
      light palette above). */
-  --sidebar-stage-fade: var(--card);
+  --sidebar-stage-fade: var(--sidebar);
 }
 
 body {
@@ -1831,4 +1889,244 @@ label:has(> select#reasoning-effort) select {
   background-color: Highlight;
   opacity: 0.3;
   pointer-events: none;
+}
+
+/* Obsidian & Gold: the composer is one more crisp card. No glass blur, no
+   inner highlight, the same 1px `--line` edge and `--card` surface as the
+   assistant turn boxes, so every surface in the thread shares one edge. */
+.dark .chat-composer-glass-shell {
+  --chat-composer-glass-surface: var(--card);
+  --chat-composer-outline: var(--line);
+  --chat-composer-highlight: transparent;
+}
+
+.dark .chat-composer-glass-shell::before {
+  background: var(--card);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.dark .chat-composer-context-strip::before {
+  box-shadow: none;
+}
+
+/* Banner and notification cards (version notices, agent alerts, blockers)
+   share the turn-box edge: flat `--card` surface, 1px `--line`, no glass.
+   The variant colour survives on the icon and title only. */
+.dark .alert-glass {
+  background: var(--card) !important;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The same card treatment in light: the tokens above already resolve per
+   scheme, so these unscoped rules only need to match the dark ones. */
+.chat-composer-glass-shell {
+  --chat-composer-glass-surface: var(--card);
+  --chat-composer-outline: var(--line);
+  --chat-composer-highlight: transparent;
+}
+
+.chat-composer-glass-shell::before {
+  background: var(--card);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.chat-composer-glass-host,
+.chat-composer-context-strip::before {
+  box-shadow: none;
+}
+
+.alert-glass {
+  background: var(--card) !important;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Motion. The redesign's surfaces are flat and crisp, so the softness has to
+   come from movement: every control eases between states, pressed controls
+   give a little, and content settles in rather than snapping. All of it is
+   off under prefers-reduced-motion.
+   --------------------------------------------------------------------------- */
+@keyframes ui-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes ui-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ui-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root {
+    --ease-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  button,
+  [role="button"],
+  [role="menuitem"],
+  [role="option"],
+  [role="tab"],
+  [role="switch"],
+  [role="combobox"],
+  a[href] {
+    transition-property:
+      background-color, border-color, color, box-shadow, opacity, transform, fill, stroke;
+    transition-duration: 160ms;
+    transition-timing-function: var(--ease-soft);
+  }
+  /* A press gives a touch: small controls compress, rows do not. */
+  button:not(:disabled):not([data-sidebar]):not([data-slot="sidebar-menu-button"]):active,
+  [role="button"]:not([data-sidebar]):active {
+    transform: scale(0.97);
+    transition-duration: 70ms;
+  }
+  /* Content that appears: cards, panes, page bodies, timeline rows. */
+  .motion-enter {
+    animation: ui-enter 220ms var(--ease-soft) both;
+  }
+  .motion-fade {
+    animation: ui-fade 180ms var(--ease-soft) both;
+  }
+  .motion-scale-in {
+    animation: ui-scale-in 180ms var(--ease-soft) both;
+  }
+  /* Chevrons and disclosure arrows turn rather than flip. */
+  [data-slot="sidebar-menu-button"] svg,
+  [data-composer-control-chevron],
+  [aria-expanded] > svg {
+    transition:
+      transform 180ms var(--ease-soft),
+      opacity 160ms var(--ease-soft);
+  }
+  /* Hover on any row/tile surfaces eases in. */
+  [data-slot="sidebar-menu-button"],
+  [data-work-card-edge],
+  .card-edge,
+  [data-mobile-tab-bar] button {
+    transition:
+      background-color 160ms var(--ease-soft),
+      border-color 160ms var(--ease-soft),
+      color 160ms var(--ease-soft),
+      box-shadow 160ms var(--ease-soft);
+  }
+}
+
+/* Terminal: the page black, a hairline of gold around whatever is selected,
+   and nothing between the glyphs and the eye. */
+.thread-terminal-drawer .xterm .xterm-screen {
+  padding: 2px 4px;
+}
+.thread-terminal-drawer .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  opacity: 0;
+  transition: opacity 160ms var(--ease-soft, ease);
+}
+.thread-terminal-drawer:hover .xterm .xterm-scrollable-element > .scrollbar.vertical,
+.thread-terminal-drawer .xterm.focus .xterm-scrollable-element > .scrollbar.vertical {
+  opacity: 1;
+}
+.thread-terminal-drawer [data-terminal-pane-id] {
+  transition:
+    border-color 160ms,
+    box-shadow 160ms var(--ease-soft, ease);
+}
+
+/* ---------------------------------------------------------------------------
+   Settings search: a deep link lands on a row and flashes it gold, then the
+   tint drains away so the page returns to its resting state.
+   --------------------------------------------------------------------------- */
+@keyframes settings-highlight {
+  0%,
+  35% {
+    background-color: rgba(217, 169, 58, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(217, 169, 58, 0.55);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+[data-settings-highlight] {
+  border-radius: 12px;
+  animation: settings-highlight 2.4s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-settings-highlight] {
+    animation: none;
+    background-color: rgba(217, 169, 58, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(217, 169, 58, 0.55);
+  }
+}
+
+/* The "Working for …" equalizer icon. Each of lucide's six bars is scaled
+   about its own centre on a staggered cycle, so the pillars change height
+   independently. `non-scaling-stroke` keeps every bar the same thickness
+   while its height changes; without it the short bars render fatter. */
+@keyframes working-pillar {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1.15);
+  }
+}
+
+.working-pillars > path {
+  transform-box: fill-box;
+  transform-origin: center;
+  vector-effect: non-scaling-stroke;
+  animation: working-pillar 1150ms ease-in-out infinite;
+}
+
+/* Prime-ish offsets rather than a uniform ramp: an even stagger reads as a
+   travelling wave, which looks like a progress bar instead of activity. */
+.working-pillars > path:nth-child(1) {
+  animation-delay: -900ms;
+}
+.working-pillars > path:nth-child(2) {
+  animation-delay: -240ms;
+}
+.working-pillars > path:nth-child(3) {
+  animation-delay: -660ms;
+}
+.working-pillars > path:nth-child(4) {
+  animation-delay: -80ms;
+}
+.working-pillars > path:nth-child(5) {
+  animation-delay: -480ms;
+}
+.working-pillars > path:nth-child(6) {
+  animation-delay: -1020ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working-pillars > path {
+    animation: none;
+  }
 }

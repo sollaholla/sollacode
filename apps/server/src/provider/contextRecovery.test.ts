@@ -26,6 +26,23 @@ describe("contextRecovery", () => {
     NodeAssert.ok(handoff.includes("handed"));
   });
 
+  it("tells a handed-over model to read history before calling anything done", () => {
+    // The soft compaction phrasing let incoming models trust the digest and
+    // drop outstanding requests (reported 2026-09-02). A handoff holds no
+    // other context, so its closing line is an instruction, and it says which
+    // way to resolve doubt about work the excerpt never showed.
+    const handoff = contextRecoveryReminder("provider-handoff");
+    NodeAssert.ok(handoff.includes("Read that history before"));
+    NodeAssert.ok(handoff.includes("still owed unless the record shows it delivered"));
+    NodeAssert.ok(!handoff.includes("Prefer querying it over guessing"));
+
+    // Compaction keeps the capability phrasing: it still has its own summary,
+    // and most of its turns need no lookup at all.
+    const compaction = contextRecoveryReminder("compaction");
+    NodeAssert.ok(compaction.includes("Prefer querying it over guessing"));
+    NodeAssert.ok(!compaction.includes("Read that history before"));
+  });
+
   it("wraps the reminder as a system reminder block", () => {
     const block = contextRecoveryReminderBlock("compaction");
     NodeAssert.ok(block.startsWith("<system-reminder>"));

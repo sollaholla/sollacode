@@ -37,7 +37,11 @@ export function remoteConnectionHeaderAction(input: {
   return input.connectionPhase === "connected" ? "open-control" : "connect-control";
 }
 
-export function RemoteConnectionControl(props: { readonly activeEnvironmentId: EnvironmentId }) {
+export function RemoteConnectionControl(props: {
+  readonly activeEnvironmentId: EnvironmentId;
+  /** Extra classes for the trigger, so a header can size it to its neighbours. */
+  readonly className?: string | undefined;
+}) {
   const { activeEnvironmentId } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const environment = useEnvironment(activeEnvironmentId);
@@ -112,6 +116,7 @@ export function RemoteConnectionControl(props: { readonly activeEnvironmentId: E
             <Button
               size="xs"
               variant="outline"
+              className={props.className}
               aria-label={label}
               disabled={isConnecting}
               onClick={() => void connectAndOpen()}

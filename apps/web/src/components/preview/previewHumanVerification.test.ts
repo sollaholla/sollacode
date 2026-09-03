@@ -7,6 +7,7 @@ import {
   getPreviewHumanVerification,
   inspectPreviewHumanVerification,
   parsePreviewHumanVerificationProbe,
+  reinspectPreviewHumanVerificationForAutomation,
   setPreviewHumanVerification,
 } from "./previewHumanVerification";
 
@@ -219,6 +220,94 @@ describe("preview human verification", () => {
     });
     expect(result).toBeNull();
     expect(getPreviewHumanVerification(tabId)).toBeNull();
+  });
+
+  it("does not pause for a Turnstile widget that already holds a passed token", () => {
+    // Suno keeps its widget mounted after the user solves it (and many sites
+    // mount one permanently in managed mode). A widget with a token is not
+    // asking anyone for anything.
+    const probe = {
+      url: "https://suno.com/create",
+      title: "Suno",
+      visibleText: "Create",
+      browserUserAgent: "Mozilla/5.0 Chrome/140.0.0.0",
+      hasTurnstile: true,
+      hasFullPageChallenge: false,
+    };
+    expect(detectPreviewHumanVerification({ probe })).not.toBeNull();
+    expect(
+      detectPreviewHumanVerification({ probe: { ...probe, hasSolvedChallengeToken: true } }),
+    ).toBeNull();
+    // A full-page challenge is still a challenge whatever a stale token says.
+    expect(
+      detectPreviewHumanVerification({
+        probe: {
+          ...probe,
+          title: "Just a moment...",
+          hasFullPageChallenge: true,
+          hasSolvedChallengeToken: true,
+        },
+      }),
+    ).not.toBeNull();
+    const parsed = parsePreviewHumanVerificationProbe({ ...probe, hasSolvedChallengeToken: true });
+    expect(parsed?.hasSolvedChallengeToken).toBe(true);
+    expect(parsePreviewHumanVerificationProbe(probe)?.hasSolvedChallengeToken).toBeUndefined();
+  });
+
+  it("re-checks a latched tab before an automation request and clears a finished challenge", async () => {
+    // Live 2026-09-03: the user completed the challenge, the next request read
+    // the stale latch, and the agent raised the same blocker again.
+    const tabId = "runtime-tab-relatch";
+    clearPreviewHumanVerification(tabId);
+    const challengeProbe = {
+      url: "https://suno.com/create",
+      title: "Verification failed",
+      visibleText: "Cloudflare Turnstile 600010",
+      browserUserAgent: "Mozilla/5.0 Chrome/140.0.0.0",
+      hasTurnstile: true,
+      hasFullPageChallenge: false,
+    };
+    await inspectPreviewHumanVerification({
+      runtimeTabId: tabId,
+      waitForConfirmation: () => Promise.resolve(),
+      evaluate: async () => challengeProbe,
+    });
+    expect(getPreviewHumanVerification(tabId)).not.toBeNull();
+
+    // Still challenged: stays paused, no clearing.
+    const stillPaused = await reinspectPreviewHumanVerificationForAutomation({
+      runtimeTabId: tabId,
+      waitForConfirmation: () => Promise.resolve(),
+      evaluate: async () => challengeProbe,
+    });
+    expect(stillPaused).not.toBeNull();
+    expect(getPreviewHumanVerification(tabId)).not.toBeNull();
+
+    // The person solved it: the latch clears on the next attempt by itself.
+    const cleared = await reinspectPreviewHumanVerificationForAutomation({
+      runtimeTabId: tabId,
+      waitForConfirmation: () => Promise.resolve(),
+      evaluate: async () => ({
+        ...challengeProbe,
+        title: "Suno",
+        visibleText: "Create",
+        hasSolvedChallengeToken: true,
+      }),
+    });
+    expect(cleared).toBeNull();
+    expect(getPreviewHumanVerification(tabId)).toBeNull();
+
+    // An unlatched tab costs nothing: no probe is run at all.
+    let evaluations = 0;
+    const untouched = await reinspectPreviewHumanVerificationForAutomation({
+      runtimeTabId: tabId,
+      evaluate: async () => {
+        evaluations += 1;
+        return challengeProbe;
+      },
+    });
+    expect(untouched).toBeNull();
+    expect(evaluations).toBe(0);
   });
 
   it("does not latch a transient challenge that clears on confirmation", async () => {

@@ -70,6 +70,17 @@ if (disabledCaptureFeatureList) {
   Electron.app.commandLine.appendSwitch("disable-features", disabledCaptureFeatureList);
 }
 
+// Opt-in Chromium remote debugging. The renderer's own UI is otherwise
+// unobservable from outside the app: a native `sample` resolves JIT frames to
+// `???`, so a visual regression like 0.1.395's black browser panels could only
+// be found by a human looking at the screen. Off unless the port is asked for
+// explicitly, since an open debugging port is full control of the renderer.
+const remoteDebuggingPort = process.env.SOLLA_REMOTE_DEBUG_PORT?.trim();
+if (remoteDebuggingPort && /^\d{2,5}$/.test(remoteDebuggingPort)) {
+  Electron.app.commandLine.appendSwitch("remote-debugging-port", remoteDebuggingPort);
+  Electron.app.commandLine.appendSwitch("remote-allow-origins", "*");
+}
+
 // Native crashes leave nothing behind on their own. The main process died
 // once on 0.1.332 with a SIGSEGV inside a Chromium runloop task, and all that
 // survived was an OS report whose Electron frames resolve to the nearest

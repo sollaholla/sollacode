@@ -138,7 +138,7 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
         Effect.mapError(mapFailure("creating the agent chat")),
       );
       const agent = yield* manager
-        .create({ name: name.trim(), purpose: purpose.trim(), threadId })
+        .create({ name: name.trim(), purpose: purpose.trim(), icon: input.icon ?? null, threadId })
         .pipe(Effect.mapError(mapFailure("creating the agent")));
       yield* workspace.ensure(agent.vmAgentId).pipe(Effect.ignoreCause({ log: true }));
       if (input.modelSelection !== undefined || input.runtimeMode !== undefined) {
@@ -261,6 +261,30 @@ export const handleAgentBuilder = Effect.fn("AgentBuilder.handle")(function* (
         })
         .pipe(Effect.mapError(mapFailure("defining the artifact")));
       return { action: input.action, status: "Artifact defined.", artifact };
+    }
+    case "start_agent": {
+      const agent = yield* resolveAgent;
+      const started = yield* manager
+        .setStatus(agent.vmAgentId, "running")
+        .pipe(Effect.mapError(mapFailure("starting the agent")));
+      yield* scheduler.wake();
+      return {
+        action: input.action,
+        status: `Agent "${agent.name}" started. Scheduled tasks resume.`,
+        agent: started,
+      };
+    }
+    case "stop_agent": {
+      const agent = yield* resolveAgent;
+      const stopped = yield* manager
+        .setStatus(agent.vmAgentId, "stopped")
+        .pipe(Effect.mapError(mapFailure("stopping the agent")));
+      yield* scheduler.interruptAgent(agent.vmAgentId);
+      return {
+        action: input.action,
+        status: `Agent "${agent.name}" stopped. Its running turn was interrupted and scheduled tasks are ignored until it is started again.`,
+        agent: stopped,
+      };
     }
     case "delete_agent": {
       const agent = yield* resolveAgent;

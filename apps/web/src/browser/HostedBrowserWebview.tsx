@@ -29,6 +29,7 @@ import {
   type AudioMutableBrowserWebview,
 } from "./hostedBrowserWebviewAudio";
 import {
+  HOSTED_BROWSER_WEBVIEW_WARMUP_MS,
   isHostedBrowserWebviewPresented,
   readHostedBrowserHostWindowPresenting,
   resolveHostedBrowserWebviewAccessibilityState,
@@ -159,6 +160,7 @@ export function HostedBrowserWebview(props: {
     };
   }, [runtimeTabId]);
 
+  const [warming, setWarming] = useState(true);
   const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const latestUrlRef = useRef(initialUrl);
@@ -166,6 +168,39 @@ export function HostedBrowserWebview(props: {
   useEffect(() => {
     latestUrlRef.current = initialUrl;
   }, [initialUrl]);
+
+  // A background guest is compositor-active only while it is warming: from
+  // mount until its load settles, and again for each navigation. Chromium
+  // defers first paint and navigation for a zero-opacity guest, so this window
+  // is what lets a tab open, load, and hydrate its auth behind the user's back
+  // — and ending it is what stops every tab of every thread from rasterizing
+  // for the lifetime of the app once it has.
+  useEffect(() => {
+    if (active) {
+      // The presented guest never parks, so no timer runs for it. It re-warms
+      // on its own the next time it goes to the background.
+      setWarming(true);
+      return;
+    }
+    const webview = webviewRef.current;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const settle = () => {
+      if (timeout !== null) clearTimeout(timeout);
+      timeout = setTimeout(() => setWarming(false), HOSTED_BROWSER_WEBVIEW_WARMUP_MS);
+    };
+    const rewarm = () => {
+      setWarming(true);
+      settle();
+    };
+    settle();
+    webview?.addEventListener("did-start-loading", rewarm);
+    webview?.addEventListener("did-stop-loading", settle);
+    return () => {
+      if (timeout !== null) clearTimeout(timeout);
+      webview?.removeEventListener("did-start-loading", rewarm);
+      webview?.removeEventListener("did-stop-loading", settle);
+    };
+  }, [active, runtimeTabId, webviewGeneration]);
 
   const setWebviewRef = useCallback((node: HTMLElement | null) => {
     const webview = node as ElectronWebview | null;
@@ -438,6 +473,7 @@ export function HostedBrowserWebview(props: {
     hiddenSize,
     hostSize,
     interactive: presentation.interactive,
+    warming,
   });
   const guestInteractive = active && presentation.interactive;
   const wrapperAccessibility = resolveHostedBrowserWebviewAccessibilityState(guestInteractive);

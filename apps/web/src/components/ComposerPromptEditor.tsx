@@ -52,6 +52,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import {
@@ -81,6 +82,11 @@ import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTermin
 import { formatProviderSkillDisplayName } from "~/providerSkillPresentation";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { registerComposerInlineTokenPaste } from "./composerInlineTokenPaste";
+import {
+  COMPOSER_DICTATION_SETTLE_MS,
+  resolveComposerControlledSync,
+  resolveComposerDictationFlush,
+} from "./composerDictationSync";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
 const SURROUND_SYMBOLS: [string, string][] = [
@@ -1557,10 +1563,96 @@ function ComposerPromptEditorInner({
     terminalContextIds: terminalContexts.map((context) => context.id),
   });
   const isApplyingControlledUpdateRef = useRef(false);
+  // Tracks whether an input method (macOS dictation, an IME, autocorrect) is
+  // currently mid-edit. See composerDictationSync for why that blocks
+  // controlled write-backs.
+  const dictationRef = useRef({ composing: false, settleUntil: 0 });
+  // Set when a controlled write-back was skipped because dictation was active,
+  // so the settle-window re-run knows to resolve the divergence rather than
+  // blindly applying a stale value.
+  const dictationFlushPendingRef = useRef(false);
+  const [dictationSettleEpoch, setDictationSettleEpoch] = useState(0);
   const terminalContextActions = useMemo(
     () => ({ onRemoveTerminalContext }),
     [onRemoveTerminalContext],
   );
+
+  const isDictating = useCallback(
+    () => dictationRef.current.composing || performance.now() < dictationRef.current.settleUntil,
+    [],
+  );
+
+  /** Push the editor's live content up to the parent, making it authoritative. */
+  const adoptEditorStateUpward = useCallback(() => {
+    editor.getEditorState().read(() => {
+      const nextValue = $getRoot().getTextContent();
+      const nextCursor = clampCollapsedComposerCursor(
+        nextValue,
+        $readSelectionOffsetFromEditorState(snapshotRef.current.cursor),
+      );
+      const nextExpandedCursor = clampExpandedCursor(
+        nextValue,
+        $readExpandedSelectionOffsetFromEditorState(snapshotRef.current.expandedCursor),
+      );
+      const terminalContextIds = collectTerminalContextIds($getRoot());
+      snapshotRef.current = {
+        value: nextValue,
+        cursor: nextCursor,
+        expandedCursor: nextExpandedCursor,
+        terminalContextIds,
+      };
+      onChangeRef.current(nextValue, nextCursor, nextExpandedCursor, false, terminalContextIds);
+    });
+  }, [editor]);
+
+  useEffect(() => {
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const endSettleWindow = () => {
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        // Re-run the controlled sync now that the input method has let go.
+        setDictationSettleEpoch((epoch) => epoch + 1);
+      }, COMPOSER_DICTATION_SETTLE_MS);
+    };
+
+    const onCompositionStart = () => {
+      dictationRef.current.composing = true;
+    };
+    const onCompositionEnd = () => {
+      dictationRef.current.composing = false;
+      dictationRef.current.settleUntil = performance.now() + COMPOSER_DICTATION_SETTLE_MS;
+      endSettleWindow();
+    };
+    // macOS delivers dictation's post-processing pass as a replacement that can
+    // land just after compositionend, so it extends the window too.
+    const onBeforeInputReplacement = (event: Event) => {
+      const inputType = (event as InputEvent).inputType;
+      if (inputType !== "insertReplacementText" && inputType !== "insertFromComposition") return;
+      dictationRef.current.settleUntil = performance.now() + COMPOSER_DICTATION_SETTLE_MS;
+      endSettleWindow();
+    };
+
+    let attached: HTMLElement | null = null;
+    const detach = (element: HTMLElement | null) => {
+      element?.removeEventListener("compositionstart", onCompositionStart);
+      element?.removeEventListener("compositionend", onCompositionEnd);
+      element?.removeEventListener("beforeinput", onBeforeInputReplacement, true);
+    };
+    const unregister = editor.registerRootListener((rootElement, prevRootElement) => {
+      detach(prevRootElement);
+      rootElement?.addEventListener("compositionstart", onCompositionStart);
+      rootElement?.addEventListener("compositionend", onCompositionEnd);
+      rootElement?.addEventListener("beforeinput", onBeforeInputReplacement, true);
+      attached = rootElement;
+    });
+    return () => {
+      detach(attached);
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      dictationRef.current = { composing: false, settleUntil: 0 };
+      unregister();
+    };
+  }, [editor]);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -1579,13 +1671,46 @@ function ComposerPromptEditorInner({
     const previousSnapshot = snapshotRef.current;
     const contextsChanged = terminalContextsSignatureRef.current !== terminalContextsSignature;
     const skillsChanged = skillsSignatureRef.current !== skillsSignature;
-    if (
-      previousSnapshot.value === value &&
-      previousSnapshot.cursor === normalizedCursor &&
-      !contextsChanged &&
-      !skillsChanged
-    ) {
+    const rootElement = editor.getRootElement();
+    const isFocused = Boolean(rootElement && document.activeElement === rootElement);
+
+    const decision = resolveComposerControlledSync({
+      incomingValue: value,
+      incomingCursor: normalizedCursor,
+      snapshotValue: previousSnapshot.value,
+      snapshotCursor: previousSnapshot.cursor,
+      contextsChanged,
+      skillsChanged,
+      isFocused,
+      isDictating: isDictating(),
+    });
+
+    if (decision.kind === "skip") {
       return;
+    }
+
+    // An input method is mid-edit. Leave the editor and the snapshot alone so
+    // the settle-window re-run re-evaluates against the real editor content.
+    if (decision.kind === "defer") {
+      dictationFlushPendingRef.current = true;
+      return;
+    }
+
+    // Reaching here after dictation means props and editor diverged while the
+    // input method held the text. The spoken text wins over the lagging echo.
+    if (dictationFlushPendingRef.current) {
+      dictationFlushPendingRef.current = false;
+      const flush = resolveComposerDictationFlush({
+        contextsChanged,
+        skillsChanged,
+        valueDiverged: previousSnapshot.value !== value,
+      });
+      if (flush.kind === "adopt-editor") {
+        terminalContextsSignatureRef.current = terminalContextsSignature;
+        skillsSignatureRef.current = skillsSignature;
+        adoptEditorStateUpward();
+        return;
+      }
     }
 
     snapshotRef.current = {
@@ -1597,27 +1722,29 @@ function ComposerPromptEditorInner({
     terminalContextsSignatureRef.current = terminalContextsSignature;
     skillsSignatureRef.current = skillsSignature;
 
-    const rootElement = editor.getRootElement();
-    const isFocused = Boolean(rootElement && document.activeElement === rootElement);
-    if (previousSnapshot.value === value && !contextsChanged && !skillsChanged && !isFocused) {
-      return;
-    }
-
     isApplyingControlledUpdateRef.current = true;
     editor.update(() => {
-      const shouldRewriteEditorState =
-        previousSnapshot.value !== value || contextsChanged || skillsChanged;
-      if (shouldRewriteEditorState) {
+      if (decision.rewrite) {
         $setComposerEditorPrompt(value, terminalContexts, skillMetadataRef.current);
       }
-      if (shouldRewriteEditorState || isFocused) {
+      if (decision.setSelection) {
         $setSelectionAtComposerOffset(normalizedCursor);
       }
     });
     queueMicrotask(() => {
       isApplyingControlledUpdateRef.current = false;
     });
-  }, [cursor, editor, skillsSignature, terminalContexts, terminalContextsSignature, value]);
+  }, [
+    adoptEditorStateUpward,
+    cursor,
+    dictationSettleEpoch,
+    editor,
+    isDictating,
+    skillsSignature,
+    terminalContexts,
+    terminalContextsSignature,
+    value,
+  ]);
 
   const focusAt = useCallback(
     (nextCursor: number) => {

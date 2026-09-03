@@ -167,9 +167,13 @@ export const PreviewAutomationWaitForDownloadInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(600_000)).annotate({
-      description: "Maximum wait in milliseconds. Defaults to 120000; maximum 600000.",
+      description:
+        "Maximum wait in milliseconds. Defaults to 120000; maximum 600000. Served 50000 at a time: a call returns after at most 50 seconds, and outcome none with a message means call again to keep waiting.",
     }),
-  ).annotate({ description: "Maximum wait in milliseconds. Defaults to 120000; maximum 600000." }),
+  ).annotate({
+    description:
+      "Maximum wait in milliseconds. Defaults to 120000; maximum 600000. Served 50000 at a time: a call returns after at most 50 seconds, and outcome none with a message means call again to keep waiting.",
+  }),
 });
 export type PreviewAutomationWaitForDownloadInput =
   typeof PreviewAutomationWaitForDownloadInput.Type;

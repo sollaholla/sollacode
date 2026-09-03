@@ -46,3 +46,48 @@ export function agentBrowserCursorOffset(input: {
     y: input.y * input.zoomFactor * scale + (surface?.y ?? 0) - (surface?.scrollTop ?? 0),
   };
 }
+
+export interface DrawnRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Cursor position from a guest point and the rect the guest is drawn in.
+ *
+ * The guest's viewport always fills the element it is drawn in: zoom, the
+ * fit transform and letterboxing all change the drawn rect, never the
+ * guest's own coordinate space. So a click at `(x, y)` in a guest reporting
+ * `viewportWidth × viewportHeight` lands at the same fraction of the drawn
+ * rect, measured from `parent` (the overlay's containing block). No
+ * mirrored scale or offset is involved, which is what let earlier versions
+ * drift when that mirror was stale.
+ */
+export function agentBrowserCursorPoint(input: {
+  readonly x: number;
+  readonly y: number;
+  readonly viewportWidth: number;
+  readonly viewportHeight: number;
+  readonly drawn: DrawnRect;
+  readonly parent: { readonly left: number; readonly top: number };
+}): { readonly x: number; readonly y: number } | null {
+  const { viewportWidth, viewportHeight, drawn } = input;
+  if (
+    !(viewportWidth > 0) ||
+    !(viewportHeight > 0) ||
+    !(drawn.width > 0) ||
+    !(drawn.height > 0) ||
+    !Number.isFinite(input.x) ||
+    !Number.isFinite(input.y)
+  ) {
+    return null;
+  }
+  const fractionX = Math.min(1, Math.max(0, input.x / viewportWidth));
+  const fractionY = Math.min(1, Math.max(0, input.y / viewportHeight));
+  return {
+    x: drawn.left - input.parent.left + fractionX * drawn.width,
+    y: drawn.top - input.parent.top + fractionY * drawn.height,
+  };
+}

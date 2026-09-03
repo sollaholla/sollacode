@@ -1157,6 +1157,34 @@ it("titles a runtime status row by its phase so bridge narration is not a though
   assert.strictEqual(payload.detail, "Delivering your message to the browser");
 });
 
+it("maps a reasoning item to reasoning rather than an untitled tool call", () => {
+  // The bridge brackets each thought with item.started/item.completed so it
+  // occupies its own row. Routed through itemTypeForTool those became
+  // untitled `dynamic_tool_call`s, so every thought reached the timeline as a
+  // bare "Tool call" row with the text buried in its expansion, and the work
+  // dropdown folded it away (reported 2026-09-03).
+  for (const type of ["item.started", "item.completed"] as const) {
+    const mapped = mapMcpBridgeEvent(
+      toolItemEvent(type, {
+        kind: "reasoning",
+        itemType: "reasoning",
+        text: "Checking whether the live run cleared preflight.",
+      }),
+      instanceId,
+      toolItemThreadId,
+    );
+    const payload = mapped.payload as Record<string, unknown>;
+    // Every frame of one thought is the same durable row, so all openings map
+    // to the upsert the host keys on the item id.
+    assert.strictEqual(mapped.type, "item.updated");
+    assert.strictEqual(String(mapped.itemId), "call_compare_1");
+    assert.strictEqual(payload.itemType, "reasoning");
+    // Untitled: the client reads an untitled reasoning row as a thought.
+    assert.strictEqual(payload.title, undefined);
+    assert.strictEqual(payload.detail, "Checking whether the live run cleared preflight.");
+  }
+});
+
 it("maps an assistant-message item without forcing it to a tool type", () => {
   // The bridge closes each tool-loop round's prose with this item so the next
   // round's narration starts its own message. itemTypeForTool only returns tool

@@ -28,7 +28,17 @@ import { makeComponentLogger } from "../app/DesktopObservability.ts";
  * relay in `ipc/methods/orchestratorBubble.ts`.
  */
 
-const BUBBLE_WINDOW_SIZE = 128;
+/**
+ * The window is far larger than the orb on purpose. The orb swells with the
+ * voice (up to BUBBLE_MAX_SCALE) and its canvas is 2.4x the sphere so the
+ * lensed star field has somewhere to live, so at full voice it draws roughly
+ * 269px across. At the old 128px the window rectangle sliced that into square
+ * corners. The surplus is transparent and click-through (see setInteractive),
+ * so the larger window costs the user nothing.
+ */
+const BUBBLE_WINDOW_SIZE = 288;
+/** Half the orb's widest drawn sphere: 56px base at 2.0x scale. */
+const BUBBLE_ORB_MAX_RADIUS = 56;
 const BUBBLE_SCREEN_MARGIN = 24;
 const DEV_LOAD_RETRY_DELAY_MS = 1_500;
 const DEV_LOAD_RETRY_LIMIT = 10;
@@ -54,6 +64,12 @@ export class OrchestratorBubbleWindow extends Context.Service<
     readonly beginDrag: Effect.Effect<void>;
     /** Persist the current window position as the resting spot. */
     readonly persistPosition: Effect.Effect<void>;
+    /**
+     * Take or release OS clicks. The window is mostly empty transparent space
+     * around the orb; the renderer turns this on only while the cursor is
+     * actually over the orb, so the rest stays click-through.
+     */
+    readonly setInteractive: (interactive: boolean) => Effect.Effect<void>;
     readonly destroy: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/window/OrchestratorBubbleWindow") {}
@@ -77,14 +93,39 @@ export function resolveInitialBubblePosition(
   displays: ReadonlyArray<Pick<Electron.Rectangle, "x" | "y" | "width" | "height">>,
 ): OrchestratorBubblePosition | null {
   if (persisted === null) return null;
-  const fits = displays.some(
-    (display) =>
-      persisted.x >= display.x - BUBBLE_WINDOW_SIZE / 2 &&
-      persisted.y >= display.y &&
-      persisted.x + BUBBLE_WINDOW_SIZE / 2 <= display.x + display.width &&
-      persisted.y + BUBBLE_WINDOW_SIZE / 2 <= display.y + display.height,
+  // Judged on the orb, not the window: the window is mostly transparent
+  // padding, so asking whether *it* fits would accept a spot that puts the orb
+  // itself over the screen edge. Positions saved under the older, smaller
+  // window sit half a window further up-left than they now read, so rather
+  // than discarding them (which would fling every existing orb back to the
+  // default corner) the centre is nudged just far enough to sit fully on the
+  // display it is already on.
+  const centerX = persisted.x + BUBBLE_WINDOW_SIZE / 2;
+  const centerY = persisted.y + BUBBLE_WINDOW_SIZE / 2;
+  const display = displays.find(
+    (candidate) =>
+      centerX >= candidate.x &&
+      centerX <= candidate.x + candidate.width &&
+      centerY >= candidate.y &&
+      centerY <= candidate.y + candidate.height,
   );
-  return fits ? persisted : null;
+  if (display === undefined) return null;
+  // A display narrower than the orb would invert these bounds; clamp the span
+  // first so the centre stays inside it either way.
+  const spanX = Math.max(0, display.width - BUBBLE_ORB_MAX_RADIUS * 2);
+  const spanY = Math.max(0, display.height - BUBBLE_ORB_MAX_RADIUS * 2);
+  const clampedX = Math.min(
+    Math.max(centerX, display.x + BUBBLE_ORB_MAX_RADIUS),
+    display.x + BUBBLE_ORB_MAX_RADIUS + spanX,
+  );
+  const clampedY = Math.min(
+    Math.max(centerY, display.y + BUBBLE_ORB_MAX_RADIUS),
+    display.y + BUBBLE_ORB_MAX_RADIUS + spanY,
+  );
+  return {
+    x: Math.round(clampedX - BUBBLE_WINDOW_SIZE / 2),
+    y: Math.round(clampedY - BUBBLE_WINDOW_SIZE / 2),
+  };
 }
 
 export const make = Effect.gen(function* () {
@@ -120,6 +161,22 @@ export const make = Effect.gen(function* () {
       return { x: 80, y: 80 };
     }
   });
+
+  const setInteractive = (interactive: boolean) =>
+    liveWindow.pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: (window) =>
+            Effect.sync(() => {
+              // `forward` keeps mousemove flowing to the renderer while the
+              // window is click-through, which is the only way it can notice
+              // the cursor arriving over the orb and take clicks back.
+              window.setIgnoreMouseEvents(!interactive, { forward: true });
+            }),
+        }),
+      ),
+    );
 
   const sendLatchedState = (window: Electron.BrowserWindow) =>
     Ref.get(latchedStateRef).pipe(
@@ -194,6 +251,10 @@ export const make = Effect.gen(function* () {
     // top of everything, on every workspace, without yanking the app out of
     // its regular activation policy.
     bubble.setAlwaysOnTop(true, environment.platform === "darwin" ? "floating" : "normal");
+    // Click-through until the renderer says the cursor is over the orb. The
+    // window is mostly transparent padding, and without this it would sit on
+    // top of everything swallowing clicks meant for what is behind it.
+    bubble.setIgnoreMouseEvents(true, { forward: true });
     if (environment.platform === "darwin") {
       bubble.setVisibleOnAllWorkspaces(true, {
         visibleOnFullScreen: true,
@@ -319,6 +380,7 @@ export const make = Effect.gen(function* () {
         .setOrchestratorBubblePosition({ x: x ?? 0, y: y ?? 0 })
         .pipe(Effect.catchCause((cause) => logWarning("failed to persist position", { cause })));
     }),
+    setInteractive,
     destroy,
   });
 });

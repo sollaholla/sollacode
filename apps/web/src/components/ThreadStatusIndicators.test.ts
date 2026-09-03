@@ -92,7 +92,7 @@ describe("prStatusIndicator", () => {
 describe("settledPrHoverColorClass", () => {
   it.each([
     ["open", "text-emerald-600"],
-    ["merged", "text-violet-600"],
+    ["merged", "text-gold-600"],
     ["closed", "text-red-600"],
   ] as const)("restores the %s pull request color on row hover", (state, colorClass) => {
     expect(settledPrHoverColorClass(state)).toContain(`group-hover/v2-row:${colorClass}`);

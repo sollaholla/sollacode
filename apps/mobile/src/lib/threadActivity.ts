@@ -88,6 +88,19 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
 }
 
 type RawThreadFeedEntry =
+  /**
+   * The model thinking out loud, carried outside the activity group so it is
+   * readable without opening the work disclosure — and so it ends the run of
+   * calls it was reasoning about, the way a provider's reasoning splits a
+   * tool-call chain everywhere else.
+   */
+  | {
+      readonly type: "thought";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly turnId: TurnId | null;
+      readonly text: string;
+    }
   | {
       readonly type: "message";
       readonly id: string;
@@ -103,7 +116,7 @@ type RawThreadFeedEntry =
     };
 
 export type ThreadFeedEntry =
-  | Extract<RawThreadFeedEntry, { type: "message" }>
+  | Extract<RawThreadFeedEntry, { type: "message" | "thought" }>
   | {
       readonly type: "working";
       readonly id: string;
@@ -500,6 +513,28 @@ function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
     entry.toolLifecycleStatus !== "failed" &&
     entry.toolLifecycleStatus !== "declined"
   );
+}
+
+/**
+ * The thought text of an untitled reasoning row, or null when the entry is
+ * something else.
+ *
+ * Titled reasoning is not the model thinking — it is a bridge narrating its
+ * own state ("Delivering your message to the browser") or a provider's summary
+ * heading — and stays an ordinary work row. The test is the absence of a
+ * provider title rather than the heading text, because the host defaults an
+ * untitled row's summary to "Thinking" and a row carrying that as its literal
+ * title would otherwise draw a paragraph saying only "Thinking".
+ */
+function workLogEntryThoughtText(entry: DerivedWorkLogEntry): string | null {
+  if (entry.activityKind !== "reasoning.updated") {
+    return null;
+  }
+  if (entry.toolTitle !== undefined) {
+    return null;
+  }
+  const text = entry.detail?.trim() ?? "";
+  return text.length > 0 ? text : null;
 }
 
 function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
@@ -1072,7 +1107,7 @@ function deriveThreadFeedTurnFolds(
     const turnId =
       entry.type === "message" && entry.message.role === "assistant"
         ? entry.message.turnId
-        : entry.type === "activity-group"
+        : entry.type === "activity-group" || entry.type === "thought"
           ? entry.turnId
           : null;
     if (!turnId) {
@@ -1396,6 +1431,16 @@ export function buildThreadFeed(
           );
         })
         .map<RawThreadFeedEntry>((entry) => {
+          const thought = workLogEntryThoughtText(entry);
+          if (thought !== null) {
+            return {
+              type: "thought",
+              id: entry.id,
+              createdAt: entry.createdAt,
+              turnId: entry.turnId,
+              text: thought,
+            };
+          }
           const summary = workEntryHeading(entry);
           const detail = workEntryPreview(entry);
           const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry));

@@ -8,6 +8,7 @@ import {
   computeBubbleScale,
   smoothBubbleScale,
 } from "./bubblePresentation";
+import { BlackHoleOrb, type OrbTint } from "../components/orchestrator/BlackHoleOrb";
 
 /**
  * The entire renderer of the floating always-on-top bubble window.
@@ -28,15 +29,18 @@ const IDLE_STATE: DesktopOrchestratorBubbleState = {
 /** Pointer travel below this is a click; above it, a drag. */
 const CLICK_MOVEMENT_THRESHOLD_PX = 5;
 
-const STATUS_COLORS: Record<DesktopOrchestratorBubbleState["status"], string> = {
-  idle: "rgba(120, 120, 130, 0.85)",
-  connecting: "rgba(139, 92, 246, 0.9)",
-  listening: "rgba(139, 92, 246, 1)",
-  speaking: "rgba(59, 130, 246, 1)",
-  // Same family as speaking — the assistant still holds the floor — but dimmer,
-  // because nothing is coming out yet.
-  working: "rgba(59, 130, 246, 0.72)",
-  error: "rgba(239, 68, 68, 0.95)",
+/**
+ * Which tint the black hole wears per status. Listening is the user's colour
+ * even before they speak: the microphone is theirs, and the orb has always
+ * gone quiet-purple then, which read as "the assistant is doing something".
+ */
+const STATUS_TINTS: Record<DesktopOrchestratorBubbleState["status"], OrbTint> = {
+  idle: "idle",
+  connecting: "connecting",
+  listening: "user",
+  speaking: "assistant",
+  working: "waiting",
+  error: "error",
 };
 
 export function OrchestratorBubbleApp() {
@@ -94,6 +98,53 @@ export function OrchestratorBubbleApp() {
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [state.status]);
+
+  const threadButtonRef = useRef<HTMLButtonElement>(null);
+
+  // The bubble window is much wider than the orb so the orb can swell without
+  // being clipped by the window rectangle. That surplus is transparent, and a
+  // transparent always-on-top window still eats OS clicks, so the window is
+  // click-through by default and only takes clicks back while the cursor is
+  // actually over the orb (or its thread button).
+  useEffect(() => {
+    const bridge = window.desktopBridge?.orchestratorBubble;
+    const setInteractive = bridge?.setInteractive;
+    if (setInteractive === undefined) return;
+    let interactive = true;
+    const apply = (next: boolean) => {
+      if (next === interactive) return;
+      interactive = next;
+      void setInteractive(next).catch(() => undefined);
+    };
+    const isOverControls = (x: number, y: number) => {
+      // Never hand the clicks back mid-drag: the cursor routinely leaves the
+      // orb while dragging, and going click-through would drop the gesture.
+      if (dragRef.current !== null) return true;
+      const button = threadButtonRef.current?.getBoundingClientRect();
+      if (
+        button !== undefined &&
+        x >= button.left &&
+        x <= button.right &&
+        y >= button.top &&
+        y <= button.bottom
+      ) {
+        return true;
+      }
+      // The orb is centred in the window and scales about its middle, so its
+      // drawn radius follows the live scale rather than the layout box.
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+      const radius = (BUBBLE_BASE_DIAMETER / 2) * scaleRef.current + 2;
+      return Math.hypot(x - centerX, y - centerY) <= radius;
+    };
+    const onMove = (event: MouseEvent) => apply(isOverControls(event.clientX, event.clientY));
+    window.addEventListener("mousemove", onMove);
+    apply(false);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      void setInteractive(true).catch(() => undefined);
+    };
+  }, []);
 
   const dragRef = useRef<{
     pointerId: number;
@@ -162,7 +213,7 @@ export function OrchestratorBubbleApp() {
     void window.desktopBridge?.orchestratorBubble?.open().catch(() => undefined);
   };
 
-  const color = STATUS_COLORS[state.status];
+  const tint = STATUS_TINTS[state.status];
   const glow = computeBubbleGlow(state);
   const speaking = state.status === "speaking";
   const listening = state.status === "listening";
@@ -213,47 +264,40 @@ export function OrchestratorBubbleApp() {
           justifyContent: "center",
         }}
       >
-        <div
-          style={{
-            width: BUBBLE_BASE_DIAMETER,
-            height: BUBBLE_BASE_DIAMETER,
-            borderRadius: "50%",
-            transform: `scale(${displayScale})`,
-            background: `radial-gradient(circle at 32% 30%, rgba(255,255,255,0.55), ${color} 62%)`,
-            boxShadow: `0 2px 14px rgba(0,0,0,0.35), 0 0 ${12 + glow * 26}px ${color}`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            transition: "background 240ms ease, box-shadow 120ms linear",
-            animation:
-              state.status === "connecting"
-                ? "orchestrator-bubble-pulse 1.1s ease-in-out infinite"
-                : undefined,
-          }}
+        <BlackHoleOrb
+          size={BUBBLE_BASE_DIAMETER}
+          tint={tint}
+          scale={displayScale}
+          intensity={glow}
+          // Still at rest: a disk spinning in the corner of the screen all day
+          // is the kind of thing that gets the bubble switched off.
+          spinning={state.status !== "idle" && state.status !== "error"}
+          breathing={state.status === "connecting"}
         >
           {speaking ? (
-            <AudioLinesIcon size={22} color="rgba(255,255,255,0.92)" strokeWidth={2.2} />
+            <AudioLinesIcon size={20} color="rgba(255,255,255,0.92)" strokeWidth={2.2} />
           ) : working ? (
             // Not a microphone: the whole point is that the user cannot speak
             // into this moment and the orb previously implied they could.
             <LoaderIcon
-              size={22}
+              size={20}
               color="rgba(255,255,255,0.9)"
               strokeWidth={2.2}
               style={{ animation: "orchestrator-bubble-spin 1.1s linear infinite" }}
             />
           ) : listening ? (
-            <MicIcon size={22} color="rgba(255,255,255,0.95)" strokeWidth={2.2} />
+            <MicIcon size={20} color="rgba(255,255,255,0.95)" strokeWidth={2.2} />
           ) : (
             // Muted mic at rest, so the orb reads as a control that is currently
             // off rather than one that is listening to everything.
-            <MicOffIcon size={22} color="rgba(255,255,255,0.62)" strokeWidth={2.2} />
+            <MicOffIcon size={20} color="rgba(255,255,255,0.62)" strokeWidth={2.2} />
           )}
-        </div>
+        </BlackHoleOrb>
 
         <button
           type="button"
           data-testid="orchestrator-bubble-open-thread"
+          ref={threadButtonRef}
           onPointerDown={handleOpenThread}
           title="Open the orchestrator thread"
           aria-label="Open the orchestrator thread"
@@ -280,10 +324,6 @@ export function OrchestratorBubbleApp() {
         </button>
       </div>
       <style>{`
-        @keyframes orchestrator-bubble-pulse {
-          0%, 100% { opacity: 0.75; }
-          50% { opacity: 1; }
-        }
         @keyframes orchestrator-bubble-spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }

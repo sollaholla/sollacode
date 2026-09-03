@@ -12,6 +12,7 @@ import {
   type VoiceSpeaker,
 } from "../../orchestrator/mobilePresentation";
 import type { VoiceSessionState } from "../../orchestrator/realtimeSession";
+import { BlackHoleOrb } from "./BlackHoleOrb";
 
 /**
  * A full-screen surface over the app while the orchestrator has the microphone.
@@ -78,7 +79,6 @@ export function OrchestratorListeningOverlay() {
       className="pointer-events-none fixed inset-0 z-40 flex flex-col items-center justify-center gap-8 bg-black/70 backdrop-blur-sm"
       aria-live="polite"
     >
-      <VoiceOrbKeyframes />
       <div className="flex flex-col items-center gap-4">
         <VoiceOrb
           state={session.state}
@@ -208,7 +208,7 @@ export function VoiceOrb({
       const node = orbRef.current;
       if (node !== null) {
         node.style.transform = `scale(${scale.toFixed(3)})`;
-        node.style.opacity = `${(0.72 + intensity * 0.28).toFixed(3)}`;
+        node.style.setProperty("--orb-intensity", intensity.toFixed(3));
       }
       frame = requestAnimationFrame(tick);
     };
@@ -220,116 +220,40 @@ export function VoiceOrb({
     };
   }, [subscribeLevels]);
 
-  const palette = ORB_PALETTE[speaker];
-
   return (
-    <div className="relative flex size-44 items-center justify-center">
-      {/* Behind the orb and unscaled, so a halo that grows with the voice does
-          not drag the icon's size with it.
-
-          A radial gradient, never `filter: blur()`: WebKit clips a blurred
-          layer to its square bounds when it sits inside a `backdrop-filter`
-          ancestor (the overlay's dimmed backdrop), which rendered the halo as
-          a hard-edged square behind the orb on iOS and Android WebViews. A
-          gradient is round by construction and needs no filter at all. */}
-      <div
-        aria-hidden="true"
-        data-voice-halo
-        className={[
-          "absolute -inset-10 transition-opacity duration-500",
-          palette.halo,
-          speaker === "waiting" || speaker === "connecting"
-            ? "animate-[orchestrator-orb-breathe_1.8s_ease-in-out_infinite]"
-            : "",
-        ].join(" ")}
-      />
-      <div
+    <div className="relative flex size-56 items-center justify-center">
+      {/* The orb scales with the voice through the ref (see the loop above);
+          the black hole itself is drawn by `BlackHoleOrb`, shared with the
+          desktop bubble and the phone route so all three surfaces are one
+          object at three sizes. */}
+      <BlackHoleOrb
         ref={orbRef}
-        data-voice-speaker={speaker}
-        className={[
-          "flex size-40 items-center justify-center rounded-full",
-          "transition-[background-color,box-shadow] duration-500",
-          palette.body,
-          palette.glow,
-        ].join(" ")}
+        size={150}
+        tint={speaker}
+        breathing={speaker === "waiting" || speaker === "connecting"}
+        className="transition-opacity duration-300"
         style={{ willChange: "transform, opacity" }}
       >
-        <span className="text-white drop-shadow-[0_1px_6px_rgba(0,0,0,0.45)]">
+        <span data-voice-speaker={speaker} className="flex items-center justify-center">
           {speaker === "assistant" ? (
-            <AudioLinesIcon size={44} strokeWidth={1.9} />
+            <AudioLinesIcon size={40} strokeWidth={1.9} />
           ) : speaker === "waiting" || speaker === "connecting" ? (
             <LoaderIcon
-              size={44}
+              size={40}
               strokeWidth={1.9}
               className="animate-[orchestrator-orb-spin_1.2s_linear_infinite]"
             />
           ) : (
-            <MicIcon size={44} strokeWidth={1.9} />
+            <MicIcon size={40} strokeWidth={1.9} />
           )}
         </span>
-      </div>
+      </BlackHoleOrb>
+      <style>{`
+        @keyframes orchestrator-orb-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
-  );
-}
-
-/**
- * One colour per speaker, so a glance answers "who has the floor".
- *
- * Before this the orb was one colour at two opacities across every state, which
- * meant the surface whose entire job is showing what the session is doing could
- * not distinguish the assistant talking from the room being silent.
- */
-const ORB_PALETTE: Record<VoiceSpeaker, { body: string; halo: string; glow: string }> = {
-  // The user has the floor: warm, and the only state that is *their* colour.
-  user: {
-    body: "bg-emerald-400",
-    halo: "bg-[radial-gradient(closest-side,rgba(52,211,153,0.4),transparent)]",
-    glow: "shadow-[0_0_90px_-10px_rgb(52_211_153)]",
-  },
-  // The assistant answering, matching the accent used for it elsewhere.
-  assistant: {
-    body: "bg-violet-500",
-    halo: "bg-[radial-gradient(closest-side,rgba(139,92,246,0.4),transparent)]",
-    glow: "shadow-[0_0_110px_-10px_rgb(139_92_246)]",
-  },
-  // Working with nothing audible — the "let me check that…" pause.
-  waiting: {
-    body: "bg-sky-500",
-    halo: "bg-[radial-gradient(closest-side,rgba(14,165,233,0.35),transparent)]",
-    glow: "shadow-[0_0_80px_-16px_rgb(14_165_233)]",
-  },
-  connecting: {
-    body: "bg-slate-500",
-    halo: "bg-[radial-gradient(closest-side,rgba(100,116,139,0.3),transparent)]",
-    glow: "shadow-[0_0_60px_-20px_rgb(100_116_139)]",
-  },
-  // Open and listening, but nobody is talking. Deliberately the quietest of
-  // the five: an idle microphone should not look like an active one.
-  idle: {
-    body: "bg-violet-500/55",
-    halo: "bg-[radial-gradient(closest-side,rgba(139,92,246,0.2),transparent)]",
-    glow: "shadow-[0_0_70px_-24px_rgb(139_92_246)]",
-  },
-};
-
-/**
- * Keyframes the orb needs, scoped to this surface.
- *
- * Inline rather than in the global sheet because the overlay is the only thing
- * that uses them and it is not always mounted; a global rule for a component
- * that exists on handhelds only is a rule nobody can find later.
- */
-function VoiceOrbKeyframes() {
-  return (
-    <style>{`
-      @keyframes orchestrator-orb-breathe {
-        0%, 100% { opacity: 0.45; transform: scale(0.96); }
-        50% { opacity: 0.85; transform: scale(1.04); }
-      }
-      @keyframes orchestrator-orb-spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-      }
-    `}</style>
   );
 }

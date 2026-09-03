@@ -5,8 +5,11 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { SelectTrigger } from "../ui/select";
 
+// Composer controls are 32px circles (pills once they carry a label) on the
+// row surface with the shared 1px edge — the same shape family as the header's
+// action buttons, so the two rows of controls read as one system.
 const composerControlClassName =
-  "h-7 min-h-7 gap-1.5 px-2.5 text-muted-foreground/70 transition-none hover:text-foreground/80 [&_svg[data-composer-control-icon]]:mx-0 [&_svg[data-composer-control-chevron]]:-mx-0.5";
+  "h-8 min-h-8 min-w-8 gap-1.5 rounded-full sm:h-8 sm:min-h-8 border border-[var(--line)] bg-surface-row px-2 text-foreground/80 transition-colors hover:bg-surface-hover hover:text-foreground [&_svg[data-composer-control-icon]]:mx-0 [&_svg[data-composer-control-chevron]]:-mx-0.5";
 
 export function ComposerControl({
   className,

@@ -186,6 +186,32 @@ export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
 }
 
+/**
+ * A thought the model wrote for the reader: an untitled reasoning row whose
+ * text is the thought itself.
+ *
+ * Titled reasoning is something else wearing the same activity kind — a bridge
+ * narrating its own state ("Delivering your message to the browser"), or a
+ * provider's summary heading — so it stays an ordinary work row. A thought is
+ * pulled out of the work group entirely and drawn in the timeline, because
+ * reasoning folded behind the work disclosure is reasoning nobody reads.
+ *
+ * The test is the absence of a provider title, not the row's heading text. The
+ * host defaults an untitled reasoning row's summary to "Thinking", so reading
+ * the heading also matched a row that carried the literal title "Thinking"
+ * over a placeholder body — which drew a paragraph in the transcript saying
+ * only "Thinking" (seen live 2026-09-03).
+ */
+export function workLogEntryIsThought(entry: WorkLogEntry): boolean {
+  if (entry.sourceActivityKind !== "reasoning.updated") {
+    return false;
+  }
+  if (entry.toolTitle !== undefined) {
+    return false;
+  }
+  return (entry.detail?.trim().length ?? 0) > 0;
+}
+
 /** Heuristic: providers often emit successful lifecycle status while error text lives in `detail` / `command`. */
 function toolDetailTextLooksLikeFailure(text: string): boolean {
   const t = text.toLowerCase();

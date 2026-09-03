@@ -41,6 +41,46 @@ managerLayer("VmManager", (it) => {
     }),
   );
 
+  it.effect("stops and starts an agent, persisting the status and re-broadcasting", () =>
+    Effect.gen(function* () {
+      const manager = yield* VmManager;
+      const store = yield* VmAgentStore;
+      const snapshots: VmAgentStreamEvent[] = [];
+      const agent = yield* manager.create({
+        name: "Night Watch",
+        purpose: "watch",
+        threadId: null,
+      });
+      const unsubscribe = yield* manager.subscribeAgents((event) =>
+        Effect.sync(() => {
+          snapshots.push(event);
+        }),
+      );
+
+      const stopped = yield* manager.setStatus(agent.vmAgentId, "stopped");
+      assert.strictEqual(stopped.status, "stopped");
+      const persistedStopped = yield* store.getById(agent.vmAgentId);
+      assert.strictEqual(Option.getOrThrow(persistedStopped).status, "stopped");
+
+      // Idempotent: stopping a stopped agent neither rewrites nor re-broadcasts.
+      const broadcastsAfterStop = snapshots.length;
+      yield* manager.setStatus(agent.vmAgentId, "stopped");
+      assert.strictEqual(snapshots.length, broadcastsAfterStop);
+
+      const started = yield* manager.setStatus(agent.vmAgentId, "running");
+      assert.strictEqual(started.status, "running");
+      const persistedStarted = yield* store.getById(agent.vmAgentId);
+      assert.strictEqual(Option.getOrThrow(persistedStarted).status, "running");
+      assert.isTrue(snapshots.length > broadcastsAfterStop);
+
+      const missing = yield* Effect.flip(
+        manager.setStatus((agent.vmAgentId + "-missing") as never, "stopped"),
+      );
+      assert.strictEqual(missing._tag, "VmAgentNotFoundError");
+      unsubscribe();
+    }),
+  );
+
   it.effect("rejects a duplicate name (case-insensitively)", () =>
     Effect.gen(function* () {
       const manager = yield* VmManager;

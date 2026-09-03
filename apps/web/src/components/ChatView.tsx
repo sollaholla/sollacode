@@ -48,6 +48,7 @@ import { truncate } from "@t3tools/shared/String";
 import { isProviderAuthenticationFailure } from "@t3tools/shared/agentMode";
 import { buildSettingsUpdatePrompt } from "@t3tools/shared/settingsPrompt";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+import { providerDriverLaunchCommand } from "@t3tools/shared/terminalProvider";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -136,6 +137,7 @@ import { isGitInitRequestReady, useGitInitRequestStore } from "../gitInitRequest
 import {
   applyProviderTaskDismissals,
   deriveProviderTasks,
+  confirmDestructiveSend,
   describeSendOverRunningTasks,
   isProviderTaskActive,
 } from "../providerTasks";
@@ -156,6 +158,8 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
+  BROWSER_PANE_ID,
+  isBrowserPaneId,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
   type SessionPhase,
@@ -313,6 +317,7 @@ import {
   primaryServerKeybindingsAtom,
   primaryServerSettingsAtom,
   serverEnvironment,
+  primaryServerProvidersAtom,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
 import { loadThreadHistory, threadEnvironment, useEnvironmentThread } from "../state/threads";
@@ -333,6 +338,7 @@ import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ComposerStatusRail } from "./chat/ComposerStatusRail";
 import { useTerminalLayoutSync } from "../hooks/useTerminalLayoutSync";
+import type { TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
   deriveWorkingSideChatsByParent,
@@ -517,7 +523,7 @@ function VoiceTranscriptionStatusChip({
       aria-label={
         status === "recording" ? (label ?? undefined) : `${label} Cancel voice transcription.`
       }
-      className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/70 bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground shadow-sm disabled:cursor-default"
+      className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-background/95 px-2.5 py-1 text-xs font-medium text-muted-foreground  disabled:cursor-default"
       data-chat-composer-status-chip="voice"
       disabled={status === "recording"}
       onClick={() => {
@@ -981,6 +987,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         resolveTerminalSessionLabel(session.target.terminalId, session.state.summary),
       );
     }
+    next.set(BROWSER_PANE_ID, "Browser");
     return next;
   }, [drawerTerminalSessions]);
   const terminalLaunchLocationsById = useMemo(() => {
@@ -1029,6 +1036,12 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     (state) => state.splitTerminalVertical,
   );
   const storeNewTerminal = useTerminalUiStateStore((state) => state.newTerminal);
+  const storeFlattenTerminalGroups = useTerminalUiStateStore(
+    (state) => state.flattenTerminalGroups,
+  );
+  const storeLaunchTerminalGrid = useTerminalUiStateStore((state) => state.launchTerminalGrid);
+  const storeAddBrowserPane = useTerminalUiStateStore((state) => state.addBrowserPane);
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const storeSetActiveTerminal = useTerminalUiStateStore((state) => state.setActiveTerminal);
   const storeCloseTerminal = useTerminalUiStateStore((state) => state.closeTerminal);
   const storeRejectPendingTerminalOpen = useTerminalUiStateStore(
@@ -1078,6 +1091,14 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     terminalIds: terminalUiState.terminalIds,
     terminalGroups: terminalUiState.terminalGroups,
   });
+  // The main terminal surface is one layout. Groups from older builds (or
+  // right-panel surfaces) would otherwise hide behind the active one, which
+  // is exactly the "which group am I in" confusion this removes.
+  useEffect(() => {
+    if (terminalUiState.terminalGroups.length > 1) {
+      storeFlattenTerminalGroups(threadRef);
+    }
+  }, [storeFlattenTerminalGroups, terminalUiState.terminalGroups.length, threadRef]);
   const [localFocusRequestId, setLocalFocusRequestId] = useState(0);
   const worktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const effectiveWorktreePath = useMemo(() => {
@@ -1198,31 +1219,155 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     ],
   );
 
-  const createNewTerminal = useCallback(() => {
-    if (!cwd) {
-      return;
-    }
-    const terminalId = nextTerminalId(knownTerminalIds);
-    storeNewTerminal(threadRef, terminalId);
-    bumpFocusRequestId();
-    void openTerminalWithRollback(terminalId, {
-      threadId,
-      terminalId,
-      cwd,
-      ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
-      env: runtimeEnv,
-    });
+  const activeLayoutPaneCount = useMemo(() => {
+    const group =
+      terminalUiState.terminalGroups.find(
+        (candidate) => candidate.id === terminalUiState.activeTerminalGroupId,
+      ) ??
+      terminalUiState.terminalGroups.find((candidate) =>
+        candidate.terminalIds.includes(terminalUiState.activeTerminalId),
+      );
+    return group?.terminalIds.length ?? 0;
   }, [
-    bumpFocusRequestId,
-    cwd,
-    effectiveWorktreePath,
-    knownTerminalIds,
-    openTerminalWithRollback,
-    runtimeEnv,
-    storeNewTerminal,
-    threadId,
-    threadRef,
+    terminalUiState.activeTerminalGroupId,
+    terminalUiState.activeTerminalId,
+    terminalUiState.terminalGroups,
   ]);
+  const openTerminalPane = useCallback(
+    (terminalId: string) =>
+      openTerminalWithRollback(terminalId, {
+        threadId,
+        terminalId,
+        cwd: cwd ?? "",
+        ...(effectiveWorktreePath != null ? { worktreePath: effectiveWorktreePath } : {}),
+        env: runtimeEnv,
+      }),
+    [cwd, effectiveWorktreePath, openTerminalWithRollback, runtimeEnv, threadId],
+  );
+  // "New terminal" adds a pane to the thread's one layout — beside the active
+  // pane when it is wide, beneath it otherwise — rather than opening a second
+  // group that hides the panes already on screen.
+  const createNewTerminal = useCallback(
+    (direction: "horizontal" | "vertical" = "horizontal") => {
+      if (!cwd) {
+        return;
+      }
+      const terminalId = nextTerminalId([...knownTerminalIds, ...terminalUiState.terminalIds]);
+      if (terminalUiState.terminalIds.length === 0) {
+        storeNewTerminal(threadRef, terminalId);
+      } else {
+        if (activeLayoutPaneCount >= MAX_TERMINALS_PER_GROUP) {
+          return;
+        }
+        if (direction === "vertical") {
+          storeSplitTerminalVertical(threadRef, terminalId);
+        } else {
+          storeSplitTerminal(threadRef, terminalId);
+        }
+      }
+      bumpFocusRequestId();
+      void openTerminalPane(terminalId);
+    },
+    [
+      activeLayoutPaneCount,
+      bumpFocusRequestId,
+      cwd,
+      knownTerminalIds,
+      openTerminalPane,
+      storeNewTerminal,
+      storeSplitTerminal,
+      storeSplitTerminalVertical,
+      terminalUiState.terminalIds,
+      threadRef,
+    ],
+  );
+  // Launch pad: open every pane as one grid, then type each provider's CLI
+  // command into its pane once the shell is up.
+  const launchTerminals = useCallback(
+    (commands: ReadonlyArray<string | null>) => {
+      if (!cwd || commands.length === 0) {
+        return;
+      }
+      const used = [...knownTerminalIds, ...terminalUiState.terminalIds];
+      const terminalIds: string[] = [];
+      for (let index = 0; index < commands.length; index += 1) {
+        const terminalId = nextTerminalId(used);
+        used.push(terminalId);
+        terminalIds.push(terminalId);
+      }
+      storeLaunchTerminalGrid(threadRef, terminalIds);
+      bumpFocusRequestId();
+      terminalIds.forEach((terminalId, index) => {
+        const command = commands[index] ?? null;
+        void (async () => {
+          const result = await openTerminalPane(terminalId);
+          if (result._tag === "Failure" || command === null) {
+            return;
+          }
+          // Give the shell a beat to print its prompt so the command lands
+          // on a fresh line instead of racing the login banner.
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          await writeTerminal({
+            environmentId: threadRef.environmentId,
+            input: { threadId, terminalId, data: `${command}\n` },
+          });
+        })();
+      });
+    },
+    [
+      bumpFocusRequestId,
+      cwd,
+      knownTerminalIds,
+      openTerminalPane,
+      storeLaunchTerminalGrid,
+      terminalUiState.terminalIds,
+      threadId,
+      threadRef,
+      writeTerminal,
+    ],
+  );
+  const addBrowserPane = useCallback(
+    (direction: "horizontal" | "vertical" = "horizontal") => {
+      if (
+        !terminalUiState.terminalIds.includes(BROWSER_PANE_ID) &&
+        activeLayoutPaneCount >= MAX_TERMINALS_PER_GROUP
+      ) {
+        return;
+      }
+      storeAddBrowserPane(threadRef, direction);
+      bumpFocusRequestId();
+    },
+    [
+      activeLayoutPaneCount,
+      bumpFocusRequestId,
+      storeAddBrowserPane,
+      terminalUiState.terminalIds,
+      threadRef,
+    ],
+  );
+  const launchProviders = useMemo<ReadonlyArray<TerminalLaunchProvider>>(() => {
+    const byDriver = new Map<string, TerminalLaunchProvider>();
+    for (const provider of serverProviders) {
+      if (!provider.installed || !provider.enabled) continue;
+      if ((provider.availability ?? "available") !== "available") continue;
+      const command = providerDriverLaunchCommand(provider.driver);
+      if (command === null || byDriver.has(provider.driver)) continue;
+      byDriver.set(provider.driver, {
+        driverKind: provider.driver,
+        label: provider.displayName ?? provider.driver,
+        command,
+      });
+    }
+    return [...byDriver.values()];
+  }, [serverProviders]);
+  const renderBrowserPane = useCallback(
+    () => (
+      <Suspense fallback={null}>
+        <PreviewPanel mode="embedded" threadRef={threadRef} tabId={null} visible={visible} />
+      </Suspense>
+    ),
+    [threadRef, visible],
+  );
 
   const activateTerminal = useCallback(
     (terminalId: string) => {
@@ -1234,6 +1379,12 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
 
   const closeTerminal = useCallback(
     (terminalId: string) => {
+      if (isBrowserPaneId(terminalId)) {
+        // No PTY behind a browser pane: just take it out of the layout.
+        storeCloseTerminal(threadRef, terminalId);
+        bumpFocusRequestId();
+        return;
+      }
       const fallbackExitWrite = () =>
         writeTerminal({
           environmentId: threadRef.environmentId,
@@ -1308,6 +1459,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
           onSplitTerminal={splitTerminal}
           onSplitTerminalVertical={splitTerminalVertical}
           onNewTerminal={createNewTerminal}
+          onLaunchTerminals={launchTerminals}
+          launchProviders={launchProviders}
+          onAddBrowserPane={addBrowserPane}
+          renderBrowserPane={renderBrowserPane}
           splitShortcutLabel={visible ? splitShortcutLabel : undefined}
           splitVerticalShortcutLabel={visible ? splitVerticalShortcutLabel : undefined}
           newShortcutLabel={visible ? newShortcutLabel : undefined}
@@ -2512,6 +2667,18 @@ function ChatViewContent(props: ChatViewProps) {
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
     [activeThread],
   );
+  // Fullscreen is a multi-pane affordance: once a single terminal remains the
+  // layout drops back so the pane never sits maximised with nothing to hide.
+  useEffect(() => {
+    if (terminalFullscreen && activeThreadRef && terminalUiState.terminalIds.length <= 1) {
+      storeSetTerminalFullscreen(activeThreadRef, false);
+    }
+  }, [
+    activeThreadRef,
+    storeSetTerminalFullscreen,
+    terminalFullscreen,
+    terminalUiState.terminalIds.length,
+  ]);
   const runPushToTalkTerminalWrite = useAtomCommand(terminalEnvironment.write, "terminal write");
   resolvePushToTalkTerminalTargetRef.current = (eventTarget) => {
     if (!activeThreadRef) return null;
@@ -2928,39 +3095,14 @@ function ChatViewContent(props: ChatViewProps) {
       if (!routeThreadRef) {
         return;
       }
-      const shouldOpenInitialTerminal =
-        surface === "terminal" && terminalUiState.terminalIds.length === 0;
+      // A thread with no terminals shows the launch pad instead of an
+      // auto-opened shell, so the first switch never spawns anything.
       storeSetMainSurface(routeThreadRef, surface);
       if (surface === "terminal") {
         void persistLocalDraftThreadRef.current();
       }
-      if (!shouldOpenInitialTerminal || !activeThreadId || !activeProject) {
-        return;
-      }
-      const cwd = projectScriptCwd({
-        project: { cwd: activeProject.workspaceRoot },
-        worktreePath: activeThread?.worktreePath ?? null,
-      });
-      void openTerminalWithRollback(routeThreadRef, DEFAULT_THREAD_TERMINAL_ID, {
-        threadId: activeThreadId,
-        terminalId: DEFAULT_THREAD_TERMINAL_ID,
-        cwd,
-        ...(activeThread?.worktreePath != null ? { worktreePath: activeThread.worktreePath } : {}),
-        env: projectScriptRuntimeEnv({
-          project: { cwd: activeProject.workspaceRoot },
-          worktreePath: activeThread?.worktreePath ?? null,
-        }),
-      });
     },
-    [
-      activeProject,
-      activeThread,
-      activeThreadId,
-      openTerminalWithRollback,
-      routeThreadRef,
-      storeSetMainSurface,
-      terminalUiState.terminalIds.length,
-    ],
+    [routeThreadRef, storeSetMainSurface],
   );
   useEffect(() => {
     if (terminalMainSurfaceActive) {
@@ -4722,7 +4864,15 @@ function ChatViewContent(props: ChatViewProps) {
       return;
     }
     const terminalId = nextTerminalId([...activeKnownTerminalIds, ...panelTerminalIds]);
-    storeNewTerminal(activeThreadRef, terminalId);
+    if (terminalUiState.terminalIds.length === 0) {
+      storeNewTerminal(activeThreadRef, terminalId);
+    } else {
+      // Same rule as the drawer's plus: one layout per thread, never a new group.
+      if ((activeTerminalGroup?.terminalIds.length ?? 0) >= MAX_TERMINALS_PER_GROUP) {
+        return;
+      }
+      storeSplitTerminal(activeThreadRef, terminalId);
+    }
     setTerminalFocusRequestId((value) => value + 1);
     void persistLocalDraftThread();
     void openTerminalWithRollback(activeThreadRef, terminalId, {
@@ -4744,8 +4894,11 @@ function ChatViewContent(props: ChatViewProps) {
     panelTerminalIds,
     persistLocalDraftThread,
     activeThreadWorktreePath,
+    activeTerminalGroup,
     gitCwd,
     storeNewTerminal,
+    storeSplitTerminal,
+    terminalUiState.terminalIds.length,
   ]);
   const closeTerminal = useCallback(
     (terminalId: string) => {
@@ -6996,7 +7149,8 @@ function ChatViewContent(props: ChatViewProps) {
       runningBackgroundTasks.length > 0 &&
       !(activeSessionProviderDriver === "grok" && phase === "running")
     ) {
-      if (!window.confirm(describeSendOverRunningTasks(runningBackgroundTasks.length))) return;
+      if (!confirmDestructiveSend(describeSendOverRunningTasks(runningBackgroundTasks.length)))
+        return;
       interruptedTaskTitles = runningBackgroundTasks.map(
         (task) => task.title || task.taskType || "Background task",
       );
@@ -9026,7 +9180,7 @@ function ChatViewContent(props: ChatViewProps) {
       <ThreadArtifactSurface threadRef={activeThreadRef} surface={activeRightPanelSurface} />
     ) : activeRightPanelSurface?.kind === "side-chat" ? (
       <div className="flex min-h-0 flex-1 flex-col" data-side-chat-surface>
-        <div className="flex h-9 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-3">
+        <div className="flex h-9 shrink-0 items-center justify-between gap-3 border-b border-border px-3">
           <span className="truncate text-xs text-muted-foreground">
             Interactive sub-agent · isolated from the main chat
           </span>
@@ -9413,7 +9567,7 @@ function ChatViewContent(props: ChatViewProps) {
                     aria-label="Scroll to end"
                     title="Scroll to end"
                     onClick={() => scrollToEnd(true)}
-                    className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
+                    className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-muted-foreground text-xs  transition-colors hover:border-border hover:text-foreground hover:cursor-pointer"
                   >
                     <ChevronDownIcon className="size-3.5" />
                     Scroll to end
@@ -9481,7 +9635,7 @@ function ChatViewContent(props: ChatViewProps) {
                         {activeTerminalActivity ? (
                           <button
                             aria-label={`${activeTerminalActivity.count} ${activeTerminalActivity.count === 1 ? "terminal is" : "terminals are"} working. Open the terminal workspace.`}
-                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-sky-600 shadow-sm transition-colors hover:text-sky-500 dark:text-sky-400"
+                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-gold-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-gold-600  transition-colors hover:text-gold-500 dark:text-gold-400"
                             data-chat-composer-status-chip="terminals"
                             onClick={openWorkingTerminal}
                             title="Open a working terminal"
@@ -9496,7 +9650,7 @@ function ChatViewContent(props: ChatViewProps) {
                         {activeSideChatActivity ? (
                           <button
                             aria-label={`${activeSideChatActivity.count} side ${activeSideChatActivity.count === 1 ? "chat is" : "chats are"} working. Open the first working side chat.`}
-                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-sky-600 shadow-sm transition-colors hover:text-sky-500 dark:text-sky-400"
+                            className="chat-composer-status-chip pointer-events-auto flex items-center gap-1.5 rounded-full border border-gold-500/30 bg-background/95 px-2.5 py-1 text-xs font-medium text-gold-600  transition-colors hover:text-gold-500 dark:text-gold-400"
                             data-chat-composer-status-chip="side-chats"
                             onClick={openWorkingSideChat}
                             title="Open a working side chat"
@@ -9531,7 +9685,7 @@ function ChatViewContent(props: ChatViewProps) {
                         />
                         {routeThreadRef ? (
                           <div className="pointer-events-auto mt-4 flex justify-center">
-                            <div className="inline-flex items-center gap-0.5 rounded-full border border-border/70 bg-background/80 p-0.5 text-xs">
+                            <div className="inline-flex items-center gap-0.5 rounded-full border border-border bg-background/80 p-0.5 text-xs">
                               <button
                                 type="button"
                                 className="inline-flex items-center gap-1.5 rounded-full bg-accent px-3 py-1 text-foreground"

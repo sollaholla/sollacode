@@ -21,6 +21,7 @@ import {
   type UpdateWorkspaceTaskInput,
 } from "../../../vm/VmAgentWorkspace.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
+import { VmManager } from "../../../vm/VmManager.ts";
 import { handleAgentWorkspace } from "./handlers.ts";
 
 const threadId = ThreadId.make("thread-agent-workspace");
@@ -35,6 +36,7 @@ const agent: VmAgent = {
   threadId,
   status: "running",
   controlMode: "agent",
+  icon: null,
   guestIp: "127.0.0.1",
   lastError: null,
   createdAt: iso,
@@ -169,17 +171,26 @@ const makeHarness = (boundAgent: VmAgent | null = agent, autoApprovesTasks = fal
   const schedulerLayer = Layer.mock(VmAgentTaskScheduler)({
     wake: () => Effect.sync(() => void (wakeCount += 1)),
   });
+  const icons: Array<VmAgent["icon"]> = [];
+  const managerLayer = Layer.mock(VmManager)({
+    setIcon: (_vmAgentId, icon) =>
+      Effect.sync(() => {
+        icons.push(icon);
+        return { ...agent, icon };
+      }),
+  });
   return {
     created,
     updated,
     raised,
     resolvedIds,
+    icons,
     wakeCount: () => wakeCount,
-    layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer),
+    layer: Layer.mergeAll(storeLayer, workspaceLayer, schedulerLayer, managerLayer),
   };
 };
 
-type Services = VmAgentStore | VmAgentWorkspace | VmAgentTaskScheduler;
+type Services = VmAgentStore | VmAgentWorkspace | VmAgentTaskScheduler | VmManager;
 const run = <A, E>(
   effect: Effect.Effect<A, E, McpInvocationContext.McpInvocationContext | Services>,
   layer: Layer.Layer<Services>,
@@ -331,5 +342,28 @@ it.effect("update_task keeps recurring work active when auto-approval applies", 
     assert.strictEqual(harness.updated[0]?.status, "active");
     assert.strictEqual(harness.updated[0]?.approvalState, "approved");
     assert.include(result.status, "auto-approved");
+  }),
+);
+
+it.effect("set_icon stores the agent's outlined glyph through the registry", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const result = yield* run(
+      handleAgentWorkspace({ action: "set_icon", icon: "globe" }),
+      harness.layer,
+    );
+    assert.deepStrictEqual(harness.icons, ["globe"]);
+    assert.include(result.status, "globe");
+  }),
+);
+
+it.effect("set_icon without an icon is an invalid input, not a silent no-op", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    const error = yield* Effect.flip(
+      run(handleAgentWorkspace({ action: "set_icon" }), harness.layer),
+    );
+    assert.strictEqual(error._tag, "AgentWorkspaceInvalidInputError");
+    assert.strictEqual(harness.icons.length, 0);
   }),
 );

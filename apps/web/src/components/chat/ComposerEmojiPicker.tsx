@@ -108,7 +108,7 @@ export function ComposerEmojiPicker(props: {
           }}
         >
           <PopoverTrigger
-            className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
             disabled={props.disabled}
             aria-label="Open searchable emoji picker"
             title="More emoji"
@@ -171,7 +171,7 @@ export function ComposerEmojiPicker(props: {
           the ellipsis sits just inside it. */}
       <button
         type="button"
-        className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
         disabled={props.disabled}
         aria-label={quickDrawerOpen ? "Close emoji shortcuts" : "Open emoji shortcuts"}
         aria-expanded={quickDrawerOpen}

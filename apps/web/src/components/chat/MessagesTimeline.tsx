@@ -81,6 +81,8 @@ import {
   Undo2Icon,
   WrenchIcon,
   XIcon,
+  AudioLinesIcon,
+  SparklesIcon,
   ZapIcon,
 } from "lucide-react";
 import {
@@ -94,6 +96,8 @@ import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
+  applyWorkCardEdges,
+  type WorkCardEdge,
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
@@ -678,7 +682,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         {hasOlderHistory ? (
           <button
             type="button"
-            className="mx-auto flex min-h-9 items-center gap-2 rounded-full border border-border/60 bg-card px-3 py-1.5 text-muted-foreground text-xs shadow-sm transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mx-auto flex min-h-9 items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-muted-foreground text-xs  transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled={olderHistoryLoading}
             onClick={onLoadOlderHistory}
             onFocus={onLoadOlderHistory}
@@ -1480,24 +1484,41 @@ type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["grouped
 type TimelineRow = MessagesTimelineRow;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
+  const cardEdge: WorkCardEdge | undefined = row.cardEdge;
+  const inCard = cardEdge !== undefined;
+  const drawsTop = cardEdge === "start" || cardEdge === "solo";
+  const drawsBottom = cardEdge === "end" || cardEdge === "solo";
   return (
     <div
       className={cn(
-        // Commentary (non-terminal assistant) rows carry no metadata row, so
-        // they sit closer to the work that follows them.
-        (row.kind === "message" && row.message.role === "assistant" && !row.showAssistantMeta) ||
-          row.kind === "work" ||
-          row.kind === "work-toggle"
-          ? "pb-2"
-          : "pb-4",
+        // The agent's turn is one bordered card painted row by row: the
+        // virtualized list keeps rows independent, so each draws the sides
+        // and only the first and last draw the top and bottom edges.
+        inCard
+          ? "border-x border-[var(--line)] bg-[var(--card)] px-3 sm:px-4"
+          : // Commentary (non-terminal assistant) rows carry no metadata row,
+            // so they sit closer to the work that follows them.
+            (row.kind === "message" &&
+                row.message.role === "assistant" &&
+                !row.showAssistantMeta) ||
+              row.kind === "work" ||
+              row.kind === "thought" ||
+              row.kind === "work-toggle"
+            ? "pb-2"
+            : "pb-4",
+        inCard && drawsTop ? "rounded-t-[14px] border-t pt-3" : null,
+        inCard && drawsBottom ? "mb-4 rounded-b-[14px] border-b pb-3" : null,
+        inCard && !drawsBottom ? "pb-2" : null,
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
       )}
       data-timeline-row-id={row.id}
       data-timeline-row-kind={row.kind}
+      data-work-card-edge={cardEdge}
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
       {row.kind === "work" ? <WorkGroupSection groupedEntries={row.groupedEntries} /> : null}
+      {row.kind === "thought" ? <ThoughtTimelineRow row={row} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
       {row.kind === "provider-transition" ? <ProviderTransitionTimelineRow row={row} /> : null}
@@ -1511,6 +1532,33 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+/**
+ * The model thinking out loud.
+ *
+ * Drawn in the timeline rather than inside the work group: a thought narrates
+ * the calls around it, and inside the group it was folded behind the work
+ * disclosure — stored, rendered, and never seen.
+ *
+ * Typeset exactly like an assistant message, through the same markdown
+ * renderer in the same container. Providers whose reasoning already reads
+ * right arrive as ordinary assistant text, so anything quieter here — smaller,
+ * greyed, unparsed — would make the same sentence look like a different class
+ * of thing depending on which provider wrote it.
+ */
+function ThoughtTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "thought" }> }) {
+  const ctx = use(TimelineRowCtx);
+  return (
+    <div className="relative min-w-0 px-1 py-0.5" data-timeline-thought>
+      <ChatMarkdown
+        text={row.text}
+        cwd={ctx.markdownCwd}
+        threadRef={ctx.threadRef ?? undefined}
+        skills={ctx.skills}
+      />
+    </div>
+  );
+}
 
 function ProviderTransitionTimelineRow({
   row,
@@ -1629,7 +1677,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         aria-label={`Settings updated: ${settingsUpdate.description}`}
       >
         <div className="h-px flex-1 bg-border/70" />
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
           <SlidersHorizontalIcon className="size-3" aria-hidden />
           {settingsUpdate.description}
         </span>
@@ -1652,7 +1700,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       <div className="flex flex-col items-end gap-1.5">
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-accent/70 px-2.5 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-accent"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-accent/70 px-2.5 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-accent"
           aria-expanded={syntheticPromptExpanded}
           onClick={() => setSyntheticPromptExpanded((expanded) => !expanded)}
         >
@@ -1682,13 +1730,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="relative max-w-[80%] rounded-2xl bg-accent p-3">
+      <div className="relative max-w-[80%] rounded-[14px] border border-[var(--gold-line)] bg-[var(--gold-tint)] px-3.5 py-3">
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
             {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
               <div
                 key={image.id}
-                className="aspect-video overflow-hidden rounded-lg border border-border/80 bg-background/70"
+                className="aspect-video overflow-hidden rounded-lg border border-border bg-background/70"
               >
                 {image.previewUrl ? (
                   <button
@@ -1754,7 +1802,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
               <span>{describeInterruptedTasks(interrupted.titles)}</span>
             </button>
             {interruptedExpanded ? (
-              <div className="rounded-md border border-border/70 bg-background/60 px-2 py-1.5 text-[11px] text-muted-foreground">
+              <div className="rounded-md border border-border bg-background/60 px-2 py-1.5 text-[11px] text-muted-foreground">
                 <p className="mb-1">
                   Sending this message cancelled these. The agent was told to restart any that are
                   still needed.
@@ -1776,7 +1824,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         ) : null}
         {row.message.inputOrigin === "transcription" ? (
           <div className="mt-2 flex justify-start">
-            <span className="rounded-full border border-border/70 bg-background/55 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <span className="rounded-full border border-border bg-background/55 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               Transcribed
             </span>
           </div>
@@ -1833,7 +1881,12 @@ function MessageDeliveryIndicator({
       <TooltipTrigger
         render={
           <span
-            className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-muted-foreground/70"
+            className={cn(
+              "flex shrink-0 items-center gap-1 text-[11px] font-medium text-muted-foreground/70",
+              // Delivered reads in the accent: it is the one state worth
+              // noticing at a glance.
+              state === "read" && "text-gold-600 dark:text-gold-400",
+            )}
             aria-label={label}
             role="status"
           />
@@ -1844,8 +1897,8 @@ function MessageDeliveryIndicator({
         ) : state === "read" ? (
           // Overlapped pair, second check tucked left — the WhatsApp shape.
           <span className="flex items-center">
-            <CheckIcon className="size-3" aria-hidden />
-            <CheckIcon className="-ms-1.5 size-3" aria-hidden />
+            <CheckIcon className="size-3.5" aria-hidden />
+            <CheckIcon className="-ms-2 size-3.5" aria-hidden />
           </span>
         ) : (
           <CheckIcon className="size-3" aria-hidden />
@@ -1887,7 +1940,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
 
   return (
-    <div className="border-b border-border/60 pb-2 pt-1">
+    <div className="border-b border-border pb-2 pt-1">
       <button
         type="button"
         aria-expanded={row.expanded}
@@ -1968,7 +2021,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                   ? "Reconnect the remote machine to resume this response."
                   : undefined
               }
-              className="h-8 gap-1.5 rounded-lg bg-card/80 text-foreground shadow-sm disabled:text-muted-foreground disabled:opacity-55"
+              className="h-8 gap-1.5 rounded-lg bg-card/80 text-foreground  disabled:text-muted-foreground disabled:opacity-55"
             >
               {ctx.isResumeIncompleteTurnBusy ? (
                 <LoaderCircleIcon aria-hidden="true" className="size-3.5 animate-spin" />
@@ -2057,12 +2110,12 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
     );
   }
   return (
-    <div className="py-0.5 pl-1.5">
-      <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
-        <span className="inline-flex items-center gap-[3px]">
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-          <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+    <div className="py-0.5 pl-1">
+      <div className="flex items-center gap-2 pt-1 text-[12px] text-muted-foreground tabular-nums">
+        <span className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-[var(--gold-tint)] text-gold-600 dark:text-gold-400">
+          {/* The equalizer's six bars each rise and fall on their own phase,
+              so the icon reads as live work rather than a pulsing block. */}
+          <AudioLinesIcon className="working-pillars size-3.5" aria-hidden />
         </span>
         <span>
           {workingStatusLabel ? (
@@ -2144,7 +2197,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
           {groupLabel}
         </p>
       )}
-      <div className="space-y-px">
+      <div className="space-y-1.5">
         {nonEmptyEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={workEntry.id}
@@ -2174,7 +2227,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
                 ? "Reconnect the remote machine to resume this task."
                 : undefined
             }
-            className="h-7 gap-1.5 rounded-lg bg-card/80 text-foreground shadow-sm disabled:text-muted-foreground disabled:opacity-55"
+            className="h-7 gap-1.5 rounded-lg bg-card/80 text-foreground  disabled:text-muted-foreground disabled:opacity-55"
             data-runtime-error-resume="true"
           >
             {ctx.isResumeIncompleteTurnBusy ? (
@@ -2205,34 +2258,35 @@ function WorkGroupToggleTimelineRow({
       : "log entries";
 
   return (
-    <button
-      type="button"
-      className="flex w-full cursor-pointer items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-[12px] leading-5 transition-colors duration-150 hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-      aria-expanded={row.expanded}
-      onClick={(event) => {
-        const anchorElement =
-          event.currentTarget.closest<HTMLElement>("[data-timeline-row-id]") ?? event.currentTarget;
-        ctx.onToggleWorkGroup(row.groupId, anchorElement);
-      }}
-    >
-      <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/65">
+    <div className="flex items-center py-0.5">
+      <button
+        type="button"
+        className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--line)] bg-surface-row px-3 text-left text-[12px] font-medium leading-5 text-foreground/85 transition-colors duration-150 hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+        aria-expanded={row.expanded}
+        onClick={(event) => {
+          const anchorElement =
+            event.currentTarget.closest<HTMLElement>("[data-timeline-row-id]") ??
+            event.currentTarget;
+          ctx.onToggleWorkGroup(row.groupId, anchorElement);
+        }}
+      >
+        <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
+        {row.expanded ? (
+          <span>Show fewer {row.onlyToolEntries ? "tool calls" : "log entries"}</span>
+        ) : (
+          <span>
+            +{row.hiddenCount} previous {labelNoun}
+          </span>
+        )}
         <ChevronDownIcon
           className={cn(
-            "size-3.5 shrink-0 opacity-70 transition-transform duration-200",
+            "size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-200",
             row.expanded && "rotate-180",
           )}
+          aria-hidden
         />
-      </span>
-      {row.expanded ? (
-        <span className="font-medium text-foreground/82">
-          Show fewer {row.onlyToolEntries ? "tool calls" : "log entries"}
-        </span>
-      ) : (
-        <span className="font-medium text-foreground/82">
-          +{row.hiddenCount} previous {labelNoun}
-        </span>
-      )}
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -2333,7 +2387,7 @@ const UserMessageElementContextChip = memo(function UserMessageElementContextChi
     <Tooltip>
       <TooltipTrigger
         render={
-          <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-xs text-foreground/85">
+          <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs text-foreground/85">
             <MousePointerClickIcon className="size-3 shrink-0" />
             <span className="truncate">{props.context.header}</span>
           </span>
@@ -2352,11 +2406,11 @@ function UserMessagePreviewAnnotationCard(props: {
 }) {
   const ctx = use(TimelineRowCtx);
   return (
-    <div className="mb-2 flex max-w-full items-center overflow-hidden rounded-lg border border-border/70 bg-background/70">
+    <div className="mb-2 flex max-w-full items-center overflow-hidden rounded-lg border border-border bg-background/70">
       {props.image?.previewUrl ? (
         <button
           type="button"
-          className="size-14 shrink-0 cursor-zoom-in overflow-hidden border-r border-border/70 bg-muted"
+          className="size-14 shrink-0 cursor-zoom-in overflow-hidden border-r border-border bg-muted"
           aria-label={`Preview ${props.image.name}`}
           onClick={() => {
             if (!props.image) return;
@@ -2659,7 +2713,7 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
   );
 
   return (
-    <div className="space-y-2 rounded-lg border border-border/70 bg-background/70 p-3">
+    <div className="space-y-2 rounded-lg border border-border bg-background/70 p-3">
       <div className="space-y-1">
         <div className="text-xs font-medium text-foreground">
           {formatWorkspaceRelativePath(comment.filePath, ctx.workspaceRoot)}
@@ -2719,7 +2773,9 @@ function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
   return useMemo(() => {
     const nextState = computeStableMessagesTimelineRows(rows, prevState.current);
     prevState.current = nextState;
-    return nextState.result;
+    // Box edges ride on the row objects (identity-stable per source row) so a
+    // neighbour change re-renders exactly the rows whose edge moved.
+    return applyWorkCardEdges(nextState.result);
   }, [rows]);
 }
 
@@ -3020,21 +3076,23 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const showDestructiveRowStyle =
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
+  // The leading glyph sits in a small raised tile so a row reads as a card
+  // header even before its body is expanded.
   const iconWrapperClass = cn(
-    "flex size-5 shrink-0 items-center justify-center",
+    "flex size-6 shrink-0 items-center justify-center rounded-md bg-surface-tile border border-[var(--line)]",
     showWarningIndicator
       ? "text-warning"
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator
-          ? "text-muted-foreground/65"
+          ? "text-muted-foreground"
           : iconConfig.className,
   );
   const headingClass = showWarningIndicator
-    ? "font-medium text-warning"
+    ? "font-semibold text-warning"
     : showDestructiveRowStyle
-      ? "font-medium text-destructive"
-      : "font-medium text-foreground/82";
+      ? "font-semibold text-destructive"
+      : "font-semibold text-foreground";
   const turnSettled = !activity.activeTurnInProgress;
   const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
   const showSuccessIndicator =
@@ -3058,9 +3116,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   return (
     <div
       className={cn(
-        "flex flex-col rounded-md px-0.5 py-0.5 transition-colors",
+        "flex flex-col rounded-[10px] border border-[var(--line)] bg-surface-row px-2.5 py-1.5 transition-colors",
         canExpand &&
-          "cursor-pointer hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          "cursor-pointer hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
       )}
       {...rowToggleProps}
     >
@@ -3078,10 +3136,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
-            <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[12px] leading-5">
+            <p className="flex min-w-0 w-full items-center gap-2 text-[12.5px] leading-6">
               <span className={cn("min-w-0 shrink truncate", headingClass)}>{heading}</span>
               {preview && (
-                <span className="min-w-0 flex-1 truncate text-muted-foreground/55">{preview}</span>
+                <span className="min-w-0 flex-1 truncate rounded-md bg-surface-tile px-1.5 py-px font-mono text-[11px] leading-5 text-gold-700 dark:text-gold-300/85">
+                  {preview}
+                </span>
               )}
             </p>
           </div>
@@ -3120,10 +3180,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   <TooltipTrigger
                     render={<span className="flex size-4 items-center justify-center" />}
                   >
-                    <span className="inline-flex size-4 items-center justify-center">
+                    <span className="inline-flex size-4 items-center justify-center text-ok">
                       <CheckIcon
-                        className="block size-3 shrink-0 stroke-current"
+                        className="block size-3.5 shrink-0 stroke-current"
                         stroke="currentColor"
+                        strokeWidth={2.25}
                         aria-hidden
                       />
                     </span>
@@ -3154,7 +3215,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ) : null}
       {expanded && canExpand && expandedBody ? (
         <div
-          className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"
+          className="mt-1 ms-7 cursor-default border-s border-border ps-3 pt-0.5"
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
@@ -3205,7 +3266,7 @@ function TokenOptimizerPage(props: {
   return (
     <button
       type="button"
-      className="overflow-hidden rounded-md border border-border/45 bg-black/10 text-left disabled:cursor-default"
+      className="overflow-hidden rounded-md border border-border bg-black/10 text-left disabled:cursor-default"
       aria-label={`Open optimized page: ${props.attachment.name}`}
       onClick={(event) => {
         event.stopPropagation();
@@ -3234,7 +3295,7 @@ function TokenOptimizerPage(props: {
           <LoaderCircleIcon className="size-4 animate-spin" aria-label="Loading optimized page" />
         )}
       </span>
-      <span className="block truncate border-t border-border/45 px-2 py-1 text-[10px] text-muted-foreground">
+      <span className="block truncate border-t border-border px-2 py-1 text-[10px] text-muted-foreground">
         {props.attachment.name}
       </span>
     </button>
@@ -3254,7 +3315,7 @@ function ToolReadImagePreview(props: {
   // Say it plainly instead so an unparseable route key is visible.
   if (!threadRef) {
     return (
-      <div className="mt-1 ms-7 max-w-xl rounded-lg border border-border/60 bg-background/55 px-4 py-3 text-[11px] text-muted-foreground">
+      <div className="mt-1 ms-7 max-w-xl rounded-lg border border-border bg-background/55 px-4 py-3 text-[11px] text-muted-foreground">
         Image preview unavailable in this view.
       </div>
     );
@@ -3437,7 +3498,7 @@ function ToolReadImagePreviewWithThread(props: {
 
   return (
     <div
-      className="mt-1 ms-7 max-w-xl cursor-default overflow-hidden rounded-lg border border-border/60 bg-background/55"
+      className="mt-1 ms-7 max-w-xl cursor-default overflow-hidden rounded-lg border border-border bg-background/55"
       aria-label={`Image read preview: ${displayPath}`}
       onClick={stopRowToggle}
       onPointerDown={stopRowToggle}
@@ -3477,7 +3538,7 @@ function ToolReadImagePreviewWithThread(props: {
       )}
       <a
         href={props.path}
-        className="block truncate border-t border-border/45 px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground/65 transition-colors hover:bg-accent/20 hover:text-foreground hover:underline"
+        className="block truncate border-t border-border px-2.5 py-1.5 font-mono text-[10px] text-muted-foreground/65 transition-colors hover:bg-accent/20 hover:text-foreground hover:underline"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();

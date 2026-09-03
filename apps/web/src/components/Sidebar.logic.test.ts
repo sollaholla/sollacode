@@ -1032,8 +1032,8 @@ describe("resolveProjectStatusIndicator", () => {
         },
         {
           label: "Working",
-          colorClass: "text-sky-600",
-          dotClass: "bg-sky-500",
+          colorClass: "text-gold-600",
+          dotClass: "bg-gold-500",
           pulse: true,
         },
       ]),
@@ -1051,12 +1051,12 @@ describe("resolveProjectStatusIndicator", () => {
         },
         {
           label: "Plan Ready",
-          colorClass: "text-violet-600",
-          dotClass: "bg-violet-500",
+          colorClass: "text-gold-600",
+          dotClass: "bg-gold-500",
           pulse: false,
         },
       ]),
-    ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
+    ).toMatchObject({ label: "Plan Ready", dotClass: "bg-gold-500" });
   });
 });
 

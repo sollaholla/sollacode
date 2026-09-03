@@ -222,7 +222,7 @@ function JumpHintBadge(props: { label: string }) {
   return (
     <span
       aria-hidden
-      className="pointer-events-none absolute right-1.5 top-1/2 z-10 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-border/80 bg-background/95 px-1.5 font-mono text-[10px] font-medium tracking-tight text-foreground shadow-sm"
+      className="pointer-events-none absolute right-1.5 top-1/2 z-10 inline-flex h-5 -translate-y-1/2 items-center rounded-full border border-border bg-background/95 px-1.5 font-mono text-[10px] font-medium tracking-tight text-foreground "
     >
       {props.label}
     </span>
@@ -618,7 +618,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
           label: autoResumeStartedAt !== null ? "Auto-resuming" : "Working",
           icon: "working" as const,
           className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
+            "animate-sidebar-working-text text-gold-600 motion-reduce:animate-none dark:text-gold-400",
         }
       : status === "approval"
         ? {
@@ -630,7 +630,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
           ? {
               label: "Input",
               icon: null,
-              className: "text-indigo-600 dark:text-indigo-300",
+              className: "text-blue-600 dark:text-blue-300",
             }
           : status === "failed"
             ? {
@@ -933,18 +933,21 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   ) : (
     <span
       className={cn(
-        "min-w-0 flex-1 text-sm",
-        shouldRecede ? "font-normal" : "font-medium",
+        "min-w-0 flex-1",
+        variant === "card" ? "text-xs font-normal" : "text-sm",
+        variant !== "card" && (shouldRecede ? "font-normal" : "font-medium"),
         variant === "card"
           ? cn(
+              // Card rows lead with the project; the thread title is the
+              // second line, so it steps down to the secondary tone.
               "truncate",
               isUnread || isWoke
                 ? "text-foreground"
                 : shouldRecede
-                  ? "text-muted-foreground/80"
+                  ? "text-muted-foreground/60"
                   : status === "failed"
-                    ? "text-foreground/95"
-                    : "text-foreground/90",
+                    ? "text-foreground/90"
+                    : "text-muted-foreground/85",
             )
           : cn(
               "truncate group-hover/v2-row:text-foreground",
@@ -1034,7 +1037,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
                   // Snoozed rows show when they come BACK, not when they were
                   // last touched — the return ticket is the row's whole story.
-                  <span className="text-xs text-blue-600 tabular-nums dark:text-blue-400">
+                  <span className="text-xs text-gold-600 tabular-nums dark:text-gold-400">
                     {props.snoozeWakeLabelText}
                   </span>
                 ) : isWoke ? (
@@ -1138,8 +1141,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               {props.projectTitle ? (
                 <span
                   className={cn(
-                    "min-w-0 flex-1 truncate text-xs text-muted-foreground/85",
-                    shouldRecede ? "font-normal" : "font-medium",
+                    "min-w-0 flex-1 truncate text-sm",
+                    shouldRecede
+                      ? "font-normal text-muted-foreground/75"
+                      : "font-medium text-foreground/95",
                   )}
                 >
                   {props.projectTitle}
@@ -2726,14 +2731,14 @@ export default function SidebarV2() {
                   type="button"
                   aria-label="Search threads and commands"
                   aria-haspopup="dialog"
-                  className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                  className="h-8 rounded-md bg-sidebar-control-surface font-normal text-sidebar-muted-foreground border border-sidebar-border hover:bg-sidebar-row-hover focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                   data-testid="command-palette-trigger"
                   onClick={() => openCommandPalette()}
                 >
                   <SearchIcon />
                   <div className="flex-1 truncate text-left">Search</div>
                   {commandPaletteShortcutLabel ? (
-                    <Kbd className="mr-px h-4 min-w-0 rounded-sm bg-sidebar-control-surface px-1.5 text-[10px] text-sidebar-muted-foreground ring-1 ring-sidebar-border">
+                    <Kbd className="mr-px h-4 min-w-0 rounded-sm bg-surface-hover px-1.5 text-[10px] text-sidebar-muted-foreground border border-sidebar-border">
                       {commandPaletteShortcutLabel}
                     </Kbd>
                   ) : null}
@@ -2788,7 +2793,7 @@ export default function SidebarV2() {
                       <FolderIcon className="size-4 shrink-0" />
                     )}
                     <span className="min-w-0 flex-1 truncate">
-                      {scopedProjectGroup?.displayName ?? "All projects"}
+                      {scopedProjectGroup?.displayName ?? "All Projects"}
                     </span>
                     <ChevronDownIcon className="-mr-px size-4 shrink-0" />
                   </MenuTrigger>
@@ -2805,7 +2810,7 @@ export default function SidebarV2() {
                         className="h-8 min-h-8 px-1 py-0 text-sm font-medium [&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
                       >
                         <FolderIcon className="size-4 shrink-0" />
-                        <span className="min-w-0 truncate text-sm">All projects</span>
+                        <span className="min-w-0 truncate text-sm">All Projects</span>
                       </MenuRadioItem>
                       {projectGroups.map((project) => {
                         const scopeKey = project.projectKey;
@@ -2877,25 +2882,39 @@ export default function SidebarV2() {
         }
       >
         <SidebarGroup className="px-2 pb-1 pt-0">
-          <button
-            type="button"
-            onClick={toggleThreadsSection}
-            aria-expanded={threadsSectionExpanded}
-            aria-controls={THREADS_SECTION_BODY_ID}
-            data-testid="sidebar-v2-threads-section-toggle"
-            className="mb-1 flex w-full cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
-          >
-            <span className="min-w-0 truncate">
-              {threadsSectionExpanded ? "Threads" : `Threads (${totalThreadCount})`}
-            </span>
-            <ChevronDownIcon
-              aria-hidden
-              className={cn(
-                "size-3.5 shrink-0 transition-transform",
-                !threadsSectionExpanded && "-rotate-90",
-              )}
-            />
-          </button>
+          <div className="mb-1 flex min-w-0 items-center gap-1 pr-1">
+            <button
+              type="button"
+              onClick={toggleThreadsSection}
+              aria-expanded={threadsSectionExpanded}
+              aria-controls={THREADS_SECTION_BODY_ID}
+              data-testid="sidebar-v2-threads-section-toggle"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted-foreground transition-colors hover:text-sidebar-foreground"
+            >
+              <span className="min-w-0 truncate">
+                {threadsSectionExpanded ? "Threads" : `Threads (${totalThreadCount})`}
+              </span>
+              <ChevronDownIcon
+                aria-hidden
+                className={cn(
+                  "size-3 shrink-0 opacity-60 transition-transform",
+                  !threadsSectionExpanded && "-rotate-90",
+                )}
+              />
+            </button>
+            {/* Same action as the compose button beside Search, repeated where
+                the list it adds to begins, so the section reads as complete on
+                its own. */}
+            <button
+              type="button"
+              aria-label="New thread"
+              className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground/70 transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground disabled:pointer-events-none disabled:opacity-50"
+              onClick={handleNewThreadClick}
+              disabled={projects.length === 0}
+            >
+              <PlusIcon className="size-3.5" />
+            </button>
+          </div>
           {/* Hidden rather than unmounted: the rows carry rename drafts, selection,
               and auto-animate state that should survive collapsing the section. */}
           <div
@@ -3035,16 +3054,16 @@ export default function SidebarV2() {
                           data-testid="sidebar-v2-snoozed-shelf-toggle"
                           className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left"
                         >
-                          <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
+                          <span className="text-xs font-medium text-gold-600 dark:text-gold-400">
                             {snoozedShelfExpanded
                               ? "Snoozed"
                               : `Snoozed (${snoozedThreads.length})`}
                           </span>
-                          <span className="h-px flex-1 bg-blue-500/20 dark:bg-blue-400/15" />
+                          <span className="h-px flex-1 bg-gold-500/20 dark:bg-gold-400/15" />
                           <ChevronDownIcon
                             aria-hidden
                             className={cn(
-                              "size-3 text-blue-600 transition-transform dark:text-blue-400",
+                              "size-3 text-gold-600 transition-transform dark:text-gold-400",
                               snoozedShelfExpanded && "rotate-180",
                             )}
                           />
@@ -3189,7 +3208,7 @@ export default function SidebarV2() {
             </div>
           </DialogHeader>
           <DialogPanel className="p-0">
-            <div className="divide-y divide-border/60">
+            <div className="divide-y divide-border">
               {projectActionsTarget?.memberProjects.map((member) => (
                 <section
                   key={member.physicalProjectKey}
@@ -3283,7 +3302,7 @@ export default function SidebarV2() {
               ))}
             </div>
             {projectActionsTarget && projectActionsTarget.memberProjects.length > 1 ? (
-              <div className="flex flex-col gap-3 border-t border-border/60 bg-muted/32 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 border-t border-border bg-muted/32 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <p className="text-base font-medium text-foreground sm:text-sm">
                     Remove this project everywhere

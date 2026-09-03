@@ -54,6 +54,7 @@ import {
   moveOrchestratorBubble,
   openOrchestratorFromBubble,
   publishOrchestratorBubbleState,
+  setOrchestratorBubbleInteractive,
   setOrchestratorBubbleVisible,
   toggleOrchestratorVoiceFromBubble,
 } from "./methods/orchestratorBubble.ts";
@@ -141,6 +142,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(beginOrchestratorBubbleDrag);
   yield* ipc.handle(moveOrchestratorBubble);
   yield* ipc.handle(endOrchestratorBubbleDrag);
+  yield* ipc.handle(setOrchestratorBubbleInteractive);
   yield* ipc.handle(openOrchestratorFromBubble);
   yield* ipc.handle(toggleOrchestratorVoiceFromBubble);
   for (const previewMethod of PreviewIpc.methods) {

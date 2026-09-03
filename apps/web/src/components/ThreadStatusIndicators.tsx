@@ -42,7 +42,7 @@ export function settledPrHoverColorClass(state: NonNullable<ThreadPr>["state"]):
     case "open":
       return "group-hover/v2-row:text-emerald-600 dark:group-hover/v2-row:text-emerald-300/90";
     case "merged":
-      return "group-hover/v2-row:text-violet-600 dark:group-hover/v2-row:text-violet-300/90";
+      return "group-hover/v2-row:text-gold-600 dark:group-hover/v2-row:text-gold-300/90";
     case "closed":
       return "group-hover/v2-row:text-red-600 dark:group-hover/v2-row:text-red-300/90";
   }
@@ -88,7 +88,7 @@ export function prStatusIndicator(
   if (pr.state === "merged") {
     return {
       label: `${presentation.shortName} merged`,
-      colorClass: "text-violet-600 dark:text-violet-300/90",
+      colorClass: "text-gold-600 dark:text-gold-300/90",
       tooltip,
       tooltipLead,
       tooltipTitle: pr.title,
@@ -384,7 +384,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
                     ? "Terminal process running"
                     : `${terminalActivity.count} terminal processes running`
                 }
-                className="inline-flex items-center justify-center text-sky-600 dark:text-sky-400"
+                className="inline-flex items-center justify-center text-gold-600 dark:text-gold-400"
               />
             }
           >

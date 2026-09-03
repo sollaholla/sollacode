@@ -32,6 +32,7 @@ const sourceAgent = {
   vmAgentId: sourceAgentId,
   threadId: sourceThreadId,
   controlMode: "agent",
+  icon: null,
 } as VmAgent;
 const delegation = {
   delegationId,

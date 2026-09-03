@@ -87,7 +87,7 @@ const initialState: UiState = {
   threadChangedFilesExpandedById: {},
   threadPanelExpandedById: {},
   defaultAdvertisedEndpointKey: null,
-  showProviderUsageBar: false,
+  showProviderUsageBar: true,
   settledShelfExpanded: false,
   agentsSectionExpanded: true,
   threadsSectionExpanded: true,
@@ -176,7 +176,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       parsed.defaultAdvertisedEndpointKey.length > 0
         ? parsed.defaultAdvertisedEndpointKey
         : null,
-    showProviderUsageBar: parsed.showProviderUsageBar === true,
+    showProviderUsageBar: parsed.showProviderUsageBar !== false,
     settledShelfExpanded: parsed.settledShelfExpanded === true,
     // Sidebar sections start open: absent means "never collapsed", not "collapsed".
     agentsSectionExpanded: parsed.agentsSectionExpanded !== false,

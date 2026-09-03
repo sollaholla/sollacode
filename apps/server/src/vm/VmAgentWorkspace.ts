@@ -417,6 +417,15 @@ export const make = Effect.gen(function* () {
       if (current.approvalState !== "approved") {
         return yield* new VmAgentTaskApprovalRequiredError({ taskId });
       }
+      const agent = yield* agents
+        .getById(vmAgentId)
+        .pipe(Effect.mapError(operationError("queueing agent task")));
+      if (Option.isSome(agent) && agent.value.status !== "running") {
+        return yield* new VmAgentWorkspaceOperationError({
+          operation: "queueing agent task",
+          detail: "The agent is stopped. Start it before running tasks.",
+        });
+      }
       const now = yield* nowIso;
       const updated = yield* store
         .runTaskNow({ vmAgentId, taskId, now })
