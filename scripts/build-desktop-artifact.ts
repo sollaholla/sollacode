@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+// @effect-diagnostics nodeBuiltinImport:off - Standalone electron-builder orchestration; runs under plain node, not an Effect runtime.
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 

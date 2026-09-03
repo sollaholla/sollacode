@@ -8506,6 +8506,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             streamVersion: 1,
             eventType: "thread.turn-start-requested",
             occurredAt: "2026-08-28T16:38:19.000Z",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
             payload: JSON.stringify({
               threadId,
               messageId: sourceMessageId,
@@ -8518,6 +8519,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             streamVersion: 2,
             eventType: "thread.turn-start-requested",
             occurredAt: "2026-08-28T16:41:19.000Z",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
             payload: JSON.stringify({
               threadId,
               messageId: followUpMessageId,
@@ -8530,6 +8532,7 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-startup-resume-backfill-tes
             streamVersion: 3,
             eventType: "thread.activity-appended",
             occurredAt: "2026-08-28T16:41:33.000Z",
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
             payload: JSON.stringify({
               threadId,
               activity: {

@@ -569,7 +569,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ...DESKTOP_EXTRA_RESOURCES,
       MACOS_SPEECH_TRANSCRIBER_EXTRA_RESOURCE,
     ]);
-    assert.deepStrictEqual(resolveDesktopExtraResources("win"), DESKTOP_EXTRA_RESOURCES);
+    assert.deepStrictEqual(resolveDesktopExtraResources("win"), [...DESKTOP_EXTRA_RESOURCES]);
     assert.deepStrictEqual(resolveMacSpeechTranscriberTargets("arm64"), ["arm64-apple-macosx26.0"]);
     assert.deepStrictEqual(resolveMacSpeechTranscriberTargets("universal"), [
       "arm64-apple-macosx26.0",

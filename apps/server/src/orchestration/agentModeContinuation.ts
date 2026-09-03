@@ -443,11 +443,15 @@ export function agentLoopSignedOffSinceUserIntent(
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message === undefined) continue;
+    const resolvedMessageId = message.id ?? message.messageId;
     if (
       message.role === "user" &&
       !isSyntheticAgentLoopUserMessage({
         role: message.role,
-        id: message.id ?? message.messageId,
+        // `id` is an optional property, and exactOptionalPropertyTypes will not
+        // take an explicit undefined for one. A message carrying neither id
+        // simply omits the key.
+        ...(resolvedMessageId === undefined ? {} : { id: resolvedMessageId }),
         text: message.text,
         inputOrigin: message.inputOrigin,
       })
