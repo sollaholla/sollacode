@@ -372,6 +372,12 @@ export class SessionStore extends Context.Service<
       readonly client: AuthClientMetadata;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
+    /**
+     * Trade a lapsed device credential for a fresh one. The old credential is
+     * left to run out on its own rather than revoked, so a client that fails to
+     * store the replacement still has the one it arrived with.
+     */
+    readonly renew: (token: string) => Effect.Effect<IssuedSession, SessionCredentialError>;
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
       input?: {
@@ -414,6 +420,14 @@ const DEFAULT_SESSION_TTL = Duration.days(30);
  * here; the clock is not.
  */
 const DEVICE_SESSION_TTL = Duration.days(365);
+/**
+ * How long after a device credential lapses the user can still take it back
+ * with one confirmation. Past its expiry the credential authorises nothing —
+ * it only identifies which session the user is offering to renew, and the
+ * session row still has to exist and be unrevoked. Revoking a device therefore
+ * remains final; forgetting about one for a while does not.
+ */
+const DEVICE_RENEWAL_GRACE = Duration.days(180);
 
 type IssueSessionTtlInput =
   | {
@@ -763,6 +777,49 @@ export const make = Effect.gen(function* () {
     } satisfies IssuedSession;
   });
 
+  const renew: SessionStore["Service"]["renew"] = Effect.fn("SessionStore.renew")(
+    function* (token) {
+      const { claims, expiresAt } = yield* decodeSessionToken(token);
+      const observedAt = yield* DateTime.now;
+      const graceEndsAt = DateTime.add(expiresAt, {
+        milliseconds: Duration.toMillis(DEVICE_RENEWAL_GRACE),
+      });
+      if (graceEndsAt.epochMilliseconds <= observedAt.epochMilliseconds) {
+        return yield* new SessionTokenExpiredError({
+          sessionId: claims.sid,
+          expiresAt,
+          observedAt,
+        });
+      }
+
+      const row = yield* authSessions
+        .getById({ sessionId: claims.sid })
+        .pipe(
+          Effect.mapError(
+            (cause) => new SessionCredentialVerificationError({ sessionId: claims.sid, cause }),
+          ),
+        );
+      if (Option.isNone(row)) {
+        return yield* new UnknownSessionTokenError({ sessionId: claims.sid });
+      }
+      // Revocation is the one thing renewal must never undo.
+      if (row.value.revokedAt !== null) {
+        return yield* new SessionTokenRevokedError({
+          sessionId: claims.sid,
+          revokedAt: row.value.revokedAt,
+        });
+      }
+
+      return yield* issueSession({
+        kind: "random",
+        subject: claims.sub,
+        method: claims.method,
+        scopes: claims.scopes,
+        client: toClientMetadata(row.value.client),
+      });
+    },
+  );
+
   const issue: SessionStore["Service"]["issue"] = (input) =>
     issueSession({
       kind: "random",
@@ -776,34 +833,45 @@ export const make = Effect.gen(function* () {
         ...input,
       });
 
+  // Signature, payload and expiry claim, with no judgement about whether the
+  // expiry has passed — renewal needs everything this establishes about a
+  // credential precisely when it is too old to authorise anything.
+  const decodeSessionToken = Effect.fn("SessionStore.decodeSessionToken")(function* (
+    token: string,
+  ) {
+    const [encodedPayload, signature] = token.split(".");
+    if (!encodedPayload || !signature) {
+      return yield* new MalformedSessionTokenError({});
+    }
+
+    const expectedSignature = signPayload(encodedPayload, signingSecret);
+    if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
+      return yield* new InvalidSessionTokenSignatureError({});
+    }
+
+    const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(encodedPayload)).pipe(
+      Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
+    );
+
+    const expiresAt = DateTime.make(claims.exp);
+    if (Option.isNone(expiresAt)) {
+      return yield* new InvalidSessionExpirationClaimError({
+        sessionId: claims.sid,
+        expirationClaim: claims.exp,
+      });
+    }
+    return { claims, expiresAt: expiresAt.value };
+  });
+
   const verify: SessionStore["Service"]["verify"] = Effect.fn("SessionStore.verify")(
     function* (token) {
-      const [encodedPayload, signature] = token.split(".");
-      if (!encodedPayload || !signature) {
-        return yield* new MalformedSessionTokenError({});
-      }
-
-      const expectedSignature = signPayload(encodedPayload, signingSecret);
-      if (!timingSafeEqualBase64Url(signature, expectedSignature)) {
-        return yield* new InvalidSessionTokenSignatureError({});
-      }
-
-      const claims = yield* decodeSessionClaims(base64UrlDecodeUtf8(encodedPayload)).pipe(
-        Effect.mapError((cause) => new InvalidSessionTokenPayloadError({ cause })),
-      );
+      const { claims, expiresAt } = yield* decodeSessionToken(token);
 
       const observedAt = yield* DateTime.now;
-      const expiresAt = DateTime.make(claims.exp);
-      if (Option.isNone(expiresAt)) {
-        return yield* new InvalidSessionExpirationClaimError({
-          sessionId: claims.sid,
-          expirationClaim: claims.exp,
-        });
-      }
       if (claims.exp <= observedAt.epochMilliseconds) {
         return yield* new SessionTokenExpiredError({
           sessionId: claims.sid,
-          expiresAt: expiresAt.value,
+          expiresAt,
           observedAt,
         });
       }
@@ -830,7 +898,7 @@ export const make = Effect.gen(function* () {
         token,
         method: claims.method,
         client: toClientMetadata(row.value.client),
-        expiresAt: expiresAt.value,
+        expiresAt,
         subject: claims.sub,
         // The persisted session is the authorization source of truth. Signed
         // cookies prove the session identity, but their embedded scope list can
@@ -1031,6 +1099,7 @@ export const make = Effect.gen(function* () {
     issue,
     issueDesktopBootstrapAccessToken,
     verify,
+    renew,
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,

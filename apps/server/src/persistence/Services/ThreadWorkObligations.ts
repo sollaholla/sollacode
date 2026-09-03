@@ -49,6 +49,15 @@ export const ACTIVE_TURN_STEER_DELIVERY_UNKNOWN_REASON =
  */
 export const SYNTHETIC_DISPATCH_ADMITTED_REASON = "native synthetic dispatch admitted";
 
+/**
+ * Marker on an executing queued delivery whose message has not been sent
+ * because another turn holds the thread. The delivery handler writes it when
+ * it starts supervising that blocking turn; a `turn-interrupt` sweep hands
+ * rows carrying it back to `pending` instead of cancelling them, because
+ * ending the blocking turn does not un-send the message.
+ */
+export const ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON = "queued behind the active turn";
+
 export const ActiveThreadWorkState = Schema.Literals([
   "claimed",
   "executing",
@@ -163,6 +172,14 @@ export const HeartbeatThreadWorkClaimInput = Schema.Struct({
 });
 export type HeartbeatThreadWorkClaimInput = typeof HeartbeatThreadWorkClaimInput.Type;
 
+export const MarkExecutingThreadWorkReasonInput = Schema.Struct({
+  obligationId: TrimmedNonEmptyString,
+  expectedAttempt: NonNegativeInt,
+  blockedReason: Schema.NullOr(Schema.String),
+  updatedAt: IsoDateTime,
+});
+export type MarkExecutingThreadWorkReasonInput = typeof MarkExecutingThreadWorkReasonInput.Type;
+
 export const TryAdmitSyntheticDispatchInput = Schema.Struct({
   obligationId: TrimmedNonEmptyString,
   expectedAttempt: NonNegativeInt,
@@ -182,9 +199,12 @@ export const CancelThreadWorkByThreadInput = Schema.Struct({
    * - `thread-terminal` (delete/settle/auth-replacement): cancel everything —
    *   the thread is over or a replacement owner is inserted in the same
    *   transaction.
-   * - `turn-interrupt` (stop button, session stop): cancel current work but
-   *   spare pending `active-turn-recovery` rows — queued deliveries of real
-   *   user messages the UI has marked "Sent"; they dispatch once the thread is
+   * - `turn-interrupt` (stop button, session stop, provider handoff): cancel
+   *   current work but spare `active-turn-recovery` rows whose message has
+   *   not started a provider turn — queued deliveries of real user messages
+   *   the UI has marked "Sent". A queued delivery the scheduler had already
+   *   claimed to supervise the blocking turn is handed back to `pending`
+   *   rather than cancelled; either way they dispatch once the thread is
    *   idle.
    * - `pending-start-interrupt` (stop before a provider turn exists): cancel
    *   everything, including the pending delivery the user explicitly stopped.
@@ -218,9 +238,21 @@ export const RecoverOrphanedThreadWorkInput = Schema.Struct({
 export type RecoverOrphanedThreadWorkInput = typeof RecoverOrphanedThreadWorkInput.Type;
 
 export interface ThreadWorkObligationRepositoryShape {
-  /** Insert once by deterministic id/key. Returns false for a duplicate. */
+  /**
+   * Insert once by deterministic id/key. Returns false for a duplicate.
+   *
+   * With `reviveCancelled`, a row for the same key that ended `cancelled` is
+   * reset to `pending` (attempt 0, no lease, no reason) and counts as
+   * inserted; a live or `completed` row is still left alone. The boot
+   * backfill needs this: a thread whose earlier resume of the SAME turn gave
+   * up ("Gave up after 11 failed attempts", thread 3112ffe4 2026-09-02
+   * 16:27) was killed again by the next relaunch, and the plain insert's
+   * conflict no-op meant it never got a resume at all -- the user had to
+   * type "Resume" while three sibling threads recovered on their own.
+   */
   readonly insert: (
     obligation: ThreadWorkObligation,
+    options?: { readonly reviveCancelled?: boolean },
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   readonly getById: (
@@ -292,6 +324,16 @@ export interface ThreadWorkObligationRepositoryShape {
    */
   readonly tryAdmitSyntheticDispatch: (
     input: TryAdmitSyntheticDispatchInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+  /**
+   * Rewrite the reason on this attempt's executing claim without touching its
+   * lease. Leaves durable markers the cancel sweep keys on (see
+   * ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON). False when the row is no
+   * longer this attempt's executing claim.
+   */
+  readonly markExecutingReason: (
+    input: MarkExecutingThreadWorkReasonInput,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   readonly cancelByThread: (

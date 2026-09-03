@@ -252,6 +252,61 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
   );
 
+  it.effect("renews an expired device credential inside the grace window", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const issued = yield* sessions.issue({
+        method: "bearer-access-token",
+        subject: "renewable-device",
+        ttl: Duration.seconds(1),
+      });
+
+      yield* TestClock.adjust(Duration.seconds(2));
+      const verifyError = yield* Effect.flip(sessions.verify(issued.token));
+      expect(verifyError._tag).toBe("SessionTokenExpiredError");
+
+      const renewed = yield* sessions.renew(issued.token);
+      expect(renewed.token).not.toBe(issued.token);
+      expect(renewed.method).toBe("bearer-access-token");
+
+      const verified = yield* sessions.verify(renewed.token);
+      expect(verified.sessionId).not.toBe(issued.sessionId);
+      expect(verified.subject).toBe("renewable-device");
+    }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
+  );
+
+  it.effect("refuses renewal once the grace window has closed", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const issued = yield* sessions.issue({
+        method: "bearer-access-token",
+        subject: "past-grace",
+        ttl: Duration.seconds(1),
+      });
+
+      // Device grace is 180 days past expiry; jump past that.
+      yield* TestClock.adjust(Duration.days(181));
+      const error = yield* Effect.flip(sessions.renew(issued.token));
+      expect(error._tag).toBe("SessionTokenExpiredError");
+    }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
+  );
+
+  it.effect("refuses renewal of a revoked device credential", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const issued = yield* sessions.issue({
+        method: "bearer-access-token",
+        subject: "revoked-device",
+        ttl: Duration.seconds(1),
+      });
+      yield* sessions.revoke(issued.sessionId);
+      yield* TestClock.adjust(Duration.seconds(2));
+
+      const error = yield* Effect.flip(sessions.renew(issued.token));
+      expect(error._tag).toBe("SessionTokenRevokedError");
+    }).pipe(Effect.provide(Layer.merge(makeSessionStoreLayer(), TestClock.layer()))),
+  );
+
   it.effect("lists active sessions, tracks connectivity, and revokes other sessions", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;

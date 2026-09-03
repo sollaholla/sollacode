@@ -17,6 +17,15 @@ Open the web app from your phone's browser the way you already do for remote acc
   the blank pane older builds showed.
 - If the panel shows the empty state, enter a URL — it opens as a real tab on the desktop host
   and the frame appears.
+- In the remote-control viewer, **Full screen** uses native element fullscreen where the browser
+  supports it. On iPhone Safari, where arbitrary elements cannot enter true fullscreen, Solla Code
+  switches to an immersive app-level overlay instead: the viewer fills the dynamic webpage viewport,
+  hides the normal title/footer chrome, and keeps the remote-control, zoom, and exit controls over
+  the stream. Safari's own browser chrome may remain visible because iOS does not let the page hide it.
+- **Game Control / FPS mode works on touch Safari without Pointer Lock.** iPhone Safari does not
+  implement the Pointer Lock API used by desktop mouse-look. Solla Code therefore treats local
+  pointer lock as optional on coarse-pointer devices: once the remote game captures its mouse, the
+  on-screen movement/look controls remain active and send relative motion directly to the host.
 
 Interacting with the frame:
 

@@ -1,4 +1,5 @@
 import { IsoDateTime, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -12,9 +13,11 @@ import { refreshProjectionThreadPendingWork } from "../PendingWorkProjection.ts"
 import { ThreadPendingWorkSignal } from "../Services/ThreadPendingWorkSignal.ts";
 import { ThreadPendingWorkSignalLive } from "./ThreadPendingWorkSignal.ts";
 import {
+  ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON,
   ACTIVE_TURN_STEER_DELIVERY_UNCONFIRMED_REASON,
   SYNTHETIC_DISPATCH_ADMITTED_REASON,
   CancelThreadWorkByThreadInput,
+  MarkExecutingThreadWorkReasonInput,
   ClaimThreadWorkInput,
   HeartbeatThreadWorkClaimInput,
   ListSchedulableThreadWorkInput,
@@ -42,6 +45,29 @@ const ReturnedThreadRef = Schema.Struct({ obligationId: Schema.String, threadId:
 const ReturnedProviderInstanceId = Schema.Struct({ providerInstanceId: ProviderInstanceId });
 const GetByIdInput = Schema.Struct({ obligationId: Schema.String });
 const SummarizeSchedulableInput = Schema.Struct({ now: IsoDateTime });
+
+/**
+ * Keep every timestamp this repository writes inside the trigger contract.
+ *
+ * The validation triggers from migration 042 accept only 24-character
+ * millisecond ISO-8601 stamps (`????-??-??T??:??:??.???Z`). Callers hand this
+ * repository timestamps that originated with providers, and an external
+ * bridge stamps its events at microsecond precision (27 characters). Live
+ * 2026-09-02 such a stamp aborted the transition that retires a turn's resume
+ * owner, which rolled back the session-set settling the turn and left the
+ * thread on "Working" after its reply had finished; the same stamp made the
+ * boot-time resume inserts for that thread fail silently. Normalizing at the
+ * write boundary keeps every caller, and every provider, inside the contract.
+ */
+const iso = (value: string): string => {
+  if (value.length === 24) return value;
+  return Option.match(DateTime.make(value), {
+    onNone: () => value,
+    onSome: (parsed) => DateTime.formatIso(parsed),
+  });
+};
+const isoOrNull = (value: string | null | undefined): string | null =>
+  value === null || value === undefined ? null : iso(value);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -73,14 +99,64 @@ const make = Effect.gen(function* () {
         ${row.state},
         ${row.providerInstanceId},
         ${row.attempt},
-        ${row.nextAttemptAt},
-        ${row.claimedAt},
-        ${row.leaseExpiresAt},
+        ${isoOrNull(row.nextAttemptAt)},
+        ${isoOrNull(row.claimedAt)},
+        ${isoOrNull(row.leaseExpiresAt)},
         ${row.blockedReason},
-        ${row.createdAt},
-        ${row.updatedAt}
+        ${iso(row.createdAt)},
+        ${iso(row.updatedAt)}
       )
       ON CONFLICT (thread_id, source_turn_id, kind) DO NOTHING
+      RETURNING obligation_id AS "obligationId"
+    `,
+  });
+
+  // Same insert, but a row for this key that ended `cancelled` is revived as
+  // a fresh pending obligation. `completed` and live rows still win the
+  // conflict, so a thread recovered once is not recovered twice.
+  const insertOrReviveRow = SqlSchema.findOneOption({
+    Request: ThreadWorkObligation,
+    Result: ReturnedId,
+    execute: (row) => sql`
+      INSERT INTO thread_work_obligations (
+        obligation_id,
+        thread_id,
+        source_turn_id,
+        kind,
+        state,
+        provider_instance_id,
+        attempt,
+        next_attempt_at,
+        claimed_at,
+        lease_expires_at,
+        blocked_reason,
+        created_at,
+        updated_at
+      ) VALUES (
+        ${row.obligationId},
+        ${row.threadId},
+        ${row.sourceTurnId},
+        ${row.kind},
+        ${row.state},
+        ${row.providerInstanceId},
+        ${row.attempt},
+        ${isoOrNull(row.nextAttemptAt)},
+        ${isoOrNull(row.claimedAt)},
+        ${isoOrNull(row.leaseExpiresAt)},
+        ${row.blockedReason},
+        ${iso(row.createdAt)},
+        ${iso(row.updatedAt)}
+      )
+      ON CONFLICT (thread_id, source_turn_id, kind) DO UPDATE SET
+        state = 'pending',
+        provider_instance_id = excluded.provider_instance_id,
+        attempt = 0,
+        next_attempt_at = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL,
+        blocked_reason = NULL,
+        updated_at = excluded.updated_at
+      WHERE thread_work_obligations.state = 'cancelled'
       RETURNING obligation_id AS "obligationId"
     `,
   });
@@ -250,7 +326,7 @@ const make = Effect.gen(function* () {
           ${input.afterUpdatedAt} IS NULL
           OR updated_at > ${input.afterUpdatedAt}
           OR (
-            updated_at = ${input.afterUpdatedAt}
+            updated_at = ${isoOrNull(input.afterUpdatedAt)}
             AND obligation_id > COALESCE(${input.afterObligationId}, '')
           )
         )
@@ -349,10 +425,10 @@ const make = Effect.gen(function* () {
         state = 'claimed',
         attempt = attempt + 1,
         next_attempt_at = NULL,
-        claimed_at = ${now},
-        lease_expires_at = ${leaseExpiresAt},
+        claimed_at = ${isoOrNull(now)},
+        lease_expires_at = ${isoOrNull(leaseExpiresAt)},
         blocked_reason = NULL,
-        updated_at = ${now}
+        updated_at = ${iso(now)}
       WHERE obligation_id = ${obligationId}
         AND (
           state = 'pending'
@@ -401,11 +477,11 @@ const make = Effect.gen(function* () {
       UPDATE thread_work_obligations
       SET
         state = ${input.state},
-        next_attempt_at = ${input.nextAttemptAt},
-        claimed_at = ${input.claimedAt},
-        lease_expires_at = ${input.leaseExpiresAt},
+        next_attempt_at = ${isoOrNull(input.nextAttemptAt)},
+        claimed_at = ${isoOrNull(input.claimedAt)},
+        lease_expires_at = ${isoOrNull(input.leaseExpiresAt)},
         blocked_reason = ${input.blockedReason},
-        updated_at = ${input.updatedAt}
+        updated_at = ${iso(input.updatedAt)}
       WHERE obligation_id = ${input.obligationId}
         AND state = ${input.expectedState}
         AND attempt = ${input.expectedAttempt}
@@ -422,7 +498,7 @@ const make = Effect.gen(function* () {
     Result: ReturnedId,
     execute: (input) => sql`
       UPDATE thread_work_obligations
-      SET lease_expires_at = ${input.leaseExpiresAt}, updated_at = ${input.updatedAt}
+      SET lease_expires_at = ${isoOrNull(input.leaseExpiresAt)}, updated_at = ${iso(input.updatedAt)}
       WHERE obligation_id = ${input.obligationId}
         AND state IN ('claimed', 'executing')
         AND attempt = ${input.expectedAttempt}
@@ -439,7 +515,7 @@ const make = Effect.gen(function* () {
       UPDATE thread_work_obligations AS work
       SET
         blocked_reason = ${SYNTHETIC_DISPATCH_ADMITTED_REASON},
-        updated_at = ${input.updatedAt}
+        updated_at = ${iso(input.updatedAt)}
       WHERE work.obligation_id = ${input.obligationId}
         AND work.state = 'executing'
         AND work.attempt = ${input.expectedAttempt}
@@ -510,6 +586,56 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const markExecutingReasonRow = SqlSchema.findOneOption({
+    Request: MarkExecutingThreadWorkReasonInput,
+    Result: ReturnedId,
+    execute: (input) => sql`
+      UPDATE thread_work_obligations
+      SET blocked_reason = ${input.blockedReason}, updated_at = ${iso(input.updatedAt)}
+      WHERE obligation_id = ${input.obligationId}
+        AND state = 'executing'
+        AND attempt = ${input.expectedAttempt}
+      RETURNING obligation_id AS "obligationId"
+    `,
+  });
+
+  /**
+   * Stop must not lose a user message that was merely waiting its turn. A
+   * queued delivery (`turn-start:<messageId>` row) is normally `pending` while
+   * another turn runs, but the scheduler may already have claimed it to
+   * supervise the blocking turn: the claim guard only keeps queued rows
+   * unclaimed while a supervisor row exists, and a turn dispatched by the
+   * event reactor has none. Cancelling that claimed row on interrupt dropped
+   * the message outright — shown as sent, never delivered (observed 2026-09-02
+   * on thread 3112ffe4: the first of two follow-ups typed mid-turn was
+   * claimed, the user pressed Stop, and only the second one ever arrived).
+   * The delivery handler marks such a claim with
+   * ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON; hand those rows back to
+   * `pending` before the cancel sweep so it spares them and the scheduler
+   * re-dispatches them once the thread is idle. A claimed row whose own turn
+   * already started carries no marker: it IS the interrupted work and still
+   * cancels.
+   */
+  const releaseUndeliveredQueuedDeliveries = SqlSchema.findAll({
+    Request: CancelThreadWorkByThreadInput,
+    Result: ReturnedId,
+    execute: (input) => sql`
+      UPDATE thread_work_obligations
+      SET
+        state = 'pending',
+        next_attempt_at = NULL,
+        claimed_at = NULL,
+        lease_expires_at = NULL,
+        blocked_reason = NULL,
+        updated_at = ${iso(input.updatedAt)}
+      WHERE thread_id = ${input.threadId}
+        AND kind = 'active-turn-recovery'
+        AND state IN ('claimed', 'executing')
+        AND blocked_reason = ${ACTIVE_TURN_DELIVERY_QUEUED_BEHIND_TURN_REASON}
+      RETURNING obligation_id AS "obligationId"
+    `,
+  });
+
   const cancelRowsByThread = SqlSchema.findAll({
     Request: CancelThreadWorkByThreadInput,
     Result: ReturnedId,
@@ -521,7 +647,7 @@ const make = Effect.gen(function* () {
         claimed_at = NULL,
         lease_expires_at = NULL,
         blocked_reason = ${input.blockedReason},
-        updated_at = ${input.updatedAt}
+        updated_at = ${iso(input.updatedAt)}
       WHERE thread_id = ${input.threadId}
         AND state NOT IN ('completed', 'cancelled')
         AND (
@@ -563,7 +689,7 @@ const make = Effect.gen(function* () {
         claimed_at = NULL,
         lease_expires_at = NULL,
         blocked_reason = 'recovered after scheduler restart',
-        updated_at = ${updatedAt}
+        updated_at = ${iso(updatedAt)}
       WHERE obligation_id IN (
         SELECT obligation_id
         FROM thread_work_obligations
@@ -682,8 +808,8 @@ const make = Effect.gen(function* () {
     `;
 
   return {
-    insert: (obligation) =>
-      insertRow(obligation).pipe(
+    insert: (obligation, options) =>
+      (options?.reviveCancelled === true ? insertOrReviveRow : insertRow)(obligation).pipe(
         mapError("insert"),
         Effect.map(Option.isSome),
         Effect.tap((inserted) =>
@@ -846,6 +972,11 @@ const make = Effect.gen(function* () {
         ),
     heartbeatClaim: (input) =>
       heartbeatClaimRow(input).pipe(mapError("heartbeatClaim"), Effect.map(Option.isSome)),
+    markExecutingReason: (input) =>
+      markExecutingReasonRow(input).pipe(
+        mapError("markExecutingReason"),
+        Effect.map(Option.isSome),
+      ),
     tryAdmitSyntheticDispatch: (input) =>
       tryAdmitSyntheticDispatchRow(input).pipe(
         mapError("tryAdmitSyntheticDispatch"),
@@ -855,23 +986,29 @@ const make = Effect.gen(function* () {
       sql
         .withTransaction(
           Effect.gen(function* () {
+            const released =
+              input.mode === "turn-interrupt"
+                ? yield* releaseUndeliveredQueuedDeliveries(input)
+                : [];
             const rows = yield* cancelRowsByThread(input);
-            if (rows.length === 0) return rows;
+            if (rows.length === 0 && released.length === 0) {
+              return { cancelled: rows, changed: false };
+            }
             yield* Effect.forEach(
               rows,
               ({ obligationId }) => clearTerminalPendingTurnStart(obligationId),
               { concurrency: 1, discard: true },
             );
             yield* refreshProjectionThreadPendingWork(sql, input.threadId);
-            return rows;
+            return { cancelled: rows, changed: true };
           }),
         )
         .pipe(
           mapError("cancelByThread"),
-          Effect.tap((rows) =>
-            rows.length > 0 ? announcePendingWork(input.threadId) : Effect.void,
+          Effect.tap(({ changed }) =>
+            changed ? announcePendingWork(input.threadId) : Effect.void,
           ),
-          Effect.map((rows) => rows.length),
+          Effect.map(({ cancelled }) => cancelled.length),
         ),
     recoverOrphanedClaims: (input) =>
       recoverOrphanedClaimRows(input).pipe(

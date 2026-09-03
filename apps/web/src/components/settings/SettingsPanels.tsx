@@ -2315,7 +2315,7 @@ export function ProviderSettingsPanel() {
       <SettingsSection
         title="Providers"
         headerAction={
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
             <Tooltip>
               <TooltipTrigger
@@ -2323,103 +2323,46 @@ export function ProviderSettingsPanel() {
                   <Button
                     size="icon-xs"
                     variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
-                    aria-label="Add provider instance"
-                  >
-                    <PlusIcon className="size-3" />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">Add provider instance</TooltipPopup>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                    disabled={isRefreshingProviders}
+                    className="size-6 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                    // Without an environment the refresh has nothing to ask;
+                    // it used to look live and silently do nothing.
+                    disabled={isRefreshingProviders || !primaryEnvironment}
                     onClick={() => void refreshProviders()}
                     aria-label="Refresh provider status"
                   >
                     {isRefreshingProviders ? (
-                      <LoaderIcon className="size-3 animate-spin" />
+                      <LoaderIcon className="size-3.5 animate-spin" />
                     ) : (
-                      <RefreshCwIcon className="size-3" />
+                      <RefreshCwIcon className="size-3.5" />
                     )}
                   </Button>
                 }
               />
-              <TooltipPopup side="top">Refresh provider status</TooltipPopup>
+              <TooltipPopup side="top">
+                {primaryEnvironment
+                  ? "Refresh provider status"
+                  : "Connect an environment to refresh provider status"}
+              </TooltipPopup>
             </Tooltip>
+            {/*
+             * Adding an instance is the section's one creative action, so it
+             * gets a labelled button. As a 20px ghost glyph it was
+             * indistinguishable from the refresh icon beside it, and nothing
+             * on the page said a provider can be configured more than once.
+             */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2.5 text-xs"
+              onClick={() => setIsAddInstanceDialogOpen(true)}
+              aria-label="Add provider instance"
+            >
+              <PlusIcon className="size-3.5" />
+              Add provider
+            </Button>
           </div>
         }
       >
-        <SettingsRow
-          title={
-            <span className="inline-flex items-center gap-1.5">
-              Health check interval
-              <PolicyTooltip>
-                This interval is configured here, then the shared Background activity policy decides
-                whether provider probes may run when the timer fires. Custom intervals appear as
-                Advanced in General settings.
-              </PolicyTooltip>
-            </span>
-          }
-          description="Refresh provider availability, versions, auth state, and model metadata in the background. Set this to 0 seconds to rely on manual refreshes."
-          resetAction={
-            providerHealthRefreshIntervalSeconds !== defaultProviderHealthRefreshIntervalSeconds ? (
-              <SettingResetButton
-                label="provider health check interval"
-                onClick={() =>
-                  updateSettings(
-                    backgroundActivityOverrideSettings(
-                      settings.backgroundActivity,
-                      resolvedBackgroundActivity,
-                      {
-                        providerHealthRefreshInterval: undefined,
-                      },
-                    ),
-                  )
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex shrink-0 items-center gap-2">
-              <NumberField
-                value={providerHealthRefreshIntervalSeconds}
-                min={0}
-                step={PROVIDER_HEALTH_INTERVAL_STEP_SECONDS}
-                size="sm"
-                className="w-32"
-                onValueChange={(value) =>
-                  updateSettings(
-                    backgroundActivityOverrideSettings(
-                      settings.backgroundActivity,
-                      resolvedBackgroundActivity,
-                      {
-                        providerHealthRefreshInterval: Duration.seconds(
-                          normalizeIntervalSeconds(value),
-                        ),
-                      },
-                    ),
-                  )
-                }
-              >
-                <NumberFieldGroup>
-                  <NumberFieldDecrement aria-label="Decrease provider health check interval" />
-                  <NumberFieldInput aria-label="Provider health check interval in seconds" />
-                  <NumberFieldIncrement aria-label="Increase provider health check interval" />
-                </NumberFieldGroup>
-              </NumberField>
-              <span className="text-xs text-muted-foreground">seconds</span>
-            </div>
-          }
-        />
-
         {rows.map((row) => {
           const driverOption = getDriverOption(row.driver);
           const liveProvider = serverProviders.find(
@@ -2547,6 +2490,68 @@ export function ProviderSettingsPanel() {
             />
           );
         })}
+        <SettingsRow
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              Health check interval
+              <PolicyTooltip>
+                This interval is configured here, then the shared Background activity policy decides
+                whether provider probes may run when the timer fires. Custom intervals appear as
+                Advanced in General settings.
+              </PolicyTooltip>
+            </span>
+          }
+          description="Refresh provider availability, versions, auth state, and model metadata in the background. Set this to 0 seconds to rely on manual refreshes."
+          resetAction={
+            providerHealthRefreshIntervalSeconds !== defaultProviderHealthRefreshIntervalSeconds ? (
+              <SettingResetButton
+                label="provider health check interval"
+                onClick={() =>
+                  updateSettings(
+                    backgroundActivityOverrideSettings(
+                      settings.backgroundActivity,
+                      resolvedBackgroundActivity,
+                      {
+                        providerHealthRefreshInterval: undefined,
+                      },
+                    ),
+                  )
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex shrink-0 items-center gap-2">
+              <NumberField
+                value={providerHealthRefreshIntervalSeconds}
+                min={0}
+                step={PROVIDER_HEALTH_INTERVAL_STEP_SECONDS}
+                size="sm"
+                className="w-32"
+                onValueChange={(value) =>
+                  updateSettings(
+                    backgroundActivityOverrideSettings(
+                      settings.backgroundActivity,
+                      resolvedBackgroundActivity,
+                      {
+                        providerHealthRefreshInterval: Duration.seconds(
+                          normalizeIntervalSeconds(value),
+                        ),
+                      },
+                    ),
+                  )
+                }
+              >
+                <NumberFieldGroup>
+                  <NumberFieldDecrement aria-label="Decrease provider health check interval" />
+                  <NumberFieldInput aria-label="Provider health check interval in seconds" />
+                  <NumberFieldIncrement aria-label="Increase provider health check interval" />
+                </NumberFieldGroup>
+              </NumberField>
+              <span className="text-xs text-muted-foreground">seconds</span>
+            </div>
+          }
+        />
       </SettingsSection>
 
       {isAddInstanceDialogOpen ? (

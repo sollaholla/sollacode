@@ -291,9 +291,13 @@ export function AgentAttentionStack(props: {
     };
   });
 
+  // No horizontal margin: the stack's own measure is `width: 100%`, and the
+  // timeline wraps this notice in an `overflow-x-clip` column of the same
+  // max-width, so `mx-1` pushed the card 0.5rem past the right edge and the
+  // dismiss button rendered half clipped (reported 2026-09-02).
   return (
     <div data-agent-attention-stack="true">
-      <ComposerBannerStack className="mx-1 my-3" items={cards} onExpandedChange={setExpanded} />
+      <ComposerBannerStack className="my-3" items={cards} onExpandedChange={setExpanded} />
     </div>
   );
 }

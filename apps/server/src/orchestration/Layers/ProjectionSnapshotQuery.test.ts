@@ -2576,6 +2576,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (Option.isSome(afterRealUser)) {
         assert.isTrue(afterRealUser.value.hasLaterRealUserTurn);
       }
+
+      // A later message the provider absorbed into the source turn is not
+      // newer intent. Its receipt is read from the activity projection, not
+      // the raw event stream, so it must be found there.
+      yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = ${threadId}`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (
+          'activity-delivered-later-user-intent', ${threadId}, ${sourceTurnId}, 'info',
+          'message.delivered', 'Message delivered to the provider',
+          ${encodeUnknownJson({ messageId: laterUserMessageId })},
+          '2026-08-25T23:34:01.000Z'
+        )
+      `;
+      const absorbedIntoSourceTurn = yield* getThreadTurnStartContext(threadId, sourceMessageId);
+      assert.isTrue(Option.isSome(absorbedIntoSourceTurn));
+      if (Option.isSome(absorbedIntoSourceTurn)) {
+        assert.isFalse(absorbedIntoSourceTurn.value.hasLaterRealUserTurn);
+      }
     }),
   );
 });

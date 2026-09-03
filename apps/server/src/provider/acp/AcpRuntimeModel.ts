@@ -410,21 +410,37 @@ export function mergeToolCallState(
 ): AcpToolCallState {
   const nextKind = typeof next.data.kind === "string" ? next.data.kind : undefined;
   const kind = nextKind ?? previous?.kind;
-  const title = next.title ?? previous?.title;
   const status = next.status ?? previous?.status;
   const command = next.command ?? previous?.command;
-  const detail = next.detail ?? previous?.detail;
+  const data = {
+    ...previous?.data,
+    ...next.data,
+  };
+  // A later frame carries only what changed. Grok's completion frame for a
+  // read brings the file text and nothing else, and on its own that derives
+  // the generic "Tool" label; taking the newer title verbatim then replaced
+  // the "Read file" the first frame had earned. Observed 2026-09-01: 151
+  // consecutive Grok reads and searches all rendered as "Tool", which the
+  // timeline collapses into one unchanging row, so three minutes of work
+  // looked like a hung thread. Keep whichever title actually names the tool,
+  // then derive the presentation again from everything known so far so the
+  // label and its detail agree with the merged state.
+  const title = isGenericToolTitle(next.title) ? (previous?.title ?? next.title) : next.title;
+  const presentation = deriveToolActivityPresentation({
+    itemType: canonicalItemTypeFromAcpToolKind(kind),
+    title,
+    detail: next.detail ?? previous?.detail,
+    data,
+    fallbackSummary: title ?? "Tool",
+  });
   return {
     toolCallId: next.toolCallId,
     ...(kind ? { kind } : {}),
-    ...(title ? { title } : {}),
+    ...(presentation.summary ? { title: presentation.summary } : {}),
     ...(status ? { status } : {}),
     ...(command ? { command } : {}),
-    ...(detail ? { detail } : {}),
-    data: {
-      ...previous?.data,
-      ...next.data,
-    },
+    ...(presentation.detail ? { detail: presentation.detail } : {}),
+    data,
   };
 }
 

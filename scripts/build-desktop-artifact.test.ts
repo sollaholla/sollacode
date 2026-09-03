@@ -24,6 +24,7 @@ import {
   UnsupportedDesktopBuildArchitectureError,
   isMacPasskeySigningConfigurationError,
   LinuxIconResizeError,
+  localVpCommand,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
   renderMacPasskeyEntitlements,
@@ -87,6 +88,17 @@ function iconResizeSpawnerLayer(
 }
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it("invokes the local Vite Plus CLI through Node instead of the .bin shell shim", () => {
+    const command = localVpCommand("/repo", ["run", "build:desktop"]);
+    assert.equal(command.command, process.execPath);
+    assert.deepStrictEqual(command.args, [
+      "/repo/node_modules/vite-plus/bin/vp",
+      "run",
+      "build:desktop",
+    ]);
+    assert.equal(command.shell, false);
+  });
+
   it("resolves the desktop release channel from nightly versions", () => {
     assert.equal(resolveDesktopReleaseChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopReleaseChannel("0.0.17"), "latest");

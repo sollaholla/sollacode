@@ -198,13 +198,15 @@ const bootstrap = Effect.gen(function* () {
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
 
   if (!(yield* Ref.get(state.quitting))) {
-    // In wsl-only mode the renderer is served by the WSL backend, which can be
-    // slow to cold-boot — show a "Connecting to WSL" splash immediately so the
-    // app feels responsive instead of presenting no window until WSL is ready.
-    // (Dual mode opens fast off the Windows primary, so no splash there.)
-    if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
-      yield* desktopWindow.showConnectingSplash;
-    }
+    // Show the starting splash immediately, in every mode. The main window
+    // only opens once the primary backend answers its readiness probe, and
+    // nothing at all was on screen until then: on a 10 GB projection
+    // database that was 71 s on 2026-09-02 before the boot query was
+    // indexed, and it is still a few seconds of "did the click register?"
+    // on a warm start. The splash is dismissed automatically when the real
+    // main window reveals. (It began as the wsl-only "Connecting to WSL"
+    // cover, where the backend cold-boot is longest.)
+    yield* desktopWindow.showConnectingSplash;
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
     // Bring up the WSL backend if the user previously enabled it. The

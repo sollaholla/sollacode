@@ -153,15 +153,56 @@ describe("solla.provider-bridge/1 validation", () => {
         events: [{ ...base, sequence: 0, payload: { text: "answer" } }],
       }),
     ).toThrow(/greater than zero/u);
-    expect(() =>
-      decodeMcpBridgeEventsPage({
-        protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
-        sessionId: "session-a",
-        gap: false,
-        nextSequence: 1,
-        events: [{ ...base, payload: { text: "x".repeat(2 * 1024 * 1024 + 1) } }],
-      }),
-    ).toThrow(/too large|exceeds/u);
+  });
+
+  it("reduces an oversized payload instead of failing the whole stream", () => {
+    const base = {
+      eventId: "event-content",
+      sequence: 1,
+      timestamp: "2026-08-13T12:00:00.000Z",
+      sessionId: "session-a",
+      type: "content.delta",
+    };
+    // One refused event used to poison every later poll of the session:
+    // the pump re-read the same sequence, failed again, and the thread
+    // filled with "event stream interrupted" rows until the app relaunched.
+    const page = decodeMcpBridgeEventsPage({
+      protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
+      sessionId: "session-a",
+      gap: false,
+      nextSequence: 1,
+      events: [
+        {
+          ...base,
+          type: "item.completed",
+          itemId: "call_1",
+          payload: {
+            kind: "tool_result",
+            name: "preview_snapshot",
+            result: { ok: true, value: "x".repeat(2 * 1024 * 1024 + 1) },
+          },
+        },
+      ],
+    });
+    const payload = page.events[0]!.payload as {
+      kind: string;
+      name: string;
+      result: { ok: boolean; truncated: boolean; value: string };
+    };
+    expect(payload.kind).toBe("tool_result");
+    expect(payload.name).toBe("preview_snapshot");
+    expect(payload.result.truncated).toBe(true);
+    expect(payload.result.value).toMatch(/exceeded the 2097152 character limit/u);
+    expect(JSON.stringify(payload).length).toBeLessThan(4_096);
+
+    const delta = decodeMcpBridgeEventsPage({
+      protocolVersion: MCP_BRIDGE_PROTOCOL_VERSION,
+      sessionId: "session-a",
+      gap: false,
+      nextSequence: 1,
+      events: [{ ...base, payload: { text: "x".repeat(2 * 1024 * 1024 + 1) } }],
+    });
+    expect((delta.events[0]!.payload as { text: string }).text).toMatch(/reduced by the host/u);
   });
 
   it("rejects impossible cursor windows", () => {

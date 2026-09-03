@@ -4,6 +4,10 @@ import { type LegendListRef } from "@legendapp/list/react-native";
 import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { isBrowserTabCleanupMessageId } from "@t3tools/shared/browserTabCleanup";
+import {
+  describeInterruptedTasks,
+  extractTrailingInterruptedTasksNotice,
+} from "@t3tools/shared/interruptedTasksNotice";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import { SymbolView } from "../../components/AppSymbol";
 import { HeaderHeightContext } from "@react-navigation/elements";
@@ -1075,29 +1079,43 @@ function UserMessageContent(props: {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onLinkPress: (href: string) => void;
 }) {
-  const segments = parseReviewCommentMessageSegments(props.text);
+  const interrupted = extractTrailingInterruptedTasksNotice(props.text);
+  const visibleText = interrupted.promptText;
+  const segments = parseReviewCommentMessageSegments(visibleText);
   const hasReviewComment = segments.some((segment) => segment.kind === "review-comment");
+  const interruptedBadge =
+    interrupted.titles.length > 0 ? (
+      <Text className="mt-1 text-[11px] font-t3-medium text-amber-700 dark:text-amber-400">
+        {describeInterruptedTasks(interrupted.titles)}
+      </Text>
+    ) : null;
   if (!hasReviewComment) {
     if (hasNativeSelectableMarkdownText()) {
       return (
-        <SelectableMarkdownText
-          markdown={props.text}
-          skills={props.skills}
-          textStyle={props.markdownStyles.nativeTextStyle}
-          preserveSoftBreaks
-          onLinkPress={props.onLinkPress}
-        />
+        <View className="gap-1">
+          <SelectableMarkdownText
+            markdown={visibleText}
+            skills={props.skills}
+            textStyle={props.markdownStyles.nativeTextStyle}
+            preserveSoftBreaks
+            onLinkPress={props.onLinkPress}
+          />
+          {interruptedBadge}
+        </View>
       );
     }
     return (
-      <Markdown
-        options={{ gfm: true }}
-        renderers={props.markdownStyles.renderers}
-        styles={props.markdownStyles.styles}
-        theme={props.markdownStyles.theme}
-      >
-        {props.text}
-      </Markdown>
+      <View className="gap-1">
+        <Markdown
+          options={{ gfm: true }}
+          renderers={props.markdownStyles.renderers}
+          styles={props.markdownStyles.styles}
+          theme={props.markdownStyles.theme}
+        >
+          {visibleText}
+        </Markdown>
+        {interruptedBadge}
+      </View>
     );
   }
 
@@ -1140,6 +1158,7 @@ function UserMessageContent(props: {
           </Markdown>
         );
       })}
+      {interruptedBadge}
     </View>
   );
 }

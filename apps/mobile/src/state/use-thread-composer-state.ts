@@ -51,7 +51,10 @@ import { useThreadOutboxMessages } from "./use-thread-outbox";
 import { composerFocusRequestsAtom, consumeComposerFocusRequest } from "./composer-focus-requests";
 import {
   clearQueuedTurnPromotionRequest,
+  collectDeliveredMessageIds,
+  nextQueuedMessageToPromote,
   orderedQueuedTurnPromotionMessageIds,
+  queuedMessageAutoPromoteDelayMs,
   queuedTurnMessageIds,
   queuedTurnPromotionRequestsAtom,
   queuedTurnPromotionOutcome,
@@ -328,7 +331,19 @@ export function useThreadComposerState() {
   );
   const queuedTurnPromotionState =
     selectedThreadKey !== null ? queuedTurnPromotionRequests[selectedThreadKey] : undefined;
-  const isPromotingQueuedMessages = queuedTurnPromotionState !== undefined;
+  const queuedMessagePromotionInFlight = queuedTurnPromotionState !== undefined;
+  const deliveredQueuedMessageIds = useMemo(
+    () => collectDeliveredMessageIds(selectedThreadDetail?.activities ?? []),
+    [selectedThreadDetail],
+  );
+  const awaitingQueuedDeliveryIdsRef = useRef<string[]>([]);
+  const [queuedGrokDrainActive, setQueuedGrokDrainActive] = useState(false);
+  const isPromotingQueuedMessages =
+    queuedMessagePromotionInFlight || (queuedGrokDrainActive && hasQueuedSendNow);
+  useEffect(() => {
+    awaitingQueuedDeliveryIdsRef.current = [];
+    setQueuedGrokDrainActive(false);
+  }, [selectedThreadKey]);
 
   useEffect(() => {
     if (!selectedThreadShell || !selectedThreadDetail || !queuedTurnPromotionState) {
@@ -342,6 +357,8 @@ export function useThreadComposerState() {
     if (outcome === null) return;
     clearQueuedTurnPromotionRequest(queuedTurnPromotionState);
     if (outcome.status === "failed") {
+      setQueuedGrokDrainActive(false);
+      awaitingQueuedDeliveryIdsRef.current = [];
       setPendingConnectionError(outcome.detail);
     }
   }, [
@@ -353,14 +370,63 @@ export function useThreadComposerState() {
 
   const onPromoteQueuedMessages = useCallback(() => {
     if (!selectedThreadShell || !hasQueuedSendNow) return;
+    const nextMessageId = nextQueuedMessageToPromote({
+      queuedMessageIds: queuedSendNowMessageIds,
+      deliveredMessageIds: deliveredQueuedMessageIds,
+      promotionInFlight: queuedMessagePromotionInFlight,
+      awaitingDeliveryMessageIds: awaitingQueuedDeliveryIdsRef.current,
+    });
+    if (nextMessageId === null) return;
+    awaitingQueuedDeliveryIdsRef.current = [nextMessageId];
+    setQueuedGrokDrainActive(true);
     requestQueuedTurnPromotion({
       commandId: CommandId.make(uuidv4()),
       environmentId: selectedThreadShell.environmentId,
-      messageIds: queuedSendNowMessageIds,
-      serverProjectionRequiredMessageIds: localQueuedMessageIds,
+      messageIds: [MessageId.make(nextMessageId)],
+      serverProjectionRequiredMessageIds: localQueuedMessageIds.some(
+        (messageId) => messageId === nextMessageId,
+      )
+        ? [MessageId.make(nextMessageId)]
+        : [],
       threadId: selectedThreadShell.id,
     });
-  }, [hasQueuedSendNow, localQueuedMessageIds, queuedSendNowMessageIds, selectedThreadShell]);
+  }, [
+    deliveredQueuedMessageIds,
+    hasQueuedSendNow,
+    localQueuedMessageIds,
+    queuedMessagePromotionInFlight,
+    queuedSendNowMessageIds,
+    selectedThreadShell,
+  ]);
+
+  useEffect(() => {
+    awaitingQueuedDeliveryIdsRef.current = awaitingQueuedDeliveryIdsRef.current.filter(
+      (messageId) => !deliveredQueuedMessageIds.has(messageId),
+    );
+    if (!hasQueuedSendNow && awaitingQueuedDeliveryIdsRef.current.length === 0) {
+      if (queuedGrokDrainActive) setQueuedGrokDrainActive(false);
+      return;
+    }
+    const nextMessageId = nextQueuedMessageToPromote({
+      queuedMessageIds: queuedSendNowMessageIds,
+      deliveredMessageIds: deliveredQueuedMessageIds,
+      promotionInFlight: queuedMessagePromotionInFlight,
+      awaitingDeliveryMessageIds: awaitingQueuedDeliveryIdsRef.current,
+    });
+    if (nextMessageId === null) return;
+    const delayMs = queuedMessageAutoPromoteDelayMs(queuedGrokDrainActive);
+    const timer = setTimeout(() => {
+      onPromoteQueuedMessages();
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }, [
+    deliveredQueuedMessageIds,
+    hasQueuedSendNow,
+    onPromoteQueuedMessages,
+    queuedGrokDrainActive,
+    queuedMessagePromotionInFlight,
+    queuedSendNowMessageIds,
+  ]);
 
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {

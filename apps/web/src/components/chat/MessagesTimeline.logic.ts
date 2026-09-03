@@ -528,7 +528,9 @@ function deriveTurnFolds(input: {
         hiddenEntryIds.add(entry.id);
       }
     }
-    if (hiddenEntryIds.size === 0) {
+    // A fold exists to compress a run of work; a single entry is shorter than
+    // the "Worked for 1ms" row that would hide it, so it stays inline.
+    if (hiddenEntryIds.size <= 1) {
       continue;
     }
 

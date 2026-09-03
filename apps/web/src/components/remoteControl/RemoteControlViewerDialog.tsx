@@ -53,6 +53,7 @@ import {
   normalizedRemotePoint,
   remotePointerButton,
   remoteSurfaceCursorStyle,
+  requestPointerLockIfSupported,
   shouldForwardEscapeOnPointerUnlock,
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
@@ -547,6 +548,7 @@ export function RemoteControlViewerDialog(props: {
     setHostNotice(null);
     inputCapturedRef.current = false;
     setInputCaptured(false);
+    setPseudoFullScreen(false);
     inputScheduler.clear();
     pressedKeysRef.current.clear();
     onOpenChange(false);
@@ -577,6 +579,13 @@ export function RemoteControlViewerDialog(props: {
     hasRenderedFrame,
   });
 
+  // The exit control lives on the remote surface. If that surface disappears
+  // while Safari is using our CSS fullscreen fallback, restore the normal
+  // dialog chrome so the terminal/error state always retains a Close button.
+  useEffect(() => {
+    if (pseudoFullScreen && !surface.showSurface) setPseudoFullScreen(false);
+  }, [pseudoFullScreen, surface.showSurface]);
+
   /**
    * Ask the browser to actually lock the mouse to the surface. Chromium only
    * grants pointer lock with transient user activation, so a request fired
@@ -590,7 +599,7 @@ export function RemoteControlViewerDialog(props: {
   const engagePointerLock = useCallback(() => {
     const surface = surfaceElementRef.current;
     if (!surface || document.pointerLockElement === surface) return;
-    void Promise.resolve(surface.requestPointerLock()).catch(() => undefined);
+    requestPointerLockIfSupported(surface);
   }, []);
 
   useEffect(() => {
@@ -666,7 +675,7 @@ export function RemoteControlViewerDialog(props: {
   }, [zoom]);
 
   const zoomOut = useCallback(() => {
-    const next = [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? 1;
+    const next = ZOOM_STEPS.toReversed().find((step) => step < zoom - 0.001) ?? 1;
     if (next === zoom) return;
     if (next === 1) setZoomOrigin({ x: 50, y: 50 });
     setZoom(next);
@@ -696,27 +705,15 @@ export function RemoteControlViewerDialog(props: {
       | null;
     if (!surface) return;
     // Fallback ladder: standard element fullscreen → prefixed WebKit element
-    // fullscreen → iOS Safari, which only fullscreens <video> elements via its
-    // own non-fullscreen-API method. Only when every rung is missing or
-    // refused does the button admit it cannot work here.
-    const enterVideoFullscreen = () => {
-      const video = frameVideoRef.current as
-        | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
-        | null;
-      if (video?.webkitEnterFullscreen) {
-        try {
-          video.webkitEnterFullscreen();
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return false;
-    };
+    // fullscreen → our CSS app overlay. iPhone Safari's video-only fullscreen
+    // is intentionally skipped because it replaces the interactive viewer with
+    // Safari's media player and drops the remote-control affordances.
     const reportUnavailable = () => {
-      if (enterVideoFullscreen()) return;
-      // Every native rung refused — iPhone Safari, in practice. Fill the
-      // viewport with CSS rather than telling the user it cannot be done.
+      // iPhone Safari only offers native fullscreen for <video>, which ejects
+      // the stream into Safari's player UI and loses our remote-control chrome.
+      // The useful fullscreen on mobile is therefore the app-level overlay:
+      // keep the live surface interactive and consume the entire dynamic
+      // webpage viewport underneath Safari's unavoidable browser chrome.
       setPseudoFullScreen(true);
     };
     if (surface.requestFullscreen) {
@@ -730,7 +727,7 @@ export function RemoteControlViewerDialog(props: {
         surface.webkitRequestFullscreen();
         return;
       } catch {
-        // Fall through to the video rung.
+        // Fall through to the app-level overlay.
       }
     }
     reportUnavailable();
@@ -987,11 +984,19 @@ export function RemoteControlViewerDialog(props: {
         // establishes a containing block — so full screen on a phone in
         // landscape, which is wider than the `sm` breakpoint, rendered as a
         // masked rectangle floating mid-screen (reported 2026-09-01).
-        className="fixed inset-0 h-[100svh] max-h-none w-screen max-w-none rounded-none"
+        className={`fixed inset-0 max-h-none w-screen max-w-none rounded-none ${
+          pseudoFullScreen ? "h-[100dvh] p-0" : "h-[100svh]"
+        }`}
         showCloseButton={false}
         bottomStickOnMobile={false}
       >
-        <DialogHeader className="flex-row items-center justify-between gap-2 max-sm:p-3 sm:gap-4">
+        <DialogHeader
+          className={
+            pseudoFullScreen
+              ? "hidden"
+              : "flex-row items-center justify-between gap-2 max-sm:p-3 sm:gap-4"
+          }
+        >
           <div className="min-w-0 space-y-1">
             <DialogTitle className="flex items-center gap-2">
               <MonitorIcon className="size-5 shrink-0" />
@@ -1050,7 +1055,11 @@ export function RemoteControlViewerDialog(props: {
             actually take, at any width. */}
         <div
           data-slot="dialog-panel"
-          className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-2 sm:p-3"
+          className={
+            pseudoFullScreen
+              ? "flex min-h-0 flex-1 items-center justify-center overflow-hidden p-0"
+              : "flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-2 sm:p-3"
+          }
         >
           {error ? (
             <div className="max-w-lg space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-5 text-center">
@@ -1334,7 +1343,9 @@ export function RemoteControlViewerDialog(props: {
                           : pointerLocked
                             ? "Live · mouse captured — Esc releases"
                             : remoteLocked && canPointer && inputCaptured
-                              ? "Live · click to capture your mouse"
+                              ? touchClient
+                                ? "Live · touch game controls active"
+                                : "Live · click to capture your mouse"
                               : inputCaptured
                                 ? "Live · input focused"
                                 : "Live · click to focus"
@@ -1491,7 +1502,12 @@ export function RemoteControlViewerDialog(props: {
             </div>
           ) : null}
         </div>
-        <DialogFooter className="py-2 text-xs text-muted-foreground max-sm:hidden" variant="bare">
+        <DialogFooter
+          className={
+            pseudoFullScreen ? "hidden" : "py-2 text-xs text-muted-foreground max-sm:hidden"
+          }
+          variant="bare"
+        >
           {canControl
             ? inputCaptured
               ? "Input is focused on the remote computer. Click outside the screen or close the window to release it. Command and Control map automatically."

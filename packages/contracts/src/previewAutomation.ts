@@ -202,6 +202,17 @@ export const PreviewAutomationLoadFailure = Schema.Struct({
 });
 export type PreviewAutomationLoadFailure = typeof PreviewAutomationLoadFailure.Type;
 
+export const PreviewAutomationTabSummary = Schema.Struct({
+  tabId: PreviewTabId,
+  url: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  loading: Schema.Boolean,
+  visible: Schema.Boolean,
+  active: Schema.Boolean,
+  updatedAt: Schema.String,
+});
+export type PreviewAutomationTabSummary = typeof PreviewAutomationTabSummary.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
   /**
    * The only readiness gate on this struct. True means the tab is attached and
@@ -220,6 +231,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   url: Schema.NullOr(Schema.String),
   title: Schema.NullOr(Schema.String),
   loading: Schema.Boolean,
+  /** Every tab owned by this thread. Optional for compatibility with older hosts. */
+  tabs: Schema.optional(Schema.Array(PreviewAutomationTabSummary)),
   /** Optional for compatibility with desktop hosts predating viewport sizing. */
   viewportSetting: Schema.optional(PreviewViewportSetting),
   /** Measured guest-page viewport in CSS pixels when a webview is ready. */
@@ -349,7 +362,7 @@ export const PreviewAutomationCloseInput = Schema.Struct({
     .check(
       Schema.isNonEmpty({
         description:
-          "Exact collaborative browser tab to close. Only close a tab created for the current browsing task; never close a reused tab merely as cleanup.",
+          "Exact collaborative browser tab to close. It must belong to the current thread; any agent/provider in that thread may close it when it is stale or no longer needed.",
       }),
     )
     .check(Schema.isMaxLength(128)),
@@ -1186,6 +1199,8 @@ const PreviewAutomationRequestErrorFields = {
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
 };
 
+export const PREVIEW_AUTOMATION_REASON_MAX_LENGTH = 500;
+
 const PreviewAutomationRemoteDiagnosticFields = {
   remoteTag: TrimmedNonEmptyString,
   remoteMessageLength: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -1250,7 +1265,7 @@ export class PreviewAutomationTabNotFoundError extends Schema.TaggedErrorClass<P
 }
 
 export function previewForeignAgentTabErrorMessage(tabId: string, operation: string): string {
-  return `Tab ${tabId} belongs to another agent's dedicated browser and cannot be used for ${operation}. Use this agent's own tabs only. Do not reuse tab IDs from other agents. Omit tabId to use this agent's current tab, or call preview_open without that tabId (reuseExistingTab: false creates a new tab in this agent's browser).`;
+  return `Tab ${tabId} belongs to another thread and cannot be used for ${operation}. Use only tabs listed by preview_status for the current thread. Omit tabId to use this thread's current tab, or call preview_open without that tabId to create or reuse a tab inside this thread.`;
 }
 
 export class PreviewAutomationForeignAgentTabError extends Schema.TaggedErrorClass<PreviewAutomationForeignAgentTabError>()(
@@ -1263,7 +1278,7 @@ export class PreviewAutomationForeignAgentTabError extends Schema.TaggedErrorCla
   override get message(): string {
     return this.tabId
       ? previewForeignAgentTabErrorMessage(this.tabId, this.operation)
-      : `That tab belongs to another agent's dedicated browser and cannot be used for ${this.operation}. Use this agent's own tabs only. Do not reuse tab IDs from other agents.`;
+      : `That tab belongs to another thread and cannot be used for ${this.operation}. Use only tabs listed by preview_status for the current thread.`;
   }
 }
 
@@ -1310,10 +1325,24 @@ export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<Pre
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
+    /**
+     * The precise, page-content-free reason the client reported (composed by
+     * the client from its error's structured fields). This is what the model
+     * reads, so it says what failed and what to do next.
+     */
+    reason: Schema.optional(
+      Schema.String.check(Schema.isMaxLength(PREVIEW_AUTOMATION_REASON_MAX_LENGTH)),
+    ),
   },
 ) {
   override get message(): string {
-    return `Preview automation ${this.operation} failed on client ${this.clientId}.`;
+    const where = this.tabId === undefined ? "" : ` on tab ${this.tabId}`;
+    if (this.reason !== undefined) {
+      return `Preview automation ${this.operation} failed${where}: ${this.reason}`;
+    }
+    const remote =
+      this.remoteTag === "PreviewAutomationExecutionError" ? "" : ` (${this.remoteTag})`;
+    return `Preview automation ${this.operation} failed${where} and the client reported no reason${remote}. Call preview_status, then preview_snapshot, before retrying.`;
   }
 }
 

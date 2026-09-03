@@ -2505,6 +2505,94 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }).pipe(TestClock.withLive),
   );
 
+  it.effect("waits for the first queued prompt's read receipt before interjecting the next", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-promote-sequential-receipts");
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-promote-sequential-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_EMIT_XAI_QUEUE_CHANGED: "1",
+          T3_ACP_PROMPT_DELAY_MS: "500",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      const firstReceiptHeld = yield* Deferred.make<void>();
+      const releaseFirstReceipt = yield* Deferred.make<void>();
+      const adapter = yield* makeTestAdapter(wrapperPath, {
+        beforeQueueSnapshotCommit: (notification) =>
+          notification.runningPromptId === "older-queued-message"
+            ? Deferred.succeed(firstReceiptHeld, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstReceipt)),
+                Effect.asVoid,
+              )
+            : Effect.void,
+      });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const sends = yield* Effect.forEach(
+        [
+          ["running-message", "start the long task"],
+          ["older-queued-message", "first correction"],
+          ["newer-queued-message", "second correction"],
+        ] as const,
+        ([messageId, input]) =>
+          adapter
+            .sendTurn({
+              threadId,
+              messageId: MessageId.make(messageId),
+              input,
+              attachments: [],
+            })
+            .pipe(Effect.forkChild),
+      );
+      yield* waitForFileContent(requestLogPath, 80, '"messageId":"newer-queued-message"');
+
+      assert.isDefined(adapter.promoteQueuedTurn);
+      const promotion = yield* adapter.promoteQueuedTurn!(threadId, [
+        MessageId.make("older-queued-message"),
+        MessageId.make("newer-queued-message"),
+      ]).pipe(Effect.forkChild);
+      yield* Deferred.await(firstReceiptHeld).pipe(Effect.timeout("2 seconds"));
+      const requestsWhileHeld = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.deepEqual(
+        requestsWhileHeld
+          .filter((entry) => entry.method === "_x.ai/queue/interject")
+          .map((entry) => entry.params),
+        [{ sessionId: "mock-session-1", id: "older-queued-message", expectedVersion: 0 }],
+      );
+
+      yield* Deferred.succeed(releaseFirstReceipt, undefined);
+      const promoted = yield* Fiber.join(promotion);
+      assert.deepEqual(promoted, [
+        MessageId.make("older-queued-message"),
+        MessageId.make("newer-queued-message"),
+      ]);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.deepEqual(
+        requests
+          .filter((entry) => entry.method === "_x.ai/queue/interject")
+          .map((entry) => entry.params),
+        [
+          { sessionId: "mock-session-1", id: "older-queued-message", expectedVersion: 0 },
+          { sessionId: "mock-session-1", id: "newer-queued-message", expectedVersion: 0 },
+        ],
+      );
+
+      yield* Effect.forEach(sends, Fiber.join, { concurrency: "unbounded", discard: true }).pipe(
+        Effect.timeout("2 seconds"),
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(TestClock.withLive),
+  );
+
   it.effect("waits for every targeted queue row across staggered admission snapshots", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-promote-admission-race");

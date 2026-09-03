@@ -302,6 +302,16 @@ export const answerPreviewDownloadApproval = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const forgetDownloadDomains = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_FORGET_DOWNLOAD_DOMAINS_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.forgetDownloadDomains")(function* () {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.forgetDownloadDomains();
+  }),
+});
+
 export const setAnnotationTheme = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_SET_ANNOTATION_THEME_CHANNEL,
   payload: DesktopPreviewAnnotationThemeInputSchema,
@@ -588,6 +598,7 @@ export const methods = [
   setPreviewDownloadDirectory,
   revealPreviewDownload,
   answerPreviewDownloadApproval,
+  forgetDownloadDomains,
   setAnnotationTheme,
   pickElement,
   cancelPickElement,

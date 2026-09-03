@@ -38,6 +38,18 @@ describe("previewComputerControlAction", () => {
     expect(previewComputerControlAction({ toolTitle: "mcp__t3-code__preview_snapshot" })).toBe(
       "snapshot",
     );
+    // Grok ACP concatenates the JSON with no space after the colon.
+    expect(
+      previewComputerControlAction({
+        toolTitle:
+          'mcp__t3-code__preview_evaluate:{"expression":"() => { const w = document.querySelector(\\".Download.downloadBtnWrapper_r5Ifd\\"); if (!w) return \\"no widget\\"; }"}',
+      }),
+    ).toBe("evaluate");
+    expect(
+      previewComputerControlAction({
+        toolData: { server: "t3-code", tool: "mcp__t3-code__preview_evaluate" },
+      }),
+    ).toBe("evaluate");
   });
 
   it("ignores everything that is not a t3-code preview tool", () => {

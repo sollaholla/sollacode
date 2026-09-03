@@ -128,6 +128,31 @@ export const fetchRemoteDpopSessionState = Effect.fn(
   );
 });
 
+/**
+ * Trade a lapsed device credential for a current one. Unauthenticated by
+ * design — the credential being offered is exactly the thing that no longer
+ * authenticates — so the environment decides, on the strength of its own
+ * signature and an unrevoked session, whether to honour it.
+ */
+export const renewRemoteCredential = Effect.fn("clientRuntime.authorization.renewRemoteCredential")(
+  function* (input: {
+    readonly httpBaseUrl: string;
+    readonly credential: string;
+    readonly timeoutMs?: number;
+  }) {
+    const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
+    return yield* executeEnvironmentHttpRequest(
+      environmentEndpointUrl(input.httpBaseUrl, "/api/auth/renew"),
+      input.timeoutMs ?? DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+      client.auth.renewCredential({
+        payload: {
+          credential: input.credential,
+        },
+      }),
+    );
+  },
+);
+
 export const issueRemoteWebSocketTicket = Effect.fn(
   "clientRuntime.authorization.issueRemoteWebSocketTicket",
 )(function* (input: {

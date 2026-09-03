@@ -350,13 +350,54 @@ describe("provider overload retry activity projection", () => {
     });
     expect(first).toEqual([
       expect.objectContaining({
-        id: "reasoning:thread-grok:turn-grok",
+        id: "reasoning:thread-grok:turn-grok:thread-grok:reasoning",
         kind: "reasoning.updated",
         summary: "Thinking",
         turnId: "turn-grok",
       }),
     ]);
     expect(second[0]?.id).toBe(first[0]?.id);
+  });
+
+  it("keeps each bridge thought as its own reasoning activity", () => {
+    const thought = (index: number, text: string) =>
+      runtimeEventToActivities({
+        eventId: asEventId(`bridge-thought-${index}`),
+        provider: ProviderDriverKind.make("mcpBridge"),
+        createdAt: `2026-09-01T22:5${index}:00.000Z`,
+        threadId: asThreadId("thread-bridge"),
+        turnId: asTurnId("turn-bridge"),
+        type: "item.updated",
+        itemId: `turn-bridge:thought:${index}` as never,
+        payload: {
+          itemType: "reasoning",
+          status: "inProgress",
+          detail: text,
+        },
+      });
+    const first = thought(1, "Checking whether the live run cleared preflight.");
+    const second = thought(2, "It did; reading the contract results now.");
+    expect(first[0]?.id).toBe("reasoning:thread-bridge:turn-bridge:turn-bridge:thought:1");
+    expect(second[0]?.id).toBe("reasoning:thread-bridge:turn-bridge:turn-bridge:thought:2");
+    expect(first[0]?.payload).toEqual({
+      itemType: "reasoning",
+      detail: "Checking whether the live run cleared preflight.",
+    });
+  });
+
+  it("keeps a whole reasoning sentence instead of the tool-detail cap", () => {
+    const detail = "x".repeat(400);
+    const [activity] = runtimeEventToActivities({
+      eventId: asEventId("bridge-thought-long"),
+      provider: ProviderDriverKind.make("mcpBridge"),
+      createdAt: "2026-09-01T22:50:00.000Z",
+      threadId: asThreadId("thread-bridge"),
+      turnId: asTurnId("turn-bridge"),
+      type: "item.updated",
+      itemId: "turn-bridge:thought:1" as never,
+      payload: { itemType: "reasoning", status: "inProgress", detail },
+    });
+    expect((activity?.payload as { detail?: string }).detail).toBe(detail);
   });
 
   it("does not append a visible error row for a durable upstream retry", () => {
@@ -5446,6 +5487,18 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    // Progress and completion share one activity id per task, so read the
+    // progress frame before the completion replaces it.
+    const progressThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:turn-task-1" && activity.kind === "task.progress",
+      ),
+    );
+    const progress = progressThread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:turn-task-1",
+    );
+
     harness.emit({
       type: "task.completed",
       eventId: asEventId("evt-task-completed"),
@@ -5486,12 +5539,14 @@ describe("ProviderRuntimeIngestion", () => {
     const started = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-started",
     );
-    const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-progress",
-    );
     const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-task-completed",
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:turn-task-1",
     );
+    expect(
+      thread.activities.filter(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:turn-task-1",
+      ),
+    ).toHaveLength(1);
 
     const progressPayload =
       progress?.payload && typeof progress.payload === "object"
@@ -5550,6 +5605,16 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    const progressThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:named-task-1" && activity.kind === "task.progress",
+      ),
+    );
+    const progress = progressThread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:named-task-1",
+    );
+
     harness.emit({
       type: "task.completed",
       eventId: asEventId("evt-named-task-completed"),
@@ -5566,15 +5631,13 @@ describe("ProviderRuntimeIngestion", () => {
 
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-completed",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:named-task-1" && activity.kind === "task.completed",
       ),
     );
 
-    const progress = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-progress",
-    );
     const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-named-task-completed",
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:named-task-1",
     );
 
     const progressPayload =
@@ -5627,12 +5690,13 @@ describe("ProviderRuntimeIngestion", () => {
 
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-fast-task-completed",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:fast-task-1" && activity.kind === "task.completed",
       ),
     );
 
     const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-fast-task-completed",
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:fast-task-1",
     );
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"
@@ -5662,7 +5726,8 @@ describe("ProviderRuntimeIngestion", () => {
 
     await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-progress",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:swept-task-1" && activity.kind === "task.progress",
       ),
     );
 
@@ -5693,12 +5758,13 @@ describe("ProviderRuntimeIngestion", () => {
 
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task:thread-1:swept-task-1" && activity.kind === "task.completed",
       ),
     );
 
     const completed = thread.activities.find(
-      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-swept-task-completed",
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task:thread-1:swept-task-1",
     );
     const completedPayload =
       completed?.payload && typeof completed.payload === "object"

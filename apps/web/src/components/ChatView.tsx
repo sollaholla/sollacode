@@ -4,7 +4,7 @@ import {
   DEFAULT_MODEL,
   defaultInstanceIdForDriver,
   type EnvironmentId,
-  type MessageId,
+  MessageId,
   type OrchestrationMessage,
   type OrchestrationThreadHistoryWindow,
   type ModelSelection,
@@ -406,12 +406,15 @@ import {
   deriveComposerSendState,
   deriveQueuedGrokMessageIds,
   expireStaleQueuedMessagePromotion,
+  nextQueuedMessageToPromote,
+  queuedMessageAutoPromoteDelayMs,
   QUEUED_MESSAGE_PROMOTION_STALE_MS,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
   isProviderOverloadRetrying,
   isThreadAlreadyExistsError,
+  describePendingTurnStart,
   isThreadWorkInterruptible,
   shouldShowBranchMismatchBanner,
   shouldConfirmRemoteProviderAccountSwitch,
@@ -2437,7 +2440,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeQueuedMessagePromotionState = activeThreadKey
     ? queuedMessagePromotionPhases[activeThreadKey]
     : undefined;
-  const isPromotingQueuedMessages = activeQueuedMessagePromotionState !== undefined;
+  const queuedMessagePromotionInFlight = activeQueuedMessagePromotionState !== undefined;
   const activeProviderAuthenticationPaused =
     activeThread?.session?.status === "error" &&
     isProviderAuthenticationFailure(activeThread.session.lastError ?? "");
@@ -3604,16 +3607,26 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveDeliveredMessageIds(threadActivities),
     [threadActivities],
   );
+  const requestedProviderInstanceId = activeThread?.modelSelection.instanceId ?? null;
   const deliveryProvider = useMemo(() => {
     const provider = providerStatuses.find(
       (status) => status.instanceId === activeProviderInstanceId,
     );
     const driver = provider?.driver ?? selectedProvider;
+    // While a provider switch is being applied the live session still belongs
+    // to the old provider, so the thread's own selection — not the session —
+    // names the one the queued send is starting.
+    const requested = providerStatuses.find(
+      (status) => status.instanceId === requestedProviderInstanceId,
+    );
     return {
       name: provider?.displayName?.trim() || formatProviderDriverKindLabel(driver),
+      requestedName:
+        requested?.displayName?.trim() ||
+        formatProviderDriverKindLabel(requested?.driver ?? driver),
       receiptsExpected: driver === "codex" || driver === "claudeAgent" || driver === "grok",
     };
-  }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  }, [activeProviderInstanceId, providerStatuses, requestedProviderInstanceId, selectedProvider]);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -3647,6 +3660,7 @@ function ChatViewContent(props: ChatViewProps) {
   // Filter before rendering so dismissing a task removes the row and updates
   // the dock count in one state transition.
   const providerTaskDismissals = useProviderTaskDismissalStore((state) => state.dismissals);
+  const dismissProviderTasks = useProviderTaskDismissalStore((state) => state.dismissTasks);
   // A stopped session has no process left to run anything, so its tasks are
   // not "running" no matter what the last activity said. Only `stopped` counts
   // here: an interrupted or idle session still has a live runtime, and real
@@ -4170,6 +4184,18 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
   const hasQueuedGrokMessages = queuedGrokMessageIds.length > 0;
+  const queuedGrokMessageIdsRef = useRef(queuedGrokMessageIds);
+  queuedGrokMessageIdsRef.current = queuedGrokMessageIds;
+  const deliveredMessageIdsRef = useRef(deliveredMessageIds);
+  deliveredMessageIdsRef.current = deliveredMessageIds;
+  const awaitingQueuedDeliveryIdsRef = useRef<string[]>([]);
+  const [queuedGrokDrainActive, setQueuedGrokDrainActive] = useState(false);
+  const isPromotingQueuedMessages =
+    queuedMessagePromotionInFlight || (queuedGrokDrainActive && hasQueuedGrokMessages);
+  useEffect(() => {
+    awaitingQueuedDeliveryIdsRef.current = [];
+    setQueuedGrokDrainActive(false);
+  }, [activeThreadKey]);
   const newestUserMessageId = useMemo(() => {
     for (let index = timelineMessages.length - 1; index >= 0; index -= 1) {
       const message = timelineMessages[index];
@@ -4461,6 +4487,8 @@ function ChatViewContent(props: ChatViewProps) {
       activities: threadActivities,
     });
     if (outcome?.status === "failed") {
+      setQueuedGrokDrainActive(false);
+      awaitingQueuedDeliveryIdsRef.current = [];
       setThreadError(activeThread.id, outcome.detail);
     }
   }, [
@@ -4486,6 +4514,8 @@ function ChatViewContent(props: ChatViewProps) {
           nowMs: Date.now(),
         });
         if (outcome?.status === "failed") {
+          setQueuedGrokDrainActive(false);
+          awaitingQueuedDeliveryIdsRef.current = [];
           setThreadError(activeThread.id, outcome.detail);
         }
       },
@@ -6783,8 +6813,18 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
-  const promoteQueuedMessagesNow = useCallback(async () => {
-    if (!activeThread || !activeThreadKey || !hasQueuedGrokMessages) return false;
+  const promoteNextQueuedGrokMessage = useCallback(async () => {
+    if (!activeThread || !activeThreadKey) return false;
+    const nextMessageId = nextQueuedMessageToPromote({
+      queuedMessageIds: queuedGrokMessageIdsRef.current,
+      deliveredMessageIds: deliveredMessageIdsRef.current,
+      promotionInFlight: queuedMessagePromotionPhasesRef.current[activeThreadKey] !== undefined,
+      awaitingDeliveryMessageIds: awaitingQueuedDeliveryIdsRef.current,
+    });
+    if (nextMessageId === null) return false;
+
+    awaitingQueuedDeliveryIdsRef.current = [nextMessageId];
+    setQueuedGrokDrainActive(true);
     const threadIdForPromotion = activeThread.id;
     const requestId = newCommandId();
 
@@ -6792,7 +6832,7 @@ function ChatViewContent(props: ChatViewProps) {
       phasesRef: queuedMessagePromotionPhasesRef,
       setPhases: setQueuedMessagePromotionPhases,
       threadKey: activeThreadKey,
-      messageIds: queuedGrokMessageIds,
+      messageIds: [nextMessageId],
       requestId,
       promote: async () => {
         const result = await promoteQueuedThreadTurns({
@@ -6800,7 +6840,7 @@ function ChatViewContent(props: ChatViewProps) {
           input: {
             commandId: requestId,
             threadId: threadIdForPromotion,
-            messageIds: queuedGrokMessageIds,
+            messageIds: [MessageId.make(nextMessageId)],
           },
         });
         if (result._tag === "Failure") {
@@ -6812,20 +6852,53 @@ function ChatViewContent(props: ChatViewProps) {
       onStart: () => setThreadError(threadIdForPromotion, null),
       onSuccess: () => setThreadError(threadIdForPromotion, null),
       onError: (error) => {
+        setQueuedGrokDrainActive(false);
+        awaitingQueuedDeliveryIdsRef.current = [];
         setThreadError(
           threadIdForPromotion,
           error instanceof Error ? error.message : "Failed to send the queued Grok messages now.",
         );
       },
     });
+  }, [activeThread, activeThreadKey, environmentId, promoteQueuedThreadTurns, setThreadError]);
+
+  const promoteQueuedMessagesNow = useCallback(async () => {
+    if (!activeThread || !activeThreadKey || !hasQueuedGrokMessages) return false;
+    setQueuedGrokDrainActive(true);
+    return promoteNextQueuedGrokMessage();
+  }, [activeThread, activeThreadKey, hasQueuedGrokMessages, promoteNextQueuedGrokMessage]);
+
+  useEffect(() => {
+    awaitingQueuedDeliveryIdsRef.current = awaitingQueuedDeliveryIdsRef.current.filter(
+      (messageId) => !deliveredMessageIds.has(messageId),
+    );
+    if (!hasQueuedGrokMessages && awaitingQueuedDeliveryIdsRef.current.length === 0) {
+      if (queuedGrokDrainActive) setQueuedGrokDrainActive(false);
+      return;
+    }
+    if (!activeThreadKey) return;
+
+    const nextMessageId = nextQueuedMessageToPromote({
+      queuedMessageIds: queuedGrokMessageIds,
+      deliveredMessageIds,
+      promotionInFlight: queuedMessagePromotionInFlight,
+      awaitingDeliveryMessageIds: awaitingQueuedDeliveryIdsRef.current,
+    });
+    if (nextMessageId === null) return;
+
+    const delayMs = queuedMessageAutoPromoteDelayMs(queuedGrokDrainActive);
+    const timer = window.setTimeout(() => {
+      void promoteNextQueuedGrokMessage();
+    }, delayMs);
+    return () => window.clearTimeout(timer);
   }, [
-    activeThread,
     activeThreadKey,
-    environmentId,
+    deliveredMessageIds,
     hasQueuedGrokMessages,
-    promoteQueuedThreadTurns,
+    promoteNextQueuedGrokMessage,
+    queuedGrokDrainActive,
     queuedGrokMessageIds,
-    setThreadError,
+    queuedMessagePromotionInFlight,
   ]);
 
   const onSend = async (
@@ -8165,6 +8238,10 @@ function ChatViewContent(props: ChatViewProps) {
   const onInterrupt = async () => {
     if (!activeThread || isInterrupting) return;
     setInterruptRequestedThreadKey(activeThreadKey);
+    // Stop is a hard cancel of this turn — clear a sticky provider error so a
+    // fallback/unavailable banner cannot keep the thread looking broken while
+    // the harness is being killed.
+    setThreadError(activeThread.id, null);
     const result = await interruptThreadTurn({
       environmentId,
       input: buildThreadTurnInterruptInput(activeThread),
@@ -8741,6 +8818,16 @@ function ChatViewContent(props: ChatViewProps) {
         instanceId,
         model: resolvedModel,
       };
+      const modelChanged =
+        activeThread.modelSelection.instanceId !== nextModelSelection.instanceId ||
+        activeThread.modelSelection.model !== nextModelSelection.model;
+      if (modelChanged && providerTasks.length > 0) {
+        // These rows belong to the provider state we are leaving. The task
+        // dismissal store revives any genuinely live task as soon as it emits
+        // an event newer than this dismissal, while a dead runtime ghost stays
+        // gone instead of repopulating every time the user switches models.
+        dismissProviderTasks(providerTasks.map((task) => task.taskId));
+      }
       setComposerDraftModelSelection(
         scopeThreadRef(activeThread.environmentId, activeThread.id),
         nextModelSelection,
@@ -8752,7 +8839,9 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       activeThread,
+      dismissProviderTasks,
       persistComposerModelDefaults,
+      providerTasks,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
@@ -9243,10 +9332,19 @@ function ChatViewContent(props: ChatViewProps) {
                             ? "Agent auto-resuming"
                             : !timelineIsWorking && isThreadInterruptible
                               ? // Reached only via the branch above: nothing is
-                                // streaming, but an interrupted turn is being
-                                // recovered. "Working for X" would be wrong — no
-                                // work is going out — so say what it is.
-                                "Recovering the interrupted response"
+                                // streaming, but a queued send is being started
+                                // or an interrupted turn recovered. "Working for
+                                // X" would be wrong — no work is going out — so
+                                // say what it is.
+                                (describePendingTurnStart({
+                                  pendingWork: serverPendingWork,
+                                  latestTurnState: activeLatestTurn?.state ?? null,
+                                  sessionProviderInstanceId:
+                                    activeThread.session?.providerInstanceId ?? null,
+                                  requestedProviderInstanceId:
+                                    activeThread.modelSelection.instanceId,
+                                  providerName: deliveryProvider.requestedName,
+                                }) ?? "Recovering the interrupted response")
                               : // A turn that happens to have compacted earlier is just a
                                 // turn; labelling the rest of it "Continuing after
                                 // compaction" pins an implementation detail to the status

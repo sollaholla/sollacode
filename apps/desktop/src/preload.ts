@@ -273,6 +273,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.PREVIEW_OPEN_DEVTOOLS_CHANNEL, { tabId }),
     clearCookies: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_COOKIES_CHANNEL),
     clearCache: () => ipcRenderer.invoke(IpcChannels.PREVIEW_CLEAR_CACHE_CHANNEL),
+    forgetDownloadDomains: () =>
+      ipcRenderer.invoke(IpcChannels.PREVIEW_FORGET_DOWNLOAD_DOMAINS_CHANNEL),
     getPreviewConfig: (environmentId, threadId, browserProfileThreadId) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_GET_CONFIG_CHANNEL, {
         environmentId,

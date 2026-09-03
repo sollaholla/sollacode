@@ -812,6 +812,18 @@ describe("deriveMessagesTimelineRows", () => {
           },
         },
         {
+          id: "work-entry-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:12Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:12Z",
+            turnId: "turn-1" as never,
+            label: "Read files",
+            tone: "tool" as const,
+          },
+        },
+        {
           id: "steer-user-entry",
           kind: "message",
           createdAt: "2026-01-01T00:00:14Z",
@@ -876,6 +888,18 @@ describe("deriveMessagesTimelineRows", () => {
             tone: "tool" as const,
           },
         },
+        {
+          id: "work-entry-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:06Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:06Z",
+            turnId: "turn-1" as never,
+            label: "Read files",
+            tone: "tool" as const,
+          },
+        },
       ],
       latestTurn: {
         turnId: "turn-1" as never,
@@ -913,6 +937,18 @@ describe("deriveMessagesTimelineRows", () => {
             createdAt: "2026-01-01T00:00:05Z",
             turnId: "turn-1" as never,
             label: "Ran command",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "work-entry-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:06Z",
+          entry: {
+            id: "work-2",
+            createdAt: "2026-01-01T00:00:06Z",
+            turnId: "turn-1" as never,
+            label: "Read files",
             tone: "tool" as const,
           },
         },
@@ -1083,6 +1119,18 @@ describe("deriveMessagesTimelineRows", () => {
             createdAt: "2026-01-01T00:00:05Z",
             turnId: "turn-1" as never,
             label: "Read files",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "previous-work-entry-2",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:06Z",
+          entry: {
+            id: "previous-work-2",
+            createdAt: "2026-01-01T00:00:06Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
             tone: "tool" as const,
           },
         },
@@ -1394,6 +1442,44 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(repeated).toBe(initial);
     expect(repeated.result[0]).toBe(initial.result[0]);
+  });
+
+  it("keeps a thinking entry visible inside a tool-call group", () => {
+    // A thought is tool-like so it sits beside the calls it narrates, but it
+    // has no lifecycle status; the neutral-status filter used to drop it, so
+    // a bridge model's comments never rendered (reported 2026-09-01).
+    const thought = {
+      id: "work-thought",
+      createdAt: "2026-09-01T22:54:34.176Z",
+      label: "Thinking",
+      detail: "Checking whether the live run cleared preflight.",
+      tone: "thinking" as const,
+    };
+    const tool = {
+      id: "work-tool",
+      createdAt: "2026-09-01T22:54:34.177Z",
+      label: "run_shell",
+      detail: "cat /tmp/result.json",
+      tone: "tool" as const,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        { id: "entry-thought", kind: "work", createdAt: thought.createdAt, entry: thought },
+        { id: "entry-tool", kind: "work", createdAt: tool.createdAt, entry: tool },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      expandedWorkGroupIds: new Set(["work-group:entry-thought"]),
+    });
+    const workRowIds = rows
+      .filter((row) => row.kind === "work")
+      .flatMap((row) => row.groupedEntries.map((entry) => entry.id));
+    expect(workRowIds).toEqual(["work-thought", "work-tool"]);
+    const toggle = rows.find((row) => row.kind === "work-toggle");
+    expect(toggle).toMatchObject({ hiddenCount: 1, onlyToolEntries: true });
   });
 
   it("returns a new result when row order changes without content changes", () => {

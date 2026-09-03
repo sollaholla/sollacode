@@ -37,9 +37,9 @@ export function mapRemoteEnvironmentError(
     case "EnvironmentAuthInvalidError":
       return new ConnectionBlockedError({
         reason: "authentication",
-        // Say what the user has to do about it. The previous wording named the
-        // failure and left them to guess that pairing again was the way back.
-        detail: "This device is no longer paired with the environment. Pair it again to reconnect.",
+        // Reconnect/Retry renews within the environment's grace window. Past
+        // that window the same action still fails and pairing is required.
+        detail: "This connection expired. Retry to renew it. If that fails, pair the device again.",
         traceId: error.traceId,
       });
     case "EnvironmentScopeRequiredError":

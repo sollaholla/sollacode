@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   MessageId,
   ProviderInstanceId,
   ThreadId,
@@ -15,6 +16,7 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import * as NodeTimersPromises from "node:timers/promises";
 
 import type { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   MAX_TRANSPORT_FAILURES_BEFORE_TURN_LOSS,
   makeMcpBridgeAdapter,
@@ -294,6 +296,46 @@ it.effect("maps, stamps, orders, and deduplicates one bridge session event strea
         schemaVersion: 1,
         bridgeSessionId: String(threadId),
       });
+      yield* adapter.stopSession(threadId);
+    }),
+  ),
+);
+
+it.effect("forwards the thread-scoped MCP credential on session_start and recovery", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fake = new FakeBridgeClient();
+      const secrets: Array<string> = [];
+      Object.assign(fake, { addSensitiveValue: (value: string) => secrets.push(value) });
+      const threadId = ThreadId.make("external-thread-mcp-credential");
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-mcp"),
+        threadId,
+        providerSessionId: "provider-session-mcp",
+        providerInstanceId: instanceId,
+        endpoint: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer secret-mcp-token",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+      );
+      const adapter = yield* makeMcpBridgeAdapter({
+        connection: fake,
+        instanceId,
+        serverConfig,
+      });
+      yield* adapter.startSession({
+        threadId,
+        providerInstanceId: instanceId,
+        runtimeMode: "full-access",
+        modelSelection: { instanceId, model: "fake-default" },
+      });
+      const sessionStart = fake.calls.find((call) => call.tool === "provider_bridge.session_start");
+      assert.deepStrictEqual(sessionStart?.arguments.mcpServer, {
+        url: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer secret-mcp-token",
+      });
+      assert.deepStrictEqual(secrets, ["secret-mcp-token"]);
       yield* adapter.stopSession(threadId);
     }),
   ),
@@ -1063,6 +1105,56 @@ const toolItemEvent = (
   itemId: "call_compare_1",
   type,
   payload,
+});
+
+const statusEvent = (
+  type: "reasoning.status" | "runtime.status",
+  itemId: string,
+  payload: Record<string, unknown>,
+): McpBridgeEvent => ({
+  eventId: `evt-${type}-${itemId}`,
+  sequence: 1,
+  timestamp: "2026-09-01T22:54:34.000Z",
+  sessionId: "session-items",
+  turnId: "turn-items",
+  itemId,
+  type,
+  payload,
+});
+
+it("keeps a bridge thought under the default Thinking heading with its own item id", () => {
+  // The bridge publishes each of the model's comments as a reasoning.status
+  // with a distinct item id; the host keys one durable row per item, so the
+  // id must survive and the row must read as the model thinking.
+  const mapped = mapMcpBridgeEvent(
+    statusEvent("reasoning.status", "turn-items:thought:3", {
+      phase: "thinking",
+      text: "Checking whether the live run cleared preflight.",
+    }),
+    instanceId,
+    toolItemThreadId,
+  );
+  const payload = mapped.payload as Record<string, unknown>;
+  assert.strictEqual(mapped.type, "item.updated");
+  assert.strictEqual(String(mapped.itemId), "turn-items:thought:3");
+  assert.strictEqual(payload.itemType, "reasoning");
+  assert.strictEqual(payload.title, undefined);
+  assert.strictEqual(payload.detail, "Checking whether the live run cleared preflight.");
+});
+
+it("titles a runtime status row by its phase so bridge narration is not a thought", () => {
+  const mapped = mapMcpBridgeEvent(
+    statusEvent("runtime.status", "turn-items:status", {
+      phase: "working",
+      text: "Delivering your message to the browser",
+    }),
+    instanceId,
+    toolItemThreadId,
+  );
+  const payload = mapped.payload as Record<string, unknown>;
+  assert.strictEqual(payload.itemType, "reasoning");
+  assert.strictEqual(payload.title, "Working");
+  assert.strictEqual(payload.detail, "Delivering your message to the browser");
 });
 
 it("maps an assistant-message item without forcing it to a tool type", () => {

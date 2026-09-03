@@ -72,7 +72,26 @@ const presentation = (
 });
 
 describe("resolvePreviewAutomationThreadTarget", () => {
-  it("uses an explicitly or persistently selected tab across thread ownership", () => {
+  it("uses an explicitly or persistently selected tab owned by the requesting thread", () => {
+    const ownState = state("tab-own");
+    expect(
+      resolvePreviewAutomationThreadTarget({
+        environmentId,
+        requestThreadRef,
+        requestedTabId: PreviewTabId.make("tab-own"),
+        previewByThreadKey: { [scopedThreadKey(requestThreadRef)]: ownState },
+        presentationsByRuntimeTabId: {},
+      }),
+    ).toEqual({
+      threadRef: requestThreadRef,
+      tabId: PreviewTabId.make("tab-own"),
+    });
+  });
+
+  it("reports an explicitly selected tab owned by another thread as foreign", () => {
+    // Tab ownership is keyed to the thread, never to a provider session or a
+    // visible panel: a tab another thread opened is not usable here even when
+    // it is the one on screen.
     const visibleState = state("tab-visible");
     expect(
       resolvePreviewAutomationThreadTarget({
@@ -80,15 +99,20 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         requestThreadRef,
         requestedTabId: PreviewTabId.make("tab-visible"),
         previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: visibleState },
-        presentationsByRuntimeTabId: {},
+        presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(visibleThreadRef, visibleState.serverEpoch, "tab-visible")]:
+            presentation(),
+        },
       }),
     ).toEqual({
-      threadRef: visibleThreadRef,
-      tabId: PreviewTabId.make("tab-visible"),
+      threadRef: requestThreadRef,
+      tabId: undefined,
+      foreignAgentTabId: PreviewTabId.make("tab-visible"),
     });
   });
 
-  it("defaults a fresh agent to the visible interactive browser in its environment", () => {
+  it("defaults to the requesting thread's visible interactive browser, ignoring other threads and environments", () => {
+    const ownState = state("tab-own");
     const visibleState = state("tab-visible");
     const foreignState = state("tab-foreign");
     expect(
@@ -97,19 +121,23 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         requestThreadRef,
         requestedTabId: undefined,
         previewByThreadKey: {
+          [scopedThreadKey(requestThreadRef)]: ownState,
           [scopedThreadKey(visibleThreadRef)]: visibleState,
           [scopedThreadKey(otherEnvironmentThreadRef)]: foreignState,
         },
         presentationsByRuntimeTabId: {
+          [previewRuntimeTabId(requestThreadRef, ownState.serverEpoch, "tab-own")]: presentation({
+            updatedAt: 1,
+          }),
           [previewRuntimeTabId(visibleThreadRef, visibleState.serverEpoch, "tab-visible")]:
-            presentation(),
-          [previewRuntimeTabId(otherEnvironmentThreadRef, foreignState.serverEpoch, "tab-foreign")]:
             presentation({ updatedAt: 2 }),
+          [previewRuntimeTabId(otherEnvironmentThreadRef, foreignState.serverEpoch, "tab-foreign")]:
+            presentation({ updatedAt: 3 }),
         },
       }),
     ).toEqual({
-      threadRef: visibleThreadRef,
-      tabId: PreviewTabId.make("tab-visible"),
+      threadRef: requestThreadRef,
+      tabId: PreviewTabId.make("tab-own"),
     });
   });
 
@@ -124,40 +152,38 @@ describe("resolvePreviewAutomationThreadTarget", () => {
         environmentId,
         requestThreadRef,
         requestedTabId: undefined,
-        previewByThreadKey: { [scopedThreadKey(visibleThreadRef)]: hostedState },
+        previewByThreadKey: { [scopedThreadKey(requestThreadRef)]: hostedState },
         presentationsByRuntimeTabId: {
-          [previewRuntimeTabId(visibleThreadRef, hostedState.serverEpoch, "tab-visible")]:
+          [previewRuntimeTabId(requestThreadRef, hostedState.serverEpoch, "tab-visible")]:
             presentation(),
         },
       }),
     ).toEqual({
-      threadRef: visibleThreadRef,
+      threadRef: requestThreadRef,
       tabId: PreviewTabId.make("tab-visible"),
     });
   });
 
   it("prefers the interactive panel over a newer visible thumbnail", () => {
     const panelState = state("tab-panel");
-    const thumbnailThreadRef = scopeThreadRef(environmentId, ThreadId.make("thread-thumbnail"));
-    const thumbnailState = state("tab-thumbnail");
+    const thumbnail = snapshot("tab-thumbnail");
+    panelState.sessions = { ...panelState.sessions, [thumbnail.tabId]: thumbnail };
+    panelState.hostedSessions = { ...panelState.hostedSessions, [thumbnail.tabId]: thumbnail };
     expect(
       resolvePreviewAutomationThreadTarget({
         environmentId,
         requestThreadRef,
         requestedTabId: undefined,
-        previewByThreadKey: {
-          [scopedThreadKey(visibleThreadRef)]: panelState,
-          [scopedThreadKey(thumbnailThreadRef)]: thumbnailState,
-        },
+        previewByThreadKey: { [scopedThreadKey(requestThreadRef)]: panelState },
         presentationsByRuntimeTabId: {
-          [previewRuntimeTabId(visibleThreadRef, panelState.serverEpoch, "tab-panel")]:
+          [previewRuntimeTabId(requestThreadRef, panelState.serverEpoch, "tab-panel")]:
             presentation({ interactive: true, updatedAt: 1 }),
-          [previewRuntimeTabId(thumbnailThreadRef, thumbnailState.serverEpoch, "tab-thumbnail")]:
+          [previewRuntimeTabId(requestThreadRef, panelState.serverEpoch, "tab-thumbnail")]:
             presentation({ interactive: false, updatedAt: 2 }),
         },
       }),
     ).toEqual({
-      threadRef: visibleThreadRef,
+      threadRef: requestThreadRef,
       tabId: PreviewTabId.make("tab-panel"),
     });
   });
@@ -201,7 +227,7 @@ describe("canReusePreviewAutomationBrowser", () => {
     ).toBe(false);
   });
 
-  it("lets a delegated project thread keep using its creating agent's profile", () => {
+  it("does not let a different thread reuse a tab merely because it shares a browser profile", () => {
     expect(
       canReusePreviewAutomationBrowser({
         requestThreadId: ThreadId.make("project-thread"),
@@ -214,7 +240,7 @@ describe("canReusePreviewAutomationBrowser", () => {
           "agent-veera": agentHome("agent-veera"),
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -258,7 +284,7 @@ describe("resolvePreviewAutomationThreadTarget agent isolation", () => {
     });
   });
 
-  it("does not default a custom agent onto another agent's visible browser", () => {
+  it("does not default a thread onto another thread's visible browser", () => {
     const pawstalgiaState = state("tab-pawstalgia-gmail");
     expect(
       resolvePreviewAutomationThreadTarget({

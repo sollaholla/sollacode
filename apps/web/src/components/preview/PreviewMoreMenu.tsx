@@ -16,6 +16,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "~/components/ui/menu";
+import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 import { previewBridge } from "./previewBridge";
@@ -181,6 +182,22 @@ export function PreviewMoreMenu({
         </MenuItem>
         <MenuItem onClick={() => void bridge.clearCache().catch(() => undefined)}>
           Clear cache
+        </MenuItem>
+        <MenuItem
+          onClick={() =>
+            void bridge
+              .forgetDownloadDomains()
+              .then(() =>
+                toastManager.add({
+                  type: "success",
+                  title: "Allowed download sites forgotten",
+                  description: "Each site will ask again before its next download.",
+                }),
+              )
+              .catch(() => undefined)
+          }
+        >
+          Forget allowed download sites
         </MenuItem>
       </MenuPopup>
     </Menu>

@@ -23,6 +23,7 @@ import {
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveActiveSessionProviderDriver,
+  describePendingTurnStart,
   deriveLockedProvider,
   dismissBranchMismatchForSession,
   hasServerAcknowledgedLocalDispatch,
@@ -122,6 +123,16 @@ describe("resolveVisibleServerThreadError", () => {
     expect(
       resolveVisibleServerThreadError({ message: "New local error" }, "Old server error"),
     ).toBe("New local error");
+  });
+
+  it("does not treat a model-fallback notice as a sticky thread error", () => {
+    expect(
+      resolveVisibleServerThreadError(
+        undefined,
+        "Claude · Opus 4.6 · Medium is temporarily unavailable. Falling back to Claude · Opus 4.1 · Medium.",
+        null,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -1162,5 +1173,66 @@ describe("resolveBlockedSend", () => {
 
   it("stays quiet when nothing is blocking the send", () => {
     expect(resolveBlockedSend(base).kind).toBe("silent");
+  });
+});
+
+describe("describePendingTurnStart", () => {
+  const queued = {
+    kind: "active-turn-recovery",
+    state: "claimed",
+    since: "2026-09-01T19:49:15.000Z",
+  } as const;
+
+  it("names the provider a queued send is starting", () => {
+    expect(
+      describePendingTurnStart({
+        pendingWork: queued,
+        latestTurnState: "completed",
+        sessionProviderInstanceId: "claudeAgent",
+        requestedProviderInstanceId: "claudeAgent",
+        providerName: "Claude",
+      }),
+    ).toBe("Starting Claude");
+  });
+
+  it("says a provider switch is in progress while the session still belongs to the old one", () => {
+    expect(
+      describePendingTurnStart({
+        pendingWork: { ...queued, state: "executing" },
+        latestTurnState: "completed",
+        sessionProviderInstanceId: "grok",
+        requestedProviderInstanceId: "claudeAgent",
+        providerName: "Claude",
+      }),
+    ).toBe("Switching to Claude");
+  });
+
+  it("keeps the recovery wording for an interrupted turn", () => {
+    expect(
+      describePendingTurnStart({
+        pendingWork: queued,
+        latestTurnState: "incomplete",
+        sessionProviderInstanceId: "claudeAgent",
+        requestedProviderInstanceId: "claudeAgent",
+        providerName: "Claude",
+      }),
+    ).toBe("Recovering the interrupted response");
+  });
+
+  it("is silent without queued delivery work", () => {
+    const base = {
+      latestTurnState: "completed",
+      sessionProviderInstanceId: "claudeAgent",
+      requestedProviderInstanceId: "claudeAgent",
+      providerName: "Claude",
+    };
+    expect(describePendingTurnStart({ ...base, pendingWork: null })).toBeNull();
+    expect(describePendingTurnStart({ ...base, pendingWork: undefined })).toBeNull();
+    expect(
+      describePendingTurnStart({ ...base, pendingWork: { ...queued, kind: "agent-continuation" } }),
+    ).toBeNull();
+    expect(
+      describePendingTurnStart({ ...base, pendingWork: { ...queued, state: "waiting-approval" } }),
+    ).toBeNull();
   });
 });

@@ -1442,6 +1442,11 @@ export interface DesktopPreviewBridge {
   /** Drop the HTTP cache for the preview partition (all tabs). */
   clearCache: () => Promise<void>;
   /**
+   * Forget every site the user answered "Allow for this domain" for, so the
+   * next download from each of them asks again.
+   */
+  forgetDownloadDomains: () => Promise<void>;
+  /**
    * One-shot config for mounting a preview `<webview>`. Replaces three
    * earlier round-trip calls (`getBrowserPartition`, `getWebviewPreferences`,
    * `getPickPreloadPath`) so adding a new field here only requires touching

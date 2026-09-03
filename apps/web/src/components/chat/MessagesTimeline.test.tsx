@@ -1041,6 +1041,28 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Restart any that are still needed");
   });
 
+  it("badges a Preview-only cancellation instead of showing the agent instruction", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          buildUserTimelineEntry(
+            [
+              "<interrupted_background_tasks>",
+              "The user sent this message, which deliberately cancelled the background tasks listed below. They were killed on purpose and did not fail: ignore any non-zero exit code, kill signal, or truncated output they reported, and do not investigate those as errors or draw conclusions about the machine from them. Restart any that are still needed.",
+              "- Preview",
+              "</interrupted_background_tasks>",
+            ].join("\r\n"),
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("1 background task interrupted");
+    expect(markup).not.toContain("interrupted_background_tasks");
+    expect(markup).not.toContain("killed on purpose");
+  });
+
   it("keeps the copy button for collapsed long user messages", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -1180,6 +1202,35 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("lucide-globe");
     expect(markup).not.toContain("lucide-file-search");
+  });
+
+  it("renders model reasoning as plain inline text instead of a collapsible work row", () => {
+    const thought = "Checking whether the live run cleared preflight.";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-thought",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "work-thought",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId: null,
+              label: "Thinking",
+              detail: thought,
+              tone: "thinking",
+              sourceActivityKind: "reasoning.updated",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain(thought);
+    expect(markup).not.toContain('aria-label="Thinking');
+    expect(markup).not.toContain("lucide-chevron-down");
   });
 
   it("renders Token Optimizer evidence with a hoverable lightning affordance", () => {

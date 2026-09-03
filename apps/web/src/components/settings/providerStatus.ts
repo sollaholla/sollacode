@@ -1,4 +1,8 @@
-import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderUpdateState,
+  ServerProviderVersionAdvisory,
+} from "@t3tools/contracts";
 
 /**
  * Visual treatment for each server-reported provider status. Centralized so
@@ -6,7 +10,7 @@ import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/con
  */
 export const PROVIDER_STATUS_STYLES = {
   disabled: {
-    dot: "bg-amber-400",
+    dot: "bg-muted-foreground/40",
   },
   error: {
     dot: "bg-destructive",
@@ -20,6 +24,20 @@ export const PROVIDER_STATUS_STYLES = {
 } as const;
 
 export type ProviderStatusKey = keyof typeof PROVIDER_STATUS_STYLES;
+
+/** Spoken and (when needed) visible name for the status dot on a provider card. */
+export function describeProviderStatus(status: ProviderStatusKey): string {
+  switch (status) {
+    case "ready":
+      return "Ready";
+    case "warning":
+      return "Needs attention";
+    case "error":
+      return "Unavailable";
+    case "disabled":
+      return "Off";
+  }
+}
 
 /**
  * Derive the headline + detail copy shown under a provider's name in the
@@ -115,4 +133,30 @@ export function getProviderVersionAdvisoryPresentation(
     updateCommand: advisory.updateCommand,
     emphasis: "normal" as const,
   };
+}
+
+/**
+ * The outcome of the last in-app provider update, for the card that offered
+ * it. The update runs on the server and reports back through
+ * `updateState`; until now only the global launch notification read it, so
+ * clicking "Update now" flipped the button to "Updating" and then the card
+ * never said whether it worked.
+ */
+export function describeProviderUpdateOutcome(
+  state: ServerProviderUpdateState | undefined,
+): { readonly tone: "error" | "neutral"; readonly text: string } | null {
+  if (!state) return null;
+  switch (state.status) {
+    case "failed":
+      return { tone: "error", text: state.message ?? "The last update attempt failed." };
+    case "succeeded":
+      return {
+        tone: "neutral",
+        text: state.message ?? "Updated. Refresh provider status to confirm the new version.",
+      };
+    case "unchanged":
+      return { tone: "neutral", text: state.message ?? "Already up to date." };
+    default:
+      return null;
+  }
 }

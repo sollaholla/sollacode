@@ -6,6 +6,7 @@ import { appAtomRegistry } from "./atom-registry";
 import {
   clearQueuedTurnPromotionRequest,
   markQueuedTurnPromotionAwaitingProjection,
+  nextQueuedMessageToPromote,
   orderedQueuedTurnPromotionMessageIds,
   queuedTurnMessageIds,
   queuedTurnPromotionOutcome,
@@ -276,5 +277,24 @@ describe("mobile queued turn promotion", () => {
         ] as never,
       }),
     ).toEqual({ status: "succeeded", messageIds: ["local-message"] });
+  });
+
+  it("holds the next queued row until the previous read receipt lands", () => {
+    expect(
+      nextQueuedMessageToPromote({
+        queuedMessageIds: ["queued-2"],
+        deliveredMessageIds: new Set(),
+        promotionInFlight: false,
+        awaitingDeliveryMessageIds: ["queued-1"],
+      }),
+    ).toBeNull();
+    expect(
+      nextQueuedMessageToPromote({
+        queuedMessageIds: ["queued-2"],
+        deliveredMessageIds: new Set(["queued-1"]),
+        promotionInFlight: false,
+        awaitingDeliveryMessageIds: ["queued-1"],
+      }),
+    ).toBe("queued-2");
   });
 });

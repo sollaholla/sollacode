@@ -5,7 +5,7 @@ import {
   buildInterruptedTasksNotice,
   describeInterruptedTasks,
   extractTrailingInterruptedTasksNotice,
-} from "./interruptedTasksNotice";
+} from "./interruptedTasksNotice.ts";
 
 describe("interrupted tasks notice", () => {
   it("round-trips the prompt and the task titles", () => {
@@ -58,6 +58,29 @@ describe("interrupted tasks notice", () => {
     const extracted = extractTrailingInterruptedTasksNotice(text);
     expect(extracted.titles).toEqual(["Ran command"]);
     expect(extracted.promptText).toBe("and then I typed more");
+    expect(extracted.promptText).not.toContain("interrupted_background_tasks");
+  });
+
+  it("strips the Preview-only cancellation that leaked as the whole bubble", () => {
+    const text = [
+      "<interrupted_background_tasks>",
+      "The user sent this message, which deliberately cancelled the background tasks listed below. They were killed on purpose and did not fail: ignore any non-zero exit code, kill signal, or truncated output they reported, and do not investigate those as errors or draw conclusions about the machine from them. Restart any that are still needed.",
+      "- Preview",
+      "</interrupted_background_tasks>",
+    ].join("\n");
+    const extracted = extractTrailingInterruptedTasksNotice(text);
+    expect(extracted.promptText).toBe("");
+    expect(extracted.titles).toEqual(["Preview"]);
+  });
+
+  it("strips a CRLF copy of the block", () => {
+    const text = appendInterruptedTasksNotice("check the build", ["Preview"]).replaceAll(
+      "\n",
+      "\r\n",
+    );
+    const extracted = extractTrailingInterruptedTasksNotice(text);
+    expect(extracted.promptText).toBe("check the build");
+    expect(extracted.titles).toEqual(["Preview"]);
     expect(extracted.promptText).not.toContain("interrupted_background_tasks");
   });
 });

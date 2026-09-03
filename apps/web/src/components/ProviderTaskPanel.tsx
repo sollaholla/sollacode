@@ -171,41 +171,32 @@ export function ProviderTaskPanel(props: {
                     </p>
                   ) : null}
                 </div>
-                {/*
-                 * One control, two meanings, decided by whether the work can
-                 * actually be reached: on a running task backed by a runtime with
-                 * a per-task kill it stops the task; otherwise it hides the row,
-                 * and says so. The single-meaning version of this button hid rows
-                 * while the task kept running, which read as a cancel that
-                 * silently did nothing.
-                 *
-                 * Stopping deliberately does *not* also dismiss. The row is the
-                 * only confirmation the kill landed — it flips to "Stopped" once
-                 * the task ends, then ages out like any finished work. Hiding it
-                 * on click instead made the row vanish and reappear a moment
-                 * later, which reads as a glitch rather than an outcome.
-                 */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    canStop(task) ? props.onStopTask?.(task.taskId) : dismissTasks([task.taskId])
-                  }
-                  aria-label={canStop(task) ? `Stop ${task.title}` : `Dismiss ${task.title}`}
-                  title={
-                    canStop(task)
-                      ? "Stop this task. The row reports the outcome, then clears itself."
-                      : task.status === "running"
-                        ? "Hide this row. This provider cannot stop a single task — if it is still alive it will reappear when it next reports."
-                        : "Hide this row."
-                  }
-                  className="-me-0.5 -mt-0.5 shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
-                >
+                <div className="flex shrink-0 items-center gap-0.5">
                   {canStop(task) ? (
-                    <CircleStop aria-hidden className="size-3.5" />
-                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => props.onStopTask?.(task.taskId)}
+                      aria-label={`Stop ${task.title}`}
+                      title="Stop this task. The row reports the outcome, then clears itself."
+                      className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                    >
+                      <CircleStop aria-hidden className="size-3.5" />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => dismissTasks([task.taskId])}
+                    aria-label={`Dismiss ${task.title}`}
+                    title={
+                      task.status === "running"
+                        ? "Hide this row. If the task is still alive it will reappear when it next reports."
+                        : "Hide this row."
+                    }
+                    className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                  >
                     <X aria-hidden className="size-3.5" />
-                  )}
-                </button>
+                  </button>
+                </div>
               </div>
             </li>
           ))}

@@ -316,6 +316,21 @@ export const authHttpApiLayer = HttpApiBuilder.group(
         ),
       )
       .handle(
+        "renewCredential",
+        Effect.fn("environment.auth.renewCredential")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            return yield* serverAuth.renewCredential(args.payload);
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
+            failEnvironmentAuthInvalid(EnvironmentAuth.serverAuthCredentialReason(error)),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("credential_renewal_failed", error),
+          ),
+        ),
+      )
+      .handle(
         "webSocketTicket",
         Effect.fn("environment.auth.webSocketTicket")(
           function* (args) {

@@ -40,6 +40,7 @@ import * as NodePath from "node:path";
 
 import * as BrowserSession from "./BrowserSession.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { serializeDownloadAllowlist } from "./downloadApproval.ts";
 
 const testHome = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-browser-session-"));
 
@@ -101,8 +102,21 @@ const registerWillDownload = Effect.fn(function* (
   return (item: ReturnType<typeof makeDownloadItem>) => handler({}, item, { id: 7 });
 });
 
+/**
+ * Where the service under test keeps remembered download answers. Wiped
+ * before every test: an "Allow for this domain" in one test is deliberately
+ * durable now, so without this it would answer for the next test too.
+ */
+const allowlistPath = NodePath.join(
+  testHome,
+  ".solla-code",
+  "userdata",
+  BrowserSession.DOWNLOAD_ALLOWLIST_FILE_NAME,
+);
+
 describe("BrowserSession", () => {
   beforeEach(() => {
+    NodeFS.rmSync(allowlistPath, { force: true });
     sessions.clear();
     fromPartition.mockReset();
     fromPartition.mockImplementation((partition: string) => {
@@ -257,6 +271,135 @@ describe("BrowserSession", () => {
       );
       assert.strictEqual(approvalEvents.length, 2);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("remembers an allowed site across a restart", () =>
+    Effect.gen(function* () {
+      // The app relaunches on every update. Answers that only lived in memory
+      // meant the same site asked again after each one, which made "Allow for
+      // this domain" look like a button that did nothing.
+      const environment = yield* DesktopEnvironment.DesktopEnvironment;
+      const persistedAt = NodePath.join(
+        environment.stateDir,
+        BrowserSession.DOWNLOAD_ALLOWLIST_FILE_NAME,
+      );
+
+      yield* Effect.gen(function* () {
+        const browserSessions = yield* BrowserSession.BrowserSession;
+        const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+        browserSessions.onDownloadApproval((_webContentsId, event) => {
+          approvalEvents.push(event);
+        });
+        const willDownload = yield* registerWillDownload(browserSessions, "scope-restart");
+        const held = makeDownloadItem("plan.docx", "https://docs.example.com/plan.docx");
+        willDownload(held);
+        NodeFS.writeFileSync(held.savedTo(), "bytes");
+        held.finish("completed");
+        const pending = approvalEvents[0];
+        if (pending?.kind !== "pending") throw new Error("Expected a pending approval");
+        browserSessions.answerDownloadApproval(pending.approval.id, "allow-domain");
+      }).pipe(Effect.provide(layer));
+
+      assert.strictEqual(
+        NodeFS.readFileSync(persistedAt, "utf8"),
+        serializeDownloadAllowlist(["example.com"]),
+      );
+
+      // A second service over the same state directory is the restarted app.
+      yield* Effect.gen(function* () {
+        const browserSessions = yield* BrowserSession.BrowserSession;
+        const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+        browserSessions.onDownloadApproval((_webContentsId, event) => {
+          approvalEvents.push(event);
+        });
+        const willDownload = yield* registerWillDownload(browserSessions, "scope-restart");
+        const trusted = makeDownloadItem("plan-v2.docx", "https://cdn.example.com/plan-v2.docx");
+        willDownload(trusted);
+        assert.strictEqual(approvalEvents.length, 0);
+        assert.isTrue(
+          trusted.savedTo().endsWith(NodePath.join("downloads", "plan-v2.docx")),
+          trusted.savedTo(),
+        );
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(environmentLayer)),
+  );
+
+  it.effect("forgets every remembered site on request, on disk too", () =>
+    Effect.gen(function* () {
+      const environment = yield* DesktopEnvironment.DesktopEnvironment;
+      const persistedAt = NodePath.join(
+        environment.stateDir,
+        BrowserSession.DOWNLOAD_ALLOWLIST_FILE_NAME,
+      );
+
+      yield* Effect.gen(function* () {
+        const browserSessions = yield* BrowserSession.BrowserSession;
+        const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+        browserSessions.onDownloadApproval((_webContentsId, event) => {
+          approvalEvents.push(event);
+        });
+        const willDownload = yield* registerWillDownload(browserSessions, "scope-forget");
+        const held = makeDownloadItem("a.bin", "https://grok.com/a.bin");
+        willDownload(held);
+        NodeFS.writeFileSync(held.savedTo(), "bytes");
+        held.finish("completed");
+        const pending = approvalEvents[0];
+        if (pending?.kind !== "pending") throw new Error("Expected a pending approval");
+        browserSessions.answerDownloadApproval(pending.approval.id, "allow-domain");
+        assert.strictEqual(
+          NodeFS.readFileSync(persistedAt, "utf8"),
+          serializeDownloadAllowlist(["grok.com"]),
+        );
+
+        browserSessions.forgetDownloadDomains();
+
+        // Forgotten for this run: the very next file from the site asks again.
+        const again = makeDownloadItem("b.bin", "https://grok.com/b.bin");
+        willDownload(again);
+        assert.strictEqual(approvalEvents.filter((event) => event.kind === "pending").length, 2);
+        assert.strictEqual(
+          NodeFS.readFileSync(persistedAt, "utf8"),
+          serializeDownloadAllowlist([]),
+        );
+      }).pipe(Effect.provide(layer));
+
+      // And forgotten for the next run as well.
+      yield* Effect.gen(function* () {
+        const browserSessions = yield* BrowserSession.BrowserSession;
+        const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+        browserSessions.onDownloadApproval((_webContentsId, event) => {
+          approvalEvents.push(event);
+        });
+        const willDownload = yield* registerWillDownload(browserSessions, "scope-forget");
+        willDownload(makeDownloadItem("c.bin", "https://grok.com/c.bin"));
+        assert.strictEqual(approvalEvents.length, 1);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(environmentLayer)),
+  );
+
+  it.effect("asks again when the remembered answers cannot be read", () =>
+    Effect.gen(function* () {
+      // A damaged allowlist must fail toward asking. Silently allowing would
+      // turn a corrupt file into a standing grant for whatever it names.
+      const environment = yield* DesktopEnvironment.DesktopEnvironment;
+      const persistedAt = NodePath.join(
+        environment.stateDir,
+        BrowserSession.DOWNLOAD_ALLOWLIST_FILE_NAME,
+      );
+      NodeFS.mkdirSync(NodePath.dirname(persistedAt), { recursive: true });
+      NodeFS.writeFileSync(persistedAt, '{"version":1,"domains":["grok.com"');
+
+      yield* Effect.gen(function* () {
+        const browserSessions = yield* BrowserSession.BrowserSession;
+        const approvalEvents: Array<BrowserSession.DownloadApprovalEvent> = [];
+        browserSessions.onDownloadApproval((_webContentsId, event) => {
+          approvalEvents.push(event);
+        });
+        const willDownload = yield* registerWillDownload(browserSessions, "scope-corrupt");
+        willDownload(makeDownloadItem("a.bin", "https://grok.com/a.bin"));
+        assert.strictEqual(approvalEvents.length, 1);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(environmentLayer)),
   );
 
   it.effect("clears the fallback directory's abandoned holds on start-up", () =>
