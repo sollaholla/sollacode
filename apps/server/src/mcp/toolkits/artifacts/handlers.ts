@@ -23,6 +23,7 @@ import {
   normalizeArtifactPath,
 } from "./assetReferences.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { resolveOwningThreadId } from "../../owningThread.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadArtifactToolkit } from "./tools.ts";
 import type { ThreadArtifactToolInput } from "./types.ts";
@@ -56,31 +57,6 @@ function decodeBase64(value: string): Uint8Array | null {
   return canonical === normalized.replaceAll("=", "") ? bytes : null;
 }
 
-/**
- * The thread whose artifacts this invocation manages. A connected side chat
- * works on its PARENT's artifacts — it was forked from that chat to help with
- * that chat's work, and publishing under the side chat's own id would strand
- * the artifact in a surface nobody revisits. The parent must still exist and
- * still claim the side chat; a promoted (disconnected) side chat or an
- * orphaned one falls back to itself.
- */
-const resolveArtifactThreadId = Effect.fn("ThreadArtifact.resolveArtifactThreadId")(function* (
-  invocationThreadId: ThreadId,
-) {
-  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-  const shell = yield* projections
-    .getThreadShellById(invocationThreadId)
-    .pipe(Effect.orElseSucceed(() => Option.none()));
-  if (Option.isNone(shell)) return invocationThreadId;
-  const parentThreadId =
-    shell.value.isSideChat === true ? (shell.value.sideChatParentThreadId ?? null) : null;
-  if (parentThreadId === null) return invocationThreadId;
-  const parent = yield* projections
-    .getThreadShellById(parentThreadId)
-    .pipe(Effect.orElseSucceed(() => Option.none()));
-  return Option.isSome(parent) ? parentThreadId : invocationThreadId;
-});
-
 export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function* (
   input: ThreadArtifactToolInput,
 ) {
@@ -92,7 +68,7 @@ export const handleThreadArtifact = Effect.fn("ThreadArtifact.handle")(function*
     });
   }
   const service = yield* ThreadArtifactService;
-  const artifactThreadId = yield* resolveArtifactThreadId(invocation.threadId);
+  const artifactThreadId = yield* resolveOwningThreadId(invocation.threadId);
 
   switch (input.action) {
     case "list": {

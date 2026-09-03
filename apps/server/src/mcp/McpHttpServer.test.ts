@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/unstable/ai";
@@ -18,6 +19,7 @@ import {
   TERMINAL_AGENT_PROVIDER_INSTANCE_ID,
 } from "./McpServerInstructions.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -42,7 +44,21 @@ const client = McpSchema.McpServerClient.of({
 });
 const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(
+    PreviewAutomationBroker.layer.pipe(
+      Layer.provide(NodeServices.layer),
+      // The broker resolves a side chat to its parent thread before routing.
+      // No thread shells here, so every scope resolves to its own thread.
+      Layer.provide(
+        Layer.succeed(
+          ProjectionSnapshotQuery,
+          ProjectionSnapshotQuery.of({
+            getThreadShellById: () => Effect.succeed(Option.none()),
+          } as never),
+        ),
+      ),
+    ),
+  ),
 );
 
 it("normalizes empty successful notification responses to accepted", () => {

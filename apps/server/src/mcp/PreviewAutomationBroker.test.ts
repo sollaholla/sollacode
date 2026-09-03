@@ -20,13 +20,36 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 
-const makeBroker = PreviewAutomationBroker.make.pipe(Effect.provide(NodeServices.layer));
+/**
+ * Thread shells the broker sees when resolving a side chat to its parent.
+ * Empty by default, so every existing case resolves to its own thread.
+ */
+const threadShells = new Map<
+  string,
+  { readonly isSideChat?: boolean; readonly sideChatParentThreadId?: string }
+>();
+
+const projectionsStub = ProjectionSnapshotQuery.of({
+  getThreadShellById: (threadId: string) => {
+    const shell = threadShells.get(threadId);
+    return Effect.succeed(
+      shell === undefined ? Option.none() : Option.some({ id: threadId, ...shell }),
+    );
+  },
+} as never);
+
+const makeBroker = PreviewAutomationBroker.make.pipe(
+  Effect.provide(NodeServices.layer),
+  Effect.provideService(ProjectionSnapshotQuery, projectionsStub),
+);
 
 const scope = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -797,6 +820,118 @@ it.effect("routes requests for background threads through an environment-level h
 
       expect(result).toBe("background");
       expect(routedThreadId).toBe(backgroundThreadId);
+    }),
+  ),
+);
+
+it.effect("routes a side chat's preview request to its parent thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread-parent");
+      const sideChatThreadId = ThreadId.make("thread-side-chat");
+      threadShells.set(sideChatThreadId, {
+        isSideChat: true,
+        sideChatParentThreadId: parentThreadId,
+      });
+      threadShells.set(parentThreadId, {});
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      let routedThreadId: string | undefined;
+      yield* Stream.runForEach(requests, (request) => {
+        routedThreadId = request.threadId;
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "side-chat",
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const result = yield* broker.invoke<string>({
+        scope: { ...scope, threadId: sideChatThreadId },
+        operation: "status",
+        input: {},
+      });
+
+      expect(result).toBe("side-chat");
+      // The tab opens in the parent's strip, where the user can see it.
+      expect(routedThreadId).toBe(parentThreadId);
+      threadShells.clear();
+    }),
+  ),
+);
+
+// Promotion clears the isSideChat edge, which is what disconnects a promoted
+// chat from the family. It must get its own browser back.
+it.effect("keeps a promoted side chat on its own thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const promotedThreadId = ThreadId.make("thread-promoted");
+      threadShells.set(promotedThreadId, {
+        isSideChat: false,
+        sideChatParentThreadId: ThreadId.make("thread-former-parent"),
+      });
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      let routedThreadId: string | undefined;
+      yield* Stream.runForEach(requests, (request) => {
+        routedThreadId = request.threadId;
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "promoted",
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke<string>({
+        scope: { ...scope, threadId: promotedThreadId },
+        operation: "status",
+        input: {},
+      });
+
+      expect(routedThreadId).toBe(promotedThreadId);
+      threadShells.clear();
+    }),
+  ),
+);
+
+// An orphaned side chat has nowhere to borrow from.
+it.effect("falls back to itself when the parent no longer exists", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const orphanThreadId = ThreadId.make("thread-orphan");
+      threadShells.set(orphanThreadId, {
+        isSideChat: true,
+        sideChatParentThreadId: ThreadId.make("thread-deleted-parent"),
+      });
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      let routedThreadId: string | undefined;
+      yield* Stream.runForEach(requests, (request) => {
+        routedThreadId = request.threadId;
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "orphan",
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.invoke<string>({
+        scope: { ...scope, threadId: orphanThreadId },
+        operation: "status",
+        input: {},
+      });
+
+      expect(routedThreadId).toBe(orphanThreadId);
+      threadShells.clear();
     }),
   ),
 );
