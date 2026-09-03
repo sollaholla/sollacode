@@ -30,7 +30,7 @@ describe("the overlay orb", () => {
     const markup = render({ state: "speaking" });
     expect(markup).toContain('data-voice-speaker="assistant"');
     expect(markup).toContain("lucide-audio-lines");
-    expect(markup).toContain("bg-violet-500");
+    expect(markup).toContain('data-orb-tint="assistant"');
   });
 
   it("does not show an open microphone during a silent tool call", () => {
@@ -48,7 +48,7 @@ describe("the overlay orb", () => {
     // before any level has arrived, and connecting is when the overlay matters.
     const markup = render({ state: "connecting" });
     expect(markup).toContain('data-voice-speaker="connecting"');
-    expect(markup).toContain("bg-slate-500");
+    expect(markup).toContain('data-orb-tint="connecting"');
   });
 
   it("gives every speaker its own colour", () => {
@@ -64,10 +64,9 @@ describe("the overlay orb", () => {
     ];
     const colours = cases.map((input) => {
       const markup = render(input);
-      // The opacity modifier is part of the colour: `bg-violet-500/55` and
-      // `bg-violet-500` are different fills, and dropping it would make two
-      // genuinely different states look identical to this test.
-      return /bg-(?:emerald|violet|sky|slate)-\d+(?:\/\d+)?/.exec(markup)?.[0];
+      // The black hole paints its disk from the `--orb-outer` variable; that
+      // is the colour the eye reads, so that is what must differ.
+      return /--orb-outer:\s*([^;]+);/.exec(markup)?.[1];
     });
     expect(colours.every((colour) => colour !== undefined)).toBe(true);
     expect(new Set(colours).size).toBe(cases.length);

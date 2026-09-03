@@ -6,6 +6,7 @@ import {
   VmAgent,
   VmAgentArtifact,
   VmAgentArtifactDefinition,
+  VmAgentIcon,
   VmAgentTask,
   VmAgentTaskNotificationPolicy,
   VmAgentTaskSchedule,
@@ -28,6 +29,8 @@ export const AgentBuilderInput = Schema.Struct({
     "run_task_now",
     "set_notification_preferences",
     "define_artifact",
+    "start_agent",
+    "stop_agent",
     "delete_agent",
   ]).annotate({
     description:
@@ -44,6 +47,10 @@ export const AgentBuilderInput = Schema.Struct({
   }),
   purpose: Schema.optional(VmAgent.fields.purpose).annotate({
     description: "create_agent: what this agent is for, in a sentence or two.",
+  }),
+  icon: Schema.optional(VmAgentIcon).annotate({
+    description:
+      "create_agent: the agent's outlined glyph — an uncoloured, emoji-like icon that identifies it in the sidebar and header. Always choose one that fits the purpose; if omitted, the agent picks its own on its first run.",
   }),
   modelSelection: Schema.optional(ModelSelection).annotate({
     description: "create_agent/configure_agent_chat: the model the agent's own chat runs on.",

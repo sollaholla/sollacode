@@ -854,6 +854,39 @@ function renderFeedEntry(
     return <WorkingTimelineRow startedAt={entry.createdAt} />;
   }
 
+  if (entry.type === "thought") {
+    // The model thinking out loud. Drawn in the feed rather than inside the
+    // activity group: a thought narrates the calls around it, and inside the
+    // group it sat behind the work disclosure — stored, rendered, never seen.
+    //
+    // Typeset as assistant text, through the same markdown path. Providers
+    // whose reasoning already reads right arrive as ordinary assistant
+    // messages, so anything quieter would make the same sentence look like a
+    // different class of thing depending on which provider wrote it.
+    const thoughtStyles = markdownStyles.assistant;
+    return (
+      <View className="mb-2 px-1">
+        {hasNativeSelectableMarkdownText() ? (
+          <SelectableMarkdownText
+            markdown={entry.text}
+            skills={props.skills}
+            textStyle={thoughtStyles.nativeTextStyle}
+            onLinkPress={props.onMarkdownLinkPress}
+          />
+        ) : (
+          <Markdown
+            options={{ gfm: true }}
+            renderers={thoughtStyles.renderers}
+            styles={thoughtStyles.styles}
+            theme={thoughtStyles.theme}
+          >
+            {entry.text}
+          </Markdown>
+        )}
+      </View>
+    );
+  }
+
   if (entry.type === "turn-fold") {
     return (
       <Pressable

@@ -424,6 +424,30 @@ export function mapMcpBridgeEvent(
     case "item.started":
     case "item.updated":
     case "item.completed": {
+      // A thought is not a tool call either. The bridge publishes each of the
+      // browser model's comments as its own reasoning item so it occupies its
+      // own row; routed through itemTypeForTool it became an untitled
+      // `dynamic_tool_call`, so every LAN Chat thought reached the timeline as
+      // a bare "Tool call" row — text buried in a tool expansion, folded into
+      // the work dropdown, instead of reasoning (reported 2026-09-03).
+      if (payload.itemType === "reasoning" || payload.kind === "reasoning") {
+        const detail = stringValue(payload.text);
+        return {
+          ...base,
+          // Reasoning carries no tool lifecycle. Every frame of one thought is
+          // the same durable row, keyed by the host on the item id, so all
+          // three openings map to the same upsert rather than bracketing the
+          // row with a started/completed pair the work log would render.
+          type: "item.updated",
+          payload: {
+            itemType: "reasoning",
+            status: event.type === "item.completed" ? "completed" : "inProgress",
+            // No title: an untitled reasoning row is the model thinking, which
+            // is what the client renders as a thought.
+            ...(detail ? { detail } : {}),
+          },
+        };
+      }
       // An assistant-message item is not a tool item. The bridge emits one to
       // close a tool-loop round's prose so the next round's narration starts a
       // new message; without it the host reuses one message for the whole turn

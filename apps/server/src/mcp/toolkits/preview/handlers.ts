@@ -65,6 +65,28 @@ const invokeTargeted = <A>(
   return invoke<A>(operation, operationInput, timeoutMs, tabId);
 };
 
+/**
+ * The most one tool call may wait before answering.
+ *
+ * The MCP client gives a tool call 60s (the SDK default; the LAN Chat client
+ * uses the same), then reports "Request timed out" to the model and discards
+ * the result the desktop goes on to produce. `preview_wait_for_download`
+ * defaulted to 120s and `preview_wait_for` allowed 60s, so a long wait could
+ * only ever end as that error -- live 2026-09-03 a download wait ran the full
+ * minute on the desktop and the model received "MCP error -32001". A long
+ * wait is served in slices instead: each call returns inside the budget, and
+ * a result that ran out with nothing to report says to call again.
+ */
+export const PREVIEW_WAIT_SLICE_MS = 50_000;
+
+export function boundedPreviewWaitMs(requested: number | undefined, fallback: number): number {
+  const wanted = requested ?? fallback;
+  return Math.min(Math.max(1, Math.floor(wanted)), PREVIEW_WAIT_SLICE_MS);
+}
+
+const DOWNLOAD_WAIT_DEFAULT_MS = 120_000;
+const PAGE_WAIT_DEFAULT_MS = 15_000;
+
 const handlers = {
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   preview_open: (input) =>
@@ -88,14 +110,28 @@ const handlers = {
   preview_scroll: (input) => invokeTargeted<void>("scroll", input).pipe(Effect.as({})),
   preview_evaluate: (input) =>
     invokeTargeted<unknown>("evaluate", input).pipe(Effect.map((result) => result ?? null)),
-  preview_wait_for: (input) =>
-    invokeTargeted<void>("waitFor", input, input.timeoutMs).pipe(Effect.as({})),
-  preview_wait_for_download: (input) =>
-    invokeTargeted<PreviewAutomationWaitForDownloadResult>(
+  preview_wait_for: (input) => {
+    const timeoutMs = boundedPreviewWaitMs(input.timeoutMs, PAGE_WAIT_DEFAULT_MS);
+    return invokeTargeted<void>("waitFor", { ...input, timeoutMs }, timeoutMs).pipe(Effect.as({}));
+  },
+  preview_wait_for_download: (input) => {
+    const wanted = input.timeoutMs ?? DOWNLOAD_WAIT_DEFAULT_MS;
+    const timeoutMs = boundedPreviewWaitMs(input.timeoutMs, DOWNLOAD_WAIT_DEFAULT_MS);
+    return invokeTargeted<PreviewAutomationWaitForDownloadResult>(
       "waitForDownload",
-      input,
-      input.timeoutMs,
-    ),
+      { ...input, timeoutMs },
+      timeoutMs,
+    ).pipe(
+      Effect.map((result) =>
+        wanted > timeoutMs && result.outcome === "none" && result.message === undefined
+          ? {
+              ...result,
+              message: `Waited ${Math.round(timeoutMs / 1000)}s of the ${Math.round(wanted / 1000)}s requested with no download and no approval prompt yet. Call preview_wait_for_download again to keep waiting.`,
+            }
+          : result,
+      ),
+    );
+  },
   preview_close: (input) => invokeTargeted<PreviewAutomationCloseResult>("close", input),
   preview_recording_start: (input) =>
     invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),

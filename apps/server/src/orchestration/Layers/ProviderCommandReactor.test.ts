@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import {
   ModelSelection,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderDriverKind,
@@ -1252,6 +1253,49 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("sends a message past the provider input ceiling instead of failing the turn", async () => {
+    // A pasted crash report used to make `ProviderSendTurnInput` decoding fail
+    // inside sendTurn, which fails the turn: the message stayed in the thread
+    // and every retry re-failed it. The prompt is bounded before the request is
+    // built now, and the overflow is spilled where the provider can read it.
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("user-message-oversized");
+    const oversized = `LEAD REQUEST\n${"x".repeat(400_000)}\nCLOSING ASK`;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-oversized"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: oversized,
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const request = harness.sendTurn.mock.calls[0]?.[0] as { input: string };
+    expect(request.input.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    expect(request.input.startsWith("LEAD REQUEST")).toBe(true);
+    expect(request.input.endsWith("CLOSING ASK")).toBe(true);
+
+    const spillPath = NodePath.join(
+      harness.stateDir,
+      "oversized-turn-inputs",
+      String(threadId),
+      `${String(messageId)}.txt`,
+    );
+    expect(request.input).toContain(spillPath);
+    expect(NodeFS.readFileSync(spillPath, "utf8")).toBe(oversized);
   });
 
   it("continues multiple Agent turns from the server without a mounted chat view", async () => {
@@ -8078,6 +8122,100 @@ describe("ProviderCommandReactor", () => {
         targetModel: "claude-opus-4-6",
         immediateRequirement: "second",
       }),
+    });
+  });
+
+  it("stops the live turn when a model switch on the same instance restarts the session", async () => {
+    // The restart decision and the stop-the-outgoing-turn guard used to
+    // disagree: the guard fired only on an INSTANCE change, while a model
+    // change the provider cannot apply in-session restarts the session just
+    // the same. The replacement session then started underneath a turn that
+    // was still running and waited on a lifecycle lane the old one never
+    // released, so the switch hung -- exactly the case a user hits when
+    // changing model on one provider to keep working against a usage limit.
+    const harness = await createHarness({ sessionModelSwitch: "unsupported" });
+    const now = "2026-01-01T00:00:00.000Z";
+    const sourceTurnId = asTurnId("turn-model-switch-source");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-live-model-switch-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-live-model-switch-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const runtimeIndex = harness.runtimeSessions.findIndex(
+      (session) => session.threadId === ThreadId.make("thread-1"),
+    );
+    const runtimeSession = harness.runtimeSessions[runtimeIndex];
+    if (runtimeSession === undefined) throw new Error("provider session was not started");
+    harness.runtimeSessions[runtimeIndex] = {
+      ...runtimeSession,
+      status: "running",
+      activeTurnId: sourceTurnId,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-running-before-model-switch"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: sourceTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-live-model-switch-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-live-model-switch-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        // Same provider instance, different model.
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.1-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    expect(harness.interruptTurn).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+      turnId: sourceTurnId,
+    });
+    expect(harness.stopSession).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
     });
   });
 

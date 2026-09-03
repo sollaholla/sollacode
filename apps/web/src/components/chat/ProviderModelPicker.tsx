@@ -162,7 +162,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       className={cn(
         "min-w-0 justify-between whitespace-nowrap",
         props.iconOnly
-          ? "size-7 shrink-0 justify-center px-0"
+          ? "size-8 shrink-0 justify-center px-0"
           : props.compact
             ? "max-w-42 shrink-0"
             : "max-w-48 shrink-0 sm:max-w-56",
@@ -247,7 +247,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           data-model-picker-phone-portrait="true"
         >
           <div className="relative flex h-full min-h-0 flex-col overscroll-contain">
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-border/70 px-3 pt-[env(safe-area-inset-top)]">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-border px-3 pt-[env(safe-area-inset-top)]">
               <DialogTitle className="text-base">Choose model</DialogTitle>
               <Button
                 size="icon-xl"

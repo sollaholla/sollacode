@@ -47,6 +47,7 @@ const agent: VmAgent = {
   threadId: agentThreadId,
   status: "running",
   controlMode: "agent",
+  icon: null,
   guestIp: "127.0.0.1",
   lastError: null,
   createdAt: "2026-08-21T00:00:00.000Z",

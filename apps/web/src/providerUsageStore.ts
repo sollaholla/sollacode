@@ -16,6 +16,35 @@ export interface PersistedProviderUsageWindow {
    */
   readonly windowDurationMs?: number | null;
   readonly detail?: string;
+  /**
+   * When the provider last included this window in a usage response. Windows
+   * for experimental models come and go; one the provider has stopped
+   * reporting is pruned after `PROVIDER_USAGE_WINDOW_STALE_AFTER_MS`.
+   */
+  readonly lastSeenAt?: string;
+}
+
+export const PROVIDER_USAGE_WINDOW_STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Drop windows the provider has not mentioned for a week. `seenKeys` are the
+ * windows in the response being merged, which always survive.
+ */
+export function pruneStaleUsageWindows(
+  windows: ReadonlyArray<PersistedProviderUsageWindow>,
+  seenKeys: ReadonlySet<string>,
+  nowIso: string,
+  fallbackSeenAt: string | undefined,
+): PersistedProviderUsageWindow[] {
+  const nowMs = Date.parse(nowIso);
+  if (!Number.isFinite(nowMs)) return [...windows];
+  return windows.filter((window) => {
+    if (seenKeys.has(window.key)) return true;
+    const seenAt = window.lastSeenAt ?? fallbackSeenAt;
+    const seenMs = seenAt === undefined ? Number.NaN : Date.parse(seenAt);
+    if (!Number.isFinite(seenMs)) return false;
+    return nowMs - seenMs <= PROVIDER_USAGE_WINDOW_STALE_AFTER_MS;
+  });
 }
 
 export interface PersistedProviderUsageResetCredit {
@@ -169,14 +198,24 @@ export function mergeProviderUsageEntry(
     (previous?.windows ?? []).map((window) => [window.key, window] as const),
   );
   const entryIsOlder = previous !== undefined && previous.reportedAt > entry.reportedAt;
+  const seenKeys = new Set<string>();
   for (const window of entry.windows) {
+    seenKeys.add(window.key);
     if (!entryIsOlder || !windowsByKey.has(window.key)) {
-      windowsByKey.set(
-        window.key,
-        mergeUsageWindow(entry.driver, windowsByKey.get(window.key), window, entry.reportedAt),
-      );
+      windowsByKey.set(window.key, {
+        ...mergeUsageWindow(entry.driver, windowsByKey.get(window.key), window, entry.reportedAt),
+        lastSeenAt: entry.reportedAt,
+      });
     }
   }
+  const survivingWindows = entryIsOlder
+    ? Array.from(windowsByKey.values())
+    : pruneStaleUsageWindows(
+        Array.from(windowsByKey.values()),
+        seenKeys,
+        entry.reportedAt,
+        previous?.reportedAt,
+      );
   const dismissedResetCreditKeys = Array.from(
     new Set([
       ...(previous?.dismissedResetCreditKeys ?? []),
@@ -190,7 +229,7 @@ export function mergeProviderUsageEntry(
   );
   const merged = {
     ...entry,
-    windows: Array.from(windowsByKey.values()),
+    windows: survivingWindows,
     resetCredits,
     dismissedResetCreditKeys,
     reportedAt:

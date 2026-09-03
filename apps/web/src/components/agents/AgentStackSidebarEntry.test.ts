@@ -110,7 +110,7 @@ describe("Agent Builder status dot", () => {
   });
 
   it("uses the established working, success, warning, and error colors", () => {
-    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.working.dotClass).toContain("bg-sky-500");
+    expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.working.dotClass).toContain("bg-gold-500");
     expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.success.dotClass).toContain("bg-emerald-500");
     expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.input.dotClass).toContain("bg-amber-500");
     expect(AGENT_BUILDER_BUTTON_STATUS_PRESENTATION.error.dotClass).toContain("bg-red-500");

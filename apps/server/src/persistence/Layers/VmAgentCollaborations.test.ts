@@ -53,6 +53,7 @@ const insertAgent = (suffix: string) =>
       threadId: ThreadId.make(`collaboration-source-thread-${suffix}`),
       status: "running",
       controlMode: "agent",
+      icon: null,
       guestIp: "127.0.0.1",
       lastError: null,
       createdAt,

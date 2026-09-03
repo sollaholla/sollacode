@@ -635,13 +635,59 @@ function latestMessageText(
   return null;
 }
 
+/**
+ * Provider notices that are not work.
+ *
+ * A handoff usually fires *because* the outgoing provider stopped, so its last
+ * assistant message is very often that refusal rather than anything it was
+ * doing. Reporting it as `inProgressWork` tells the incoming model the work in
+ * flight was an error string, and the real state -- what the thread was
+ * halfway through -- is never named at all. Live 2026-09-02: a thread handed
+ * over mid-task carried "Our systems have detected unusual activity coming
+ * from your system. Please try again later." as its in-progress work, while
+ * the actual state (a half-finished recovery change over a red test suite) sat
+ * two messages further back, behind a "Too many concurrent requests" notice.
+ */
+const PROVIDER_NOTICE_PATTERNS: ReadonlyArray<RegExp> = [
+  /unusual activity/i,
+  /try again (?:later|in a)/i,
+  /too many (?:concurrent )?requests/i,
+  /usage limit/i,
+  // Not a bare /rate limit/: work prose legitimately discusses rate limiting
+  // ("Rate limiting the retry loop is the next change") and must not be read
+  // as the provider refusing.
+  /being rate[- ]limited|rate limit (?:reached|exceeded)/i,
+  /at capacity/i,
+  /you(?:'|\u2019)?ve reached your/i,
+];
+
+/** True when an assistant message is the provider talking about itself. */
+export function isProviderNotice(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return true;
+  return PROVIDER_NOTICE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function latestInProgressWork(messages: ReadonlyArray<OrchestrationMessage>): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant") continue;
+    const text = message.text.trim();
+    if (text.length === 0 || isProviderNotice(text)) continue;
+    return boundedMessageText(text).text;
+  }
+  // Every assistant message was a notice: say nothing rather than hand the
+  // next provider a refusal dressed as the work in flight.
+  return null;
+}
+
 export function deriveProviderHandoffContinuity(messages: ReadonlyArray<OrchestrationMessage>): {
   readonly immediateRequirement: string | null;
   readonly inProgressWork: string | null;
 } {
   return {
     immediateRequirement: latestMessageText(messages, "user"),
-    inProgressWork: latestMessageText(messages, "assistant"),
+    inProgressWork: latestInProgressWork(messages),
   };
 }
 

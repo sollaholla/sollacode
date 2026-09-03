@@ -414,6 +414,18 @@ export function createVmAgentEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: perAgentSerial,
     }),
+    start: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:start",
+      tag: WS_METHODS.vmAgentStart,
+      scheduler: lifecycleScheduler,
+      concurrency: perAgentSerial,
+    }),
+    stop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vm-agents:stop",
+      tag: WS_METHODS.vmAgentStop,
+      scheduler: lifecycleScheduler,
+      concurrency: perAgentSerial,
+    }),
     createTask: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vm-agents:task-create",
       tag: WS_METHODS.vmAgentTaskCreate,

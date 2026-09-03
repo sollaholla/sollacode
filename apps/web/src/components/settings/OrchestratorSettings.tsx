@@ -15,6 +15,7 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { useOrchestratorSessionContext } from "../../orchestrator/OrchestratorSessionProvider";
 import { isEchoProneDevice } from "../../orchestrator/echoProneDevice";
 import { OrchestratorUsageView } from "./OrchestratorUsageView";
+import { BlackHoleOrb } from "../orchestrator/BlackHoleOrb";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Button } from "../ui/button";
@@ -443,13 +444,24 @@ export function OrchestratorSettingsPanel() {
           title="Floating bubble"
           description="Keep a small always-on-top orb on screen. It swells as you and the orchestrator speak; click it to open the orchestrator, drag it anywhere."
           control={
-            <Switch
-              checked={orchestrator.floatingBubble}
-              onCheckedChange={(checked) =>
-                updateSettings({ orchestrator: { floatingBubble: Boolean(checked) } })
-              }
-              aria-label="Floating bubble"
-            />
+            <span className="flex items-center gap-5">
+              {/* The orb itself, so the toggle is not a leap of faith: this is
+                  what lands on screen, at the size it lands there. */}
+              <span
+                data-testid="orchestrator-orb-preview"
+                className="mr-4 flex size-14 items-center justify-center"
+                aria-hidden
+              >
+                <BlackHoleOrb size={44} tint="user" intensity={0.4} />
+              </span>
+              <Switch
+                checked={orchestrator.floatingBubble}
+                onCheckedChange={(checked) =>
+                  updateSettings({ orchestrator: { floatingBubble: Boolean(checked) } })
+                }
+                aria-label="Floating bubble"
+              />
+            </span>
           }
         />
 

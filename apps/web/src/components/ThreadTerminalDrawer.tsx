@@ -15,6 +15,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   BanIcon,
   FilesIcon,
+  Globe,
   Maximize2Icon,
   Minimize2Icon,
   Plus,
@@ -69,6 +70,7 @@ import {
 } from "../keybindings";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
+  isBrowserPaneId,
   MAX_TERMINALS_PER_GROUP,
   type TerminalPaneLayout,
   type ThreadTerminalGroup,
@@ -86,6 +88,8 @@ import { readLocalApi } from "~/localApi";
 import { clientOwnsTerminalGeometry, terminalClientId } from "../terminalClientIdentity";
 import { useAttachedTerminalSession, useKnownTerminalSessions } from "../state/terminalSessions";
 import { TerminalSessionIcon } from "./chat/TerminalSessionIcon";
+import { TerminalLaunchPad, type TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { terminalCommandProviderDriver } from "@t3tools/shared/terminalProvider";
 import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
@@ -775,35 +779,41 @@ function terminalThemeFromApp(mountElement?: HTMLElement | null): ITheme {
     return {
       background,
       foreground,
-      cursor: "rgb(180, 203, 255)",
-      selectionBackground: "rgba(180, 203, 255, 0.25)",
-      scrollbarSliderBackground: "rgba(255, 255, 255, 0.1)",
-      scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.18)",
-      scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.22)",
-      black: "rgb(24, 30, 38)",
-      red: "rgb(255, 122, 142)",
-      green: "rgb(134, 231, 149)",
-      yellow: "rgb(244, 205, 114)",
-      blue: "rgb(137, 190, 255)",
-      magenta: "rgb(208, 176, 255)",
-      cyan: "rgb(124, 232, 237)",
-      white: "rgb(210, 218, 230)",
-      brightBlack: "rgb(110, 120, 136)",
-      brightRed: "rgb(255, 168, 180)",
-      brightGreen: "rgb(176, 245, 186)",
-      brightYellow: "rgb(255, 224, 149)",
-      brightBlue: "rgb(174, 210, 255)",
-      brightMagenta: "rgb(229, 203, 255)",
-      brightCyan: "rgb(167, 244, 247)",
-      brightWhite: "rgb(244, 247, 252)",
+      // Gold caret and selection on the page black; the ANSI ramp is muted
+      // and evenly weighted so a busy build log reads as one texture.
+      cursor: "rgb(217, 169, 58)",
+      cursorAccent: "rgb(5, 5, 5)",
+      selectionBackground: "rgba(217, 169, 58, 0.28)",
+      selectionInactiveBackground: "rgba(217, 169, 58, 0.16)",
+      scrollbarSliderBackground: "rgba(255, 255, 255, 0.10)",
+      scrollbarSliderHoverBackground: "rgba(217, 169, 58, 0.45)",
+      scrollbarSliderActiveBackground: "rgba(217, 169, 58, 0.6)",
+      black: "rgb(28, 28, 31)",
+      red: "rgb(240, 113, 120)",
+      green: "rgb(152, 210, 121)",
+      yellow: "rgb(224, 175, 104)",
+      blue: "rgb(122, 162, 247)",
+      magenta: "rgb(187, 154, 247)",
+      cyan: "rgb(125, 207, 255)",
+      white: "rgb(200, 204, 212)",
+      brightBlack: "rgb(96, 100, 110)",
+      brightRed: "rgb(255, 143, 150)",
+      brightGreen: "rgb(181, 232, 154)",
+      brightYellow: "rgb(245, 205, 138)",
+      brightBlue: "rgb(157, 188, 255)",
+      brightMagenta: "rgb(210, 186, 255)",
+      brightCyan: "rgb(163, 224, 255)",
+      brightWhite: "rgb(240, 241, 245)",
     };
   }
 
   return {
     background,
     foreground,
-    cursor: "rgb(38, 56, 78)",
-    selectionBackground: "rgba(37, 63, 99, 0.2)",
+    cursor: "rgb(176, 124, 20)",
+    cursorAccent: "rgb(255, 255, 255)",
+    selectionBackground: "rgba(217, 169, 58, 0.28)",
+    selectionInactiveBackground: "rgba(217, 169, 58, 0.16)",
     scrollbarSliderBackground: "rgba(0, 0, 0, 0.15)",
     scrollbarSliderHoverBackground: "rgba(0, 0, 0, 0.25)",
     scrollbarSliderActiveBackground: "rgba(0, 0, 0, 0.3)",
@@ -1138,8 +1148,12 @@ export function TerminalViewport({
       scrollback: 5_000,
       smoothScrollDuration: 0,
       allowTransparency: false,
+      cursorStyle: "bar",
+      cursorWidth: 2,
+      fontWeight: "400",
+      fontWeightBold: "600",
       fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+        '"JetBrains Mono Variable", "JetBrains Mono", "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace',
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);
@@ -2146,7 +2160,7 @@ export function TerminalViewport({
         data-terminal-replay-overlay={replayOverlayVisible ? "visible" : "hidden"}
         role="status"
       >
-        <div className="flex max-w-56 items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3 shadow-sm">
+        <div className="flex max-w-56 items-center gap-3 rounded-[10px] border border-[var(--line)] bg-[var(--card)] px-4 py-3">
           <TerminalSessionIcon className="size-4 text-primary" working={false} />
           <div className="min-w-0">
             <p className="text-xs font-medium text-foreground">Restoring terminal</p>
@@ -2195,7 +2209,16 @@ interface ThreadTerminalDrawerProps {
   focusRequestId: number;
   onSplitTerminal: (terminalId: string) => void;
   onSplitTerminalVertical: (terminalId: string) => void;
-  onNewTerminal: () => void;
+  /** Add a pane to the layout; the drawer picks the split direction from the active pane's shape. */
+  onNewTerminal: (direction?: "horizontal" | "vertical") => void;
+  /** Launch pad: open several panes at once, typing each non-null command into its shell. */
+  onLaunchTerminals?: ((commands: ReadonlyArray<string | null>) => void) | undefined;
+  /** Installed provider CLIs offered by the launch pad. */
+  launchProviders?: ReadonlyArray<TerminalLaunchProvider> | undefined;
+  /** Dock the thread's browser as a pane; absent hides the Browser option. */
+  onAddBrowserPane?: ((direction?: "horizontal" | "vertical") => void) | undefined;
+  /** Renders the browser surface inside a docked pane. */
+  renderBrowserPane?: (() => ReactNode) | undefined;
   splitShortcutLabel?: string | undefined;
   splitVerticalShortcutLabel?: string | undefined;
   newShortcutLabel?: string | undefined;
@@ -2309,13 +2332,66 @@ interface TerminalPaneHeaderProps {
   newTerminalLabel: string;
   closeTerminalLabel: string;
   fullscreen?: boolean;
+  /** The focused pane: gold header so the selection reads at a glance. */
+  active?: boolean;
+  /** Fullscreen only means something with several panes; disabled with one. */
+  fullscreenDisabled?: boolean;
   onDragStart?: (event: ReactDragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
   onNew: () => void;
+  /** Present when a browser pane can be docked; turns the plus into a menu. */
+  onNewBrowser?: (() => void) | undefined;
   onClose: () => void;
   onToggleFullscreen?: () => void;
+}
+
+const FULLSCREEN_NEEDS_PANES_LABEL = "Fullscreen needs more than one terminal";
+
+/**
+ * The plus control: a plain "new terminal" button, or a Terminal/Browser
+ * menu when the layout can also dock the thread's browser.
+ */
+function NewPaneButton({
+  className,
+  iconClassName,
+  label,
+  onNewTerminal,
+  onNewBrowser,
+}: {
+  className: string;
+  iconClassName: string;
+  label: string;
+  onNewTerminal: () => void;
+  onNewBrowser?: (() => void) | undefined;
+}) {
+  if (!onNewBrowser) {
+    return (
+      <TerminalActionButton className={className} onClick={onNewTerminal} label={label}>
+        <Plus className={iconClassName} />
+      </TerminalActionButton>
+    );
+  }
+  return (
+    <Menu>
+      <MenuTrigger
+        render={<button type="button" className={className} aria-label={label} title={label} />}
+      >
+        <Plus className={iconClassName} />
+      </MenuTrigger>
+      <MenuPopup align="end" sideOffset={6} className="min-w-40">
+        <MenuItem onClick={onNewTerminal}>
+          <SquareSplitHorizontal className="size-3.5" />
+          Terminal
+        </MenuItem>
+        <MenuItem onClick={onNewBrowser}>
+          <Globe className="size-3.5" />
+          Browser
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
+  );
 }
 
 /** Pane title bar for the terminal main surface: shows the tab heading and doubles as the swap drag handle. */
@@ -2330,21 +2406,27 @@ function TerminalPaneHeader({
   newTerminalLabel,
   closeTerminalLabel,
   fullscreen = false,
+  active = false,
+  fullscreenDisabled = false,
   onDragStart,
   onDragEnd,
   onSplitHorizontal,
   onSplitVertical,
   onNew,
+  onNewBrowser,
   onClose,
   onToggleFullscreen,
 }: TerminalPaneHeaderProps) {
   const actionClassName =
-    "rounded p-0.5 text-foreground/60 transition-colors hover:bg-accent hover:text-foreground";
+    "rounded-md p-0.5 text-foreground/55 transition-colors hover:bg-surface-hover hover:text-foreground";
   const disabledSplitClassName = "cursor-not-allowed opacity-45 hover:bg-transparent";
   return (
     <div
       className={cn(
-        "flex h-6 shrink-0 items-center gap-1.5 border-b border-border/60 bg-muted/20 px-2 text-[11px] text-foreground/80 select-none",
+        "flex h-6 shrink-0 items-center gap-1.5 border-b px-2 text-[11px] select-none transition-colors",
+        active
+          ? "border-gold-500/40 bg-gold-500/12 text-gold-200"
+          : "border-[var(--line)] bg-surface-row text-foreground/75",
         draggable && "cursor-grab active:cursor-grabbing",
       )}
       draggable={draggable}
@@ -2382,9 +2464,13 @@ function TerminalPaneHeader({
         >
           <SquareSplitVertical className="size-3" />
         </TerminalActionButton>
-        <TerminalActionButton className={actionClassName} onClick={onNew} label={newTerminalLabel}>
-          <Plus className="size-3" />
-        </TerminalActionButton>
+        <NewPaneButton
+          className={actionClassName}
+          iconClassName="size-3"
+          label={newTerminalLabel}
+          onNewTerminal={onNew}
+          onNewBrowser={onNewBrowser}
+        />
         <TerminalActionButton
           className={actionClassName}
           onClick={onClose}
@@ -2394,9 +2480,15 @@ function TerminalPaneHeader({
         </TerminalActionButton>
         {onToggleFullscreen ? (
           <TerminalActionButton
-            className={actionClassName}
-            onClick={onToggleFullscreen}
-            label={fullscreen ? "Exit terminal fullscreen" : "Enter terminal fullscreen"}
+            className={cn(actionClassName, fullscreenDisabled && disabledSplitClassName)}
+            onClick={fullscreenDisabled ? () => {} : onToggleFullscreen}
+            label={
+              fullscreenDisabled
+                ? FULLSCREEN_NEEDS_PANES_LABEL
+                : fullscreen
+                  ? "Exit terminal fullscreen"
+                  : "Enter terminal fullscreen"
+            }
           >
             {fullscreen ? (
               <Minimize2Icon className="size-3" />
@@ -2454,6 +2546,10 @@ export default function ThreadTerminalDrawer({
   onSplitTerminal,
   onSplitTerminalVertical,
   onNewTerminal,
+  onLaunchTerminals,
+  launchProviders,
+  onAddBrowserPane,
+  renderBrowserPane,
   splitShortcutLabel,
   splitVerticalShortcutLabel,
   newShortcutLabel,
@@ -2773,8 +2869,10 @@ export default function ThreadTerminalDrawer({
     });
   };
   const canDragSidebarTerminals = onMoveTerminalToGroup !== undefined;
-  const canDragSidebarGroups =
-    onReorderTerminalGroups !== undefined && resolvedTerminalGroups.length > 1;
+  // Groups still exist in the data (a group is the set of panes a split shows
+  // together) but the list never shows them: one flat list of terminals,
+  // no headers, no group drag. Grouping was a concept nobody asked for.
+  const canDragSidebarGroups = false;
   const clearSidebarDrag = () => {
     draggedGroupIdRef.current = null;
     setSidebarDropTarget(null);
@@ -2826,9 +2924,7 @@ export default function ThreadTerminalDrawer({
   const isTabLayout = paneLayout === "tabs";
   const hasTerminalSidebar = !isTabLayout && normalizedTerminalIds.length > 1;
   const isSplitView = !isTabLayout && visibleTerminalIds.length > 1;
-  const showGroupHeaders =
-    resolvedTerminalGroups.length > 1 ||
-    resolvedTerminalGroups.some((terminalGroup) => terminalGroup.terminalIds.length > 1);
+  const showGroupHeaders = false;
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const terminalLabelById = useMemo(() => {
     const next = new Map<string, string>();
@@ -2867,18 +2963,24 @@ export default function ThreadTerminalDrawer({
     [cwd, runtimeEnv, terminalLaunchLocationsById, worktreePath],
   );
   const splitTerminalActionLabel = hasReachedSplitLimit
-    ? `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} per group)`
+    ? `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} panes)`
     : splitShortcutLabel
       ? `Split Terminal Horizontally (${splitShortcutLabel})`
       : "Split Terminal Horizontally";
   const splitTerminalVerticalActionLabel = hasReachedSplitLimit
-    ? `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} per group)`
+    ? `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} panes)`
     : splitVerticalShortcutLabel
       ? `Split Terminal Vertically (${splitVerticalShortcutLabel})`
       : "Split Terminal Vertically";
-  const newTerminalActionLabel = newShortcutLabel
-    ? `New Terminal (${newShortcutLabel})`
-    : "New Terminal";
+  const canAddPane =
+    isPanel || (activeTerminalGroup?.terminalIds.length ?? 0) < MAX_TERMINALS_PER_GROUP;
+  // A lone pane already fills the workspace, so fullscreen has nothing to do.
+  const canToggleFullscreen = normalizedTerminalIds.length > 1;
+  const newTerminalActionLabel = !canAddPane
+    ? `New Terminal (max ${MAX_TERMINALS_PER_GROUP} panes)`
+    : newShortcutLabel
+      ? `New Terminal (${newShortcutLabel})`
+      : "New Terminal";
   const closeTerminalActionLabel = closeShortcutLabel
     ? `Close Terminal (${closeShortcutLabel})`
     : "Close Terminal";
@@ -2897,7 +2999,7 @@ export default function ThreadTerminalDrawer({
         ? splitShortcutLabel
           ? `Split Terminal Horizontally (${splitShortcutLabel})`
           : "Split Terminal Horizontally"
-        : `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} per group)`,
+        : `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} panes)`,
     [canSplitTerminal, splitShortcutLabel],
   );
   const splitVerticalLabelFor = useCallback(
@@ -2906,7 +3008,7 @@ export default function ThreadTerminalDrawer({
         ? splitVerticalShortcutLabel
           ? `Split Terminal Vertically (${splitVerticalShortcutLabel})`
           : "Split Terminal Vertically"
-        : `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} per group)`,
+        : `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} panes)`,
     [canSplitTerminal, splitVerticalShortcutLabel],
   );
   const onSplitTerminalAction = useCallback(
@@ -2923,9 +3025,32 @@ export default function ThreadTerminalDrawer({
     },
     [canSplitTerminal, onSplitTerminalVertical],
   );
+  // Side by side when the active pane is wide, stacked when it is tall, so a
+  // fresh pane lands where there is room instead of always slicing one axis.
+  const resolveNewPaneDirection = useCallback((): "horizontal" | "vertical" => {
+    const pane =
+      typeof document === "undefined"
+        ? null
+        : document.querySelector<HTMLElement>(
+            `[data-terminal-pane-id="${CSS.escape(resolvedActiveTerminalId)}"]`,
+          );
+    if (!pane) return "horizontal";
+    const rect = pane.getBoundingClientRect();
+    return rect.width >= rect.height * 1.2 ? "horizontal" : "vertical";
+  }, [resolvedActiveTerminalId]);
   const onNewTerminalAction = useCallback(() => {
-    onNewTerminal();
-  }, [onNewTerminal]);
+    if (!canAddPane) return;
+    onNewTerminal(resolveNewPaneDirection());
+  }, [canAddPane, onNewTerminal, resolveNewPaneDirection]);
+  const onNewBrowserAction = useMemo(
+    () =>
+      onAddBrowserPane
+        ? () => {
+            onAddBrowserPane(resolveNewPaneDirection());
+          }
+        : undefined,
+    [onAddBrowserPane, resolveNewPaneDirection],
+  );
   const paneHeaderProps = (terminalId: string) => ({
     terminalLabel: terminalLabelById.get(terminalId) ?? "Terminal",
     working: terminalAppearanceById.get(terminalId)?.working === true,
@@ -2939,10 +3064,14 @@ export default function ThreadTerminalDrawer({
         ? ` (${closeShortcutLabel})`
         : ""
     }`,
-    ...(onToggleFullscreen !== undefined ? { fullscreen, onToggleFullscreen } : {}),
+    ...(onToggleFullscreen !== undefined
+      ? { fullscreen, onToggleFullscreen, fullscreenDisabled: !canToggleFullscreen }
+      : {}),
     onSplitHorizontal: () => onSplitTerminalAction(terminalId),
     onSplitVertical: () => onSplitTerminalVerticalAction(terminalId),
     onNew: onNewTerminalAction,
+    onNewBrowser: onNewBrowserAction,
+    active: terminalId === resolvedActiveTerminalId,
     onClose: () => onCloseTerminal(terminalId),
   });
 
@@ -3054,7 +3183,7 @@ export default function ThreadTerminalDrawer({
         data-terminal-owner={focusOwner ?? (isPanel ? "right-panel" : "drawer")}
         className={cn(
           "thread-terminal-drawer relative flex min-w-0 flex-col overflow-hidden bg-background",
-          isPanel ? "h-full flex-1" : "shrink-0 border-t border-border/80",
+          isPanel ? "h-full flex-1" : "shrink-0 border-t border-[var(--line)]",
         )}
         style={isPanel ? undefined : { height: `${drawerHeight}px` }}
       >
@@ -3068,20 +3197,29 @@ export default function ThreadTerminalDrawer({
           />
         ) : null}
         {isTabLayout ? (
-          <div className="flex h-7 shrink-0 items-center justify-end gap-1 border-b border-border/60 bg-muted/10 px-1">
+          <div className="flex h-8 shrink-0 items-center justify-end gap-0.5 border-b border-[var(--line)] px-1.5">
             {tabStripTrailing}
           </div>
         ) : null}
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-muted-foreground">
-          <p>No terminal sessions for this thread yet.</p>
-          <button
-            type="button"
-            className="rounded-md border border-border/80 bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
-            onClick={onNewTerminalAction}
-          >
-            {newTerminalActionLabel}
-          </button>
-        </div>
+        {onLaunchTerminals ? (
+          <TerminalLaunchPad
+            providers={launchProviders ?? []}
+            maxTerminals={MAX_TERMINALS_PER_GROUP}
+            onLaunch={onLaunchTerminals}
+            onAddBrowser={onNewBrowserAction}
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm text-muted-foreground">
+            <p>No terminal sessions for this thread yet.</p>
+            <button
+              type="button"
+              className="rounded-[10px] border border-[var(--line)] bg-surface-row px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-hover"
+              onClick={onNewTerminalAction}
+            >
+              {newTerminalActionLabel}
+            </button>
+          </div>
+        )}
       </aside>
     );
   }
@@ -3094,8 +3232,11 @@ export default function ThreadTerminalDrawer({
     return (
       <div
         data-terminal-pane-id={terminalId}
-        className={`relative flex h-full min-h-0 min-w-0 flex-1 flex-col border ${
-          terminalId === resolvedActiveTerminalId ? "border-border" : "border-transparent"
+        data-active={terminalId === resolvedActiveTerminalId ? "true" : undefined}
+        className={`relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-[8px] border transition-[border-color,box-shadow] ${
+          terminalId === resolvedActiveTerminalId
+            ? "border-gold-500/70 shadow-[0_0_0_1px_rgba(217,169,58,0.28),0_0_28px_-6px_rgba(217,169,58,0.55)]"
+            : "border-[var(--line)]"
         }`}
         onMouseDown={() => {
           if (terminalId !== resolvedActiveTerminalId) {
@@ -3166,31 +3307,43 @@ export default function ThreadTerminalDrawer({
             }}
           />
         ) : null}
-        <div className="min-h-0 flex-1 p-1">
-          <TerminalViewport
-            threadRef={threadRef}
-            threadId={threadId}
-            terminalId={terminalId}
-            terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
-            cwd={terminalLaunchLocation.cwd}
-            {...(terminalLaunchLocation.worktreePath !== undefined
-              ? { worktreePath: terminalLaunchLocation.worktreePath }
-              : {})}
-            {...(terminalLaunchLocation.runtimeEnv
-              ? { runtimeEnv: terminalLaunchLocation.runtimeEnv }
-              : {})}
-            onSessionExited={() => onCloseTerminal(terminalId)}
-            onAddTerminalContext={onAddTerminalContext}
-            focusRequestId={focusRequestId}
-            autoFocus={terminalId === resolvedActiveTerminalId}
-            surfaceVisible={visible}
-            locallyOpening={locallyOpeningTerminalIdSet.has(terminalId)}
-            resizeEpoch={resizeEpoch}
-            {...(nudgeEpoch !== undefined ? { nudgeEpoch } : {})}
-            drawerHeight={drawerHeight}
-            keybindings={keybindings}
-          />
-        </div>
+        {isBrowserPaneId(terminalId) ? (
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {renderBrowserPane ? (
+              renderBrowserPane()
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                Browser is not available here.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 p-1">
+            <TerminalViewport
+              threadRef={threadRef}
+              threadId={threadId}
+              terminalId={terminalId}
+              terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
+              cwd={terminalLaunchLocation.cwd}
+              {...(terminalLaunchLocation.worktreePath !== undefined
+                ? { worktreePath: terminalLaunchLocation.worktreePath }
+                : {})}
+              {...(terminalLaunchLocation.runtimeEnv
+                ? { runtimeEnv: terminalLaunchLocation.runtimeEnv }
+                : {})}
+              onSessionExited={() => onCloseTerminal(terminalId)}
+              onAddTerminalContext={onAddTerminalContext}
+              focusRequestId={focusRequestId}
+              autoFocus={terminalId === resolvedActiveTerminalId}
+              surfaceVisible={visible}
+              locallyOpening={locallyOpeningTerminalIdSet.has(terminalId)}
+              resizeEpoch={resizeEpoch}
+              {...(nudgeEpoch !== undefined ? { nudgeEpoch } : {})}
+              drawerHeight={drawerHeight}
+              keybindings={keybindings}
+            />
+          </div>
+        )}
         {dropZone ? <TerminalPaneDropOverlay zone={dropZone} /> : null}
       </div>
     );
@@ -3235,7 +3388,7 @@ export default function ThreadTerminalDrawer({
                     node.direction === "vertical" ? "h-1 w-full" : "h-full w-1"
                   } ${
                     onSplitSizesChange
-                      ? `transition-colors hover:bg-border ${
+                      ? `transition-colors hover:bg-gold-500/70 ${
                           node.direction === "vertical" ? "cursor-row-resize" : "cursor-col-resize"
                         }`
                       : ""
@@ -3273,7 +3426,7 @@ export default function ThreadTerminalDrawer({
       data-terminal-owner={focusOwner ?? (isPanel ? "right-panel" : "drawer")}
       className={cn(
         "thread-terminal-drawer relative flex min-w-0 flex-col overflow-hidden bg-background",
-        isPanel ? "h-full flex-1" : "shrink-0 border-t border-border/80",
+        isPanel ? "h-full flex-1" : "shrink-0 border-t border-[var(--line)]",
       )}
       style={isPanel ? undefined : { height: `${drawerHeight}px` }}
     >
@@ -3288,7 +3441,7 @@ export default function ThreadTerminalDrawer({
       ) : null}
 
       {isTabLayout ? (
-        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-border/60 bg-muted/10 px-1">
+        <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-[var(--line)] px-1.5">
           <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
             {normalizedTerminalIds.map((terminalId) => {
               const isActive = terminalId === resolvedActiveTerminalId;
@@ -3298,10 +3451,12 @@ export default function ThreadTerminalDrawer({
                 <div
                   key={terminalId}
                   className={cn(
-                    "group flex max-w-48 min-w-0 shrink-0 items-center gap-1 border-b-2 px-2 text-[11px]",
+                    // A tab is text with a gold hairline beneath the active one;
+                    // no boxes, so switching reads as instant.
+                    "group relative flex h-full max-w-48 min-w-0 shrink-0 items-center gap-1 px-2.5 text-[11.5px] font-medium transition-colors after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:transition-colors",
                     isActive
-                      ? "border-foreground text-foreground"
-                      : "border-transparent text-muted-foreground hover:text-foreground",
+                      ? "bg-gold-500/10 text-gold-700 after:bg-gold-500 dark:text-gold-200"
+                      : "text-muted-foreground after:bg-transparent hover:text-foreground",
                   )}
                 >
                   <button
@@ -3320,7 +3475,7 @@ export default function ThreadTerminalDrawer({
                   {normalizedTerminalIds.length > 1 ? (
                     <button
                       type="button"
-                      className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
+                      className="rounded-md p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-surface-hover hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
                       aria-label={`Close ${label}`}
                       onClick={() => onCloseTerminal(terminalId)}
                     >
@@ -3330,21 +3485,30 @@ export default function ThreadTerminalDrawer({
                 </div>
               );
             })}
-            <TerminalActionButton
-              className="px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={onNewTerminalAction}
+            <NewPaneButton
+              className="mx-0.5 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground"
+              iconClassName="size-3.25"
               label={newTerminalActionLabel}
-            >
-              <Plus className="size-3.25" />
-            </TerminalActionButton>
+              onNewTerminal={onNewTerminalAction}
+              onNewBrowser={onNewBrowserAction}
+            />
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             {tabStripTrailing}
             {onToggleFullscreen ? (
               <TerminalActionButton
-                className="p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={onToggleFullscreen}
-                label={fullscreen ? "Exit terminal fullscreen" : "Enter terminal fullscreen"}
+                className={cn(
+                  "rounded-md p-1 text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground",
+                  !canToggleFullscreen && "cursor-not-allowed opacity-45 hover:bg-transparent",
+                )}
+                onClick={canToggleFullscreen ? onToggleFullscreen : () => {}}
+                label={
+                  !canToggleFullscreen
+                    ? FULLSCREEN_NEEDS_PANES_LABEL
+                    : fullscreen
+                      ? "Exit terminal fullscreen"
+                      : "Enter terminal fullscreen"
+                }
               >
                 {fullscreen ? (
                   <Minimize2Icon className="size-3.25" />
@@ -3359,41 +3523,41 @@ export default function ThreadTerminalDrawer({
 
       {!hasTerminalSidebar && !isTabLayout && !showPaneHeaders && (
         <div className="pointer-events-none absolute right-2 top-2 z-20">
-          <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background/70">
+          <div className="pointer-events-auto inline-flex items-center gap-0.5 rounded-full border border-[var(--line)] bg-[var(--card)] px-1 py-0.5">
             <TerminalActionButton
-              className={`p-1 text-foreground/90 transition-colors ${
+              className={`rounded-full p-1 text-foreground/70 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-45 hover:bg-transparent"
-                  : "hover:bg-accent"
+                  : "hover:bg-surface-hover hover:text-foreground"
               }`}
               onClick={() => onSplitTerminalAction(resolvedActiveTerminalId)}
               label={splitTerminalActionLabel}
             >
               <SquareSplitHorizontal className="size-3.25" />
             </TerminalActionButton>
-            <div className="h-4 w-px bg-border/80" />
+            <div className="h-3.5 w-px bg-[var(--line)]" />
             <TerminalActionButton
-              className={`p-1 text-foreground/90 transition-colors ${
+              className={`rounded-full p-1 text-foreground/70 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-45 hover:bg-transparent"
-                  : "hover:bg-accent"
+                  : "hover:bg-surface-hover hover:text-foreground"
               }`}
               onClick={() => onSplitTerminalVerticalAction(resolvedActiveTerminalId)}
               label={splitTerminalVerticalActionLabel}
             >
               <SquareSplitVertical className="size-3.25" />
             </TerminalActionButton>
-            <div className="h-4 w-px bg-border/80" />
-            <TerminalActionButton
-              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
-              onClick={onNewTerminalAction}
+            <div className="h-3.5 w-px bg-[var(--line)]" />
+            <NewPaneButton
+              className="rounded-full p-1 text-foreground/70 transition-colors hover:bg-surface-hover hover:text-foreground"
+              iconClassName="size-3.25"
               label={newTerminalActionLabel}
-            >
-              <Plus className="size-3.25" />
-            </TerminalActionButton>
-            <div className="h-4 w-px bg-border/80" />
+              onNewTerminal={onNewTerminalAction}
+              onNewBrowser={onNewBrowserAction}
+            />
+            <div className="h-3.5 w-px bg-[var(--line)]" />
             <TerminalActionButton
-              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
+              className="rounded-full p-1 text-foreground/70 transition-colors hover:bg-surface-hover hover:text-foreground"
               onClick={() => onCloseTerminal(resolvedActiveTerminalId)}
               label={closeTerminalActionLabel}
             >
@@ -3401,11 +3565,20 @@ export default function ThreadTerminalDrawer({
             </TerminalActionButton>
             {onToggleFullscreen ? (
               <>
-                <div className="h-4 w-px bg-border/80" />
+                <div className="h-3.5 w-px bg-[var(--line)]" />
                 <TerminalActionButton
-                  className="p-1 text-foreground/90 transition-colors hover:bg-accent"
-                  onClick={onToggleFullscreen}
-                  label={fullscreen ? "Exit terminal fullscreen" : "Enter terminal fullscreen"}
+                  className={cn(
+                    "rounded-full p-1 text-foreground/70 transition-colors hover:bg-surface-hover hover:text-foreground",
+                    !canToggleFullscreen && "cursor-not-allowed opacity-45 hover:bg-transparent",
+                  )}
+                  onClick={canToggleFullscreen ? onToggleFullscreen : () => {}}
+                  label={
+                    !canToggleFullscreen
+                      ? FULLSCREEN_NEEDS_PANES_LABEL
+                      : fullscreen
+                        ? "Exit terminal fullscreen"
+                        : "Enter terminal fullscreen"
+                  }
                 >
                   {fullscreen ? (
                     <Minimize2Icon className="size-3.25" />
@@ -3419,7 +3592,7 @@ export default function ThreadTerminalDrawer({
         </div>
       )}
 
-      <div className="min-h-0 w-full flex-1">
+      <div className="min-h-0 w-full flex-1 p-1.5">
         <div className={`flex h-full min-h-0 ${hasTerminalSidebar ? "gap-1.5" : ""}`}>
           <div className="min-w-0 flex-1">
             {isSplitView && activeGroupLayout ? (
@@ -3427,7 +3600,7 @@ export default function ThreadTerminalDrawer({
             ) : (
               <div
                 data-terminal-pane-id={resolvedActiveTerminalId}
-                className="flex h-full min-h-0 flex-col"
+                className="flex h-full min-h-0 flex-col overflow-hidden rounded-[8px] border border-[var(--line)]"
               >
                 {showPaneHeaders && resolvedActiveTerminalId ? (
                   <TerminalPaneHeader
@@ -3467,7 +3640,7 @@ export default function ThreadTerminalDrawer({
 
           {hasTerminalSidebar && (
             <aside
-              className="relative flex shrink-0 flex-col border border-border/70 bg-muted/10"
+              className="relative flex shrink-0 flex-col border-r border-[var(--line)]"
               style={{ width: `${effectiveSidebarWidth}px` }}
             >
               {onSidebarWidthChange ? (
@@ -3594,7 +3767,7 @@ export default function ThreadTerminalDrawer({
                             autoFocus
                             value={groupRenameDraft.name}
                             aria-label="Group name"
-                            className="w-full rounded border border-border bg-background px-1 py-0.5 text-[10px] uppercase tracking-[0.08em] text-foreground outline-none"
+                            className="w-full rounded-md border border-[var(--gold-line)] bg-background px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-foreground outline-none"
                             onChange={(event) =>
                               setGroupRenameDraft({
                                 groupId: terminalGroup.id,
@@ -3612,10 +3785,10 @@ export default function ThreadTerminalDrawer({
                           <button
                             type="button"
                             className={cn(
-                              "relative flex w-full items-center rounded px-1 py-0.5 text-[10px] uppercase tracking-[0.08em]",
+                              "relative flex w-full items-center rounded-md px-1.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] transition-colors",
                               isGroupActive
-                                ? "bg-accent/70 text-foreground"
-                                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                                ? "text-gold-600 dark:text-gold-400"
+                                : "text-muted-foreground/80 hover:bg-surface-hover hover:text-foreground",
                               canDragSidebarGroups && "cursor-grab active:cursor-grabbing",
                             )}
                             draggable={canDragSidebarGroups}
@@ -3685,7 +3858,9 @@ export default function ThreadTerminalDrawer({
                         ))}
 
                       <div
-                        className={showGroupHeaders ? "ml-1 border-l border-border/60 pl-1.5" : ""}
+                        className={
+                          showGroupHeaders ? "ml-1.5 border-l border-[var(--line)] pl-1.5" : ""
+                        }
                       >
                         {terminalGroup.terminalIds.map((terminalId) => {
                           const isActive = terminalId === resolvedActiveTerminalId;
@@ -3701,10 +3876,10 @@ export default function ThreadTerminalDrawer({
                             <div
                               key={terminalId}
                               className={cn(
-                                "group relative flex items-center gap-1 rounded px-1 py-0.5 text-[11px]",
+                                "group relative flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-[11.5px] transition-colors",
                                 isActive
-                                  ? "bg-accent text-foreground"
-                                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                                  ? "border-gold-500/60 bg-gold-500/15 font-medium text-gold-800 shadow-[inset_2px_0_0_0_var(--gold-500)] dark:text-gold-100"
+                                  : "border-transparent text-muted-foreground hover:bg-surface-hover hover:text-foreground",
                                 canDragSidebarTerminals && "cursor-grab active:cursor-grabbing",
                               )}
                               draggable={canDragSidebarTerminals}
@@ -3800,7 +3975,7 @@ export default function ThreadTerminalDrawer({
                                       <button
                                         type="button"
                                         draggable={false}
-                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
+                                        className="inline-flex size-4 items-center justify-center rounded-md text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-surface-hover hover:text-foreground group-hover:opacity-100 pointer-coarse:opacity-100"
                                         onClick={() => onCloseTerminal(terminalId)}
                                         onMouseDown={(event) => event.stopPropagation()}
                                         aria-label={closeTerminalLabel}

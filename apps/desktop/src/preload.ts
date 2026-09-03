@@ -452,6 +452,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     move: (position) => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_MOVE_CHANNEL, position),
     beginDrag: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_DRAG_START_CHANNEL),
     dragEnd: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_DRAG_END_CHANNEL),
+    setInteractive: (interactive) =>
+      ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_SET_INTERACTIVE_CHANNEL, interactive),
     open: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_OPEN_CHANNEL),
     toggleVoice: () => ipcRenderer.invoke(IpcChannels.ORCHESTRATOR_BUBBLE_TOGGLE_VOICE_CHANNEL),
     onVoiceToggleRequested: (listener) => {

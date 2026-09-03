@@ -1,5 +1,6 @@
 import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default" | "refresh-plan";
@@ -39,8 +40,51 @@ export function isComposerSubmitBlocked(input: {
   noProviderAvailable: boolean;
   isSendDisabled: boolean;
   pushToTalkStatus: "recording" | "loading" | "transcribing" | "refining" | null;
+  /** Optional so existing callers keep their behaviour; see composerPromptLengthState. */
+  promptTooLong?: boolean;
 }): boolean {
-  return input.noProviderAvailable || input.isSendDisabled || input.pushToTalkStatus !== null;
+  return (
+    input.noProviderAvailable ||
+    input.isSendDisabled ||
+    input.pushToTalkStatus !== null ||
+    input.promptTooLong === true
+  );
+}
+
+/**
+ * The provider refuses a turn longer than this, so the composer has to know the
+ * same number the server validates against rather than discovering it from a
+ * failed send. Pasting a long stack trace used to sail through the composer and
+ * come back as "Provider validation failed in ProviderService.sendTurn".
+ */
+export const COMPOSER_MAX_PROMPT_CHARS = PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+
+export interface ComposerPromptLengthState {
+  readonly length: number;
+  readonly max: number;
+  readonly overBy: number;
+  readonly tooLong: boolean;
+  /** Warn on approach, so a long paste is not a surprise at send time. */
+  readonly nearLimit: boolean;
+}
+
+export function composerPromptLengthState(
+  text: string,
+  max: number = COMPOSER_MAX_PROMPT_CHARS,
+): ComposerPromptLengthState {
+  // Deliberately `.trim().length`, matching the server exactly: its schema is a
+  // trimmed string checked with `Schema.isMaxLength`, which counts UTF-16 code
+  // units. Counting code points instead would disagree on emoji and CJK and let
+  // a prompt the client called legal fail validation anyway.
+  const length = text.trim().length;
+  const overBy = Math.max(0, length - max);
+  return {
+    length,
+    max,
+    overBy,
+    tooLong: overBy > 0,
+    nearLimit: length >= Math.floor(max * 0.9),
+  };
 }
 
 const isInlineTokenSegment = (

@@ -61,6 +61,51 @@ const requestsFrom = (
     }),
   );
 
+it.effect("gives focus-taking input time for the user on top of its own timeout", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const seen: RoutedRequest[] = [];
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) => {
+        seen.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: {},
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const before = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      yield* broker.invoke<void>({ scope, operation: "click", input: {}, timeoutMs: 15_000 });
+      yield* broker.invoke<void>({ scope, operation: "waitFor", input: {}, timeoutMs: 15_000 });
+      yield* broker.invoke<void>({ scope, operation: "type", input: {}, timeoutMs: 45_000 });
+
+      const [click, waitFor, type] = seen;
+      // The caller's number is what errors report; the deadline is what the
+      // desktop enforces, and only the click got the grace.
+      expect(click?.timeoutMs).toBe(15_000);
+      expect((click?.expiresAt ?? 0) - before).toBeGreaterThanOrEqual(
+        15_000 + PreviewAutomationBroker.USER_INPUT_DEFERRAL_GRACE_MS - 50,
+      );
+      expect(waitFor?.timeoutMs).toBe(15_000);
+      expect((waitFor?.expiresAt ?? 0) - before).toBeLessThan(15_000 + 1_000);
+      // The grace never pushes a request past the MCP client's own limit.
+      expect((type?.expiresAt ?? 0) - before).toBeLessThanOrEqual(
+        PreviewAutomationBroker.PREVIEW_REQUEST_BUDGET_MS + 50,
+      );
+      expect(PreviewAutomationBroker.previewRequestDeadlineMs("press", 15_000)).toBe(45_000);
+      expect(PreviewAutomationBroker.previewRequestDeadlineMs("drag", 40_000)).toBe(50_000);
+      expect(PreviewAutomationBroker.previewRequestDeadlineMs("evaluate", 15_000)).toBe(15_000);
+      // A caller who asked for more than the budget still gets what they asked for.
+      expect(PreviewAutomationBroker.previewRequestDeadlineMs("waitFor", 55_000)).toBe(55_000);
+    }),
+  ),
+);
+
 it.effect("atomically registers a connected host and correlates its response", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -1095,6 +1095,36 @@ describe("shouldRestoreComposerFocus", () => {
   });
 });
 
+describe("resolveSendDisabledReason oversized prompt", () => {
+  const base = { providerAuthenticationPaused: false, threadCatchingUp: false };
+
+  it("blocks a prompt past the provider limit and says how much to cut", () => {
+    // This is the exact failure it replaces: the server validates a trimmed
+    // string with isMaxLength(120000) and rejects the turn in sendTurn.
+    const reason = resolveSendDisabledReason({ ...base, promptLength: 120_500 });
+    expect(reason).toBe("Message is 500 characters over the 120,000 limit");
+  });
+
+  it("allows a prompt exactly at the limit", () => {
+    expect(resolveSendDisabledReason({ ...base, promptLength: 120_000 })).toBeNull();
+  });
+
+  it("leaves normal prompts and the omitted case alone", () => {
+    expect(resolveSendDisabledReason({ ...base, promptLength: 42 })).toBeNull();
+    expect(resolveSendDisabledReason(base)).toBeNull();
+  });
+
+  it("keeps sign-in the priority when both apply", () => {
+    expect(
+      resolveSendDisabledReason({
+        ...base,
+        providerAuthenticationPaused: true,
+        promptLength: 999_999,
+      }),
+    ).toBe("Sign in to continue");
+  });
+});
+
 describe("resolveSendDisabledReason", () => {
   it("leaves send pressable while the conversation catches up", () => {
     // The dead button: "Messages syncing" disabled send for the whole

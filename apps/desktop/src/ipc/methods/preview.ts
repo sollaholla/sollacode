@@ -446,7 +446,7 @@ export const automationClick = DesktopIpc.makeIpcMethod({
       operation: "click",
       tabId,
       expiresAt,
-      effect: manager.automationClick(tabId, input),
+      effect: manager.automationClick(tabId, input, { expiresAt }),
     });
   }),
 });
@@ -461,7 +461,7 @@ export const automationDrag = DesktopIpc.makeIpcMethod({
       operation: "drag",
       tabId,
       expiresAt,
-      effect: manager.automationDrag(tabId, input),
+      effect: manager.automationDrag(tabId, input, { expiresAt }),
     });
   }),
 });
@@ -476,7 +476,7 @@ export const automationType = DesktopIpc.makeIpcMethod({
       operation: "type",
       tabId,
       expiresAt,
-      effect: manager.automationType(tabId, input),
+      effect: manager.automationType(tabId, input, { expiresAt }),
     });
   }),
 });
@@ -522,7 +522,7 @@ export const automationPress = DesktopIpc.makeIpcMethod({
       operation: "press",
       tabId,
       expiresAt,
-      effect: manager.automationPress(tabId, input),
+      effect: manager.automationPress(tabId, input, { expiresAt }),
     });
   }),
 });

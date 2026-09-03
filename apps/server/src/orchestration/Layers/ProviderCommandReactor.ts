@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationSession,
@@ -46,6 +47,8 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -54,8 +57,10 @@ import * as TxRef from "effect/TxRef";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { ServerConfig } from "../../config.ts";
+import { boundProviderTurnInput } from "../providerInputBounding.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { formatProviderFailureDetail } from "../../provider/providerFailureMessage.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -247,6 +252,20 @@ function findProviderAdapterRequestError(
     ? failReason.error
     : undefined;
 }
+
+const isProviderValidationError = Schema.is(ProviderValidationError);
+
+/**
+ * A request the provider schema rejected.
+ *
+ * Deterministic by construction: the same request fails decoding every time,
+ * so retrying only re-queues the user's message behind an identical failure.
+ * Terminal, like a failed manual provider switch.
+ */
+const isProviderRequestValidationFailure = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.some(
+    (reason) => Cause.isFailReason(reason) && isProviderValidationError(reason.error),
+  );
 
 const isRetryableUpstreamFailure = (cause: Cause.Cause<unknown>): boolean =>
   findProviderAdapterRequestError(cause)?.failureKind === "retryable-upstream";
@@ -627,6 +646,9 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
     const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
     const textGeneration = yield* TextGeneration;
     const serverSettingsService = yield* ServerSettingsService;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const filePath = yield* Path.Path;
+    const serverConfig = yield* ServerConfig;
     const serverCommandId = (tag: string) =>
       crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
     const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -926,10 +948,29 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           createdAt,
         });
       }
+      // Every restart reason has to be known HERE, not only where the restart
+      // happens further down: this is the last point at which the outgoing
+      // turn can still be stopped. When the two disagree the session is
+      // replaced underneath a turn that is still running, and the new
+      // startSession waits on a lifecycle lane the old one never releases --
+      // the switch simply hangs. Reported 2026-09-02: "model switching ...
+      // sometimes hangs ... especially when you're trying to get work done or
+      // running against usage limits", which is exactly when a model is
+      // changed on the SAME provider instance, the case the instance-only
+      // guard here used to miss.
+      const sessionModelSwitchMode = (yield* providerService.getCapabilities(desiredInstanceId))
+        .sessionModelSwitch;
+      const activeModel = activeSession?.model ?? thread.modelSelection.model;
+      const restartsSessionForModel =
+        requestedModelSelection !== undefined &&
+        (requestedModelSelection.instanceId !== currentInstanceId ||
+          (requestedModelSelection.model !== activeModel &&
+            sessionModelSwitchMode === "unsupported") ||
+          (preferredProvider === "claudeAgent" &&
+            !Equal.equals(providerSessionModelSelections.get(threadId), requestedModelSelection)));
       const switchingProviderDuringActiveTurn =
         activeThreadSession !== null &&
-        requestedModelSelection !== undefined &&
-        requestedModelSelection.instanceId !== currentInstanceId &&
+        restartsSessionForModel &&
         activeThreadSession.activeTurnId !== null;
       if (switchingProviderDuringActiveTurn) {
         // A provider change is an explicit handoff, not a validation error. Stop
@@ -1070,8 +1111,7 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (existingSessionThreadId) {
         const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
         const cwdChanged = effectiveCwd !== activeSession?.cwd;
-        const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
-          .sessionModelSwitch;
+        const sessionModelSwitch = sessionModelSwitchMode;
         const modelChanged =
           requestedModelSelection !== undefined &&
           requestedModelSelection.model !== activeSession?.model;
@@ -1146,6 +1186,62 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
         pendingContextRecovery: startedSession.pendingContextRecovery,
       };
     });
+
+    /**
+     * Fit a turn's prompt inside the provider's per-turn ceiling.
+     *
+     * `ProviderSendTurnInput.input` caps at
+     * `PROVIDER_SEND_TURN_MAX_INPUT_CHARS`, and an over-cap prompt used to
+     * fail schema decoding inside `sendTurn` — which fails the turn. The
+     * message stays in the thread, every retry re-fails it, and the thread
+     * cannot move again: one pasted crash report was enough. The overflow is
+     * spilled to a file the provider can open instead, and the prompt keeps
+     * its head and tail plus a pointer to that file.
+     */
+    const boundProviderInputForTransport = Effect.fn("boundProviderInputForTransport")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly messageId?: MessageId;
+        readonly text: string | undefined;
+      }) {
+        if (input.text === undefined || input.text.length <= PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+          return input.text;
+        }
+        const fileStem =
+          input.messageId === undefined
+            ? `turn-${yield* crypto.randomUUIDv4}`
+            : String(input.messageId).replace(/[^a-zA-Z0-9._-]+/g, "-");
+        const target = filePath.join(
+          serverConfig.stateDir,
+          "oversized-turn-inputs",
+          String(input.threadId),
+          `${fileStem}.txt`,
+        );
+        // Best effort: losing the spill costs the omitted middle, not the turn.
+        const spillPath = yield* fileSystem
+          .makeDirectory(filePath.dirname(target), { recursive: true })
+          .pipe(
+            Effect.andThen(fileSystem.writeFileString(target, input.text)),
+            Effect.as<string | null>(target),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.turn-input.spill-failed", {
+                threadId: input.threadId,
+                target,
+                cause,
+              }).pipe(Effect.as<string | null>(null)),
+            ),
+          );
+        const bounded = boundProviderTurnInput({ text: input.text, spillPath });
+        yield* Effect.logWarning("provider.turn-input.bounded", {
+          threadId: input.threadId,
+          messageId: input.messageId ?? null,
+          originalChars: bounded.originalChars,
+          omittedChars: bounded.omittedChars,
+          spillPath,
+        });
+        return bounded.text;
+      },
+    );
 
     const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
       readonly threadId: ThreadId;
@@ -1334,7 +1430,11 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       if (input.modelSelection !== undefined) {
         threadModelSelections.set(input.threadId, input.modelSelection);
       }
-      const normalizedInput = toNonEmptyProviderInput(providerInput);
+      const normalizedInput = yield* boundProviderInputForTransport({
+        threadId: input.threadId,
+        ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+        text: toNonEmptyProviderInput(providerInput),
+      });
       const normalizedAttachments = input.attachments ?? [];
       const activeSession = input.liveSteerTarget
         ? activeSessionBeforeStart
@@ -1937,9 +2037,28 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       const switchesProviderInstance =
         requestedProviderInstanceId !== undefined &&
         requestedProviderInstanceId !== currentProviderInstanceId;
-      const steerTargetsLiveSession =
-        requestedProviderInstanceId === undefined ||
-        requestedProviderInstanceId === currentProviderInstanceId;
+      // A model change the live session cannot apply in-session is a restart,
+      // not a steer. Steering it anyway silently DROPS the switch: the message
+      // joins the running turn on the old model, the user sees nothing change,
+      // and when the reason for switching was that this provider had stopped
+      // answering -- a usage limit -- the steered message waits on a session
+      // that will never reply. Reported 2026-09-02 as model switching that is
+      // "really unreliable ... sometimes hangs ... especially when you're
+      // trying to get work done or running against usage limits". An instance
+      // change was already excluded here; a model change on the SAME instance
+      // was not, which is the switch a user makes to get around that limit.
+      const requestedModel = event.payload.modelSelection?.model;
+      const liveModel = liveProviderSession?.model ?? thread.modelSelection.model;
+      const requestedModelNeedsRestart =
+        requestedModel !== undefined && requestedModel !== liveModel
+          ? yield* providerService.getCapabilities(currentProviderInstanceId).pipe(
+              Effect.map((capabilities) => capabilities.sessionModelSwitch === "unsupported"),
+              // An unreadable capability is not a reason to tear a healthy
+              // turn down; the steer path stays the default.
+              Effect.orElseSucceed(() => false),
+            )
+          : false;
+      const steerTargetsLiveSession = !switchesProviderInstance && !requestedModelNeedsRestart;
       // A user message arriving mid-turn has exactly one visible fate on
       // success (it steers) and THREE silent exits on failure: a session gate
       // that is not running, a provider-instance mismatch, and a parked row a
@@ -1968,7 +2087,15 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
       // provider receives the message exactly once after the source settles.
       if (
         activeTurnId !== undefined &&
-        (switchesProviderInstance || message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX))
+        (switchesProviderInstance ||
+          // A model the live session cannot switch to needs the same restart an
+          // instance change does, so it needs the same stop. Left out, the
+          // replacement parks behind the very turn it is meant to replace and
+          // the switch sits "Queued" until the user presses Stop -- the
+          // deadlock described just below, reached by changing model rather
+          // than provider.
+          requestedModelNeedsRestart ||
+          message.text.startsWith(SETTINGS_UPDATE_MESSAGE_PREFIX))
       ) {
         const interruptedTurnId = activeTurnId;
         // Cooperative interrupt is not enough on Claude: `query.interrupt()`
@@ -3624,6 +3751,12 @@ const make = (options?: ProviderCommandReactorLiveOptions) =>
           return {
             state: "cancelled" as const,
             reason: `Provider switch failed: ${detail}`,
+          };
+        }
+        if (isProviderRequestValidationFailure(input.cause)) {
+          return {
+            state: "cancelled" as const,
+            reason: `Provider rejected the request as invalid: ${detail}`,
           };
         }
         return yield* recoverThreadWorkFailure(input.cause, input.attempt);

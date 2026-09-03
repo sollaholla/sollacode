@@ -13,6 +13,14 @@ export interface PreviewHumanVerificationProbe {
   readonly browserUserAgent: string | null;
   readonly hasTurnstile: boolean;
   readonly hasFullPageChallenge: boolean;
+  /**
+   * A challenge widget on the page already holds a passed token. Turnstile
+   * leaves its widget mounted after success (and many sites mount it
+   * permanently in managed mode), so a visible widget alone does not mean a
+   * person is being asked for anything. Optional: probes from older hosts do
+   * not report it.
+   */
+  readonly hasSolvedChallengeToken?: boolean;
 }
 
 export const PREVIEW_HUMAN_VERIFICATION_PROBE_EXPRESSION = `(() => {
@@ -45,6 +53,9 @@ export const PREVIEW_HUMAN_VERIFICATION_PROBE_EXPRESSION = `(() => {
     visibleText: text,
     browserUserAgent: navigator.userAgent || null,
     hasTurnstile: Array.from(document.querySelectorAll(challengeSelector)).some(isVisible),
+    hasSolvedChallengeToken: Array.from(
+      document.querySelectorAll('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"], input[name="h-captcha-response"]'),
+    ).some((input) => typeof input.value === 'string' && input.value.length > 0),
     hasFullPageChallenge:
       /(?:cf-chl-|challenge-platform|challenges\\.cloudflare\\.com)/i.test(html) &&
       /(?:just a moment|verify you are human|security verification|checking your browser)/i.test(
@@ -100,17 +111,24 @@ export function detectPreviewHumanVerification(input: {
 
   const combined = `${probe.title}\n${probe.visibleText}`;
   const code = boundedMatch(combined.match(ERROR_CODE_PATTERN));
+  // A widget that already holds a passed token is not asking anyone for
+  // anything. Live 2026-09-03 (Suno): the page keeps its Turnstile mounted, so
+  // the tab stayed "requires human verification" after the user had solved
+  // it, and the agent raised the same blocker twice.
+  const turnstileAsksForAPerson = probe.hasTurnstile && probe.hasSolvedChallengeToken !== true;
   const cfMitigated =
     input.snapshot?.networkEntries.some((entry) => entry.cfMitigated === true) ?? null;
   const hasChallengeLanguage = CHALLENGE_LANGUAGE_PATTERN.test(combined);
   const hasCloudflareMarker =
-    probe.hasTurnstile || probe.hasFullPageChallenge || CLOUDFLARE_MARKER_PATTERN.test(combined);
+    turnstileAsksForAPerson ||
+    probe.hasFullPageChallenge ||
+    CLOUDFLARE_MARKER_PATTERN.test(combined);
   const supportedChallengeCode = code !== null && (hasCloudflareMarker || hasChallengeLanguage);
   const fullPageTitle = /^(?:just a moment|attention required)[.!…\s]*$/iu.test(probe.title.trim());
 
   if (
     !supportedChallengeCode &&
-    !probe.hasTurnstile &&
+    !turnstileAsksForAPerson &&
     !probe.hasFullPageChallenge &&
     !fullPageTitle &&
     !(hasCloudflareMarker && hasChallengeLanguage)
@@ -234,7 +252,31 @@ export function parsePreviewHumanVerificationProbe(
       typeof record["browserUserAgent"] === "string" ? record["browserUserAgent"] : null,
     hasTurnstile: record["hasTurnstile"],
     hasFullPageChallenge: record["hasFullPageChallenge"],
+    ...(typeof record["hasSolvedChallengeToken"] === "boolean"
+      ? { hasSolvedChallengeToken: record["hasSolvedChallengeToken"] }
+      : {}),
   };
+}
+
+/**
+ * Re-check a latched tab before refusing an automation request on it.
+ *
+ * The latch is set once and, until now, was read back for every later request
+ * without looking at the page again, so a challenge the user had completed
+ * kept every click, type and snapshot paused until someone forced a re-check
+ * by hand. Live 2026-09-03 (Pawstalgia, Suno): the user resolved "Complete
+ * Suno human verification", the next request read the stale latch, and the
+ * agent raised "interact with it once to clear the stuck verification latch".
+ * A read-only DOM probe is not an interaction with the challenge, so it is
+ * safe to run on every attempt: still challenged stays paused, cleared clears.
+ */
+export async function reinspectPreviewHumanVerificationForAutomation(input: {
+  readonly runtimeTabId: string;
+  readonly evaluate: (expression: string) => Promise<unknown>;
+  readonly waitForConfirmation?: () => Promise<void>;
+}): Promise<PreviewHumanVerification | null> {
+  if (getPreviewHumanVerification(input.runtimeTabId) === null) return null;
+  return await inspectPreviewHumanVerification({ ...input, force: true });
 }
 
 export async function inspectPreviewHumanVerification(input: {

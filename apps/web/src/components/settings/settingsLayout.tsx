@@ -4,6 +4,7 @@ import { type ComponentPropsWithoutRef, type ReactNode, useEffect, useState } fr
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { settingsRowAnchor } from "./settingsSearchIndex";
 
 /** Re-render every `intervalMs`; return a stable timestamp snapshot for render-time relative labels. */
 export function useRelativeTimeTick(intervalMs = 1_000) {
@@ -61,8 +62,14 @@ export function SettingsRow({
 }) {
   return (
     <div
+      // Search deep-links land on this id; rows with JSX titles pass one explicitly.
+      id={typeof title === "string" ? settingsRowAnchor(title) : undefined}
       {...rowProps}
-      className={cn("rounded-xl px-3 sm:px-4", children ? "pt-3 pb-1" : "py-3", className)}
+      className={cn(
+        "settings-row rounded-xl px-3 sm:px-4",
+        children ? "pt-3 pb-1" : "py-3",
+        className,
+      )}
     >
       <div className="flex flex-col gap-3 sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(10rem,auto)] sm:items-center sm:gap-8">
         <div className="min-w-0 flex-1 space-y-1">

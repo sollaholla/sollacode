@@ -281,6 +281,11 @@ const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
  * Automation therefore defers instead of competing.
  */
 export const USER_INPUT_DEFERRAL_MS = 5_000;
+
+/** Caller-side deadline for focus-taking input; the wait for the user must end before it. */
+export interface AutomationInputOptions {
+  readonly expiresAt?: number | undefined;
+}
 /** Re-check cadence while deferring. */
 const USER_INPUT_DEFERRAL_POLL_MS = 200;
 const APP_FOCUS_MARKER_ATTRIBUTE = "data-t3-last-user-focus";
@@ -399,8 +404,16 @@ export function shouldReclaimGuestKeyForApp(input: {
   readonly expectedAgentInput: boolean;
   readonly inputType: string;
   readonly key: string;
+  /**
+   * The guest's annotation editor has focus. The user put their caret there
+   * on purpose (the pick flow opens it), so no key is handed back to the app
+   * even when their last click was in the app window (reported 2026-09-03:
+   * typing a follow-up comment on a picked element landed in the composer).
+   */
+  readonly guestEditorFocused?: boolean;
 }): boolean {
   if (input.expectedAgentInput) return false;
+  if (input.guestEditorFocused) return false;
   if (input.inputType !== "keyDown") return false;
   if (BARE_MODIFIER_KEYS.has(input.key)) return false;
   return input.focusIntent.kind === "app" || input.focusIntent.tabId !== input.currentTabId;
@@ -712,7 +725,13 @@ type NewTabRequestListener = (request: DesktopPreviewNewTabRequest) => Effect.Ef
 
 type PreviewInputSignal =
   | { readonly kind: "pointer"; readonly x: number; readonly y: number; readonly button: number }
-  | { readonly kind: "key"; readonly key: string; readonly code: string };
+  | { readonly kind: "key"; readonly key: string; readonly code: string }
+  /**
+   * The guest's own editor (the annotation comment box the pick preload
+   * draws) gained or lost focus. While it holds focus every key belongs to
+   * the guest, whatever the user's last click said about focus intent.
+   */
+  | { readonly kind: "editor-focus"; readonly focused: boolean };
 
 interface ManagedListeners {
   readonly scope: Scope.Closeable;
@@ -804,6 +823,9 @@ const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
       "button" in value &&
       typeof value.button === "number"
     );
+  }
+  if (value.kind === "editor-focus") {
+    return "focused" in value && typeof value.focused === "boolean";
   }
   return (
     value.kind === "key" &&
@@ -899,6 +921,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
    * forked expiry rather than compared against wall-clock time here.
    */
   const agentInputActiveTabs = new Set<string>();
+  /** Tabs whose guest-side annotation editor currently holds focus. */
+  const guestEditorFocusedTabs = new Set<string>();
   const agentInputWindowGenerations = new Map<string, number>();
   let agentInputWindowGeneration = 0;
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
@@ -2699,6 +2723,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (!listenersActive) return;
       const current = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
       if (current?.webContentsId !== webContentsId) return;
+      if (isPreviewInputSignal(rawSignal) && rawSignal.kind === "editor-focus") {
+        // Focus moving into the guest's own editor is the user choosing to
+        // type there; it hands the keyboard to this tab like a click would.
+        if (rawSignal.focused) {
+          guestEditorFocusedTabs.add(tabId);
+          userFocusIntent = { kind: "guest", tabId };
+        } else {
+          guestEditorFocusedTabs.delete(tabId);
+        }
+        return;
+      }
       if (isPreviewInputSignal(rawSignal) && (yield* consumeExpectedAgentInput(tabId, rawSignal))) {
         return;
       }
@@ -2872,6 +2907,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           expectedAgentInput: isAgentOriginatedKey(tabId, input),
           inputType: input.type,
           key: input.key,
+          guestEditorFocused: guestEditorFocusedTabs.has(tabId),
         })
       ) {
         event.preventDefault();
@@ -2905,6 +2941,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("context-menu", contextMenu);
         wc.off("destroyed", destroyed);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
+        guestEditorFocusedTabs.delete(tabId);
       }).pipe(Effect.ignore),
     );
     const install = Effect.fn("PreviewManager.installWebContentsListeners")(function* () {
@@ -4029,6 +4066,19 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           // Automation activity lease. Let that action keep focus emulation;
           // its normal cleanup disables it when the action actually finishes.
           if (!activityLeases.has(tab.tabId, PreviewActivityConsumer.Automation)) {
+            // Symmetry for the setBackgroundThrottling(false) that acquiring
+            // this lease performed. Without it a tab stayed unthrottled for
+            // the rest of the app's life after a single automated action, so
+            // every tab an agent had ever touched kept running timers and
+            // decoding media off screen (measured 2026-09-03).
+            yield* attempt(
+              {
+                operation: "automationForeground.restoreBackgroundThrottling",
+                tabId: tab.tabId,
+                webContentsId: wc.id,
+              },
+              () => wc.setBackgroundThrottling(true),
+            ).pipe(Effect.ignore);
             const control = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
             if (control) {
               yield* control.semaphore
@@ -5617,6 +5667,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const deferToUserInput = Effect.fn("PreviewManager.deferToUserInput")(function* (
     operation: string,
     tabId: string,
+    expiresAt?: number,
   ) {
     const startedAt = yield* currentMillis;
     let deferred = false;
@@ -5630,6 +5681,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }) === "proceed"
       ) {
         break;
+      }
+      // Say so before the caller's deadline cuts the wait off: an interrupted
+      // wait reports as a generic expiry, and the model cannot tell "the user
+      // was typing" from "the page hung". Failing here, one poll ahead of the
+      // deadline, keeps the reason.
+      if (deferred && expiresAt !== undefined && now + USER_INPUT_DEFERRAL_POLL_MS >= expiresAt) {
+        return yield* new PreviewAutomationDeferredToUserInputError({
+          operation,
+          tabId,
+          waitedMs: now - startedAt,
+        });
       }
       if (!deferred) {
         // Say why nothing is happening: waiting silently looks identical to the
@@ -5659,10 +5721,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     operation: string,
     tabId: string,
     action: Effect.Effect<A, E, R>,
+    expiresAt?: number,
   ) =>
     automationInputMutex.withPermits(1)(
       Effect.gen(function* () {
-        yield* deferToUserInput(operation, tabId);
+        yield* deferToUserInput(operation, tabId, expiresAt);
         yield* rememberAppFocusTarget(tabId);
         return yield* action;
       }).pipe(
@@ -5700,6 +5763,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       phase: "move",
       ...point,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
       sequence: moveSequence,
       createdAt: moveCreatedAt,
     });
@@ -5710,6 +5775,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       phase: "click",
       ...point,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
       sequence: clickSequence,
       createdAt: clickCreatedAt,
     });
@@ -5781,8 +5848,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationClick = Effect.fn("PreviewManager.automationClick")(function* (
     tabId: string,
     input: PreviewAutomationClickInput,
+    options?: AutomationInputOptions,
   ) {
-    yield* withAutomationInputTurn("click", tabId, automationClickUnlocked(tabId, input));
+    yield* withAutomationInputTurn(
+      "click",
+      tabId,
+      automationClickUnlocked(tabId, input),
+      options?.expiresAt,
+    );
   });
 
   /**
@@ -5846,6 +5919,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       phase: "move",
       ...start,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
       sequence: moveSequence,
       createdAt: moveCreatedAt,
     });
@@ -5856,6 +5931,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       phase: "click",
       ...start,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
       sequence: pressSequence,
       createdAt: pressCreatedAt,
     });
@@ -5881,6 +5958,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         tabId,
         phase: "move",
         ...move,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
         sequence: dragSequence,
         createdAt: dragCreatedAt,
       });
@@ -5947,8 +6026,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationDrag = Effect.fn("PreviewManager.automationDrag")(function* (
     tabId: string,
     input: PreviewAutomationDragInput,
+    options?: AutomationInputOptions,
   ) {
-    yield* withAutomationInputTurn("drag", tabId, automationDragUnlocked(tabId, input));
+    yield* withAutomationInputTurn(
+      "drag",
+      tabId,
+      automationDragUnlocked(tabId, input),
+      options?.expiresAt,
+    );
   });
 
   const typeIntoAutomationTarget = Effect.fn("PreviewManager.typeIntoAutomationTarget")(function* (
@@ -6174,6 +6259,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationType = Effect.fn("PreviewManager.automationType")(function* (
     tabId: string,
     input: PreviewAutomationTypeInput,
+    options?: AutomationInputOptions,
   ) {
     yield* withAutomationInputTurn(
       "type",
@@ -6184,6 +6270,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           performAutomationType(tabId, wc, input, send, sendCleanup),
         );
       }),
+      options?.expiresAt,
     );
   });
 
@@ -6486,6 +6573,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const automationPress = Effect.fn("PreviewManager.automationPress")(function* (
     tabId: string,
     input: PreviewAutomationPressInput,
+    options?: AutomationInputOptions,
   ) {
     yield* withAutomationInputTurn(
       "press",
@@ -6496,6 +6584,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           performAutomationPress(tabId, wc, input, send, sendCleanup),
         );
       }),
+      options?.expiresAt,
     );
   });
 
@@ -7096,6 +7185,32 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedErrorClass<Previ
   }
 }
 
+/**
+ * The action was held for the user and the request ran out before they paused.
+ *
+ * Automation defers to a person who is typing or clicking (see
+ * `deferToUserInput`), and that wait used to be charged against the request's
+ * own deadline, so a user composing a message for more than the deadline made
+ * every click, drag, type and press "time out" -- reported to the model with
+ * the same words as a page that failed to respond. Live 2026-09-03 (Pawstalgia,
+ * Suno tab): two clicks died at 14997ms and 14956ms inside the wait, nothing
+ * was ever dispatched, and the model concluded the site's menus were broken.
+ * This error says what actually happened so the caller retries instead of
+ * changing strategy.
+ */
+export class PreviewAutomationDeferredToUserInputError extends Schema.TaggedErrorClass<PreviewAutomationDeferredToUserInputError>()(
+  "PreviewAutomationDeferredToUserInputError",
+  {
+    operation: Schema.String,
+    tabId: Schema.String,
+    waitedMs: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Preview automation ${this.operation} waited ${Math.round(this.waitedMs)}ms for the user to stop typing or clicking and was still waiting when the request expired; nothing was dispatched to tab ${this.tabId}`;
+  }
+}
+
 export class PreviewAutomationControlInterruptedError extends Schema.TaggedErrorClass<PreviewAutomationControlInterruptedError>()(
   "PreviewAutomationControlInterruptedError",
   {
@@ -7126,6 +7241,7 @@ export const PreviewManagerError = Schema.Union([
   PreviewAutomationResultTooLargeError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationDeferredToUserInputError,
 ]);
 export type PreviewManagerError = typeof PreviewManagerError.Type;
 
@@ -7214,14 +7330,17 @@ export class PreviewManager extends Context.Service<
     readonly automationClick: (
       tabId: string,
       input: PreviewAutomationClickInput,
+      options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationDrag: (
       tabId: string,
       input: PreviewAutomationDragInput,
+      options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationType: (
       tabId: string,
       input: PreviewAutomationTypeInput,
+      options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationUpload: (
       tabId: string,
@@ -7234,6 +7353,7 @@ export class PreviewManager extends Context.Service<
     readonly automationPress: (
       tabId: string,
       input: PreviewAutomationPressInput,
+      options?: AutomationInputOptions,
     ) => Effect.Effect<void, PreviewManagerError>;
     readonly automationScroll: (
       tabId: string,

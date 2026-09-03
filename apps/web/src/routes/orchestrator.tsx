@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { BlackHoleOrb, resolveVoiceOrbTint } from "../components/orchestrator/BlackHoleOrb";
 import { useOrchestratorSessionContext } from "../orchestrator/OrchestratorSessionProvider";
+import type { VoiceSessionState } from "../orchestrator/realtimeSession";
 import {
   computeMobileOrbDiameter,
   computeMobileOrbScale,
@@ -86,14 +88,17 @@ function OrchestratorFullScreenView() {
             height: orbDiameter,
             transform: `scale(${scale})`,
           }}
-          className={[
-            "flex items-center justify-center rounded-full transition-[transform,background-color,box-shadow] duration-200",
-            presentation.live
-              ? "bg-primary text-primary-foreground shadow-[0_0_60px_-10px_var(--color-primary)]"
-              : "bg-muted text-muted-foreground",
-          ].join(" ")}
+          className="flex items-center justify-center rounded-full outline-hidden transition-transform duration-200 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"
         >
-          <span className="text-2xl font-medium">{presentation.live ? "Stop" : "Talk"}</span>
+          <BlackHoleOrb
+            size={orbDiameter}
+            tint={resolveVoiceOrbTint(session.state, session.working, presentation.live)}
+            spinning={presentation.live}
+            breathing={session.state === "connecting" || session.working}
+            intensity={presentation.live ? 0.6 : 0}
+          >
+            <span className="text-2xl font-medium">{presentation.live ? "Stop" : "Talk"}</span>
+          </BlackHoleOrb>
         </button>
 
         <div className="text-center">
@@ -129,3 +134,8 @@ function OrchestratorFullScreenView() {
     </div>
   );
 }
+
+/**
+ * The orb's colour for the full-screen route, which has no per-frame levels:
+ * the session state alone says who has the floor.
+ */

@@ -63,6 +63,22 @@ function lastMarkerIndex(text: string, markers: ReadonlyArray<RegExp>): number {
   return last;
 }
 
+const DRIVER_TO_LAUNCH_COMMAND: Readonly<Record<string, string>> = {
+  claudeAgent: "claude",
+  grok: "grok",
+  codex: "codex",
+  cursor: "cursor-agent",
+  opencode: "opencode",
+};
+
+/**
+ * The shell command that starts a provider's CLI in a terminal, or null when
+ * the driver has no interactive CLI to launch (pure API providers).
+ */
+export function providerDriverLaunchCommand(driver: ProviderDriverKind | string): string | null {
+  return DRIVER_TO_LAUNCH_COMMAND[String(driver)] ?? null;
+}
+
 /** Map a terminal's running command (the pane label) to a provider driver. */
 export function terminalCommandProviderDriver(
   command: string | null | undefined,

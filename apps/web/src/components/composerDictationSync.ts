@@ -1,0 +1,119 @@
+/**
+ * Controlled-value reconciliation for the composer's Lexical editor.
+ *
+ * The editor is a controlled component: every edit is emitted upward, stored in
+ * the composer draft store, and handed back as the `value` prop. Applying that
+ * value re-runs `$setComposerEditorPrompt`, which calls `root.clear()` and
+ * rebuilds every text node from the plain string.
+ *
+ * That is fine for keystrokes, which are committed synchronously. It is not
+ * fine while an input method owns the text. macOS dictation streams words and
+ * then makes a post-processing pass that replaces earlier words in place,
+ * anchored to the DOM text nodes it originally wrote. If a controlled
+ * write-back clears the root (or force-moves the caret) between those two
+ * phases, the replacement lands against detached nodes and the word is dropped,
+ * leaving the surrounding spaces behind. IME composition and macOS autocorrect
+ * have the same shape.
+ *
+ * So while dictation is in flight we defer reconciliation instead of applying
+ * it, and resolve the divergence once the input method has let go.
+ */
+
+/** How long after a composition ends we keep treating input as dictation.
+ *
+ * macOS delivers the post-processing replacement as an `insertReplacementText`
+ * beforeinput that can arrive a beat after `compositionend`. The window only
+ * ever delays an external write; it never drops one. */
+export const COMPOSER_DICTATION_SETTLE_MS = 400;
+
+export type ComposerControlledSyncInput = {
+  /** `value` prop as of this render. */
+  readonly incomingValue: string;
+  /** `cursor` prop, already clamped to a collapsed composer offset. */
+  readonly incomingCursor: number;
+  /** Text the editor last emitted upward. */
+  readonly snapshotValue: string;
+  /** Collapsed cursor the editor last emitted upward. */
+  readonly snapshotCursor: number;
+  readonly contextsChanged: boolean;
+  readonly skillsChanged: boolean;
+  readonly isFocused: boolean;
+  /** A composition is open, or we are inside the post-composition settle window. */
+  readonly isDictating: boolean;
+};
+
+export type ComposerControlledSyncDecision =
+  /** Props already match the editor; leave it alone. */
+  | { readonly kind: "skip" }
+  /** An input method owns the text; re-evaluate once it lets go. */
+  | { readonly kind: "defer" }
+  | {
+      readonly kind: "apply";
+      /** Tear down and rebuild the editor content from `incomingValue`. */
+      readonly rewrite: boolean;
+      /** Force the caret to `incomingCursor`. */
+      readonly setSelection: boolean;
+    };
+
+export function resolveComposerControlledSync(
+  input: ComposerControlledSyncInput,
+): ComposerControlledSyncDecision {
+  const valueChanged = input.snapshotValue !== input.incomingValue;
+  const cursorChanged = input.snapshotCursor !== input.incomingCursor;
+  const structureChanged = input.contextsChanged || input.skillsChanged;
+
+  if (!valueChanged && !cursorChanged && !structureChanged) {
+    return { kind: "skip" };
+  }
+
+  // Dictation owns the text and the caret. Rebuilding nodes or moving the
+  // selection underneath it is what deletes words mid-sentence.
+  if (input.isDictating) {
+    return { kind: "defer" };
+  }
+
+  // An unfocused editor has no caret worth restoring, so a cursor-only change
+  // is not worth an update.
+  if (!valueChanged && !structureChanged && !input.isFocused) {
+    return { kind: "skip" };
+  }
+
+  const rewrite = valueChanged || structureChanged;
+  return { kind: "apply", rewrite, setSelection: rewrite || input.isFocused };
+}
+
+export type ComposerDictationFlushInput = {
+  readonly contextsChanged: boolean;
+  readonly skillsChanged: boolean;
+  /** Whether the `value` prop still disagrees with the editor's live text. */
+  readonly valueDiverged: boolean;
+};
+
+export type ComposerDictationFlushDecision =
+  /** Nothing diverged while dictating; fall through to the normal path. */
+  | { readonly kind: "none" }
+  /** Chips changed while dictating; they can only be rendered by a rewrite. */
+  | { readonly kind: "rewrite" }
+  /** The editor moved on while the props lagged; the spoken text wins. */
+  | { readonly kind: "adopt-editor" };
+
+/**
+ * Resolve the divergence that built up while dictation was in flight.
+ *
+ * The editor is authoritative for text: a `value` that disagrees after
+ * dictation is a lagging echo of an earlier edit, and writing it back is
+ * exactly the word loss we are fixing. Inline chips are the exception — they
+ * only exist as nodes, so a terminal-context or skill change still has to be
+ * rebuilt.
+ */
+export function resolveComposerDictationFlush(
+  input: ComposerDictationFlushInput,
+): ComposerDictationFlushDecision {
+  if (input.contextsChanged || input.skillsChanged) {
+    return { kind: "rewrite" };
+  }
+  if (input.valueDiverged) {
+    return { kind: "adopt-editor" };
+  }
+  return { kind: "none" };
+}

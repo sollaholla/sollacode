@@ -11,6 +11,7 @@ import {
   VmAgentNotificationId,
   type VmAgentTask,
   type VmAgentTaskRun,
+  type VmAgentId,
   VmAgentTaskRunId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
@@ -94,6 +95,12 @@ export const delegationWorkerThreadProvenance = (input: {
 export interface VmAgentTaskSchedulerShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   readonly wake: () => Effect.Effect<void>;
+  /**
+   * Interrupt the agent's in-flight turn, if any. Used when an agent is
+   * stopped: the status flip keeps new work from being claimed, this ends the
+   * work already running. Best-effort; never fails.
+   */
+  readonly interruptAgent: (vmAgentId: VmAgentId) => Effect.Effect<void>;
 }
 
 export class VmAgentTaskScheduler extends Context.Service<
@@ -457,6 +464,16 @@ export const make = Effect.gen(function* () {
         yield* failRun(task, run, new Error("The agent has no dedicated chat session."));
         return;
       }
+      if (agent.value.status !== "running") {
+        // Claimed before the agent was stopped. Due tasks of a stopped agent
+        // are no longer claimed at all, so this only settles the straggler.
+        yield* failRun(
+          task,
+          run,
+          new Error("The agent is stopped. Start it to resume scheduled work."),
+        );
+        return;
+      }
       if (!(yield* canStart(run).pipe(Effect.orElseSucceed(() => false)))) return;
 
       const startedAt = yield* nowIso;
@@ -726,7 +743,28 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  return { start, wake } satisfies VmAgentTaskSchedulerShape;
+  const interruptAgent: VmAgentTaskSchedulerShape["interruptAgent"] = (vmAgentId) =>
+    Effect.gen(function* () {
+      const agent = yield* agents.getById(vmAgentId);
+      if (Option.isNone(agent) || agent.value.threadId === null) return;
+      const threadId = agent.value.threadId;
+      const thread = yield* projections.getThreadShellById(threadId);
+      if (Option.isNone(thread)) return;
+      const activeTurnId =
+        thread.value.session?.activeTurnId ??
+        (thread.value.latestTurn?.state === "running" ? thread.value.latestTurn.turnId : null);
+      if (activeTurnId === null) return;
+      const createdAt = yield* nowIso;
+      yield* engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make(`vm-agent-stop:${vmAgentId}:${activeTurnId}`),
+        threadId,
+        turnId: activeTurnId,
+        createdAt,
+      });
+    }).pipe(Effect.ignoreCause({ log: true }));
+
+  return { start, wake, interruptAgent } satisfies VmAgentTaskSchedulerShape;
 });
 
 export const VmAgentTaskSchedulerLive = Layer.effect(VmAgentTaskScheduler, make);

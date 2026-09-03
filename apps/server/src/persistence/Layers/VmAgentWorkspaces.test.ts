@@ -54,6 +54,7 @@ const agent: VmAgent = {
   threadId: ThreadId.make("workspace-thread"),
   status: "running",
   controlMode: "agent",
+  icon: null,
   guestIp: "127.0.0.1",
   lastError: null,
   createdAt,
@@ -223,6 +224,29 @@ it.layer(stores())("VmAgentWorkspaceStore: a one-time occurrence the user interr
       const settled = yield* readTask;
       assert.strictEqual(settled.status, "completed");
       assert.strictEqual(settled.nextRunAt, null);
+    }),
+  );
+});
+
+it.layer(stores())("VmAgentWorkspaceStore: a stopped agent", (it) => {
+  it.effect("keeps due work on the clock but never claims it until the agent runs again", () =>
+    Effect.gen(function* () {
+      const agents = yield* VmAgentStore;
+      const store = yield* VmAgentWorkspaceStore;
+      yield* givenTask({ kind: "interval", everyMinutes: 30 }, "2026-08-21T20:05:00.000Z");
+      yield* agents.updateStatus({ vmAgentId, status: "stopped", updatedAt: createdAt });
+
+      const whileStopped = yield* store.claimNextDue({
+        runId: VmAgentTaskRunId.make("workspace-run-stopped"),
+        now: "2026-08-21T20:10:00.000Z",
+      });
+      assert.isTrue(Option.isNone(whileStopped));
+      // Not consumed: the occurrence is still armed for the same instant.
+      assert.strictEqual((yield* readTask).nextRunAt, "2026-08-21T20:05:00.000Z");
+
+      yield* agents.updateStatus({ vmAgentId, status: "running", updatedAt: createdAt });
+      const run = yield* claim("started", "2026-08-21T20:10:00.000Z");
+      assert.strictEqual(run.scheduledFor, "2026-08-21T20:05:00.000Z");
     }),
   );
 });

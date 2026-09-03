@@ -29,7 +29,8 @@ import {
 } from "./terminalPaneLayout";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
-  DEFAULT_THREAD_TERMINAL_ID,
+  BROWSER_PANE_ID,
+  isBrowserPaneId,
   MAX_TERMINALS_PER_GROUP,
   type TerminalPaneLayout,
   type ThreadMainSurface,
@@ -460,6 +461,100 @@ function newThreadTerminal(
   terminalId: string,
 ): ThreadTerminalUiState {
   return upsertTerminalIntoGroups(state, terminalId, "new");
+}
+
+/**
+ * Collapse every group into one split tree. The drawer presents a thread as a
+ * single layout, so groups persisted by older builds (or opened as right-panel
+ * surfaces) are merged side by side instead of hiding behind each other.
+ */
+function flattenThreadTerminalGroups(state: ThreadTerminalUiState): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  if (normalized.terminalGroups.length <= 1) {
+    return normalized;
+  }
+  const groups = copyTerminalGroups(normalized.terminalGroups);
+  const children: TerminalPaneLayout[] = groups.map((group) => {
+    const layout = groupLayout(group, group.terminalIds);
+    return layout ?? { kind: "terminal", terminalId: group.terminalIds[0] ?? "" };
+  });
+  const first = groups[0]!;
+  const merged: ThreadTerminalGroup = {
+    id: first.id,
+    ...(first.name !== undefined ? { name: first.name } : {}),
+    terminalIds: groups.flatMap((group) => group.terminalIds),
+    layout: {
+      kind: "split",
+      direction: children.length <= 2 ? "horizontal" : "vertical",
+      children,
+    },
+  };
+  return normalizeThreadTerminalUiState({
+    ...normalized,
+    terminalGroups: [merged],
+    activeTerminalGroupId: merged.id,
+  });
+}
+
+/**
+ * Open several terminals at once as a two-column grid in a fresh layout. Used
+ * by the launch pad, which only shows when the thread has no panes yet.
+ */
+function launchThreadTerminalGrid(
+  state: ThreadTerminalUiState,
+  terminalIds: ReadonlyArray<string>,
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  const ids = normalizeTerminalIds([...terminalIds]).filter(
+    (terminalId) => !normalized.terminalIds.includes(terminalId),
+  );
+  if (ids.length === 0) {
+    return normalized;
+  }
+  const rows: TerminalPaneLayout[] = [];
+  for (let index = 0; index < ids.length; index += 2) {
+    const rowIds = ids.slice(index, index + 2);
+    rows.push(
+      rowIds.length === 1
+        ? { kind: "terminal", terminalId: rowIds[0]! }
+        : {
+            kind: "split",
+            direction: "horizontal",
+            children: rowIds.map((terminalId) => ({ kind: "terminal" as const, terminalId })),
+          },
+    );
+  }
+  const layout: TerminalPaneLayout =
+    rows.length === 1 ? rows[0]! : { kind: "split", direction: "vertical", children: rows };
+  const usedGroupIds = new Set(normalized.terminalGroups.map((group) => group.id));
+  const groupId = assignUniqueGroupId(fallbackGroupId(ids[0]!), usedGroupIds);
+  return normalizeThreadTerminalUiState({
+    ...normalized,
+    terminalIds: [...normalized.terminalIds, ...ids],
+    activeTerminalId: ids[0]!,
+    terminalGroups: [
+      ...copyTerminalGroups(normalized.terminalGroups),
+      { id: groupId, terminalIds: [...ids], layout },
+    ],
+    activeTerminalGroupId: groupId,
+  });
+}
+
+/** Dock the browser pane next to the active pane, or focus it when already docked. */
+function addThreadBrowserPane(
+  state: ThreadTerminalUiState,
+  direction: "horizontal" | "vertical",
+): ThreadTerminalUiState {
+  const normalized = normalizeThreadTerminalUiState(state);
+  if (normalized.terminalIds.includes(BROWSER_PANE_ID)) {
+    return setThreadActiveTerminal(normalized, BROWSER_PANE_ID);
+  }
+  return upsertTerminalIntoGroups(
+    normalized,
+    BROWSER_PANE_ID,
+    normalized.terminalIds.length === 0 ? "new" : "split",
+    direction,
+  );
 }
 
 function setThreadActiveTerminal(
@@ -962,6 +1057,12 @@ interface TerminalUiStateStoreState {
   splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
   splitTerminalVertical: (threadRef: ScopedThreadRef, terminalId: string) => void;
   newTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
+  /** Merge every group of a thread into one split layout. */
+  flattenTerminalGroups: (threadRef: ScopedThreadRef) => void;
+  /** Open several terminals at once as a grid in a fresh layout. */
+  launchTerminalGrid: (threadRef: ScopedThreadRef, terminalIds: ReadonlyArray<string>) => void;
+  /** Dock the browser pane beside the active pane (or focus it when docked). */
+  addBrowserPane: (threadRef: ScopedThreadRef, direction: "horizontal" | "vertical") => void;
   ensureTerminal: (
     threadRef: ScopedThreadRef,
     terminalId: string,
@@ -1057,7 +1158,10 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
           const currentPendingIds = state.pendingOpenTerminalIdsByThreadKey[threadKey] ?? [];
           const addedPendingIds = nextUiState.terminalIds.filter(
             (terminalId) =>
-              !previousIdSet.has(terminalId) && !currentPendingIds.includes(terminalId),
+              !previousIdSet.has(terminalId) &&
+              !currentPendingIds.includes(terminalId) &&
+              // Browser panes never get a server session to confirm them.
+              !isBrowserPaneId(terminalId),
           );
           let pendingIds =
             addedPendingIds.length > 0
@@ -1108,6 +1212,18 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             terminalId,
             suppressed: false,
           }),
+        flattenTerminalGroups: (threadRef) =>
+          updateTerminal(threadRef, (state) => flattenThreadTerminalGroups(state)),
+        launchTerminalGrid: (threadRef, terminalIds) => {
+          updateTerminal(threadRef, (state) => launchThreadTerminalGrid(state, terminalIds));
+          // Each id may belong to a terminal closed earlier on this client;
+          // lifting the suppression keeps reconcile from dropping it again.
+          for (const terminalId of terminalIds) {
+            updateTerminal(threadRef, (state) => state, { terminalId, suppressed: false });
+          }
+        },
+        addBrowserPane: (threadRef, direction) =>
+          updateTerminal(threadRef, (state) => addThreadBrowserPane(state, direction)),
         ensureTerminal: (threadRef, terminalId, options) =>
           updateTerminal(
             threadRef,
@@ -1147,11 +1263,9 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
                 terminalFullscreen: false,
               };
             }
-            const next =
-              normalized.terminalIds.length === 0
-                ? upsertTerminalIntoGroups(normalized, DEFAULT_THREAD_TERMINAL_ID, "new")
-                : normalized;
-            return { ...next, mainSurface: surface };
+            // Terminal mode with no panes shows the launch pad; never seed a
+            // placeholder terminal here.
+            return { ...normalized, mainSurface: surface };
           }),
         setTerminalFullscreen: (threadRef, fullscreen) =>
           updateTerminal(threadRef, (state) => {
@@ -1286,8 +1400,12 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             const nextIds = [
               ...current.terminalIds.filter(
                 (terminalId) =>
-                  (serverIdSet.has(terminalId) || stillPendingIdSet.has(terminalId)) &&
-                  !suppressedIds.has(terminalId),
+                  // A docked browser pane is purely local layout: the server
+                  // session list never mentions it, so it survives as long as
+                  // it is still in the layout.
+                  isBrowserPaneId(terminalId) ||
+                  ((serverIdSet.has(terminalId) || stillPendingIdSet.has(terminalId)) &&
+                    !suppressedIds.has(terminalId)),
               ),
               ...serverIds.filter(
                 (terminalId) => !currentIdSet.has(terminalId) && !suppressedIds.has(terminalId),

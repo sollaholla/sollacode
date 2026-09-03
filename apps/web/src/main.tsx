@@ -7,12 +7,14 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./index.css";
 
+import { APP_VERSION } from "./branding";
 import { isElectron } from "./env";
 import { getRouter } from "./router";
 import {
   syncDocumentElectronPlatformClasses,
   syncDocumentWindowControlsOverlayClass,
 } from "./lib/windowControlsOverlay";
+import { installDynamicImportRecoveryListeners } from "./lib/dynamicImportRecoveryListeners";
 import { AppRoot } from "./AppRoot";
 import { IntentionalShutdownOverlay } from "./components/IntentionalShutdownOverlay";
 
@@ -28,6 +30,19 @@ const OrchestratorBubbleApp = lazy(() =>
 // out of the route tree entirely.
 const isOrchestratorBubbleWindow =
   isElectron && window.location.hash.startsWith("#/orchestrator-bubble");
+
+// A release replaces every hashed chunk, so an already-open client 404s on its
+// next lazy import. Install this before anything can be imported lazily: the
+// router's error boundary only sees route loads, and these are the failures
+// that reach no boundary at all.
+installDynamicImportRecoveryListeners({
+  appVersion: APP_VERSION,
+  target: window,
+  getStorage: () => window.sessionStorage,
+  location: window.location,
+  now: () => Date.now(),
+  desktopBridgeAvailable: () => window.desktopBridge !== undefined,
+});
 
 // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
 const history = isElectron ? createHashHistory() : createBrowserHistory();

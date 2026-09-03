@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import {
   formatDuration,
   workEntryIndicatesToolNeutralStatus,
+  workLogEntryIsThought,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type WorkLogEntry,
@@ -179,13 +180,21 @@ export type TimelineLatestTurn = Pick<
   "turnId" | "state" | "startedAt" | "completedAt"
 >;
 
-export type MessagesTimelineRow =
+type MessagesTimelineRowContent =
   | {
       kind: "work";
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
     }
+  /**
+   * The model thinking out loud, drawn in the timeline rather than inside the
+   * work group. A thought explains the calls around it, so it has to be
+   * readable without opening the disclosure that hides them — and it ends the
+   * run of calls it was reasoning about, the way every other provider's
+   * reasoning splits a tool-call chain.
+   */
+  | { kind: "thought"; id: string; createdAt: string; text: string }
   | {
       kind: "work-toggle";
       id: string;
@@ -235,6 +244,14 @@ export type MessagesTimelineRow =
    */
   | { kind: "conversation-boundary"; id: string; createdAt: string }
   | { kind: "working"; id: string; createdAt: string | null };
+
+/**
+ * Every row also carries which edges of its assistant-turn box it draws (see
+ * {@link applyWorkCardEdges}); undefined means the row sits outside any box.
+ */
+export type MessagesTimelineRow = MessagesTimelineRowContent & {
+  readonly cardEdge?: WorkCardEdge | undefined;
+};
 
 function isProviderTransitionWorkEntry(entry: WorkLogEntry): boolean {
   return (
@@ -690,6 +707,15 @@ export function deriveMessagesTimelineRows(input: {
         });
         continue;
       }
+      if (workLogEntryIsThought(timelineEntry.entry)) {
+        nextRows.push({
+          kind: "thought",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          text: (timelineEntry.entry.detail ?? "").trim(),
+        });
+        continue;
+      }
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
@@ -698,6 +724,7 @@ export function deriveMessagesTimelineRows(input: {
           !nextEntry ||
           nextEntry.kind !== "work" ||
           isProviderTransitionWorkEntry(nextEntry.entry) ||
+          workLogEntryIsThought(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {
@@ -852,6 +879,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "conversation-boundary":
       return a.createdAt === (b as typeof a).createdAt;
 
+    case "thought": {
+      const bt = b as typeof a;
+      return a.createdAt === bt.createdAt && a.text === bt.text;
+    }
+
     case "work-toggle": {
       const bw = b as typeof a;
       return (
@@ -876,4 +908,94 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       );
     }
   }
+}
+
+/**
+ * Which edges a row draws of the bordered card it shares with its neighbours.
+ * The timeline is a virtualized list of independent rows, so one visual box
+ * per assistant turn has to be painted row by row: the first row draws the
+ * top edge, the last the bottom, everything between only the sides.
+ */
+export type WorkCardEdge = "solo" | "start" | "middle" | "end";
+
+/**
+ * The agent's side of the conversation lives in a box: its commentary and
+ * replies, its tool work, the show-more/fewer toggle, and the live working
+ * indicator. User messages, transitions, folds, and plans sit outside it and
+ * therefore split one box from the next.
+ */
+export function isWorkCardRow(row: MessagesTimelineRow): boolean {
+  switch (row.kind) {
+    case "work":
+    case "work-toggle":
+    case "working":
+      return true;
+    case "message":
+      return row.message.role === "assistant";
+    default:
+      return false;
+  }
+}
+
+export function deriveWorkCardEdges(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): ReadonlyMap<string, WorkCardEdge> {
+  const edges = new Map<string, WorkCardEdge>();
+  let segmentStart = -1;
+
+  const close = (endIndex: number) => {
+    if (segmentStart < 0) return;
+    const first = rows[segmentStart];
+    const last = rows[endIndex];
+    if (first === undefined || last === undefined) {
+      segmentStart = -1;
+      return;
+    }
+    if (endIndex === segmentStart) {
+      edges.set(first.id, "solo");
+    } else {
+      edges.set(first.id, "start");
+      for (let index = segmentStart + 1; index < endIndex; index += 1) {
+        const middle = rows[index];
+        if (middle !== undefined) edges.set(middle.id, "middle");
+      }
+      edges.set(last.id, "end");
+    }
+    segmentStart = -1;
+  };
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row !== undefined && isWorkCardRow(row)) {
+      if (segmentStart < 0) segmentStart = index;
+    } else {
+      close(index - 1);
+    }
+  }
+  close(rows.length - 1);
+  return edges;
+}
+
+const decoratedRowCache = new WeakMap<MessagesTimelineRow, MessagesTimelineRow>();
+
+/**
+ * Stamps each row with its box edge. The virtualized list re-renders a row
+ * only when the row object changes, so the edge has to live on the row: a
+ * side map would leave already-mounted rows drawing stale edges. Rows whose
+ * edge is unchanged keep their identity (cached per source object), so the
+ * structural sharing from {@link computeStableMessagesTimelineRows} survives.
+ */
+export function applyWorkCardEdges(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): MessagesTimelineRow[] {
+  const edges = deriveWorkCardEdges(rows);
+  return rows.map((row) => {
+    const edge = edges.get(row.id);
+    if (row.cardEdge === edge) return row;
+    const cached = decoratedRowCache.get(row);
+    if (cached !== undefined && cached.cardEdge === edge) return cached;
+    const decorated: MessagesTimelineRow = { ...row, cardEdge: edge };
+    decoratedRowCache.set(row, decorated);
+    return decorated;
+  });
 }

@@ -31,6 +31,7 @@ import {
 } from "../lib/terminalContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { RESUME_PROMPT } from "../resumePrompt";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 
 export {
   QUEUED_MESSAGE_AUTO_PROMOTE_DELAY_MS,
@@ -993,8 +994,22 @@ export type BlockedSendOutcome =
 export function resolveSendDisabledReason(input: {
   readonly providerAuthenticationPaused: boolean;
   readonly threadCatchingUp: boolean;
+  /** Trimmed prompt length; see composerPromptLengthState for why trimmed. */
+  readonly promptLength?: number;
+  readonly maxPromptChars?: number;
 }): string | null {
-  return input.providerAuthenticationPaused ? "Sign in to continue" : null;
+  if (input.providerAuthenticationPaused) return "Sign in to continue";
+  // The provider rejects an oversized turn at validation, which surfaced as
+  // "Provider validation failed in ProviderService.sendTurn: Expected a value
+  // with a length of at most 120000". Say so here, before the send, and say
+  // exactly how much has to go — a disabled button with no reason is worse
+  // than the error it replaces.
+  const max = input.maxPromptChars ?? PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+  const length = input.promptLength ?? 0;
+  if (length > max) {
+    return `Message is ${(length - max).toLocaleString()} characters over the ${max.toLocaleString()} limit`;
+  }
+  return null;
 }
 
 export function resolveBlockedSend(input: {

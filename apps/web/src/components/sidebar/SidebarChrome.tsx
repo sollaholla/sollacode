@@ -2,6 +2,7 @@ import { SettingsIcon } from "lucide-react";
 import { memo, useCallback } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 
+import { APP_BASE_NAME } from "../../branding";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import {
@@ -72,15 +73,18 @@ function SidebarBrand() {
   return (
     <Link
       aria-label="Solla Code home"
-      className="sidebar-brand relative z-10 ml-[var(--workspace-titlebar-content-left)] size-8 shrink-0 items-center justify-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2"
+      className="sidebar-brand relative z-10 ml-[var(--workspace-titlebar-content-left)] h-8 min-w-0 shrink-0 items-center gap-2 overflow-hidden rounded-md pr-1 outline-hidden ring-ring focus-visible:ring-2"
       to="/"
     >
       <img
         alt=""
         aria-hidden
-        className="size-7 shrink-0 object-contain"
+        className="size-6 shrink-0 object-contain"
         src="/solla-code-mark.png"
       />
+      <span className="truncate text-[15px] font-semibold tracking-[-0.01em] text-sidebar-foreground">
+        {APP_BASE_NAME}
+      </span>
     </Link>
   );
 }

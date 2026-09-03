@@ -3118,6 +3118,126 @@ describe("PreviewManager", () => {
       ),
   );
 
+  effectIt.effect("names the wait for the user when the request expires inside it", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        // Live 2026-09-03 (Pawstalgia, Suno): a user typing a message for
+        // longer than the request deadline made every click expire inside
+        // the wait, and the failure reached the model as a generic timeout.
+        const sendCommand = vi.fn<(method: string, params?: unknown) => Promise<unknown>>(
+          async () => undefined,
+        );
+        const mainWindowListeners = new Map<
+          string,
+          (event: Electron.Event, input: Electron.Input) => void
+        >();
+        const mainWebContents = {
+          sendInputEvent: vi.fn(),
+          on: vi.fn(
+            (event: string, listener: (event: Electron.Event, input: Electron.Input) => void) => {
+              mainWindowListeners.set(event, listener);
+            },
+          ),
+          off: vi.fn(),
+        };
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          on: vi.fn(),
+          off: vi.fn(),
+          webContents: mainWebContents,
+        } as never);
+        fromId.mockReturnValue({
+          id: 42,
+          hostWebContents: mainWebContents,
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          session: {},
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+        yield* manager.createTab("tab_held");
+        yield* manager.registerWebview("tab_held", 42);
+
+        // Off zero: a keystroke stamped at t=0 reads as "never typed".
+        yield* TestClock.adjust(10_000);
+        // The user is typing in the composer.
+        mainWindowListeners.get("before-input-event")?.({} as Electron.Event, {
+          type: "keyDown",
+          key: "a",
+          code: "KeyA",
+          isAutoRepeat: false,
+          isComposing: false,
+          shift: false,
+          control: false,
+          alt: false,
+          meta: false,
+          location: 0,
+          modifiers: [],
+        });
+        yield* Effect.yieldNow;
+
+        const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+        const click = yield* manager
+          .automationClick("tab_held", { x: 120, y: 80 }, { expiresAt: now + 3_000 })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        // Still typing at every poll, so the deferral never releases.
+        for (let elapsed = 0; elapsed < 3_000; elapsed += 500) {
+          yield* TestClock.adjust(500);
+          mainWindowListeners.get("before-input-event")?.({} as Electron.Event, {
+            type: "keyDown",
+            key: "b",
+            code: "KeyB",
+            isAutoRepeat: false,
+            isComposing: false,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+            location: 0,
+            modifiers: [],
+          });
+          yield* Effect.yieldNow;
+        }
+        yield* TestClock.adjust(200);
+
+        const exit = yield* Fiber.await(click);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) return;
+        const found = Cause.findErrorOption(exit.cause);
+        if (Option.isNone(found)) throw new Error(`no typed error: ${Cause.pretty(exit.cause)}`);
+        const error = found.value;
+        expect(error).toMatchObject({
+          _tag: "PreviewAutomationDeferredToUserInputError",
+          operation: "click",
+          tabId: "tab_held",
+        });
+        expect((error as { waitedMs: number }).waitedMs).toBeGreaterThanOrEqual(2_500);
+        // Nothing was ever dispatched to the page.
+        expect(
+          sendCommand.mock.calls.filter(([method]) => method === "Input.dispatchMouseEvent"),
+        ).toEqual([]);
+      }),
+    ),
+  );
+
   effectIt.effect("does not dereference the main WebContents after its window closes", () =>
     withManager((manager) =>
       Effect.gen(function* () {

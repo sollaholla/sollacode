@@ -735,8 +735,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(reachable).toContain("animate-status-pulse");
-    expect(unreachable).not.toContain("animate-status-pulse");
+    // The animated equalizer is what claims live progress now; the offline
+    // row draws static dots instead.
+    expect(reachable).toContain("working-pillars");
+    expect(unreachable).not.toContain("working-pillars");
     expect(unreachable).toContain("reconnecting");
     expect(unreachable).not.toContain("Working for");
   });
@@ -914,7 +916,9 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
-    expect(markup).toContain("rounded-2xl bg-accent p-3");
+    expect(markup).toContain(
+      "rounded-[14px] border border-[var(--gold-line)] bg-[var(--gold-tint)]",
+    );
   });
 
   it("collapses the synthetic Agent continuation into an inline fast-forward chip", () => {
@@ -1231,6 +1235,13 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain(thought);
     expect(markup).not.toContain('aria-label="Thinking');
     expect(markup).not.toContain("lucide-chevron-down");
+    // Typeset as assistant text, not as quieter chrome: same markdown
+    // container, and none of the muted work-row styling it used to wear
+    // (reported 2026-09-03, side by side with a provider whose reasoning
+    // arrives as an ordinary assistant message).
+    expect(markup).toContain("data-timeline-thought");
+    const thoughtRow = markup.slice(markup.indexOf("data-timeline-thought"));
+    expect(thoughtRow).not.toContain("text-muted-foreground");
   });
 
   it("renders Token Optimizer evidence with a hoverable lightning affordance", () => {

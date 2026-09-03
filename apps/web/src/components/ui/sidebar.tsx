@@ -92,6 +92,30 @@ function SidebarInsetOverlayProvider({
   return <SidebarInsetOverlayContext value={overlay}>{children}</SidebarInsetOverlayContext>;
 }
 
+/**
+ * Chrome every inset carries on a phone: a bar above the route's content and
+ * one below it. The app shell supplies them once; the inset is what knows
+ * where the route's content starts and ends, so it is what places them.
+ */
+interface SidebarInsetChrome {
+  readonly top: React.ReactNode;
+  readonly bottom: React.ReactNode;
+}
+
+const SidebarInsetChromeContext = React.createContext<SidebarInsetChrome>({
+  top: null,
+  bottom: null,
+});
+
+function SidebarInsetChromeProvider({
+  children,
+  top,
+  bottom,
+}: SidebarInsetChrome & { children: React.ReactNode }) {
+  const value = React.useMemo(() => ({ top, bottom }), [top, bottom]);
+  return <SidebarInsetChromeContext value={value}>{children}</SidebarInsetChromeContext>;
+}
+
 function useSidebar() {
   const context = React.use(SidebarContext);
   if (!context) {
@@ -670,6 +694,7 @@ function SidebarRail({
 
 function SidebarInset({ className, children, ...props }: React.ComponentProps<"main">) {
   const overlay = React.use(SidebarInsetOverlayContext);
+  const chrome = React.use(SidebarInsetChromeContext);
 
   return (
     <main
@@ -681,8 +706,10 @@ function SidebarInset({ className, children, ...props }: React.ComponentProps<"m
       data-slot="sidebar-inset"
       {...props}
     >
+      {chrome.top}
       {children}
       {overlay}
+      {chrome.bottom}
     </main>
   );
 }
@@ -1066,6 +1093,7 @@ export {
   SidebarHeader,
   SidebarInput,
   SidebarInset,
+  SidebarInsetChromeProvider,
   SidebarInsetOverlayProvider,
   SidebarMenu,
   SidebarMenuAction,

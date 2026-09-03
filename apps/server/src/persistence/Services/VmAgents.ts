@@ -7,7 +7,7 @@
  *
  * @module VmAgentStore
  */
-import { VmAgent, VmAgentId } from "@t3tools/contracts";
+import { VmAgent, VmAgentId, type VmAgentIcon, type VmAgentStatus } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -41,6 +41,20 @@ export interface VmAgentStoreShape {
   ) => Effect.Effect<Option.Option<VmAgent>, ProjectionRepositoryError>;
 
   readonly deleteById: (vmAgentId: VmAgentId) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Set (or clear) the agent's outlined glyph and bump `updated_at`. */
+  readonly updateIcon: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly icon: VmAgentIcon | null;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Switch the agent's lifecycle status (start/stop) and bump `updated_at`. */
+  readonly updateStatus: (input: {
+    readonly vmAgentId: VmAgentId;
+    readonly status: VmAgentStatus;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 export class VmAgentStore extends Context.Service<VmAgentStore, VmAgentStoreShape>()(

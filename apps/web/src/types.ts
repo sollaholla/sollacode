@@ -22,7 +22,14 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const DEFAULT_INTERACTION_MODE: ProviderInteractionMode = "default";
 export const DEFAULT_THREAD_TERMINAL_HEIGHT = 280;
 export const DEFAULT_THREAD_TERMINAL_ID = "term-1";
-export const MAX_TERMINALS_PER_GROUP = 4;
+/** Panes one thread layout may hold; the layout is a single split tree, not tabs of groups. */
+export const MAX_TERMINALS_PER_GROUP = 6;
+/** The docked browser pane: a layout leaf that shows the thread's preview tab instead of a PTY. */
+export const BROWSER_PANE_ID = "browser:pane";
+/** True for layout leaf ids that are browser panes rather than terminal sessions. */
+export function isBrowserPaneId(id: string): boolean {
+  return id.startsWith("browser:");
+}
 export type ProjectScript = ContractProjectScript;
 
 /**

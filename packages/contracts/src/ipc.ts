@@ -676,6 +676,13 @@ export interface DesktopPreviewPointerEvent {
   y: number;
   sequence: number;
   createdAt: string;
+  /**
+   * The guest's `window.innerWidth`/`innerHeight` when the point was
+   * dispatched. Coordinates are in that space, so the renderer can place the
+   * cursor by fraction of the drawn guest instead of guessing zoom and fit.
+   */
+  readonly viewportWidth?: number;
+  readonly viewportHeight?: number;
 }
 
 export const DesktopPreviewPointerEventSchema: Schema.Codec<DesktopPreviewPointerEvent> =
@@ -686,6 +693,8 @@ export const DesktopPreviewPointerEventSchema: Schema.Codec<DesktopPreviewPointe
     y: Schema.Number,
     sequence: Schema.Int,
     createdAt: Schema.String,
+    viewportWidth: Schema.optionalKey(Schema.Number),
+    viewportHeight: Schema.optionalKey(Schema.Number),
   });
 
 /**
@@ -1404,6 +1413,14 @@ export interface DesktopOrchestratorBubbleBridge {
   beginDrag?: () => Promise<void>;
   /** Persist the bubble's resting position after a drag. */
   dragEnd: () => Promise<void>;
+  /**
+   * Let clicks through the bubble window's empty area, or take them back.
+   * The window is far larger than the orb so the orb can swell without being
+   * clipped by the window rectangle; without this the transparent remainder
+   * would eat every click aimed at whatever sits behind it. Optional on older
+   * preloads.
+   */
+  setInteractive?: (interactive: boolean) => Promise<void>;
   /** Reveal the main window and navigate it to the orchestrator thread. */
   open: () => Promise<void>;
   /**

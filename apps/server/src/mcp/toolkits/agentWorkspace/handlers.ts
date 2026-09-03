@@ -6,6 +6,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { VmAgentStore } from "../../../persistence/Services/VmAgents.ts";
 import { VmAgentWorkspace } from "../../../vm/VmAgentWorkspace.ts";
 import { VmAgentTaskScheduler } from "../../../vm/VmAgentTaskScheduler.ts";
+import { VmManager } from "../../../vm/VmManager.ts";
 import { AgentWorkspaceToolkit } from "./tools.ts";
 import {
   AgentWorkspaceCapabilityUnavailableError,
@@ -50,6 +51,19 @@ export const handleAgentWorkspace = Effect.fn("AgentWorkspace.handle")(function*
   const vmAgentId = agent.value.vmAgentId;
 
   switch (input.action) {
+    case "set_icon": {
+      if (input.icon === undefined) {
+        return yield* new AgentWorkspaceInvalidInputError({
+          action: input.action,
+          missing: "icon",
+        });
+      }
+      const manager = yield* VmManager;
+      yield* manager
+        .setIcon(vmAgentId, input.icon)
+        .pipe(Effect.mapError(mapFailure("setting the agent icon")));
+      return { action: input.action, status: `Icon set to "${input.icon}".` };
+    }
     case "list_tasks": {
       const snapshot = yield* workspace
         .snapshot(vmAgentId)

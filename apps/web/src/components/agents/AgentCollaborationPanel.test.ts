@@ -31,6 +31,7 @@ const agent = (id: string) =>
     purpose: `${id} purpose`,
     status: "running",
     controlMode: "agent",
+    icon: null,
     availability: "available",
     capabilities: ["collaboration"],
     providerInstanceId: null,

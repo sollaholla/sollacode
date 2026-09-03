@@ -7,6 +7,8 @@ import {
   expandCollapsedComposerCursor,
   canReferenceLocalComposerFiles,
   classifyComposerFileIntake,
+  COMPOSER_MAX_PROMPT_CHARS,
+  composerPromptLengthState,
   isComposerSubmitBlocked,
   isEnabledComposerSubmitButton,
   isCollapsedCursorAdjacentToInlineToken,
@@ -38,6 +40,37 @@ describe("isEnabledComposerSubmitButton", () => {
   });
 });
 
+describe("composerPromptLengthState", () => {
+  it("counts the trimmed length the server validates, not code points", () => {
+    // The server trims first, so surrounding whitespace must not count.
+    expect(composerPromptLengthState("  hi  ", 10).length).toBe(2);
+    // An emoji is two UTF-16 code units; the server's isMaxLength counts those,
+    // so counting code points here would under-report and let a send fail.
+    expect(composerPromptLengthState("\u{1F600}", 10).length).toBe(2);
+  });
+
+  it("reports how far over the limit a long paste is", () => {
+    const state = composerPromptLengthState("x".repeat(120_050), 120_000);
+    expect(state.tooLong).toBe(true);
+    expect(state.overBy).toBe(50);
+    expect(state.nearLimit).toBe(true);
+  });
+
+  it("warns on approach before the limit is broken", () => {
+    const approaching = composerPromptLengthState("x".repeat(109_000), 120_000);
+    expect(approaching.tooLong).toBe(false);
+    expect(approaching.nearLimit).toBe(true);
+    const short = composerPromptLengthState("x".repeat(10), 120_000);
+    expect(short.nearLimit).toBe(false);
+    expect(short.overBy).toBe(0);
+  });
+
+  it("defaults to the provider limit the server enforces", () => {
+    expect(COMPOSER_MAX_PROMPT_CHARS).toBe(120_000);
+    expect(composerPromptLengthState("x").max).toBe(120_000);
+  });
+});
+
 describe("isComposerSubmitBlocked", () => {
   const ready = {
     noProviderAvailable: false,
@@ -48,6 +81,8 @@ describe("isComposerSubmitBlocked", () => {
   it("permits submission only when nothing is pending", () => {
     expect(isComposerSubmitBlocked(ready)).toBe(false);
     expect(isComposerSubmitBlocked({ ...ready, noProviderAvailable: true })).toBe(true);
+    expect(isComposerSubmitBlocked({ ...ready, promptTooLong: true })).toBe(true);
+    expect(isComposerSubmitBlocked({ ...ready, promptTooLong: false })).toBe(false);
     expect(isComposerSubmitBlocked({ ...ready, isSendDisabled: true })).toBe(true);
   });
 

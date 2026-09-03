@@ -9,8 +9,16 @@ import type { DesktopOrchestratorBubbleState } from "@t3tools/contracts";
  */
 
 export const BUBBLE_BASE_DIAMETER = 56;
-/** The window is 128px; the orb plus glow must never clip against it. */
+/**
+ * The orb's canvas is 2.4x its sphere (the lensed star field needs the room),
+ * so at this scale it draws BUBBLE_BASE_DIAMETER * 2.4 * 2.0 = 269px across.
+ * The bubble window is sized to hold that; the two numbers move together, and
+ * the window must never be the smaller of the pair or the orb is clipped into
+ * square corners at full voice.
+ */
 export const BUBBLE_MAX_SCALE = 2.0;
+/** Widest the orb is ever drawn, in CSS px. Must fit inside the window. */
+export const BUBBLE_MAX_DRAWN_DIAMETER = BUBBLE_BASE_DIAMETER * 2.4 * BUBBLE_MAX_SCALE;
 
 const MIC_WEIGHT = 0.95;
 const ASSISTANT_WEIGHT = 0.55;

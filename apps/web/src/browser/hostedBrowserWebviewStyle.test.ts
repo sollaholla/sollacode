@@ -4,6 +4,7 @@ import {
   HOSTED_BROWSER_WEBVIEW_ACTIVE_Z_INDEX,
   HOSTED_BROWSER_WEBVIEW_BACKGROUND_Z_INDEX,
   HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
+  HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA,
   HOSTED_BROWSER_WEBVIEW_STAGED_Z_INDEX,
   isHostedBrowserWebviewPresented,
   readHostedBrowserHostWindowPresenting,
@@ -104,9 +105,10 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     });
   });
 
-  it("keeps an inactive webview compositor-active at its last full geometry", () => {
+  it("keeps a warming webview compositor-active at its last full geometry", () => {
     const style = resolveHostedBrowserWebviewWrapperStyle({
       active: false,
+      warming: true,
       rect: { x: 12, y: 34, width: 800, height: 600 },
       hiddenSize: { width: 393, height: 852 },
     });
@@ -120,6 +122,37 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       pointerEvents: "none",
       opacity: HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
       visibility: "visible",
+    });
+  });
+
+  it("parks a resting background guest off the compositor at the same geometry", () => {
+    const rect = { x: 12, y: 34, width: 800, height: 600 };
+    const hiddenSize = { width: 393, height: 852 };
+    const warming = resolveHostedBrowserWebviewWrapperStyle({
+      active: false,
+      warming: true,
+      rect,
+      hiddenSize,
+    });
+    const parked = resolveHostedBrowserWebviewWrapperStyle({ active: false, rect, hiddenSize });
+
+    // Only the alpha may change. A guest returning with a stale compositor
+    // clip is why geometry is held identical across every state.
+    expect(parked).toEqual({ ...warming, opacity: HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA });
+    expect(HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA).toBe(0);
+  });
+
+  it("keeps a staged guest compositor-active so its native capture can paint", () => {
+    expect(
+      resolveHostedBrowserWebviewWrapperStyle({
+        active: false,
+        snapshotStaged: true,
+        rect: { x: 12, y: 34, width: 800, height: 600 },
+        hiddenSize: { width: 393, height: 852 },
+      }),
+    ).toMatchObject({
+      zIndex: HOSTED_BROWSER_WEBVIEW_STAGED_Z_INDEX,
+      opacity: HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
     });
   });
 
@@ -144,6 +177,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     expect(
       resolveHostedBrowserWebviewWrapperStyle({
         active: false,
+        warming: true,
         rect: null,
         hiddenSize: { width: 1280, height: 800 },
       }),
@@ -177,7 +211,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       height: 640,
       zIndex: HOSTED_BROWSER_WEBVIEW_BACKGROUND_Z_INDEX,
       pointerEvents: "none",
-      opacity: HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
+      opacity: HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA,
       visibility: "visible",
     });
   });
@@ -191,12 +225,17 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
     const inactive = resolveHostedBrowserWebviewWrapperStyle(input);
     const staged = resolveHostedBrowserWebviewWrapperStyle({ ...input, snapshotStaged: true });
 
+    // Staging lifts the guest back onto the compositor so the capture has a
+    // frame to take; the geometry it captures must not move.
     expect(staged).toEqual({
       ...inactive,
       zIndex: HOSTED_BROWSER_WEBVIEW_STAGED_Z_INDEX,
+      opacity: HOSTED_BROWSER_WEBVIEW_COMPOSITOR_ALPHA,
     });
-    expect(inactive.opacity).toBeGreaterThan(0);
-    expect(staged.opacity).toBe(inactive.opacity);
+    // A resting guest is parked off the compositor; staging is what puts it
+    // back, and it is the only thing that changes.
+    expect(inactive.opacity).toBe(HOSTED_BROWSER_WEBVIEW_PARKED_ALPHA);
+    expect(staged.opacity).toBeGreaterThan(0);
     expect(staged.left).toBe(inactive.left);
     expect(staged.top).toBe(inactive.top);
     expect(staged.width).toBe(inactive.width);

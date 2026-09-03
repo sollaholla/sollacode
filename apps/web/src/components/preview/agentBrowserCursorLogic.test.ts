@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { agentBrowserCursorOffset, agentBrowserCursorOpacity } from "./agentBrowserCursorLogic";
+import {
+  agentBrowserCursorOffset,
+  agentBrowserCursorOpacity,
+  agentBrowserCursorPoint,
+} from "./agentBrowserCursorLogic";
 
 describe("agentBrowserCursorOpacity", () => {
   it("keeps active movement fully visible", () => {
@@ -82,5 +86,81 @@ describe("agentBrowserCursorOffset", () => {
       x: 12,
       y: 34,
     });
+  });
+});
+
+describe("agentBrowserCursorPoint", () => {
+  // A 1280×800 guest drawn scaled into a 640×400 rect that starts 40px right
+  // and 12px below the overlay's containing block.
+  const drawn = { left: 140, top: 62, width: 640, height: 400 };
+  const parent = { left: 100, top: 50 };
+
+  it("maps a guest point by fraction of the drawn rect, whatever the scale", () => {
+    expect(
+      agentBrowserCursorPoint({
+        x: 1280,
+        y: 800,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        drawn,
+        parent,
+      }),
+    ).toEqual({ x: 680, y: 412 });
+    expect(
+      agentBrowserCursorPoint({
+        x: 320,
+        y: 200,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        drawn,
+        parent,
+      }),
+    ).toEqual({ x: 200, y: 112 });
+  });
+
+  it("is exact at zoom because the guest viewport, not the element, is the denominator", () => {
+    // Zoomed to 150%: the guest reports 853×533 while the element is still drawn 640×400.
+    const point = agentBrowserCursorPoint({
+      x: 853,
+      y: 533,
+      viewportWidth: 853,
+      viewportHeight: 533,
+      drawn,
+      parent,
+    });
+    expect(point).toEqual({ x: 680, y: 412 });
+  });
+
+  it("clamps points just outside the viewport and rejects degenerate rects", () => {
+    expect(
+      agentBrowserCursorPoint({
+        x: 1300,
+        y: -5,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        drawn,
+        parent,
+      }),
+    ).toEqual({ x: 680, y: 12 });
+    expect(
+      agentBrowserCursorPoint({
+        x: 10,
+        y: 10,
+        viewportWidth: 0,
+        viewportHeight: 800,
+        drawn,
+        parent,
+      }),
+    ).toBeNull();
+    expect(
+      agentBrowserCursorPoint({
+        x: 10,
+        y: 10,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        drawn: { ...drawn, width: 0 },
+        parent,
+      }),
+    ).toBeNull();
   });
 });

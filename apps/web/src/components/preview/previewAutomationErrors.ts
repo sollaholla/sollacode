@@ -296,6 +296,8 @@ const DESKTOP_FAILURE_GUIDANCE: Readonly<Record<string, string>> = {
   PreviewAutomationResultTooLargeError: "Return a summary, a slice, or specific fields instead",
   PreviewAutomationTimeoutError: "Check the page with preview_snapshot before waiting again",
   PreviewAutomationControlInterruptedError: "The user is using the tab; retry after a moment",
+  PreviewAutomationDeferredToUserInputError:
+    "The user is typing or clicking right now, so the action was held and never reached the page; nothing on the page failed. Wait about ten seconds and retry the same action unchanged rather than changing approach",
 };
 
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*/;
@@ -390,6 +392,10 @@ const desktopFailureReason = (cause: unknown): string | undefined => {
     }
     case "PreviewAutomationControlInterruptedError":
       return `browser control was interrupted by human input${tab ? ` in tab ${tab}` : ""}. The user is using the tab; retry after a moment`;
+    case "PreviewAutomationDeferredToUserInputError": {
+      const waited = num("waitedMs");
+      return `the action was held for ${waited === undefined ? "the whole request" : `${Math.round(waited / 1000)}s`} because the user is typing or clicking, and never reached the page${tab ? ` (tab ${tab})` : ""}. Nothing on the page failed. Wait about ten seconds and retry the same action unchanged rather than changing approach`;
+    }
     case "PreviewOperationError": {
       const operation =
         typeof record.operation === "string" && record.operation.trim().length <= 128

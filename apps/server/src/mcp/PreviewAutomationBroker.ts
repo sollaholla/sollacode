@@ -163,6 +163,48 @@ const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): stri
 const isPreviewTabId = Schema.is(PreviewTabId);
 const isPreviewHumanVerification = Schema.is(PreviewHumanVerification);
 
+/**
+ * Operations that take the keyboard or pointer, and so wait for the user.
+ *
+ * The desktop holds these while a person is typing or clicking (its
+ * `deferToUserInput`), and that wait used to be charged against the request's
+ * own deadline: a user composing a message for longer than the 15s default
+ * made every one of them "time out", and the model was told so in the same
+ * words as a page that failed to respond. Live 2026-09-03 (Pawstalgia, Suno):
+ * two clicks expired inside the wait, nothing was dispatched, and the model
+ * concluded the site's menus rejected automation. The grace below is time
+ * for the person, on top of the time for the page.
+ */
+const USER_INPUT_OPERATIONS: ReadonlySet<PreviewAutomationOperation> = new Set([
+  "click",
+  "drag",
+  "type",
+  "press",
+]);
+export const USER_INPUT_DEFERRAL_GRACE_MS = 30_000;
+/**
+ * The MCP client waits 60s for a tool call (the SDK default, and the LAN Chat
+ * client's), then reports "Request timed out" and discards whatever the
+ * desktop later returns. Every request therefore has to settle inside that,
+ * with room for the hop back.
+ */
+export const PREVIEW_REQUEST_BUDGET_MS = 50_000;
+/**
+ * The desktop enforces the same deadline it was sent, and its failure names
+ * the exact step that gave out; the broker's own timeout only says "timed
+ * out". Let the desktop's answer win the race.
+ */
+const BROKER_DEADLINE_MARGIN_MS = 1_500;
+
+/** How long the broker waits for one request, given the caller's timeout. */
+export function previewRequestDeadlineMs(
+  operation: PreviewAutomationOperation,
+  timeoutMs: number,
+): number {
+  const grace = USER_INPUT_OPERATIONS.has(operation) ? USER_INPUT_DEFERRAL_GRACE_MS : 0;
+  return Math.min(timeoutMs + grace, Math.max(timeoutMs, PREVIEW_REQUEST_BUDGET_MS));
+}
+
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
   const tabId = result.tabId;
@@ -486,6 +528,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const timeoutMs = input.timeoutMs ?? 15_000;
+    const deadlineMs = previewRequestDeadlineMs(input.operation, timeoutMs);
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
@@ -582,7 +625,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     }
     const { connection, requestId, requestContext, requestSequence } = route;
-    const expiresAt = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + timeoutMs;
+    const expiresAt = (yield* Effect.clockWith((clock) => clock.currentTimeMillis)) + deadlineMs;
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;
       const pending = new Map(next.pending);
@@ -613,7 +656,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           return yield* new PreviewAutomationRequestQueueClosedError(requestContext);
         }
         return (yield* Deferred.await(deferred)) as A;
-      }).pipe(Effect.timeoutOption(timeoutMs));
+      }).pipe(Effect.timeoutOption(deadlineMs + BROKER_DEADLINE_MARGIN_MS));
       return yield* Option.match(result, {
         onNone: () => Effect.fail(new PreviewAutomationTimeoutError(requestContext)),
         onSome: Effect.succeed,

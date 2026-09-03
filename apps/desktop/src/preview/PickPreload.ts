@@ -1226,6 +1226,15 @@ function startAnnotation(): void {
       ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, screenshotRect);
     });
   });
+  // The host hands guest keystrokes back to the app whenever the user's last
+  // click was in the app window. The pick flow opens this box and focuses it
+  // without a guest click, so tell the host the caret is here on purpose.
+  comment.addEventListener("focus", () => {
+    ipcRenderer.send(HUMAN_INPUT_CHANNEL, { kind: "editor-focus", focused: true });
+  });
+  comment.addEventListener("blur", () => {
+    ipcRenderer.send(HUMAN_INPUT_CHANNEL, { kind: "editor-focus", focused: false });
+  });
   comment.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
     event.preventDefault();

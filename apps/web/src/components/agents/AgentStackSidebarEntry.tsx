@@ -5,17 +5,16 @@ import {
   type EnvironmentId,
   type VmAgent,
   type VmAgentCollaborationAgentSummary,
-  type VmAgentStatus,
 } from "@t3tools/contracts";
 import {
   BellIcon,
-  BotIcon,
   ChevronDownIcon,
   CircleCheckIcon,
   CircleDashedIcon,
   HandIcon,
   MessageSquareDotIcon,
   PlusIcon,
+  PowerIcon,
   ShieldAlertIcon,
   SparklesIcon,
   Trash2Icon,
@@ -41,6 +40,15 @@ import { useOnScreenKeyboard } from "../../hooks/useOnScreenKeyboard";
 import { useSidebarRowSwipe } from "../useSidebarRowSwipe";
 import type { SidebarSwipeDirection } from "../sidebarRowSwipe";
 import type { SidebarThreadSummary } from "../../types";
+import { AgentGlyph } from "./AgentGlyph";
+import {
+  agentPowerActionLabel,
+  agentPowerSwitchable,
+  agentPowerTitle,
+  agentStatusDotClass,
+  agentStatusLabel,
+  useAgentPowerToggle,
+} from "./AgentPowerToggle";
 import { CreateAgentDialog } from "./CreateAgentDialog";
 import { DeleteAgentDialog } from "./DeleteAgentDialog";
 import {
@@ -51,15 +59,6 @@ import {
 } from "./agentRegistryState";
 import { shouldSendAgentDesktopNotification } from "./agentNotifications";
 
-const STATUS_DOT: Record<VmAgentStatus, string> = {
-  provisioning: "bg-amber-500",
-  starting: "bg-amber-500",
-  running: "bg-emerald-500",
-  stopping: "bg-amber-500",
-  stopped: "bg-muted-foreground/40",
-  failed: "bg-destructive",
-};
-
 const AGENT_SECTION_BODY_ID = "agent-stack-sections";
 
 export type AgentBuilderButtonStatus = "working" | "success" | "input" | "error";
@@ -67,7 +66,7 @@ export type AgentBuilderButtonStatus = "working" | "success" | "input" | "error"
 export const AGENT_BUILDER_BUTTON_STATUS_PRESENTATION = {
   working: {
     label: "Working",
-    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    dotClass: "bg-gold-500 dark:bg-gold-300/80",
     pulse: true,
   },
   success: {
@@ -234,12 +233,15 @@ export function AgentStackSidebarEntry() {
             // aria-controls at an id that is not in the document is worse than omitting it.
             aria-controls={expanded ? AGENT_SECTION_BODY_ID : undefined}
             data-testid="agents-section-toggle"
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-sm font-semibold text-sidebar-foreground/75 transition-colors hover:text-sidebar-foreground"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2.5 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-sidebar-muted-foreground transition-colors hover:text-sidebar-foreground"
           >
             <span className="min-w-0 truncate">Agents</span>
             <ChevronDownIcon
               aria-hidden
-              className={cn("size-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")}
+              className={cn(
+                "size-3 shrink-0 opacity-60 transition-transform",
+                !expanded && "-rotate-90",
+              )}
             />
           </button>
           {singleEnvironmentId ? (
@@ -380,8 +382,10 @@ function AgentSidebarRow(props: {
   readonly isActive: boolean;
   readonly onOpen: () => void;
   readonly onRequestDelete: () => void;
+  readonly onTogglePower: () => void;
+  readonly powerBusy: boolean;
 }) {
-  const { agent, onRequestDelete } = props;
+  const { agent, onRequestDelete, onTogglePower } = props;
   const usesTouch = useOnScreenKeyboard();
   // The agent's chat thread is the truth about whether it is mid-turn; the
   // status dot only says its VM is up. Icon-only on purpose — these rows have
@@ -468,7 +472,7 @@ function AgentSidebarRow(props: {
         }
         {...swipe.handlers}
       >
-        <BotIcon />
+        <AgentGlyph name={agent.name} icon={agent.icon} />
         <span className="flex-1 truncate text-left">{agent.name}</span>
         {/* Deliberately identical to the thread rows' working indicator, minus
             their "Working 4m" label — same CircleDashedIcon, same sky tint,
@@ -489,14 +493,14 @@ function AgentSidebarRow(props: {
         ) : needsInput ? (
           <span
             title="Waiting for your input"
-            className="flex shrink-0 items-center text-indigo-600 dark:text-indigo-300"
+            className="flex shrink-0 items-center text-blue-600 dark:text-blue-300"
           >
             <MessageSquareDotIcon className="size-4 shrink-0" aria-label="Waiting for your input" />
           </span>
         ) : working ? (
           <span
             title="Working"
-            className="flex shrink-0 items-center animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400"
+            className="flex shrink-0 items-center animate-sidebar-working-text text-gold-600 motion-reduce:animate-none dark:text-gold-400"
           >
             <CircleDashedIcon className="size-4 shrink-0" aria-label="Working" />
           </span>
@@ -547,14 +551,47 @@ function AgentSidebarRow(props: {
             centred geometry, so the two line up in the gutter. */}
         <span
           aria-hidden="true"
-          title={agent.status}
+          title={agentStatusLabel(agent.status)}
           className={cn(
             "flex shrink-0 items-center justify-center",
             !usesTouch && "-mr-0.5 size-5",
           )}
         >
-          <span className={cn("size-1.5 rounded-full", STATUS_DOT[agent.status])} />
+          <span className={cn("size-1.5 rounded-full", agentStatusDotClass(agent.status))} />
         </span>
+        {/* The on/off switch shares the X's reveal rules below: hidden until
+            the row is hovered or focused, reachable but undrawn on touch. */}
+        {agentPowerSwitchable(agent.status) ? (
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label={`${agentPowerActionLabel(agent.status)} ${agent.name}`}
+            aria-disabled={props.powerBusy || undefined}
+            title={agentPowerTitle(agent)}
+            className={cn(
+              "-mr-0.5 size-5 shrink-0 cursor-pointer items-center justify-center rounded text-sidebar-muted-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+              agent.status !== "running" && "text-gold-700 dark:text-gold-300",
+              props.powerBusy && "animate-pulse",
+              usesTouch
+                ? "sr-only"
+                : "hidden group-hover/agent-row:inline-flex group-focus-within/agent-row:inline-flex",
+            )}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTogglePower();
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              onTogglePower();
+            }}
+          >
+            <PowerIcon className="size-3.5" />
+          </span>
+        ) : null}
         {/* Collapsed out of layout while hidden, not made transparent: a
             reserved-but-invisible box left the status dot sitting beside a
             hole at the row's edge. When the X appears the dot simply yields
@@ -690,6 +727,7 @@ function AgentEnvironmentSection(props: {
 }) {
   const router = useRouter();
   const environment = useEnvironment(props.environmentId);
+  const power = useAgentPowerToggle(props.environmentId);
   const agentsAtom = useMemo(
     () => vmAgentEnvironment.agents({ environmentId: props.environmentId, input: {} }),
     [props.environmentId],
@@ -798,6 +836,8 @@ function AgentEnvironmentSection(props: {
                 })
               }
               onRequestDelete={() => setPendingDelete(agent)}
+              onTogglePower={() => void power.toggle(agent)}
+              powerBusy={power.busyAgentId === agent.vmAgentId}
             />
           );
         })

@@ -11,6 +11,8 @@
 import {
   ThreadId,
   VmAgent,
+  type VmAgentIcon,
+  type VmAgentStatus,
   VmAgentId,
   VmAgentNameConflictError,
   VmAgentNotFoundError,
@@ -33,6 +35,8 @@ export interface VmManagerShape {
   readonly create: (input: {
     readonly name: string;
     readonly purpose: string;
+    /** Outlined glyph chosen at creation; omitted when the first run should pick it. */
+    readonly icon?: VmAgentIcon | null | undefined;
     /** The agent's dedicated chat thread, created by the caller (or null). */
     readonly threadId: ThreadId | null;
   }) => Effect.Effect<VmAgent, VmAgentNameConflictError>;
@@ -41,6 +45,22 @@ export interface VmManagerShape {
   readonly deleteAgent: (
     vmAgentId: VmAgentId,
   ) => Effect.Effect<ThreadId | null, VmAgentNotFoundError>;
+
+  /** Set or clear the agent's glyph; the registry stream re-broadcasts. */
+  readonly setIcon: (
+    vmAgentId: VmAgentId,
+    icon: VmAgentIcon | null,
+  ) => Effect.Effect<VmAgent, VmAgentNotFoundError>;
+
+  /**
+   * Switch the agent on (`running`) or off (`stopped`); the registry stream
+   * re-broadcasts. Callers own the side effects: interrupting a running turn
+   * on stop, waking the task scheduler on start.
+   */
+  readonly setStatus: (
+    vmAgentId: VmAgentId,
+    status: Extract<VmAgentStatus, "running" | "stopped">,
+  ) => Effect.Effect<VmAgent, VmAgentNotFoundError>;
 
   /** Subscribe to the registry: a full snapshot initially and on every change. */
   readonly subscribeAgents: (listener: AgentListener) => Effect.Effect<() => void>;
@@ -103,6 +123,7 @@ export const make = Effect.gen(function* () {
         name: input.name,
         handle,
         purpose: input.purpose,
+        icon: input.icon ?? null,
         // Vestigial identity column (NOT NULL UNIQUE) from the VM era.
         vmId: VmId.make(`vm-${NodeCrypto.randomUUID()}`),
         threadId: input.threadId,
@@ -128,6 +149,25 @@ export const make = Effect.gen(function* () {
       yield* publishAgents();
       // The caller (ws handler) deletes the chat thread; it owns orchestration.
       return agent.threadId;
+    });
+
+  const setIcon: VmManagerShape["setIcon"] = (vmAgentId, icon) =>
+    Effect.gen(function* () {
+      const agent = yield* requireAgent(vmAgentId);
+      const updatedAt = yield* nowIso;
+      yield* store.updateIcon({ vmAgentId, icon, updatedAt }).pipe(Effect.orDie);
+      yield* publishAgents();
+      return { ...agent, icon, updatedAt };
+    });
+
+  const setStatus: VmManagerShape["setStatus"] = (vmAgentId, status) =>
+    Effect.gen(function* () {
+      const agent = yield* requireAgent(vmAgentId);
+      if (agent.status === status) return agent;
+      const updatedAt = yield* nowIso;
+      yield* store.updateStatus({ vmAgentId, status, updatedAt }).pipe(Effect.orDie);
+      yield* publishAgents();
+      return { ...agent, status, lastError: null, updatedAt };
     });
 
   const addAgentListener = (listener: AgentListener) =>
@@ -176,6 +216,8 @@ export const make = Effect.gen(function* () {
   return {
     create,
     deleteAgent,
+    setIcon,
+    setStatus,
     subscribeAgents,
   } satisfies VmManagerShape;
 });

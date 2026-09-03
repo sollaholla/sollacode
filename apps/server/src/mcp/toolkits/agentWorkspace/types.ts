@@ -3,6 +3,7 @@ import {
   VmAgentArtifact,
   VmAgentArtifactDefinition,
   VmAgentBlocker,
+  VmAgentIcon,
   VmAgentTask,
   VmAgentTaskNotificationPolicy,
   VmAgentTaskSchedule,
@@ -22,12 +23,17 @@ export const AgentWorkspaceInput = Schema.Struct({
     "resolve_blocker",
     "define_artifact",
     "update_artifact",
+    "set_icon",
   ]).annotate({
     description:
       "Workspace operation. Recurring tasks created by an agent remain drafts until the user approves them, unless the user enabled task auto-approval and this chat runs in Agent mode — then they activate immediately. report_blocker keeps a standing, visible request in front of the user when work is blocked on something only they can do (a login, a CAPTCHA, a permission, a purchase) — it persists across turns and runs until resolved, unlike prose in the chat. A blocker is already user-visible attention: NEVER also call notify_user for that request. notify_user is only for independent informational updates that require no user action. resolve_blocker clears one you raised once it no longer blocks you.",
   }),
   taskId: Schema.optional(Schema.String).annotate({
     description: "Task id for update_task or complete_task.",
+  }),
+  icon: Schema.optional(VmAgentIcon).annotate({
+    description:
+      "set_icon: your outlined glyph — the uncoloured, emoji-like icon that identifies you in the sidebar and header. Pick the one that best fits your purpose. Do this once, as the first step of your first run, when the workspace snapshot says you have no icon yet.",
   }),
   title: Schema.optional(VmAgentTask.fields.title),
   prompt: Schema.optional(VmAgentTask.fields.prompt),

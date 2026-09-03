@@ -14,6 +14,7 @@ import {
   detectProviderUsageLimitExhaustion,
   deriveProviderHandoffContinuity,
   isAccountWideProviderExhaustion,
+  isProviderNotice,
   PROVIDER_HANDOFF_MAX_SERIALIZED_CHARS,
   PROVIDER_HANDOFF_TURN_MAX_SERIALIZED_CHARS,
   providerFailoverModelKey,
@@ -583,6 +584,58 @@ describe("isAccountWideProviderExhaustion", () => {
         resetsAt: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("deriveProviderHandoffContinuity", () => {
+  it("looks past the refusal that caused the handoff", () => {
+    // Live 2026-09-02: the outgoing provider's last two messages were both
+    // notices, so the digest reported an error string as the work in flight
+    // and never named the half-finished change the thread was actually on.
+    const messages = [
+      message(0, "Fix the recovery ladder."),
+      message(1, "Assessed recovery behavior. I am adding the regressions now."),
+      // Odd indices are the assistant in this fixture: both notices are the
+      // outgoing provider talking, not the user.
+      message(3, "Too many concurrent requests"),
+      message(
+        5,
+        "Our systems have detected unusual activity coming from your system. Please try again later.",
+      ),
+    ];
+
+    expect(deriveProviderHandoffContinuity(messages)).toEqual({
+      immediateRequirement: "Fix the recovery ladder.",
+      inProgressWork: "Assessed recovery behavior. I am adding the regressions now.",
+    });
+  });
+
+  it("says nothing rather than pass a refusal off as work", () => {
+    const messages = [
+      message(0, "Fix the recovery ladder."),
+      message(1, "You've reached your usage limit."),
+    ];
+
+    expect(deriveProviderHandoffContinuity(messages).inProgressWork).toBe(null);
+  });
+
+  it("recognises a provider notice without swallowing real work", () => {
+    for (const notice of [
+      "Too many concurrent requests",
+      "Our systems have detected unusual activity coming from your system.",
+      "Please try again later.",
+      "You are being rate limited.",
+      "   ",
+    ]) {
+      expect(isProviderNotice(notice)).toBe(true);
+    }
+    for (const work of [
+      "I am tracing visualViewport and scroll ownership now.",
+      "The suite is green; I am writing the changelog entry.",
+      "Rate limiting the retry loop is the next change I will make.",
+    ]) {
+      expect(isProviderNotice(work)).toBe(false);
+    }
   });
 });
 

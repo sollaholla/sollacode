@@ -6,13 +6,11 @@ import {
   type PointerEventHandler,
 } from "react";
 import { ChevronDownIcon, ChevronLeftIcon, MicIcon, RefreshCwIcon } from "lucide-react";
-import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
-import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
@@ -167,16 +165,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const pointerFocusProps = preserveComposerFocusOnPointerDown
     ? { onPointerDown: preventPointerFocus }
     : undefined;
-  const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const hasCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const showAppMicrophone = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
   });
   const isSendDisabled = sendDisabledReason !== null;
-  const stageBackdropVariant = useSidebarStageBackdropVariant(
-    environmentIdentificationMode === "artwork",
-  );
   const pushToTalkActive = pushToTalkStatus === "recording";
   const microphoneDisabled = pushToTalkDisabled && !pushToTalkActive;
   const pushToTalkLabel = formatPushToTalkActionLabel(
@@ -228,10 +222,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           <button
             type="button"
             className={cn(
-              "flex h-9 w-9 items-center justify-center rounded-full border text-muted-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer hover:scale-105 active:shadow-none aria-disabled:cursor-not-allowed aria-disabled:opacity-30 aria-disabled:hover:scale-100 sm:h-8 sm:w-8",
+              "flex h-9 w-9 items-center justify-center rounded-full border border-[var(--line)] text-foreground/80 transition-colors duration-150 enabled:cursor-pointer aria-disabled:cursor-not-allowed aria-disabled:opacity-30 sm:h-8 sm:w-8",
               pushToTalkActive
-                ? "border-destructive/70 bg-destructive/15 text-destructive ring-2 ring-destructive/20"
-                : "border-border/70 bg-background/80 hover:border-border hover:bg-muted/70 hover:text-foreground",
+                ? "border-destructive/70 bg-destructive/15 text-destructive"
+                : "bg-surface-row hover:bg-surface-hover hover:text-foreground",
             )}
             aria-disabled={microphoneDisabled}
             aria-label={pushToTalkLabel}
@@ -386,7 +380,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         {queuedPromotionAction}
         <button
           type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white  shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none sm:h-8 sm:w-8"
           {...pointerFocusProps}
           onClick={onInterrupt}
           disabled={isInterrupting}
@@ -487,10 +481,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       <button
         type="submit"
         className={cn(
-          "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-full text-primary-foreground shadow-xs transition-all duration-150 enabled:cursor-pointer enabled:inset-shadow-[0_1px_--theme(--color-white/16%)] hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none disabled:pointer-events-none disabled:opacity-30 disabled:shadow-none disabled:hover:scale-100 sm:h-8 sm:w-8",
-          stageBackdropVariant
-            ? "bg-transparent enabled:shadow-black/24 enabled:hover:brightness-110"
-            : "bg-primary/90 enabled:shadow-primary/24 hover:bg-primary",
+          // The one gold square in the composer: every other control is a
+          // circle, so the send button reads as the primary action on shape
+          // alone, before colour. Flat, no scale or inset shine.
+          // Always solid gold: the per-channel stage art used to paint this
+          // square (a dark nightly sky in artwork mode), which read as a dead
+          // control. Channel identity lives in the sidebar header instead.
+          // Ready to send: a soft gold glow says "go" without moving anything.
+          "relative isolate flex h-9 w-9 items-center justify-center overflow-hidden rounded-[10px] bg-gold-500 text-[#0b0b0b] transition-[background-color,box-shadow] duration-200 enabled:cursor-pointer enabled:shadow-[0_0_0_1px_rgba(217,169,58,0.35),0_0_18px_-2px_rgba(217,169,58,0.6)] enabled:hover:bg-gold-400 enabled:hover:shadow-[0_0_0_1px_rgba(217,169,58,0.5),0_0_24px_-2px_rgba(217,169,58,0.8)] disabled:pointer-events-none disabled:text-[#0b0b0b]/45 sm:h-8 sm:w-8",
         )}
         {...pointerFocusProps}
         // Reconnecting and disconnected deliberately do NOT disable this. A
@@ -517,11 +515,6 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                       : "Send message"
         }
       >
-        {stageBackdropVariant ? (
-          <span className="absolute inset-0 -z-10" aria-hidden="true">
-            <StageBackdropButtonArt variant={stageBackdropVariant} />
-          </span>
-        ) : null}
         {isConnecting || isSendBusy ? (
           <Spinner className="size-3.5" aria-hidden="true" />
         ) : (
@@ -529,7 +522,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             <path
               d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
               stroke="currentColor"
-              strokeWidth="1.8"
+              strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
             />

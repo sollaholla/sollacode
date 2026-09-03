@@ -8,16 +8,15 @@ export function formatAppDisplayName(input: {
 }
 
 /**
- * Whether the sidebar v2 beta is on by default for a build stage.
+ * Whether the flat thread list (sidebar v2) is on by default for a build stage.
  *
- * Nightly and local dev opt in; Alpha and Latest stay on v1. This is resolved
- * from the client's own stage label rather than the connected server's version:
- * v2 only exists in the client, so a stable client on a nightly server has
- * nothing to turn on.
+ * It is the default on every stage since the Obsidian & Gold redesign: the
+ * grouped v1 sidebar remains available through Settings → Thread list for
+ * anyone who switches it off. The stage label is still accepted so an
+ * explicit per-stage rollback stays a one-line change.
  */
-export function resolveSidebarV2Default(stageLabel: string): boolean {
-  const stage = stageLabel.trim().toLowerCase();
-  return stage === "nightly" || stage === "dev";
+export function resolveSidebarV2Default(_stageLabel: string): boolean {
+  return true;
 }
 
 /**

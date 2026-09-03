@@ -2874,6 +2874,22 @@ const makeWsRpcLayer = (
               ),
             { "rpc.aggregate": "vm" },
           ),
+        [WS_METHODS.vmAgentStart]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentStart,
+            vmManager
+              .setStatus(input.vmAgentId, "running")
+              .pipe(Effect.tap(() => vmAgentTaskScheduler.wake())),
+            { "rpc.aggregate": "vm" },
+          ),
+        [WS_METHODS.vmAgentStop]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vmAgentStop,
+            vmManager
+              .setStatus(input.vmAgentId, "stopped")
+              .pipe(Effect.tap(() => vmAgentTaskScheduler.interruptAgent(input.vmAgentId))),
+            { "rpc.aggregate": "vm" },
+          ),
         [WS_METHODS.vmAgentSubscribe]: (_input) =>
           observeRpcStream(
             WS_METHODS.vmAgentSubscribe,
