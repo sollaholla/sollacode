@@ -28,8 +28,11 @@ describe("T3 browser control policy", () => {
     // Sign-in still stays inside preview rather than switching surfaces.
     expect(T3_BROWSER_CONTROL_POLICY).toContain("Authentication, login");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("blocker or user-input flow");
-    // Unchanged operational guidance survives.
-    expect(T3_BROWSER_CONTROL_POLICY).toContain("another named agent's dedicated browser");
+    // Unchanged operational guidance survives. Agents no longer own dedicated
+    // browsers (scrapped in 0.1.214); ownership is per thread, so the
+    // hands-off rule is now phrased against threads rather than agents.
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("Never pass tab IDs from another thread");
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("Tabs outside the current thread are off-limits");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("downloadApprovalRequired");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("preview_wait_for_download");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("PDF viewers");
@@ -41,9 +44,7 @@ describe("T3 browser control policy", () => {
     expect(T3_BROWSER_CONTROL_POLICY).toContain("`visible` is presentation only");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("`visible: false` is an ordinary background tab");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("never blocks anything");
-    expect(T3_BROWSER_CONTROL_POLICY).toContain(
-      "Driving a reused, background, or not-presented tab is expected and safe",
-    );
+    expect(T3_BROWSER_CONTROL_POLICY).toContain("keep driving it");
     expect(T3_BROWSER_CONTROL_POLICY).toContain("Never stall approved work");
     // Anti-abuse guardrail is retained regardless of surface.
     expect(T3_BROWSER_CONTROL_POLICY).toContain("Never try to defeat anti-bot checks");

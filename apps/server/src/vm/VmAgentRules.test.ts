@@ -3,6 +3,7 @@ import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import {
@@ -76,6 +77,6 @@ describe("VmAgentRules", () => {
       expect(yield* fileSystem.readFileString(claudeRulesPath)).toBe(
         `# Claude-only\n\n${VM_AGENT_CLAUDE_RULES_POINTER}\n`,
       );
-    }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(NodePath.layer), Effect.scoped),
+    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)), Effect.scoped),
   );
 });
