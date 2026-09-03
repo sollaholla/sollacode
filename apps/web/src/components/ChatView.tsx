@@ -90,6 +90,11 @@ import {
   shouldTranscribeStoppedRecording,
 } from "../pushToTalkTranscription";
 import {
+  forgetPendingTranscriptionToast,
+  registerPendingTranscriptionToast,
+  takePendingTranscriptionToast,
+} from "../voiceTranscriptionHandoff";
+import {
   dismissVoiceTranscriptionResult,
   finishVoiceTranscriptionBackgroundTask,
   isBackgroundTaskActive,
@@ -7595,8 +7600,13 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThread || !isServerThread) return false;
     const draftTarget = target ?? composerDraftTarget;
     const draftStore = useComposerDraftStore.getState();
-    const prompt = draftStore.getComposerDraft(draftTarget)?.prompt?.trim() || transcript.trim();
+    const draft = draftStore.getComposerDraft(draftTarget);
+    const prompt = draft?.prompt?.trim() || transcript.trim();
     if (prompt.length === 0) return false;
+    // Screenshots the user dropped in the composer belong to this message. The
+    // away-send used to post the transcript with `attachments: []`, silently
+    // leaving them behind in the draft.
+    const draftImages = [...(draft?.images ?? [])];
     const threadIdForSend =
       typeof draftTarget === "string" ? activeThread.id : draftTarget.threadId;
     const createdAt = new Date().toISOString();
@@ -7606,39 +7616,63 @@ function ChatViewContent(props: ChatViewProps) {
     if (readyVoiceTranscriptionTask) {
       dismissVoiceTranscriptionResult(readyVoiceTranscriptionTask.id);
     }
-    void startThreadTurn({
-      environmentId,
-      input: {
-        threadId: threadIdForSend,
-        message: {
-          messageId: newMessageId(),
-          role: "user",
-          text: prompt,
-          inputOrigin: "transcription",
-          attachments: [],
-        },
-        modelSelection,
-        runtimeMode: runtimeModeForSend,
-        interactionMode: interactionModeForSend,
-        createdAt,
-      },
-    }).then((result) => {
-      if (result._tag === "Success") {
-        clearComposerDraftContent(draftTarget);
-        return;
-      }
-      if (isAtomCommandInterrupted(result)) return;
-      const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not send transcription",
-          description: error instanceof Error ? error.message : "Failed to send the transcript.",
+    void prepareImageAttachmentsForSend(draftImages)
+      .then((images) =>
+        images.map((image) => ({
+          type: "image" as const,
+          name: image.name,
+          mimeType: image.mimeType,
+          sizeBytes: image.sizeBytes,
+          dataUrl: image.dataUrl,
+        })),
+      )
+      // A screenshot that will not encode must not cost the user their words.
+      .catch(() => [] as ReadonlyArray<never>)
+      .then((attachments) =>
+        startThreadTurn({
+          environmentId,
+          input: {
+            threadId: threadIdForSend,
+            message: {
+              messageId: newMessageId(),
+              role: "user",
+              text: prompt,
+              inputOrigin: "transcription",
+              attachments,
+            },
+            modelSelection,
+            runtimeMode: runtimeModeForSend,
+            interactionMode: interactionModeForSend,
+            createdAt,
+          },
         }),
-      );
-    });
+      )
+      .then((result) => {
+        if (result._tag === "Success") {
+          clearComposerDraftContent(draftTarget);
+          return;
+        }
+        if (isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not send transcription",
+            description: error instanceof Error ? error.message : "Failed to send the transcript.",
+          }),
+        );
+      });
     return true;
   };
+  // Walking back into the conversation retires its "Transcription ready" card.
+  // The transcript is already restored into the composer in front of them, so
+  // leaving a live Send button up is just a second way to post the same words.
+  useEffect(() => {
+    if (activeThreadKey === null) return;
+    const toastId = takePendingTranscriptionToast(activeThreadKey);
+    if (toastId !== null) toastManager.close(toastId);
+  }, [activeThreadKey]);
+
   // Flushes a send the user made while the conversation was still catching up.
   // Their text never left the composer, so replaying the call sends exactly
   // what they wrote — and if they kept editing in the meantime, it sends the
@@ -8189,6 +8223,10 @@ function ChatViewContent(props: ChatViewProps) {
                   // live button and the same transcript could be sent again on
                   // every tap. Close it as part of the action.
                   let transcriptToastId: ReturnType<typeof toastManager.add> | null = null;
+                  // The thread that owned this recording. Captured here rather
+                  // than read at click time, because by now the user is
+                  // somewhere else entirely.
+                  const owningThreadKey = activeThreadKey ?? "";
                   transcriptToastId = toastManager.add(
                     stackedThreadToast({
                       type: "success",
@@ -8210,6 +8248,7 @@ function ChatViewContent(props: ChatViewProps) {
                             );
                             return;
                           }
+                          forgetPendingTranscriptionToast(owningThreadKey);
                           if (transcriptToastId !== null) toastManager.close(transcriptToastId);
                         },
                       },
@@ -8227,6 +8266,7 @@ function ChatViewContent(props: ChatViewProps) {
                       },
                     }),
                   );
+                  registerPendingTranscriptionToast(owningThreadKey, transcriptToastId);
                 }
               })
               .catch((cause) => {

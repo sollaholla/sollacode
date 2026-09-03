@@ -42,6 +42,7 @@ const makeAgent = (id: string, name: string, status: VmAgent["status"] = "runnin
   name,
   handle: name.toLowerCase(),
   purpose: `${name} purpose`,
+  icon: null,
   vmId: VmId.make(`vm-${id}`),
   threadId: ThreadId.make(`thread-${id}`),
   status,
