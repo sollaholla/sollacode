@@ -88,6 +88,7 @@ import {
   rememberComposerEmittedValue,
   type ComposerEmittedEcho,
   resolveComposerControlledSync,
+  resolveComposerReplacement,
   resolveComposerDictationFlush,
 } from "./composerDictationSync";
 
@@ -1639,10 +1640,29 @@ function ComposerPromptEditorInner({
     // macOS delivers dictation's post-processing pass as a replacement that can
     // land just after compositionend, so it extends the window too.
     const onBeforeInputReplacement = (event: Event) => {
-      const inputType = (event as InputEvent).inputType;
+      const inputEvent = event as InputEvent;
+      const inputType = inputEvent.inputType;
       if (inputType !== "insertReplacementText" && inputType !== "insertFromComposition") return;
       dictationRef.current.settleUntil = performance.now() + COMPOSER_DICTATION_SETTLE_MS;
       endSettleWindow();
+
+      // Runs in the capture phase, ahead of Lexical. By the time Lexical sees
+      // this event the selection already covers the word being replaced, so a
+      // replacement with no payload deletes that word and leaves its spaces.
+      const decision = resolveComposerReplacement({
+        dataTransferText:
+          inputEvent.dataTransfer === null ? null : inputEvent.dataTransfer.getData("text/plain"),
+        data: inputEvent.data,
+      });
+      if (decision.kind === "allow") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (decision.kind === "block") return;
+      editor.update(() => {
+        const selection = $getSelection();
+        if (!$isRangeSelection(selection)) return;
+        selection.insertText(decision.text);
+      });
     };
 
     let attached: HTMLElement | null = null;

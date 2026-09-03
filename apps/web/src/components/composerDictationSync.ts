@@ -185,3 +185,54 @@ export function isComposerStaleEcho(input: {
       entry.value === input.incomingValue && input.now - entry.at < COMPOSER_ECHO_MEMORY_MS,
   );
 }
+
+/**
+ * What to do with a `beforeinput` that replaces existing text.
+ *
+ * Lexical hands `insertReplacementText` to its rich-text handler, which does:
+ *
+ * ```js
+ * const dataTransfer = eventOrText.dataTransfer;
+ * if (dataTransfer != null) {
+ *   $insertDataTransferForRichText(dataTransfer, selection, editor);
+ * } else if ($isRangeSelection(selection)) {
+ *   const data = eventOrText.data;
+ *   if (data) selection.insertText(data);
+ * }
+ * ```
+ *
+ * By then the selection already covers the word being replaced. So a
+ * replacement whose payload is empty replaces that word with nothing: the word
+ * disappears and the spaces around it stay, which is exactly what iOS
+ * dictation's post-processing pass leaves behind. A replacement that carries no
+ * replacement text is not an edit anyone asked for, so it must never reach the
+ * editor.
+ */
+export type ComposerReplacementDecision =
+  /** Let Lexical apply it; the payload it will read is present. */
+  | { readonly kind: "allow" }
+  /** Payload is empty. Drop the event so the target word survives. */
+  | { readonly kind: "block" }
+  /**
+   * The text is in `data`, but a non-null empty `dataTransfer` will win inside
+   * Lexical and erase the target. Apply `text` ourselves instead.
+   */
+  | { readonly kind: "insert"; readonly text: string };
+
+export function resolveComposerReplacement(input: {
+  /** `event.dataTransfer`, or null when the event carries none. */
+  readonly dataTransferText: string | null;
+  /** `event.data`. */
+  readonly data: string | null;
+}): ComposerReplacementDecision {
+  const fromTransfer = input.dataTransferText ?? "";
+  const fromData = input.data ?? "";
+  if (input.dataTransferText === null) {
+    // Lexical reads `data` in this branch, which is the correct behaviour.
+    return fromData.length > 0 ? { kind: "allow" } : { kind: "block" };
+  }
+  if (fromTransfer.length > 0) return { kind: "allow" };
+  // A present-but-empty dataTransfer is the destructive case: Lexical prefers
+  // it over `data` and inserts nothing.
+  return fromData.length > 0 ? { kind: "insert", text: fromData } : { kind: "block" };
+}
