@@ -2,7 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   COMPOSER_ECHO_MEMORY_MS,
-  resolveComposerReplacement,
+  resolveComposerBeforeInput,
   isComposerStaleEcho,
   rememberComposerEmittedValue,
   resolveComposerControlledSync,
@@ -212,15 +212,27 @@ describe("resolveComposerControlledSync with a stale echo", () => {
   });
 });
 
-describe("resolveComposerReplacement", () => {
+describe("resolveComposerBeforeInput", () => {
   it("lets a replacement through when the clipboard payload has the new text", () => {
-    expect(resolveComposerReplacement({ dataTransferText: "their", data: null })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: "their",
+        data: null,
+      }),
+    ).toEqual({
       kind: "allow",
     });
   });
 
   it("lets a replacement through when there is no dataTransfer and data has the text", () => {
-    expect(resolveComposerReplacement({ dataTransferText: null, data: "their" })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: null,
+        data: "their",
+      }),
+    ).toEqual({
       kind: "allow",
     });
   });
@@ -228,13 +240,31 @@ describe("resolveComposerReplacement", () => {
   it("blocks a replacement that carries no replacement text at all", () => {
     // The selection already covers the word. Letting this through replaces it
     // with nothing, which is the word loss with the spaces left behind.
-    expect(resolveComposerReplacement({ dataTransferText: "", data: null })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: "",
+        data: null,
+      }),
+    ).toEqual({
       kind: "block",
     });
-    expect(resolveComposerReplacement({ dataTransferText: null, data: null })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: null,
+        data: null,
+      }),
+    ).toEqual({
       kind: "block",
     });
-    expect(resolveComposerReplacement({ dataTransferText: "", data: "" })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: "",
+        data: "",
+      }),
+    ).toEqual({
       kind: "block",
     });
   });
@@ -242,9 +272,58 @@ describe("resolveComposerReplacement", () => {
   it("applies the text itself when an empty dataTransfer would win over data", () => {
     // Lexical prefers a non-null dataTransfer, so an empty one erases the word
     // even though the replacement text is sitting in `data`.
-    expect(resolveComposerReplacement({ dataTransferText: "", data: "their" })).toEqual({
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertReplacementText",
+        dataTransferText: "",
+        data: "their",
+      }),
+    ).toEqual({
       kind: "insert",
       text: "their",
     });
+  });
+});
+
+describe("resolveComposerBeforeInput for the insertText path", () => {
+  // Lexical core has a second replacement path, reached by `insertText` with a
+  // null `data` and a dataTransfer. It runs `selection.insertRawText(text)`
+  // after the selection has been widened to the revised span, so an empty
+  // transfer deletes every word in it - the user saw three go at once.
+  it("blocks an insertText replacement that carries nothing", () => {
+    expect(
+      resolveComposerBeforeInput({ inputType: "insertText", dataTransferText: "", data: null }),
+    ).toEqual({ kind: "block" });
+  });
+
+  it("allows an insertText replacement that carries the new text", () => {
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "insertText",
+        dataTransferText: "supercalifragilisticexpialidocious",
+        data: null,
+      }),
+    ).toEqual({ kind: "allow" });
+  });
+
+  it("never touches ordinary typing, which always carries data", () => {
+    expect(
+      resolveComposerBeforeInput({ inputType: "insertText", dataTransferText: null, data: "a" }),
+    ).toEqual({ kind: "allow" });
+    // Even with an empty transfer alongside it, a keystroke must reach
+    // Lexical's fast path untouched.
+    expect(
+      resolveComposerBeforeInput({ inputType: "insertText", dataTransferText: "", data: "a" }),
+    ).toEqual({ kind: "allow" });
+  });
+
+  it("leaves input types it does not understand alone", () => {
+    expect(
+      resolveComposerBeforeInput({
+        inputType: "deleteContentBackward",
+        dataTransferText: "",
+        data: null,
+      }),
+    ).toEqual({ kind: "allow" });
   });
 });

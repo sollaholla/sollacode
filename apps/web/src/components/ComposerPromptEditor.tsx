@@ -88,7 +88,8 @@ import {
   rememberComposerEmittedValue,
   type ComposerEmittedEcho,
   resolveComposerControlledSync,
-  resolveComposerReplacement,
+  COMPOSER_REPLACING_INPUT_TYPES,
+  resolveComposerBeforeInput,
   resolveComposerDictationFlush,
 } from "./composerDictationSync";
 
@@ -1642,14 +1643,18 @@ function ComposerPromptEditorInner({
     const onBeforeInputReplacement = (event: Event) => {
       const inputEvent = event as InputEvent;
       const inputType = inputEvent.inputType;
-      if (inputType !== "insertReplacementText" && inputType !== "insertFromComposition") return;
-      dictationRef.current.settleUntil = performance.now() + COMPOSER_DICTATION_SETTLE_MS;
-      endSettleWindow();
+      if (!COMPOSER_REPLACING_INPUT_TYPES.includes(inputType as never)) return;
+      if (inputType === "insertReplacementText" || inputType === "insertFromComposition") {
+        dictationRef.current.settleUntil = performance.now() + COMPOSER_DICTATION_SETTLE_MS;
+        endSettleWindow();
+      }
 
-      // Runs in the capture phase, ahead of Lexical. By the time Lexical sees
-      // this event the selection already covers the word being replaced, so a
-      // replacement with no payload deletes that word and leaves its spaces.
-      const decision = resolveComposerReplacement({
+      // Runs in the capture phase, ahead of Lexical. By then the selection has
+      // been widened to whatever the input method is revising, so an event that
+      // carries no replacement text deletes that whole span and leaves its
+      // spaces behind.
+      const decision = resolveComposerBeforeInput({
+        inputType,
         dataTransferText:
           inputEvent.dataTransfer === null ? null : inputEvent.dataTransfer.getData("text/plain"),
         data: inputEvent.data,
