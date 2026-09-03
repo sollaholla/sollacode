@@ -1,10 +1,19 @@
-export const GROK_SESSION_UPDATE_METHODS = ["x.ai/session/update"] as const;
+// xAI sends its vendor notifications under both spellings: the bare namespace
+// and the underscore-prefixed form that marks an extension in ACP. Matching is
+// exact, so a method list carrying only one of them silently drops the other -
+// which is how a completed background task could arrive and never be recorded.
+// Nothing outside xAI produces an `x.ai/` method, so accepting both only ever
+// widens recognition of their own traffic.
+export const GROK_SESSION_UPDATE_METHODS = ["x.ai/session/update", "_x.ai/session/update"] as const;
 
-export const GROK_TASK_BACKGROUNDED_METHODS = ["x.ai/task_backgrounded"] as const;
+export const GROK_TASK_BACKGROUNDED_METHODS = [
+  "x.ai/task_backgrounded",
+  "_x.ai/task_backgrounded",
+] as const;
 
-export const GROK_TASK_COMPLETED_METHODS = ["x.ai/task_completed"] as const;
+export const GROK_TASK_COMPLETED_METHODS = ["x.ai/task_completed", "_x.ai/task_completed"] as const;
 
-export const GROK_TASK_KILL_METHODS = ["x.ai/task/kill"] as const;
+export const GROK_TASK_KILL_METHODS = ["x.ai/task/kill", "_x.ai/task/kill"] as const;
 
 export const GROK_BACKGROUND_TASK_NOTIFICATION_METHODS = [
   ...GROK_SESSION_UPDATE_METHODS,
