@@ -86,6 +86,34 @@ function Get-LocalHttpStatus {
   }
 }
 
+function Get-DisplayDiagnostic {
+  # A GUI app cannot come up without a display. When the monitor is off or
+  # detached, Chromium logs "Unable to find a primary display", its GPU process
+  # dies, and the main window closes the moment it is created - which the app
+  # correctly treats as the user closing the window, so it quits and takes the
+  # backend with it. The readiness failure then reads as an empty process list
+  # and says nothing about the cause, which is a long way from the truth.
+  try {
+    $monitors = @(Get-CimInstance Win32_DesktopMonitor -ErrorAction Stop)
+  } catch {
+    return "monitor state unavailable: $($_.Exception.Message)"
+  }
+  if ($monitors.Count -eq 0) {
+    return "no monitor reported"
+  }
+  # Win32_DesktopMonitor Availability: 3 = running/full power, 8 = off line.
+  $summary = @($monitors | ForEach-Object {
+    $availability = $_.Availability
+    $label = switch ($availability) {
+      3 { "running" }
+      8 { "OFF LINE" }
+      default { "availability $availability" }
+    }
+    "$($_.Name): $label"
+  }) -join '; '
+  return $summary
+}
+
 function Get-ReadyState {
   $roots = @(Get-AppRoots)
   $explorerSessionIds = @(
@@ -239,7 +267,8 @@ try {
   } while (-not $state.Ready -and (Get-Date) -lt $readyDeadline)
   if (-not $state.Ready) {
     $rootSummary = @($state.Roots | ForEach-Object { "PID $($_.ProcessId), session $($_.SessionId), parent $($_.ParentProcessId): $($_.CommandLine)" }) -join '; '
-    throw "Windows release did not become ready. Roots: $rootSummary; Explorer sessions: $($state.ExplorerSessionIds -join ','); listeners: $($state.ListenerProcessIds -join ','); HTTP: $($state.HttpStatus)"
+    $displaySummary = Get-DisplayDiagnostic
+    throw "Windows release did not become ready. Roots: $rootSummary; Explorer sessions: $($state.ExplorerSessionIds -join ','); listeners: $($state.ListenerProcessIds -join ','); HTTP: $($state.HttpStatus); displays: $displaySummary"
   }
 } finally {
   if ($null -ne $interactiveTask) {
