@@ -85,54 +85,6 @@ describe("highlightNativeReviewDiffVisibleRows", () => {
     expect(highlighted.tokensByRowId[exportRow.id]).toEqual(standalone.tokensByRowId[exportRow.id]);
   });
 
-  it("TEMPDIAG concurrent identical inputs agree", async () => {
-    const openingRow = makeLine({
-      id: "d-open",
-      content: "const message = `open",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 1,
-    });
-    const closingRow = makeLine({
-      id: "d-close",
-      content: "closed`;",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 2,
-    });
-    const trailingRow = makeLine({
-      id: "d-trail",
-      content: "export const answer = 42;",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 3,
-    });
-    const rows = [openingRow, closingRow, trailingRow];
-    const [a, b] = await Promise.all([highlight(rows), highlight(rows)]);
-    expect(a.tokensByRowId).toEqual(b.tokensByRowId);
-  });
-
-  it("TEMPDIAG sequential identical inputs agree", async () => {
-    const openingRow = makeLine({
-      id: "s-open",
-      content: "const message = `open",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 1,
-    });
-    const closingRow = makeLine({
-      id: "s-close",
-      content: "closed`;",
-      change: "add",
-      oldLineNumber: null,
-      newLineNumber: 2,
-    });
-    const rows = [openingRow, closingRow];
-    const a = await highlight(rows);
-    const b = await highlight(rows);
-    expect(a.tokensByRowId).toEqual(b.tokensByRowId);
-  });
-
   it("keeps grammar state across inline comment rows", async () => {
     const openingRow = makeLine({
       id: "template-open",
