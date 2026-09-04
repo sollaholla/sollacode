@@ -200,6 +200,12 @@ import {
   useThreadPreviewState,
   type DesktopPreviewOverlay,
 } from "../previewStateStore";
+import {
+  releaseQueuedComposerMessages,
+  removeQueuedComposerMessage,
+  shouldQueueComposerSend,
+  type QueuedComposerMessage,
+} from "./chat/composerSendQueue";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import {
   resolveBrowserOnlySurfaceTarget,
@@ -3872,6 +3878,67 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThreadId, environmentId, stopThreadTask],
   );
+  /**
+   * Follow-ups typed while background work is still running.
+   *
+   * Sending one immediately hands it to the live agent loop, which abandons the
+   * background work it started for the previous request - so a long test run
+   * dies because a follow-up was typed. Holding it in the composer instead
+   * means remembering to send it later, and forgetting is routine. These are
+   * held here, never dispatched, and released in order the moment the tasks
+   * finish.
+   */
+  const [queuedComposerSends, setQueuedComposerSends] = useState<readonly QueuedComposerMessage[]>(
+    [],
+  );
+  /**
+   * The queued follow-ups, shown so they cannot be forgotten.
+   *
+   * Being invisible was half the original problem: the message waits, the
+   * tasks finish, and nobody remembers it was ever typed.
+   */
+  const queuedComposerSendPanel =
+    queuedComposerSends.length === 0 ? null : (
+      <div className="mx-auto w-full max-w-3xl px-2 pb-2">
+        <div className="rounded-lg border border-border/60 bg-muted/40 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {queuedComposerSends.length === 1
+                ? "1 message queued until background tasks finish"
+                : `${queuedComposerSends.length} messages queued until background tasks finish`}
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                void onSendRef.current(undefined, undefined, { sendNow: true });
+              }}
+            >
+              Send now
+            </Button>
+          </div>
+          <ul className="mt-1 flex flex-col gap-1">
+            {queuedComposerSends.map((queued) => (
+              <li key={queued.id} className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs text-foreground/80">{queued.text}</span>
+                <button
+                  type="button"
+                  aria-label="Remove queued message"
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() =>
+                    setQueuedComposerSends((current) =>
+                      removeQueuedComposerMessage(current, queued.id),
+                    )
+                  }
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
   const providerTaskPanel =
     providerTasks.length === 0 ? null : (
       <ProviderTaskPanel
@@ -7091,6 +7158,7 @@ function ChatViewContent(props: ChatViewProps) {
   const onSend = async (
     e?: { preventDefault: () => void },
     inputOrigin?: OrchestrationMessageInputOrigin,
+    sendOptions?: { readonly sendNow?: boolean },
   ) => {
     e?.preventDefault();
     if (
@@ -7178,6 +7246,27 @@ function ChatViewContent(props: ChatViewProps) {
     // then stop them explicitly rather than letting them disappear silently.
     // Captured here, not read later: by the time the message is built these
     // tasks have been stopped and are gone from the list.
+    // Queue rather than destroy: the default for a send made while background
+    // work is running is to wait for it, not to kill it. `sendNow` is the
+    // explicit override behind the send-anyway control, which still confirms
+    // below before stopping anything.
+    if (
+      shouldQueueComposerSend({
+        turnRunning: runningBackgroundTasks.length > 0,
+        sendNow: sendOptions?.sendNow === true,
+      }) &&
+      promptRef.current.trim().length > 0
+    ) {
+      const queuedText = promptRef.current;
+      setQueuedComposerSends((current) => [
+        ...current,
+        { id: `queued-${Date.now()}-${current.length}`, text: queuedText },
+      ]);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
     let interruptedTaskTitles: ReadonlyArray<string> = [];
     if (
       runningBackgroundTasks.length > 0 &&
@@ -7614,6 +7703,36 @@ function ChatViewContent(props: ChatViewProps) {
   };
 
   const onSendRef = useRef(onSend);
+  /**
+   * Release queued follow-ups once the background work they were waiting on is
+   * done, in the order they were typed.
+   *
+   * Guarded by a ref rather than the queue's own emptiness: sending is async,
+   * and re-entering here mid-flush would send the same message twice.
+   */
+  const flushingQueuedSendsRef = useRef(false);
+  useEffect(() => {
+    if (flushingQueuedSendsRef.current) return;
+    const release = releaseQueuedComposerMessages({
+      turnRunning: hasRunningBackgroundTask,
+      queued: queuedComposerSends,
+    });
+    if (release.length === 0) return;
+    flushingQueuedSendsRef.current = true;
+    setQueuedComposerSends([]);
+    void (async () => {
+      try {
+        for (const queued of release) {
+          promptRef.current = queued.text;
+          setComposerDraftPrompt(composerDraftTarget, queued.text);
+          // sendNow so a queued message cannot be re-queued by its own release.
+          await onSendRef.current(undefined, undefined, { sendNow: true });
+        }
+      } finally {
+        flushingQueuedSendsRef.current = false;
+      }
+    })();
+  }, [composerDraftTarget, hasRunningBackgroundTask, queuedComposerSends, setComposerDraftPrompt]);
   onSendRef.current = onSend;
   // Reports whether the send actually started. The caller closes the
   // "Transcription ready" card on the strength of that: closing over a send
@@ -10015,6 +10134,7 @@ function ChatViewContent(props: ChatViewProps) {
                         </div>
                       </div>
                     </div>
+                    {queuedComposerSendPanel}
                     {providerTaskPanel}
                     <div
                       aria-hidden
