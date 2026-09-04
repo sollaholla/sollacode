@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { randomUUID } from "../../lib/utils";
 import {
+  activeResetCredits,
   mergeProviderUsageEntry,
   providerUsageAccountKey,
   PROVIDER_USAGE_STALE_AFTER_MS,
@@ -684,7 +685,7 @@ export function deriveProviderUsageSummaries(
     const supported = SUPPORTED_USAGE_DRIVERS.has(provider.driver);
     const stale =
       report !== undefined && now - Date.parse(report.reportedAt) > PROVIDER_USAGE_STALE_AFTER_MS;
-    const resetCredits = report?.resetCredits ?? null;
+    const resetCredits = activeResetCredits(report?.resetCredits, now);
     return {
       provider,
       accountKey,
@@ -721,7 +722,12 @@ export function deriveProviderUsageReports(
       driver: provider.driver,
       windows,
       reportedAt,
-      ...(resetCredits ? { resetCredits } : {}),
+      // Codex is the only driver that has resets, so its `null` is the
+      // provider answering "none" and must be sent through. Omitting the key
+      // for every other driver keeps "no reset data in this report" distinct
+      // from "there are no resets", which is what the merge keys its
+      // hysteresis on.
+      ...(provider.driver === "codex" ? { resetCredits } : {}),
     });
   };
 
