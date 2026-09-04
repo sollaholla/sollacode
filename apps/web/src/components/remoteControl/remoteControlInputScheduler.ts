@@ -89,9 +89,24 @@ export function createRemoteControlInputScheduler(
   const sendContinuous = (input: ContinuousInput): void => {
     const lane = lanes[laneFor(input)];
     if (lane.running) {
-      // This is deliberately replacement, not accumulation. The pending value
-      // describes the freshest frame; older unsent motion is already stale.
-      lane.pending = input;
+      // Replacement for a POSITION, accumulation for a DELTA - which is what
+      // these coalescers already encode, so the successor slot uses the same
+      // rule as the frame staging rather than a second, different one.
+      //
+      // An absolute sample names a destination, so an older unsent one is
+      // simply stale. A relative sample names a distance travelled, and
+      // dropping it does not go stale - it goes missing. While one send is in
+      // flight over a phone's round-trip, several frames' worth of deltas land
+      // here, and replacing them threw away all but the last: mouse-look moved
+      // a fraction of the drag and read as a dead stick, while movement (key
+      // edges, which never enter a motion lane) worked perfectly.
+      //
+      // Still exactly one pending event per lane, so this adds no replay
+      // backlog - only the total distance is preserved.
+      lane.pending =
+        input.type === "pointer"
+          ? coalescePointerFrame(lane.pending as PointerMove | undefined, input)
+          : coalesceWheelFrame(lane.pending as WheelInput | undefined, input);
       return;
     }
     lane.running = true;

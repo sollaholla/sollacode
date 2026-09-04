@@ -48,7 +48,7 @@ it("samples a pointer burst once per frame and sends only its newest destination
   expect(sent[0]).toMatchObject({ x: 0.99 });
 });
 
-it("keeps one replaceable motion successor instead of replaying a slow backlog", async () => {
+it("keeps a slow send's successor to ONE event without losing look distance", async () => {
   const sent: RemoteControlInput[] = [];
   const frames: Array<() => void> = [];
   const active = deferred();
@@ -73,8 +73,43 @@ it("keeps one replaceable motion successor instead of replaying a slow backlog",
 
   active.resolve();
   await settle();
+  // Still exactly one follow-up - no replay backlog - but it carries the whole
+  // distance travelled while the first send was in flight. Replacing instead
+  // dropped 20 of the 50, which over a phone's round-trip is most of a
+  // mouse-look drag: the stick reads as dead while movement keys, which never
+  // enter a motion lane, work perfectly.
   expect(sent).toHaveLength(2);
-  expect(sent[1]).toMatchObject({ x: 0.3, dx: 30 });
+  expect(sent[1]).toMatchObject({ x: 0.3, dx: 50 });
+});
+
+it("still replaces, rather than accumulates, an absolute position", async () => {
+  // A position names a destination, so an older unsent one is stale, not
+  // missing. Summing them would fling the cursor off the far edge.
+  const sent: RemoteControlInput[] = [];
+  const frames: Array<() => void> = [];
+  const active = deferred();
+  const scheduler = createRemoteControlInputScheduler({
+    send: (input) => {
+      sent.push(input);
+      return sent.length === 1 ? active.promise : Promise.resolve();
+    },
+    scheduleFrame: (callback) => {
+      frames.push(callback);
+      return frames.length;
+    },
+  });
+
+  scheduler.enqueue(pointer(0.1));
+  frames.shift()!();
+  scheduler.enqueue(pointer(0.2));
+  frames.shift()!();
+  scheduler.enqueue(pointer(0.3));
+  frames.shift()!();
+  active.resolve();
+  await settle();
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toMatchObject({ x: 0.3 });
+  expect(sent[1]).not.toHaveProperty("dx");
 });
 
 it("bounds the native-host lane without adding a frame of input latency", async () => {

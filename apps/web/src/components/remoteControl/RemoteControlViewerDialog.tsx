@@ -17,8 +17,6 @@ import {
   MonitorIcon,
   ShieldCheckIcon,
   SquareStackIcon,
-  ZoomInIcon,
-  ZoomOutIcon,
 } from "lucide-react";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -46,6 +44,11 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
+import {
+  RemoteViewAdjustLayer,
+  RemoteViewZoomToggle,
+  useRemoteViewZoom,
+} from "../remoteView/RemoteViewZoom";
 import {
   controllerPlatform,
   objectContainContentRect,
@@ -85,8 +88,6 @@ function failureMessage(result: Parameters<typeof squashAtomCommandFailure>[0]):
 }
 
 /** Magnification steps the two magnifier buttons walk between. */
-const ZOOM_STEPS = [1, 1.5, 2, 3, 4] as const;
-
 export function RemoteControlViewerDialog(props: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
@@ -158,12 +159,12 @@ export function RemoteControlViewerDialog(props: {
    * instead, which is what the user was asking for either way.
    */
   const [pseudoFullScreen, setPseudoFullScreen] = useState(false);
-  /** 1 = fit the pane. Above that, the picture is magnified about `zoomOrigin`. */
-  const [zoom, setZoom] = useState(1);
-  const [zoomOrigin, setZoomOrigin] = useState({ x: 50, y: 50 });
-  // Where the last touch landed, so zooming in magnifies what was just tapped
-  // rather than always the middle of the screen.
-  const lastPointerFractionRef = useRef({ x: 0.5, y: 0.5 });
+  // Zoom and pan are one mode, not two buttons: while it is on, drags move the
+  // picture and nothing reaches the remote machine. See `RemoteViewZoom`.
+  const zoomView = useRemoteViewZoom();
+  // Read inside event handlers that are not re-created per render.
+  const zoomViewAdjustingRef = useRef(zoomView.adjusting);
+  zoomViewAdjustingRef.current = zoomView.adjusting;
   // Touch devices have no hardware keyboard to capture; this summons the
   // on-screen one via a hidden input and forwards its text natively.
   const [virtualKeyboardOpen, setVirtualKeyboardOpen] = useState(false);
@@ -662,25 +663,6 @@ export function RemoteControlViewerDialog(props: {
     };
   }, []);
 
-  const zoomIn = useCallback(() => {
-    const next = ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom;
-    if (next === zoom) return;
-    // Anchor on the last touch only when leaving 1x. Re-anchoring on every
-    // step would walk the picture out from under the finger.
-    if (zoom === 1) {
-      const { x, y } = lastPointerFractionRef.current;
-      setZoomOrigin({ x: Math.round(x * 100), y: Math.round(y * 100) });
-    }
-    setZoom(next);
-  }, [zoom]);
-
-  const zoomOut = useCallback(() => {
-    const next = ZOOM_STEPS.toReversed().find((step) => step < zoom - 0.001) ?? 1;
-    if (next === zoom) return;
-    if (next === 1) setZoomOrigin({ x: 50, y: 50 });
-    setZoom(next);
-  }, [zoom]);
-
   const toggleFullScreen = useCallback(() => {
     // The CSS fallback owns the toggle once it is on: there is no browser
     // fullscreen state to exit, so asking the document would leave it stuck.
@@ -748,6 +730,7 @@ export function RemoteControlViewerDialog(props: {
   ) => {
     if (
       !shouldForwardRemoteSurfaceInput({
+        viewAdjusting: zoomViewAdjustingRef.current,
         capabilityGranted: canPointer,
         inputCaptured: inputCapturedRef.current,
         kind: `pointer-${action}`,
@@ -800,6 +783,7 @@ export function RemoteControlViewerDialog(props: {
   const sendWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (
       !shouldForwardRemoteSurfaceInput({
+        viewAdjusting: zoomViewAdjustingRef.current,
         capabilityGranted: canPointer,
         inputCaptured: inputCapturedRef.current,
         kind: "wheel",
@@ -839,6 +823,40 @@ export function RemoteControlViewerDialog(props: {
     pointerLocked,
   });
 
+  /**
+   * The controller takes the whole screen.
+   *
+   * A game pad drawn over a letterboxed picture inside a dialog inside browser
+   * chrome leaves the actual game a few hundred pixels tall, with the thumbs
+   * resting on window furniture. Entering full screen is the only way the pad
+   * has room to be a controller.
+   *
+   * It only undoes what it did: someone who was already full screen before
+   * arming FPS keeps it afterwards.
+   */
+  const fpsClaimedFullScreenRef = useRef(false);
+  const fpsWasActiveRef = useRef(false);
+  const fullScreenStateRef = useRef({ real: isFullScreen, pseudo: pseudoFullScreen });
+  fullScreenStateRef.current = { real: isFullScreen, pseudo: pseudoFullScreen };
+  useEffect(() => {
+    // Only on the transition. Reacting to the full-screen state as well would
+    // turn a deliberate Esc into a fight: the viewer leaves, this puts them
+    // straight back, and the browser starts refusing the request for want of a
+    // gesture.
+    if (fpsActive === fpsWasActiveRef.current) return;
+    fpsWasActiveRef.current = fpsActive;
+    const { real, pseudo } = fullScreenStateRef.current;
+    if (fpsActive) {
+      if (real || pseudo) return;
+      fpsClaimedFullScreenRef.current = true;
+      toggleFullScreen();
+      return;
+    }
+    if (!fpsClaimedFullScreenRef.current) return;
+    fpsClaimedFullScreenRef.current = false;
+    if (real || pseudo) toggleFullScreen();
+  }, [fpsActive, toggleFullScreen]);
+
   const sendFpsKey = useCallback(
     (code: string, key: string, action: "down" | "up") => {
       // Same gate as the physical keyboard path. The pad can be on screen with
@@ -847,6 +865,7 @@ export function RemoteControlViewerDialog(props: {
       // the component considers unfocused.
       if (
         !shouldForwardRemoteSurfaceInput({
+          viewAdjusting: zoomViewAdjustingRef.current,
           capabilityGranted: canKeyboard,
           inputCaptured: inputCapturedRef.current,
           kind: "key",
@@ -881,6 +900,7 @@ export function RemoteControlViewerDialog(props: {
     (dx: number, dy: number) => {
       if (
         !shouldForwardRemoteSurfaceInput({
+          viewAdjusting: zoomViewAdjustingRef.current,
           capabilityGranted: canPointer,
           inputCaptured: inputCapturedRef.current,
           kind: "pointer-move",
@@ -898,6 +918,7 @@ export function RemoteControlViewerDialog(props: {
     (button: "left" | "right", action: "down" | "up") => {
       if (
         !shouldForwardRemoteSurfaceInput({
+          viewAdjusting: zoomViewAdjustingRef.current,
           capabilityGranted: canPointer,
           inputCaptured: inputCapturedRef.current,
           kind: action === "down" ? "pointer-down" : "pointer-up",
@@ -917,6 +938,7 @@ export function RemoteControlViewerDialog(props: {
       if (
         !event.code ||
         !shouldForwardRemoteSurfaceInput({
+          viewAdjusting: zoomViewAdjustingRef.current,
           capabilityGranted: canKeyboard,
           inputCaptured: inputCapturedRef.current,
           kind: "key",
@@ -1096,7 +1118,13 @@ export function RemoteControlViewerDialog(props: {
                   pointerGranted: canPointer,
                 }),
               }}
-              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none ${
+              // The control row floats over the picture: free real estate
+              // in a tall window, and straight across the remote taskbar in
+              // a short landscape one - a phone on its side, where the
+              // bottom of the remote screen is exactly what you are
+              // reaching for. Under ~34rem of height the picture gives the
+              // row its own strip instead of sharing.
+              className={`relative flex size-full touch-none select-none items-center justify-center overflow-hidden rounded-none bg-black outline-hidden overscroll-none [@media(orientation:landscape)and(max-height:34rem)]:pb-12 ${
                 inputCaptured
                   ? "ring-2 ring-primary ring-offset-2 ring-offset-background"
                   : "focus-visible:ring-2 focus-visible:ring-ring"
@@ -1141,10 +1169,10 @@ export function RemoteControlViewerDialog(props: {
                 event.currentTarget.setPointerCapture(event.pointerId);
                 const surfaceRect = event.currentTarget.getBoundingClientRect();
                 if (surfaceRect.width > 0 && surfaceRect.height > 0) {
-                  lastPointerFractionRef.current = {
+                  zoomView.setAnchor({
                     x: (event.clientX - surfaceRect.left) / surfaceRect.width,
                     y: (event.clientY - surfaceRect.top) / surfaceRect.height,
-                  };
+                  });
                 }
                 const button = remotePointerButton(event.button);
                 pressedPointerButtonRef.current = button;
@@ -1188,14 +1216,7 @@ export function RemoteControlViewerDialog(props: {
                   // Transform rather than layout: pointer math reads the
                   // element's bounding rect, which already reflects it, so
                   // clicks keep landing where the user aimed while zoomed.
-                  style={
-                    zoom === 1
-                      ? undefined
-                      : {
-                          transform: `scale(${zoom})`,
-                          transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%`,
-                        }
-                  }
+                  style={zoomView.style}
                   className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : surface.media === "image" ? (
@@ -1211,14 +1232,7 @@ export function RemoteControlViewerDialog(props: {
                   // Transform rather than layout: pointer math reads the
                   // element's bounding rect, which already reflects it, so
                   // clicks keep landing where the user aimed while zoomed.
-                  style={
-                    zoom === 1
-                      ? undefined
-                      : {
-                          transform: `scale(${zoom})`,
-                          transformOrigin: `${zoomOrigin.x}% ${zoomOrigin.y}%`,
-                        }
-                  }
+                  style={zoomView.style}
                   className="pointer-events-none size-full touch-none select-none object-contain"
                 />
               ) : null}
@@ -1319,7 +1333,13 @@ export function RemoteControlViewerDialog(props: {
                   because the buttons reveal their labels at `sm`. Here the
                   pill simply truncates against whatever the buttons take. */}
               <div
-                className="absolute inset-x-3 z-40 flex items-center justify-between gap-2"
+                // Hidden under the FPS controller: this row lies straight
+                // across its action buttons and fire cluster, so a player
+                // reaching for "reload" got "full screen" instead. The
+                // controller carries its own Exit.
+                className={`absolute inset-x-3 z-40 flex items-center justify-between gap-2 ${
+                  fpsActive ? "hidden" : ""
+                }`}
                 // The surface always reaches the bottom edge now, so the row
                 // always has to clear the home indicator and browser chrome; a
                 // plain bottom-3 sat under both.
@@ -1416,35 +1436,11 @@ export function RemoteControlViewerDialog(props: {
                       <span className="sr-only sm:not-sr-only">Windows</span>
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    aria-label="Zoom out"
-                    title="Zoom out"
-                    disabled={zoom === 1}
-                    className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85 disabled:cursor-default disabled:opacity-40"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      zoomOut();
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    <ZoomOutIcon className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Zoom in"
-                    title="Zoom in"
-                    disabled={zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]!}
-                    className="flex cursor-pointer items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-xs text-white hover:bg-black/85 disabled:cursor-default disabled:opacity-40"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      zoomIn();
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    <ZoomInIcon className="size-3.5" />
-                    {zoom === 1 ? null : <span className="tabular-nums">{zoom}×</span>}
-                  </button>
+                  <RemoteViewZoomToggle
+                    adjusting={zoomView.adjusting}
+                    view={zoomView.view}
+                    onToggle={zoomView.toggleAdjusting}
+                  />
                   <button
                     type="button"
                     aria-label={
@@ -1472,6 +1468,19 @@ export function RemoteControlViewerDialog(props: {
                   </button>
                 </div>
               </div>
+              {zoomView.adjusting ? (
+                <RemoteViewAdjustLayer
+                  view={zoomView.view}
+                  canZoomIn={zoomView.canZoomIn}
+                  canZoomOut={zoomView.canZoomOut}
+                  onZoomIn={zoomView.zoomIn}
+                  onZoomOut={zoomView.zoomOut}
+                  onReset={zoomView.reset}
+                  onPanBy={zoomView.panBy}
+                  onPaneResize={zoomView.setPane}
+                  onDone={zoomView.stopAdjusting}
+                />
+              ) : null}
               {fpsActive ? (
                 <RemoteControlFpsOverlay
                   onMovementKey={sendFpsMovementKey}

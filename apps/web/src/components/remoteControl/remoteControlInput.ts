@@ -24,7 +24,15 @@ export function shouldForwardRemoteSurfaceInput(input: {
   readonly inputCaptured: boolean;
   readonly kind: RemoteControlSurfaceInputKind;
   readonly hasActivePointerPress?: boolean;
+  /**
+   * The viewer is moving its own picture around. Panning and dragging on the
+   * remote machine are the same gesture, so while the view is being adjusted
+   * nothing may reach the host - not even a pointer-down, which otherwise
+   * forwards unconditionally to let a click take focus.
+   */
+  readonly viewAdjusting?: boolean;
 }): boolean {
+  if (input.viewAdjusting === true) return false;
   if (!input.capabilityGranted) return false;
   if (input.kind === "pointer-down") return true;
   if (input.kind === "pointer-up" && input.hasActivePointerPress) return true;
