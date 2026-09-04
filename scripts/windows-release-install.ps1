@@ -87,12 +87,18 @@ function Get-LocalHttpStatus {
 }
 
 function Get-DisplayDiagnostic {
-  # A GUI app cannot come up without a display. When the monitor is off or
-  # detached, Chromium logs "Unable to find a primary display", its GPU process
-  # dies, and the main window closes the moment it is created - which the app
-  # correctly treats as the user closing the window, so it quits and takes the
-  # backend with it. The readiness failure then reads as an empty process list
-  # and says nothing about the cause, which is a long way from the truth.
+  # Context only - do NOT read this as the cause. A monitor reporting OFF LINE
+  # does make Chromium log "Unable to find a primary display" and kill its GPU
+  # process, and that looks damning next to an empty process list. It is a red
+  # herring: the app that quit ~1s after startup was quitting because dismissing
+  # the "Connecting to WSL" splash read as the user closing the app (fixed
+  # 0.1.409), and it now runs fine with the monitor still OFF LINE.
+  #
+  # When readiness fails, the process list and this line are both symptoms. The
+  # cause is in the app's PROSE log, which goes to stdout - desktop.trace.ndjson
+  # holds spans only, and a quit from the window-close handler opens no span.
+  # Relaunch with Start-Process -RedirectStandardOutput/-RedirectStandardError
+  # and read those instead of theorising from what is printed here.
   try {
     $monitors = @(Get-CimInstance Win32_DesktopMonitor -ErrorAction Stop)
   } catch {
