@@ -1,4 +1,4 @@
-import { ExternalLinkIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
+import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
 import { useMemo } from "react";
 import type {
   ProviderDriverKind,
@@ -338,13 +338,12 @@ export function ProviderSettingsUsage(props: {
 
   if (!shouldShowProviderSettingsUsage(driverKind, summary)) return null;
 
-  const statusLabel = refreshing
-    ? "Loading"
-    : summary?.state === "stale"
-      ? "Stale"
-      : summary?.state === "unavailable"
-        ? "Unavailable"
-        : null;
+  // Deliberately independent of `refreshing`: adding, removing or relabelling
+  // this badge mid-refresh reflows the header and drags the figures below it
+  // with it. A refresh disables its own button and spins its own icon; nothing
+  // else about the card may move.
+  const statusLabel =
+    summary?.state === "stale" ? "Stale" : summary?.state === "unavailable" ? "Unavailable" : null;
   const reportedAt = summary?.reportedAt ? formatAt(summary.reportedAt) : null;
   const hasActivity = digest.allTime.turns > 0;
 
@@ -361,9 +360,7 @@ export function ProviderSettingsUsage(props: {
             <p className="text-[11.5px] text-muted-foreground">
               {reportedAt
                 ? `${summary?.state === "stale" ? "Last reported" : "Reported"} ${reportedAt}`
-                : refreshing
-                  ? "Waiting for provider usage"
-                  : "Quotas reported by the provider account"}
+                : "Quotas reported by the provider account"}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -371,7 +368,7 @@ export function ProviderSettingsUsage(props: {
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[11px] font-medium",
-                  summary?.state === "stale" && !refreshing
+                  summary?.state === "stale"
                     ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
                     : "bg-surface-hover text-muted-foreground",
                 )}
@@ -389,7 +386,7 @@ export function ProviderSettingsUsage(props: {
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--line)] px-2 text-[12px] font-medium text-foreground transition-colors hover:bg-surface-hover disabled:opacity-60"
               >
                 <RefreshCwIcon className={cn("size-3", refreshing && "animate-spin")} aria-hidden />
-                {refreshing ? "Refreshing…" : "Refresh"}
+                Refresh
               </button>
             ) : null}
           </div>
@@ -407,22 +404,18 @@ export function ProviderSettingsUsage(props: {
           </ul>
         ) : (
           <p className="mt-3 text-[12px] text-muted-foreground">
-            {refreshing
-              ? "Loading usage…"
-              : "Usage has not been reported for this provider account yet."}
+            Usage has not been reported for this provider account yet.
           </p>
         )}
 
-        {refreshing ? (
-          <p
-            className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground"
-            role="status"
-            aria-live="polite"
-          >
-            <LoaderIcon className="size-3 animate-spin" aria-hidden />
-            Refreshing {displayName} usage
-          </p>
-        ) : null}
+        {/*
+          Screen-reader only: the visible spinner lives on the refresh button
+          itself. A real paragraph here appeared and disappeared with the
+          refresh, growing the card by a line and pushing everything below it.
+        */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {refreshing ? `Refreshing ${displayName} usage` : ""}
+        </span>
         {provider && !canRefresh ? (
           <p className="mt-2 text-[11px] text-muted-foreground">
             {provider.auth.status === "unauthenticated"

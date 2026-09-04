@@ -1025,16 +1025,18 @@ export function ProviderUsageDetails({
   };
   const hasUsage = windows.length > 0;
   const visibleState = isRefreshing ? "loading" : state;
+  // Deliberately read `state`, not `visibleState`: a refresh must not add,
+  // remove or relabel this badge. Every one of those reflows the header and
+  // shoves the numbers underneath it around, which is the whole reason the
+  // refresh lives in a corner instead of over the figures it is updating.
   const statusLabel =
-    visibleState === "loading"
-      ? "Loading"
-      : visibleState === "stale"
-        ? "Stale"
-        : visibleState === "unavailable"
-          ? "Unavailable"
-          : visibleState === "unsupported"
-            ? "Unsupported"
-            : null;
+    state === "stale"
+      ? "Stale"
+      : state === "unavailable"
+        ? "Unavailable"
+        : state === "unsupported"
+          ? "Unsupported"
+          : null;
   return (
     <div
       // Fills whichever container it is placed in rather than carrying its own
@@ -1056,16 +1058,14 @@ export function ProviderUsageDetails({
               <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">
                 {reportedAt
                   ? `${state === "stale" ? "Last reported" : "Reported"} ${formatReportedAt(reportedAt)}`
-                  : isRefreshing
-                    ? "Waiting for provider usage"
-                    : "Account-level provider usage"}
+                  : "Account-level provider usage"}
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
               {statusLabel ? (
                 <span
                   className={`inline-flex h-6 shrink-0 items-center whitespace-nowrap rounded-full px-2 font-medium text-[11px] ${
-                    visibleState === "stale"
+                    state === "stale"
                       ? "bg-amber-500/12 text-amber-700 dark:text-amber-300"
                       : "bg-foreground/6 text-muted-foreground"
                   }`}
@@ -1086,7 +1086,7 @@ export function ProviderUsageDetails({
                     className={`size-3 ${isRefreshing ? "animate-spin" : ""}`}
                     aria-hidden
                   />
-                  <span>{isRefreshing ? "Refreshing…" : "Refresh"}</span>
+                  <span>Refresh</span>
                 </button>
               ) : null}
               {onSwitchUser ? (
@@ -1170,11 +1170,9 @@ export function ProviderUsageDetails({
             </ul>
           ) : (
             <p className="mt-3 rounded-[10px] border border-[var(--line)] border-dashed px-3 py-3 text-center text-[11.5px] text-muted-foreground leading-snug">
-              {isRefreshing
-                ? "Loading usage…"
-                : state === "unsupported"
-                  ? "This provider does not expose account usage."
-                  : "Usage has not been reported for this provider account yet."}
+              {state === "unsupported"
+                ? "This provider does not expose account usage."
+                : "Usage has not been reported for this provider account yet."}
             </p>
           )}
         </>

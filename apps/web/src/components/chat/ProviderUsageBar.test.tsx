@@ -1190,8 +1190,11 @@ describe("provider usage summaries", () => {
       />,
     );
     expect(loadingMarkup).toContain('data-provider-usage-state="loading"');
-    expect(loadingMarkup).toContain(">Loading<");
-    expect(loadingMarkup).toContain("Loading usage…");
+    // The badge reports the account's state, never the refresh. Swapping it to
+    // "Loading" resized the header pill and reflowed the card under it.
+    expect(loadingMarkup).toContain(">Unavailable<");
+    expect(loadingMarkup).not.toContain(">Loading<");
+    expect(loadingMarkup).not.toContain("Loading usage…");
 
     const unavailableMarkup = renderToStaticMarkup(
       <ProviderUsageDetails name="Fable" state="unavailable" reportedAt={null} windows={[]} />,
@@ -1239,7 +1242,37 @@ describe("provider usage summaries", () => {
       />,
     );
     expect(loadingMarkup).toContain('aria-busy="true"');
-    expect(loadingMarkup).toContain("Refreshing…");
+    expect(loadingMarkup).toContain("animate-spin");
+    // The label stays put: "Refreshing…" is wider than "Refresh", so the button
+    // grew and dragged the badge beside it sideways every time usage refreshed.
+    expect(loadingMarkup).toContain(">Refresh<");
+    expect(loadingMarkup).not.toContain("Refreshing…");
+  });
+
+  it("changes nothing but the refresh button while refreshing", () => {
+    // The point of the corner refresh is that the figures it updates hold
+    // still. Render the same card idle and in-flight, neutralise only the
+    // button's own busy affordances, and the two must be identical - anything
+    // left over is a layout shift the user watches happen.
+    const card = (isRefreshing: boolean) =>
+      renderToStaticMarkup(
+        <ProviderUsageDetails
+          name="Claude"
+          state="stale"
+          reportedAt="2026-07-29T15:00:00.000Z"
+          windows={[{ key: "seven_day", label: "Weekly", usedPercent: 78, resetAt: null }]}
+          onRefresh={() => undefined}
+          isRefreshing={isRefreshing}
+        />,
+      );
+    const neutralise = (markup: string) =>
+      markup
+        .replaceAll(' disabled=""', "")
+        .replaceAll(' aria-busy="true"', "")
+        .replaceAll(' aria-busy="false"', "")
+        .replaceAll(" animate-spin", "")
+        .replaceAll('data-provider-usage-state="loading"', 'data-provider-usage-state="stale"');
+    expect(neutralise(card(true))).toBe(neutralise(card(false)));
   });
 
   it("places draft usage at the padded pane top and keeps active usage in the footer", () => {
