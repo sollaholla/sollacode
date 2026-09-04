@@ -161,24 +161,38 @@ export function mergeResetCredits(
     nextByKey.set(providerUsageResetCreditKey(credit), { ...credit, lastSeenAt: reportedAt });
   }
 
-  const survives = (key: string, credit: PersistedProviderUsageResetCredit): boolean => {
-    if (nextByKey.has(key)) return true;
+  // Returns the credit to carry forward, or null to retire it. Retaining a
+  // credit and dating it are the same decision, so they are made together.
+  const carryForward = (
+    key: string,
+    credit: PersistedProviderUsageResetCredit,
+  ): PersistedProviderUsageResetCredit | null => {
+    if (nextByKey.has(key)) return credit;
     // An expired credit is gone whatever the grace says; the provider will
     // never mention it again and there is nothing to ride out.
     if (credit.expiresAt !== null && Number.isFinite(nowMs) && credit.expiresAt <= nowMs) {
-      return false;
+      return null;
     }
-    const seenMs = credit.lastSeenAt === undefined ? Number.NaN : Date.parse(credit.lastSeenAt);
-    // Never seen fresh, or the clock is unreadable: believe the provider now
-    // rather than keeping something we cannot age out.
-    if (!Number.isFinite(seenMs) || !Number.isFinite(nowMs)) return false;
-    return nowMs - seenMs <= PROVIDER_USAGE_RESET_CREDIT_GRACE_MS;
+    if (!Number.isFinite(nowMs)) return null;
+    if (credit.lastSeenAt === undefined) {
+      // Written by a build that did not date its credits. Dropping it here
+      // would make a real credit blink out on the first desynced refresh after
+      // an upgrade - the exact flicker this grace exists to absorb. Adopt it
+      // instead: start its clock now so it gets one full grace window and then
+      // ages out like any other.
+      return { ...credit, lastSeenAt: reportedAt };
+    }
+    const seenMs = Date.parse(credit.lastSeenAt);
+    // An unreadable stamp cannot be aged out, so believe the provider now.
+    if (!Number.isFinite(seenMs)) return null;
+    return nowMs - seenMs <= PROVIDER_USAGE_RESET_CREDIT_GRACE_MS ? credit : null;
   };
 
   const creditsByKey = new Map<string, PersistedProviderUsageResetCredit>();
   for (const credit of previous?.credits ?? []) {
     const key = providerUsageResetCreditKey(credit);
-    if (survives(key, credit)) creditsByKey.set(key, credit);
+    const carried = carryForward(key, credit);
+    if (carried !== null) creditsByKey.set(key, carried);
   }
   for (const [key, credit] of nextByKey) creditsByKey.set(key, credit);
 

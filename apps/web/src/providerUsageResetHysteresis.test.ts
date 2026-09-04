@@ -112,6 +112,48 @@ describe("provider usage reset hysteresis", () => {
     expect(countOf(settled)).toBe(1);
   });
 
+  it("adopts an undated credit from an older build instead of blinking it out", () => {
+    // What a client that upgraded mid-cycle has sitting in localStorage.
+    const legacy: Readonly<Record<string, PersistedProviderUsageEntry>> = {
+      [ACCOUNT]: {
+        accountKey: ACCOUNT,
+        driver: ProviderDriverKind.make("codex"),
+        windows: [],
+        reportedAt: at(0),
+        resetCredits: { availableCount: 1, credits: [credit()] },
+      },
+    };
+    expect(creditsOf(legacy)[0]?.lastSeenAt).toBeUndefined();
+
+    const adopted = mergeProviderUsageEntry(legacy, report(30_000, null));
+    expect(creditsOf(adopted).map((entry) => entry.id)).toEqual(["credit-a"]);
+    // Adoption has to start the clock, or the credit is undated forever and
+    // the ratchet is back.
+    expect(creditsOf(adopted)[0]?.lastSeenAt).toBe(at(30_000));
+
+    const aged = mergeProviderUsageEntry(
+      adopted,
+      report(30_000 + PROVIDER_USAGE_RESET_CREDIT_GRACE_MS + 1_000, null),
+    );
+    expect(aged[ACCOUNT]?.resetCredits ?? null).toBeNull();
+  });
+
+  it("retires an undated credit that has already expired", () => {
+    const legacy: Readonly<Record<string, PersistedProviderUsageEntry>> = {
+      [ACCOUNT]: {
+        accountKey: ACCOUNT,
+        driver: ProviderDriverKind.make("codex"),
+        windows: [],
+        reportedAt: at(0),
+        resetCredits: { availableCount: 1, credits: [credit({ expiresAt: T0 + 10_000 })] },
+      },
+    };
+
+    expect(
+      mergeProviderUsageEntry(legacy, report(20_000, null))[ACCOUNT]?.resetCredits ?? null,
+    ).toBeNull();
+  });
+
   it("drops an expired credit even inside the grace window", () => {
     const seen = mergeProviderUsageEntry(
       {},
