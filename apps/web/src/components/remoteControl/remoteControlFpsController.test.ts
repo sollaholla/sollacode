@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  advanceFpsLookPointer,
   createHeldInputTracker,
   diffHeldKeys,
   FPS_LOOK_SENSITIVITY_DEFAULT,
@@ -227,5 +228,38 @@ describe("createHeldInputTracker", () => {
     tracker.drain();
     expect(tracker.press("Space")).toBe(true);
     expect(tracker.isHeld("Space")).toBe(true);
+  });
+});
+
+describe("advanceFpsLookPointer", () => {
+  const surface = { width: 400, height: 200 } as const;
+
+  it("moves the cursor by the drag, in surface fractions", () => {
+    expect(advanceFpsLookPointer({ point: { x: 0.5, y: 0.5 }, dx: 40, dy: -20, surface })).toEqual({
+      x: 0.6,
+      y: 0.4,
+    });
+  });
+
+  it("stops at the edge rather than running off it", () => {
+    expect(
+      advanceFpsLookPointer({ point: { x: 0.95, y: 0.05 }, dx: 400, dy: -400, surface }),
+    ).toEqual({ x: 1, y: 0 });
+  });
+
+  it("holds still until the surface has been measured", () => {
+    // Sending a position derived from a zero-sized rect would fling the cursor
+    // into a corner on the first sample after a resize.
+    expect(
+      advanceFpsLookPointer({ point: { x: 0.25, y: 0.75 }, dx: 50, dy: 50, surface: null }),
+    ).toEqual({ x: 0.25, y: 0.75 });
+    expect(
+      advanceFpsLookPointer({
+        point: { x: 0.25, y: 0.75 },
+        dx: 50,
+        dy: 50,
+        surface: { width: 0, height: 0 },
+      }),
+    ).toEqual({ x: 0.25, y: 0.75 });
   });
 });

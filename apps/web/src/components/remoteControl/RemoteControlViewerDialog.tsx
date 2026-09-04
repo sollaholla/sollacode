@@ -61,7 +61,11 @@ import {
   shouldForwardRemoteSurfaceInput,
 } from "./remoteControlInput";
 import { RemoteControlFpsOverlay } from "./RemoteControlFpsOverlay";
-import { type FpsMovementCode, shouldShowFpsController } from "./remoteControlFpsController";
+import {
+  advanceFpsLookPointer,
+  type FpsMovementCode,
+  shouldShowFpsController,
+} from "./remoteControlFpsController";
 import { createRemoteControlInputScheduler } from "./remoteControlInputScheduler";
 import { describeHostStatus } from "./remoteControlHostStatus";
 import { clampPointerDelta } from "./remoteControlPointerMotion";
@@ -835,6 +839,14 @@ export function RemoteControlViewerDialog(props: {
    * It only undoes what it did: someone who was already full screen before
    * arming FPS keeps it afterwards.
    */
+  /**
+   * Arming is enough. The controller only becomes "active" once the remote game
+   * captures the mouse, but the whole point of going full screen is to give the
+   * game room BEFORE that happens - waiting for capture means the player sets
+   * up inside a letterboxed dialog and the screen only expands once they are
+   * already playing.
+   */
+  const fpsWantsFullScreen = fpsArmed && canControl && canPointer && canKeyboard;
   const fpsClaimedFullScreenRef = useRef(false);
   const fpsWasActiveRef = useRef(false);
   const fullScreenStateRef = useRef({ real: isFullScreen, pseudo: pseudoFullScreen });
@@ -844,10 +856,10 @@ export function RemoteControlViewerDialog(props: {
     // turn a deliberate Esc into a fight: the viewer leaves, this puts them
     // straight back, and the browser starts refusing the request for want of a
     // gesture.
-    if (fpsActive === fpsWasActiveRef.current) return;
-    fpsWasActiveRef.current = fpsActive;
+    if (fpsWantsFullScreen === fpsWasActiveRef.current) return;
+    fpsWasActiveRef.current = fpsWantsFullScreen;
     const { real, pseudo } = fullScreenStateRef.current;
-    if (fpsActive) {
+    if (fpsWantsFullScreen) {
       if (real || pseudo) return;
       fpsClaimedFullScreenRef.current = true;
       toggleFullScreen();
@@ -856,7 +868,7 @@ export function RemoteControlViewerDialog(props: {
     if (!fpsClaimedFullScreenRef.current) return;
     fpsClaimedFullScreenRef.current = false;
     if (real || pseudo) toggleFullScreen();
-  }, [fpsActive, toggleFullScreen]);
+  }, [fpsWantsFullScreen, toggleFullScreen]);
 
   // Entering the adjust mode stops forwarding, which would otherwise strand a
   // key or mouse button that was down at that instant - the remote machine
@@ -924,10 +936,23 @@ export function RemoteControlViewerDialog(props: {
       ) {
         return;
       }
-      const point = lastPointerPointRef.current ?? { x: 0.5, y: 0.5 };
+      // Carry a position that actually moves, not just the deltas. The macOS
+      // host has no relative path at all - it derives the cursor from x/y - so
+      // a frozen point warped it to the same place on every sample and the aim
+      // never moved. The deltas still ride along for a Windows game in
+      // mouse-look, where the host takes its relative branch and ignores the
+      // position entirely.
+      const rect = remoteSurfaceRect();
+      const point = advanceFpsLookPointer({
+        point: lastPointerPointRef.current ?? { x: 0.5, y: 0.5 },
+        dx,
+        dy,
+        surface: rect ? { width: rect.width, height: rect.height } : null,
+      });
+      lastPointerPointRef.current = point;
       enqueueInput({ type: "pointer", action: "move", ...point, button: "left", dx, dy });
     },
-    [canPointer, enqueueInput],
+    [canPointer, enqueueInput, remoteSurfaceRect],
   );
 
   const sendFpsPointerButton = useCallback(
