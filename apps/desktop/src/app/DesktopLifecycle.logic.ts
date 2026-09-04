@@ -2,7 +2,21 @@ export function shouldInterceptWindowCloseForQuit(input: {
   readonly platform: NodeJS.Platform;
   readonly quitAllowed: boolean;
   readonly quitAlreadyRequested: boolean;
+  /**
+   * A window the user was actually shown. Windows are created hidden and
+   * revealed on `ready-to-show`, so this stays false when the window never
+   * made it onto a screen.
+   */
+  readonly windowEverRevealed: boolean;
 }): boolean {
+  // Closing a window the user never saw is not the user asking to quit. On a
+  // machine whose display is off or detached, Chromium cannot find a primary
+  // display, its GPU process dies, and the window closes the moment it is
+  // created - which used to quit the app about a second after the backend had
+  // come up and started serving. That box is reached over the network from a
+  // phone, so tearing the server down was the worst possible response to a
+  // monitor being off.
+  if (!input.windowEverRevealed) return false;
   return input.platform !== "darwin" && !input.quitAllowed && !input.quitAlreadyRequested;
 }
 
