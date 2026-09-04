@@ -69,11 +69,20 @@ const unitTestProject = {
   test: {
     name: "unit",
     include: ["src/**/*.test.{ts,tsx}"],
-    // The web runtime suite exercises auth bootstrap, saved environments,
-    // and websocket subscription lifecycles. Under the full monorepo test
-    // run, those async tests can exceed Vitest's default 5s budget.
-    hookTimeout: 15_000,
-    testTimeout: 15_000,
+    // The web runtime suite exercises auth bootstrap, saved environments, and
+    // websocket subscription lifecycles, and several tests `await import(...)`
+    // something heavy (Lexical) inside the test body. Under the full monorepo
+    // run, with every project's workers competing, those take far longer than
+    // they do standalone.
+    //
+    // These MUST be declared here. A project config does not inherit the root
+    // `test.testTimeout` through `extends: true` - dropping them fell back to
+    // Vitest's own 5s default rather than the root's 60s, and the suite got
+    // flakier, not less flaky. 15s was still too tight: two unrelated tests
+    // failed intermittently at exactly 15000ms, one of them only because a
+    // dynamic import of Lexical had to queue behind 13 other workers.
+    hookTimeout: 60_000,
+    testTimeout: 60_000,
   },
 } satisfies TestProjectInlineConfiguration;
 
