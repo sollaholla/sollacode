@@ -13,7 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -62,105 +62,109 @@ describe("thread control command scheduling", () => {
     registry.dispose();
   });
 
-  it("wires the real interrupt command outside a hung start-turn lane", async () => {
-    const environmentId = EnvironmentId.make("environment-1");
-    const threadId = ThreadId.make("thread-1");
-    const turnStarted = await Effect.runPromise(Deferred.make<void>());
-    const releaseTurn = await Effect.runPromise(Deferred.make<void>());
-    const dispatched: ClientOrchestrationCommand[] = [];
-    const client = {
-      [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command: ClientOrchestrationCommand) => {
-        dispatched.push(command);
-        return command.type === "thread.turn.start"
-          ? Deferred.succeed(turnStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseTurn)),
-              Effect.as({ sequence: dispatched.length }),
-            )
-          : Effect.succeed({ sequence: dispatched.length });
-      },
-    } as unknown as WsRpcProtocolClient;
-    const target = new PrimaryConnectionTarget({
-      environmentId,
-      label: "Test environment",
-      httpBaseUrl: "https://environment.example.test",
-      wsBaseUrl: "wss://environment.example.test",
-    });
-    const session: RpcSession = {
-      client,
-      initialConfig: Effect.never,
-      ready: Effect.void,
-      probe: Effect.void,
-      closed: Effect.never,
-    };
-    const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-      target,
-      state: await Effect.runPromise(SubscriptionRef.make(AVAILABLE_CONNECTION_STATE)),
-      session: await Effect.runPromise(SubscriptionRef.make(Option.some(session))),
-      prepared: await Effect.runPromise(SubscriptionRef.make(Option.none<PreparedConnection>())),
-      connect: Effect.void,
-      disconnect: Effect.void,
-      retryNow: Effect.void,
-    } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-    const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
-      run: (_environmentId, effect) =>
-        Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-    } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
-    const deferredStore = Persistence.DeferredThreadCommandStore.of({
-      list: () => Effect.succeed([]),
-      enqueue: () => Effect.void,
-      remove: () => Effect.void,
-      clear: () => Effect.void,
-    });
-    const crypto = Crypto.make({
-      randomBytes: (size) => new Uint8Array(size),
-      digest: (_algorithm, data) => Effect.succeed(data),
-    });
-    const runtime = Atom.runtime(
-      Layer.mergeAll(
-        Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
-        Layer.succeed(Persistence.DeferredThreadCommandStore, deferredStore),
-        Layer.succeed(Crypto.Crypto, crypto),
-      ),
-    );
-    const atoms = createThreadEnvironmentAtoms(runtime);
-    const registry = AtomRegistry.make();
-    const createdAt = "2026-08-25T00:00:00.000Z";
-
-    const hungTurn = atoms.startTurn.run(registry, {
-      environmentId,
-      input: {
-        commandId: CommandId.make("command-start"),
-        threadId,
-        message: {
-          messageId: MessageId.make("message-start"),
-          role: "user",
-          text: "Keep working",
-          attachments: [],
+  it.effect("wires the real interrupt command outside a hung start-turn lane", () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("environment-1");
+      const threadId = ThreadId.make("thread-1");
+      const turnStarted = yield* Deferred.make<void>();
+      const releaseTurn = yield* Deferred.make<void>();
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const client = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command: ClientOrchestrationCommand) => {
+          dispatched.push(command);
+          return command.type === "thread.turn.start"
+            ? Deferred.succeed(turnStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseTurn)),
+                Effect.as({ sequence: dispatched.length }),
+              )
+            : Effect.succeed({ sequence: dispatched.length });
         },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt,
-      },
-    });
-    await Effect.runPromise(Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds")));
+      } as unknown as WsRpcProtocolClient;
+      const target = new PrimaryConnectionTarget({
+        environmentId,
+        label: "Test environment",
+        httpBaseUrl: "https://environment.example.test",
+        wsBaseUrl: "wss://environment.example.test",
+      });
+      const session: RpcSession = {
+        client,
+        initialConfig: Effect.never,
+        ready: Effect.void,
+        probe: Effect.void,
+        closed: Effect.never,
+      };
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session)),
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+        run: (_environmentId, effect) =>
+          Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+      const deferredStore = Persistence.DeferredThreadCommandStore.of({
+        list: () => Effect.succeed([]),
+        enqueue: () => Effect.void,
+        remove: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const crypto = Crypto.make({
+        randomBytes: (size) => new Uint8Array(size),
+        digest: (_algorithm, data) => Effect.succeed(data),
+      });
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+          Layer.succeed(Persistence.DeferredThreadCommandStore, deferredStore),
+          Layer.succeed(Crypto.Crypto, crypto),
+        ),
+      );
+      const atoms = createThreadEnvironmentAtoms(runtime);
+      const registry = AtomRegistry.make();
+      const createdAt = "2026-08-25T00:00:00.000Z";
 
-    const interruptResult = await atoms.interruptTurn.run(registry, {
-      environmentId,
-      input: {
-        commandId: CommandId.make("command-interrupt"),
-        threadId,
-        createdAt,
-      },
-    });
+      const hungTurn = atoms.startTurn.run(registry, {
+        environmentId,
+        input: {
+          commandId: CommandId.make("command-start"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-start"),
+            role: "user",
+            text: "Keep working",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt,
+        },
+      });
+      yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
 
-    expect(interruptResult).toMatchObject({ _tag: "Success" });
-    expect(dispatched.map((command) => command.type)).toEqual([
-      "thread.turn.start",
-      "thread.turn.interrupt",
-    ]);
+      const interruptResult = yield* Effect.promise(() =>
+        atoms.interruptTurn.run(registry, {
+          environmentId,
+          input: {
+            commandId: CommandId.make("command-interrupt"),
+            threadId,
+            createdAt,
+          },
+        }),
+      );
 
-    await Effect.runPromise(Deferred.succeed(releaseTurn, undefined));
-    await hungTurn;
-    registry.dispose();
-  });
+      expect(interruptResult).toMatchObject({ _tag: "Success" });
+      expect(dispatched.map((command) => command.type)).toEqual([
+        "thread.turn.start",
+        "thread.turn.interrupt",
+      ]);
+
+      yield* Deferred.succeed(releaseTurn, undefined);
+      yield* Effect.promise(() => hungTurn);
+      registry.dispose();
+    }),
+  );
 });
