@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.1.405",
+  "version": "0.1.406",
   "private": true,
   "type": "module",
   "scripts": {
