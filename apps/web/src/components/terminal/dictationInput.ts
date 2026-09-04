@@ -93,6 +93,20 @@ export function resolveTerminalDictationInput(input: {
   if (input.textareaValue.length === 0) {
     return { payload: input.payload, state: emptyTerminalDictationState };
   }
+  if (input.textareaValue === input.state.forwarded && input.payload !== input.textareaValue) {
+    // The textarea has not moved since we last forwarded it, and this payload
+    // is not a resend of it, so it cannot be an edit to the dictated text.
+    //
+    // This is ordinary typing. xterm serves normal keys from `keydown` and
+    // emits them without ever touching the textarea, so a buffer left sitting
+    // there - by dictation, an IME, or a press-and-hold accent menu - stays
+    // non-empty behind every subsequent keystroke. Reconciling those against
+    // an unchanged buffer produced an empty payload every time, which the
+    // caller drops: typing died completely until something happened to clear
+    // the textarea. A resend of the whole buffer still falls through to the
+    // reconciliation below, so it is still collapsed rather than duplicated.
+    return { payload: input.payload, state: input.state };
+  }
   if (!isTextareaExplicablePayload(input.payload)) {
     // A control payload does not change the dictated text, so what we have
     // already forwarded still stands.
