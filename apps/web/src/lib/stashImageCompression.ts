@@ -102,6 +102,26 @@ function createCanvas(width: number, height: number): Canvas2D | null {
 }
 
 /**
+ * One encode attempt, measured but not yet materialized.
+ *
+ * Base64 is the expensive part: it allocates a string ~4/3 the size of the
+ * encoded image, and the search below can discard a dozen attempts before one
+ * fits. Since a data URL's length follows exactly from the blob's byte length,
+ * every attempt can be *compared* against the budget for free, and only the
+ * one actually returned pays to be encoded.
+ */
+interface EncodeAttempt {
+  readonly mimeType: string;
+  readonly dataUrlLength: number;
+  readonly dataUrl: () => Promise<string>;
+}
+
+/** btoa emits standard padded base64, so this is exact rather than an estimate. */
+function dataUrlLengthFor(mimeType: string, byteLength: number): number {
+  return `data:${mimeType};base64,`.length + 4 * Math.ceil(byteLength / 3);
+}
+
+/**
  * WebP is preferred: at matched visual quality it lands roughly 25-35%
  * smaller than JPEG, so the same budget buys more resolution and detail —
  * and it keeps alpha, so screenshots with transparency survive intact.
@@ -111,16 +131,21 @@ async function encodeToDataUrl(
   canvas: OffscreenCanvas | HTMLCanvasElement,
   quality: number,
   mimeType: string,
-): Promise<{ dataUrl: string; mimeType: string } | null> {
+): Promise<EncodeAttempt | null> {
   if (typeof HTMLCanvasElement !== "undefined" && canvas instanceof HTMLCanvasElement) {
     const dataUrl = canvas.toDataURL(mimeType, quality);
     // toDataURL silently returns a PNG when the requested type is unsupported.
     if (!dataUrl.startsWith(`data:${mimeType}`)) return null;
-    return { dataUrl, mimeType };
+    // This path hands back a string directly, so there is nothing to defer.
+    return { mimeType, dataUrlLength: dataUrl.length, dataUrl: () => Promise.resolve(dataUrl) };
   }
   const blob = await (canvas as OffscreenCanvas).convertToBlob({ type: mimeType, quality });
   if (blob.type && blob.type !== mimeType) return null;
-  return { dataUrl: await blobToDataUrl(blob, mimeType), mimeType };
+  return {
+    mimeType,
+    dataUrlLength: dataUrlLengthFor(mimeType, blob.size),
+    dataUrl: () => blobToDataUrl(blob, mimeType),
+  };
 }
 
 /**
@@ -133,7 +158,7 @@ async function encodeWithinBudget(
   bitmap: ImageBitmap,
   maxDimension: number,
   budgetChars: number,
-): Promise<{ dataUrl: string; mimeType: string } | null> {
+): Promise<EncodeAttempt | null> {
   const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -151,14 +176,14 @@ async function encodeWithinBudget(
   }
   target.context.drawImage(bitmap, 0, 0, width, height);
 
-  let smallest: { dataUrl: string; mimeType: string } | null = null;
+  let smallest: EncodeAttempt | null = null;
   for (const quality of QUALITY_STEPS) {
     const encoded = await encodeToDataUrl(target.canvas, quality, mimeType);
     if (!encoded) break;
-    if (smallest === null || encoded.dataUrl.length < smallest.dataUrl.length) {
+    if (smallest === null || encoded.dataUrlLength < smallest.dataUrlLength) {
       smallest = encoded;
     }
-    if (encoded.dataUrl.length <= budgetChars) {
+    if (encoded.dataUrlLength <= budgetChars) {
       return encoded;
     }
   }
@@ -217,7 +242,7 @@ export async function compressImageForStash(
     let encodeFailed = false;
     for (const dimensionScale of [1, ...FALLBACK_SCALE_STEPS]) {
       const targetDimension = Math.max(1, Math.round(baseDimension * dimensionScale));
-      let encoded: { dataUrl: string; mimeType: string } | null;
+      let encoded: EncodeAttempt | null;
       try {
         encoded = await encodeWithinBudget(bitmap, targetDimension, budgetChars);
       } catch {
@@ -231,13 +256,15 @@ export async function compressImageForStash(
         continue;
       }
       encodeFailed = false;
-      if (encoded && encoded.dataUrl.length <= budgetChars) {
+      if (encoded && encoded.dataUrlLength <= budgetChars) {
+        // Only now is it worth paying for the base64.
+        const dataUrl = await encoded.dataUrl();
         return {
           ok: true,
           image: {
-            dataUrl: encoded.dataUrl,
+            dataUrl,
             mimeType: encoded.mimeType,
-            sizeBytes: dataUrlByteLength(encoded.dataUrl),
+            sizeBytes: dataUrlByteLength(dataUrl),
             recompressed: true,
           },
         };
