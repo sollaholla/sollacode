@@ -177,6 +177,31 @@ describe("ProviderSettingsUsage", () => {
     expect(loading).toContain('role="status"');
     expect(loading).toContain("Refreshing");
     expect(loading).toContain("animate-spin");
+    // Announced to screen readers only. A visible "Refreshing…" line grew the
+    // card by a row and pushed the quota figures down every refresh.
+    expect(loading).toContain("sr-only");
+
+    const idle = renderToStaticMarkup(
+      <ProviderSettingsUsage
+        displayName="Claude Personal"
+        driverKind={claudeProvider().driver}
+        provider={claudeProvider()}
+        summary={summary()}
+        refreshState={{ status: "idle", error: null }}
+        onRefresh={() => undefined}
+      />,
+    );
+    // Refreshing may disable the button and spin its icon. Nothing else about
+    // the card is allowed to move while it does.
+    const neutralise = (markup: string) =>
+      markup
+        .replaceAll(' disabled=""', "")
+        .replaceAll(' aria-busy="true"', "")
+        .replaceAll(' aria-busy="false"', "")
+        .replaceAll(" animate-spin", "")
+        .replace(/data-provider-usage-state="[a-z]+"/g, 'data-provider-usage-state="x"')
+        .replaceAll(`Refreshing Claude Personal usage`, "");
+    expect(neutralise(loading)).toBe(neutralise(idle));
 
     const failed = renderToStaticMarkup(
       <ProviderSettingsUsage
