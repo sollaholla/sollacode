@@ -2372,6 +2372,10 @@ function ChatViewContent(props: ChatViewProps) {
   const appVoiceCaptureEnabled = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
+    // Must match the button's own availability check. If this one says no, the
+    // push-to-talk effect never arms and the microphone renders as a control
+    // that does nothing at all.
+    hasNativeSpeechDictation: getSpeechRecognitionConstructor() !== undefined,
   });
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
