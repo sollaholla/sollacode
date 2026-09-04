@@ -60,6 +60,25 @@ describe("remote view zoom wiring", () => {
     ).toContain("imageRef.current");
   });
 
+  it("writes arbitrary media variants Tailwind can actually compile", () => {
+    // Tailwind turns `_` into a space. Written without them, the condition
+    // reaches the stylesheet as `(orientation:landscape)and(max-height:34rem)`,
+    // which is invalid CSS the browser drops on the floor - the class compiles,
+    // ships, and does nothing, which is exactly how this one was first written.
+    const sources = [
+      read("remoteControl", "RemoteControlViewerDialog.tsx"),
+      read("preview", "RemoteBrowserFrame.tsx"),
+      read("remoteView", "RemoteViewZoom.tsx"),
+    ].join("\n");
+    for (const variant of sources.match(/\[@media\([^\]]+\)\]/g) ?? []) {
+      expect(
+        variant,
+        `${variant} joins its media conditions without Tailwind's underscore, so it emits ` +
+          `invalid CSS and silently does nothing`,
+      ).not.toMatch(/\)and\(|\)or\(/);
+    }
+  });
+
   it("keeps the toggle reachable while the adjust layer is up", () => {
     // "Press it again to lock it in" is the whole interaction; a layer stacked
     // over the toggle would strand the viewer in the mode.

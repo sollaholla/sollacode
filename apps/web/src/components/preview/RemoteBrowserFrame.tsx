@@ -403,7 +403,11 @@ export function RemoteBrowserFrame(props: {
           </div>
         ) : null}
         {frame ? (
-          <div className="absolute right-3 bottom-3 z-40 flex items-center gap-2">
+          <div
+            className={`absolute right-3 z-40 flex items-center gap-2 ${
+              frameError ? "bottom-14" : "bottom-3"
+            }`}
+          >
             <RemoteViewZoomToggle
               adjusting={zoomView.adjusting}
               view={zoomView.view}
