@@ -3,20 +3,19 @@ export function shouldInterceptWindowCloseForQuit(input: {
   readonly quitAllowed: boolean;
   readonly quitAlreadyRequested: boolean;
   /**
-   * A window the user was actually shown. Windows are created hidden and
-   * revealed on `ready-to-show`, so this stays false when the window never
-   * made it onto a screen.
+   * Whether the closing window is an auxiliary surface - the "Connecting to
+   * WSL" splash or the floating voice orb - rather than the app's own window.
    */
-  readonly windowEverRevealed: boolean;
+  readonly windowIsAuxiliary: boolean;
 }): boolean {
-  // Closing a window the user never saw is not the user asking to quit. On a
-  // machine whose display is off or detached, Chromium cannot find a primary
-  // display, its GPU process dies, and the window closes the moment it is
-  // created - which used to quit the app about a second after the backend had
-  // come up and started serving. That box is reached over the network from a
-  // phone, so tearing the server down was the worst possible response to a
-  // monitor being off.
-  if (!input.windowEverRevealed) return false;
+  // Dismissing an auxiliary window is not the user asking to quit. The splash
+  // is taken down with an ordinary `close()` the moment the real main window
+  // reveals, so on Windows - where closing the app's window does quit - a
+  // WSL-only boot killed the process about 140ms after the backend had come up
+  // and started answering requests. That machine is reached over the network
+  // from a phone, so tearing the server down was the worst possible response to
+  // the app finishing its own startup.
+  if (input.windowIsAuxiliary) return false;
   return input.platform !== "darwin" && !input.quitAllowed && !input.quitAlreadyRequested;
 }
 

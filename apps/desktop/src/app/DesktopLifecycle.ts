@@ -14,6 +14,7 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
@@ -65,7 +66,11 @@ export class DesktopLifecycle extends Context.Service<
     readonly relaunch: (
       reason: string,
     ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
-    readonly register: Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRuntimeServices>;
+    readonly register: Effect.Effect<
+      void,
+      never,
+      Scope.Scope | DesktopLifecycleRuntimeServices | ElectronWindow.ElectronWindow
+    >;
   }
 >()("@t3tools/desktop/app/DesktopLifecycle") {}
 
@@ -260,12 +265,9 @@ export const make = DesktopLifecycle.of({
       );
       observeDetachedPromise(runEffect(observedEffect), onSettled);
     };
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
     let quitAllowed = false;
     let windowCloseQuitRequested = false;
-    // Windows are created hidden and revealed on `ready-to-show`. A window that
-    // never got that far was never on a screen, so its close is not the user
-    // asking to quit - see shouldInterceptWindowCloseForQuit.
-    let anyWindowRevealed = false;
     yield* electronTheme.onUpdated(() => {
       runDetached(
         "theme-updated",
@@ -285,21 +287,26 @@ export const make = DesktopLifecycle.of({
     yield* electronApp.on(
       "browser-window-created",
       (_event: Electron.Event, window: Electron.BrowserWindow) => {
-        if (window.isVisible()) {
-          anyWindowRevealed = true;
-        }
-        window.on("show", () => {
-          anyWindowRevealed = true;
-        });
         window.on("close", (closeEvent) => {
-          if (
-            !shouldInterceptWindowCloseForQuit({
-              platform: environment.platform,
-              quitAllowed,
-              quitAlreadyRequested: windowCloseQuitRequested,
-              windowEverRevealed: anyWindowRevealed,
-            })
-          ) {
+          const windowIsAuxiliary = electronWindow.isAuxiliaryWindowId(window.id);
+          const intercept = shouldInterceptWindowCloseForQuit({
+            platform: environment.platform,
+            quitAllowed,
+            quitAlreadyRequested: windowCloseQuitRequested,
+            windowIsAuxiliary,
+          });
+          // Which window closed, and what that meant, is the whole story when
+          // the app exits seconds after starting - and it is invisible in the
+          // trace, because quitting from here opens no span of its own.
+          runDetached(
+            "window-close-observed",
+            logLifecycleInfo("window close observed", {
+              windowId: window.id,
+              auxiliary: windowIsAuxiliary,
+              quitting: intercept,
+            }),
+          );
+          if (!intercept) {
             return;
           }
           closeEvent.preventDefault();
@@ -320,14 +327,8 @@ export const make = DesktopLifecycle.of({
         Effect.gen(function* () {
           const app = yield* ElectronApp.ElectronApp;
           const state = yield* DesktopState.DesktopState;
-          // Same reasoning as the close handler: if no window was ever shown,
-          // the app is running without a usable display rather than having been
-          // closed, and the backend should keep serving.
-          if (
-            anyWindowRevealed &&
-            environment.platform !== "darwin" &&
-            !(yield* Ref.get(state.quitting))
-          ) {
+          yield* logLifecycleInfo("all windows closed");
+          if (environment.platform !== "darwin" && !(yield* Ref.get(state.quitting))) {
             yield* app.quit;
           }
         }).pipe(Effect.withSpan("desktop.lifecycle.windowAllClosed")),

@@ -68,6 +68,7 @@ const electronWindowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
   currentMainOrFirst: Effect.succeed(Option.none()),
   focusedMainOrFirst: Effect.succeed(Option.none()),
   markAuxiliary: () => Effect.void,
+  isAuxiliaryWindowId: () => false,
   setMain: () => Effect.void,
   clearMain: () => Effect.void,
   reveal: () => Effect.void,

@@ -825,6 +825,11 @@ export const make = Effect.gen(function* () {
         sandbox: true,
       },
     });
+    // The splash is a transient surface, not the app. Without this tag its
+    // dismissal is an ordinary window close, and on Windows a window close
+    // quits the app - so revealing the real main window would immediately kill
+    // the process that just finished starting.
+    yield* electronWindow.markAuxiliary(splash);
     yield* Ref.set(splashWindowRef, Option.some(splash));
     splash.once("closed", () => {
       void runPromise(Ref.set(splashWindowRef, Option.none()));
