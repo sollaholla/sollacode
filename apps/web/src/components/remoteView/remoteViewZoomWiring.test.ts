@@ -86,6 +86,26 @@ describe("remote view zoom wiring", () => {
     }
   });
 
+  it("releases held input when the desktop viewer enters the mode", () => {
+    // Forwarding stops the instant the mode is entered, which strands whatever
+    // was down at that moment: the remote machine sits on a held W or a
+    // pressed mouse button for as long as the viewer spends panning.
+    const source = read("remoteControl", "RemoteControlViewerDialog.tsx");
+    expect(source).toMatch(/if \(zoomAdjusting\) releasePressedInputs\(\);/);
+  });
+
+  it("gates the desktop viewer's on-screen keyboard too", () => {
+    // It writes straight to enqueueInput rather than through the surface's
+    // handlers, so the central gate never sees it.
+    const source = read("remoteControl", "RemoteControlViewerDialog.tsx");
+    const start = source.indexOf("onBeforeInput={(event) => {");
+    expect(start).toBeGreaterThan(-1);
+    expect(
+      source.slice(start, start + 500),
+      "typing on the on-screen keyboard still reaches the host while the view is being adjusted",
+    ).toContain("zoomViewAdjustingRef.current");
+  });
+
   it("writes arbitrary media variants Tailwind can actually compile", () => {
     // Tailwind turns `_` into a space. Written without them, the condition
     // reaches the stylesheet as `(orientation:landscape)and(max-height:34rem)`,
