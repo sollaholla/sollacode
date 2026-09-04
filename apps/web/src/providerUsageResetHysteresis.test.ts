@@ -154,6 +154,36 @@ describe("provider usage reset hysteresis", () => {
     ).toBeNull();
   });
 
+  it("holds the whole count steady through a desync, not just one of them", () => {
+    // Codex caps the detail rows, so a multi-credit inventory can arrive as a
+    // single count-only row. Holding that row through a desync has to hold the
+    // number it stood for with it.
+    const bulk = credit({ id: null, title: "3 full resets" });
+    const seen = mergeProviderUsageEntry({}, report(0, { availableCount: 3, credits: [bulk] }));
+    expect(countOf(seen)).toBe(3);
+
+    const desynced = mergeProviderUsageEntry(seen, report(30_000, null));
+    expect(creditsOf(desynced)).toHaveLength(1);
+    expect(countOf(desynced)).toBe(3);
+
+    const settled = mergeProviderUsageEntry(
+      desynced,
+      report(30_000 + PROVIDER_USAGE_RESET_CREDIT_GRACE_MS + 1_000, null),
+    );
+    expect(settled[ACCOUNT]?.resetCredits ?? null).toBeNull();
+  });
+
+  it("takes a count-only row's new number when the provider does send one", () => {
+    const bulk = credit({ id: null, title: "3 full resets" });
+    const seen = mergeProviderUsageEntry({}, report(0, { availableCount: 3, credits: [bulk] }));
+
+    const fewer = mergeProviderUsageEntry(
+      seen,
+      report(30_000, { availableCount: 2, credits: [bulk] }),
+    );
+    expect(countOf(fewer)).toBe(2);
+  });
+
   it("drops an expired credit even inside the grace window", () => {
     const seen = mergeProviderUsageEntry(
       {},

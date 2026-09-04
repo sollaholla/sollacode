@@ -199,18 +199,27 @@ export function mergeResetCredits(
   const credits = Array.from(creditsByKey.entries()).flatMap(([key, credit]) =>
     dismissedKeys.has(key) ? [] : [credit],
   );
-  // The newest reported count, not a running maximum. Maxing across refreshes
-  // let the number only ever climb, so a spent reset stayed on screen and two
-  // clients that peaked differently never agreed on it again.
-  const reportedAvailableCount = next?.availableCount ?? 0;
-  let dismissedReportedCount = 0;
+
+  // How many credits a row stands for. An id'd row is one; a count-only row is
+  // the whole anonymous inventory, so it is worth whatever count it arrived
+  // with - the new report's if the provider just sent it, the old one's if we
+  // are holding it through a desync. Reading the new count off a row we
+  // retained from the old report is what made the total lurch mid-grace.
+  const weightOf = (key: string, credit: PersistedProviderUsageResetCredit): number => {
+    if (credit.id !== null) return 1;
+    return nextByKey.has(key) ? (next?.availableCount ?? 0) : (previous?.availableCount ?? 1);
+  };
+
+  // Summed per surviving row rather than carried as a running maximum. Maxing
+  // across refreshes let the number only ever climb, so a spent reset stayed on
+  // screen and two clients that peaked differently never agreed on it again.
+  let knownAvailableCount = 0;
   for (const [key, credit] of creditsByKey) {
-    if (!dismissedKeys.has(key)) continue;
-    // A count-only row represents the complete anonymous inventory. Once the
-    // user acts on it, an incomplete refresh must not recreate it.
-    dismissedReportedCount += credit.id === null ? reportedAvailableCount : 1;
+    // Once the user acts on a row, an incomplete refresh must not recreate it.
+    if (dismissedKeys.has(key)) continue;
+    knownAvailableCount += weightOf(key, credit);
   }
-  const availableCount = Math.max(credits.length, reportedAvailableCount - dismissedReportedCount);
+  const availableCount = Math.max(credits.length, knownAvailableCount);
   return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
 }
 
