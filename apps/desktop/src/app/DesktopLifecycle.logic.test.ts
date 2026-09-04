@@ -14,6 +14,7 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "win32",
         quitAllowed: false,
         quitAlreadyRequested: false,
+        windowEverRevealed: true,
       }),
     ).toBe(true);
   });
@@ -24,6 +25,7 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "darwin",
         quitAllowed: false,
         quitAlreadyRequested: false,
+        windowEverRevealed: true,
       }),
     ).toBe(false);
     expect(
@@ -31,6 +33,21 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "linux",
         quitAllowed: true,
         quitAlreadyRequested: true,
+        windowEverRevealed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not quit for a window the user was never shown", () => {
+    // The display is off: Chromium cannot find a primary display, the GPU
+    // process dies, and the window closes before it is ever revealed. Quitting
+    // there takes down a backend that a phone is talking to over the network.
+    expect(
+      shouldInterceptWindowCloseForQuit({
+        platform: "win32",
+        quitAllowed: false,
+        quitAlreadyRequested: false,
+        windowEverRevealed: false,
       }),
     ).toBe(false);
   });

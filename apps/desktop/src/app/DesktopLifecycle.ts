@@ -262,6 +262,10 @@ export const make = DesktopLifecycle.of({
     };
     let quitAllowed = false;
     let windowCloseQuitRequested = false;
+    // Windows are created hidden and revealed on `ready-to-show`. A window that
+    // never got that far was never on a screen, so its close is not the user
+    // asking to quit - see shouldInterceptWindowCloseForQuit.
+    let anyWindowRevealed = false;
     yield* electronTheme.onUpdated(() => {
       runDetached(
         "theme-updated",
@@ -281,12 +285,19 @@ export const make = DesktopLifecycle.of({
     yield* electronApp.on(
       "browser-window-created",
       (_event: Electron.Event, window: Electron.BrowserWindow) => {
+        if (window.isVisible()) {
+          anyWindowRevealed = true;
+        }
+        window.on("show", () => {
+          anyWindowRevealed = true;
+        });
         window.on("close", (closeEvent) => {
           if (
             !shouldInterceptWindowCloseForQuit({
               platform: environment.platform,
               quitAllowed,
               quitAlreadyRequested: windowCloseQuitRequested,
+              windowEverRevealed: anyWindowRevealed,
             })
           ) {
             return;
@@ -309,7 +320,14 @@ export const make = DesktopLifecycle.of({
         Effect.gen(function* () {
           const app = yield* ElectronApp.ElectronApp;
           const state = yield* DesktopState.DesktopState;
-          if (environment.platform !== "darwin" && !(yield* Ref.get(state.quitting))) {
+          // Same reasoning as the close handler: if no window was ever shown,
+          // the app is running without a usable display rather than having been
+          // closed, and the backend should keep serving.
+          if (
+            anyWindowRevealed &&
+            environment.platform !== "darwin" &&
+            !(yield* Ref.get(state.quitting))
+          ) {
             yield* app.quit;
           }
         }).pipe(Effect.withSpan("desktop.lifecycle.windowAllClosed")),
