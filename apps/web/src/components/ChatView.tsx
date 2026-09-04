@@ -203,6 +203,7 @@ import {
 import {
   holdComposerSend,
   releaseComposerSendHold,
+  sendWouldStopBackgroundWork,
   shouldHoldComposerSend,
   shouldReleaseHeldComposerSend,
 } from "./chat/composerSendQueue";
@@ -4290,16 +4291,11 @@ function ChatViewContent(props: ChatViewProps) {
     [providerTasks],
   );
   const hasRunningBackgroundTask = runningBackgroundTasks.length > 0;
-  /**
-   * Whether sending right now would stop background work the user can see.
-   *
-   * The one predicate behind the hold, its release, and the send-anyway
-   * confirmation - a running Grok session queues the message itself and keeps
-   * its tasks, so a send there destroys nothing and must neither wait nor
-   * warn. Deciding that separately at each site is how the three drift apart.
-   */
-  const sendWouldStopBackgroundTasks =
-    hasRunningBackgroundTask && !(activeSessionProviderDriver === "grok" && phase === "running");
+  const sendWouldStopBackgroundTasks = sendWouldStopBackgroundWork({
+    hasRunningBackgroundTask,
+    turnRunning: phase === "running",
+    providerDriver: activeSessionProviderDriver,
+  });
   /**
    * Threads whose composer draft is waiting for background work to finish.
    *
@@ -4326,8 +4322,8 @@ function ChatViewContent(props: ChatViewProps) {
       <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
         <span className="text-xs text-foreground/80">
           {runningBackgroundTasks.length === 1
-            ? "Waiting for 1 background task to finish — this message sends automatically."
-            : `Waiting for ${runningBackgroundTasks.length} background tasks to finish — this message sends automatically.`}
+            ? "Waiting for this turn to end so it does not cancel 1 running background task — sends automatically."
+            : `Waiting for this turn to end so it does not cancel ${runningBackgroundTasks.length} running background tasks — sends automatically.`}
         </span>
         <div className="flex shrink-0 items-center gap-1">
           <Button
