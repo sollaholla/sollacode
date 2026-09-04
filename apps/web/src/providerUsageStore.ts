@@ -161,13 +161,19 @@ function mergeResetCredits(
     nextByKey.set(providerUsageResetCreditKey(credit), { ...credit, lastSeenAt: reportedAt });
   }
 
+  // A response carrying credits is the provider's current expression of the
+  // whole inventory, whether it spells it out as detail rows or collapses it
+  // into a single count-only row. Believe it outright: the two shapes describe
+  // the same credits, so holding the old rows alongside a new one of the other
+  // shape counts every credit twice. Retention is for the actual desync
+  // signature - a response that came back with nothing at all.
+  const nextIsEmpty = nextByKey.size === 0;
+
   // Returns the credit to carry forward, or null to retire it. Retaining a
   // credit and dating it are the same decision, so they are made together.
   const carryForward = (
-    key: string,
     credit: PersistedProviderUsageResetCredit,
   ): PersistedProviderUsageResetCredit | null => {
-    if (nextByKey.has(key)) return credit;
     // An expired credit is gone whatever the grace says; the provider will
     // never mention it again and there is nothing to ride out.
     if (credit.expiresAt !== null && Number.isFinite(nowMs) && credit.expiresAt <= nowMs) {
@@ -189,10 +195,11 @@ function mergeResetCredits(
   };
 
   const creditsByKey = new Map<string, PersistedProviderUsageResetCredit>();
-  for (const credit of previous?.credits ?? []) {
-    const key = providerUsageResetCreditKey(credit);
-    const carried = carryForward(key, credit);
-    if (carried !== null) creditsByKey.set(key, carried);
+  if (nextIsEmpty) {
+    for (const credit of previous?.credits ?? []) {
+      const carried = carryForward(credit);
+      if (carried !== null) creditsByKey.set(providerUsageResetCreditKey(credit), carried);
+    }
   }
   for (const [key, credit] of nextByKey) creditsByKey.set(key, credit);
 
@@ -200,26 +207,27 @@ function mergeResetCredits(
     dismissedKeys.has(key) ? [] : [credit],
   );
 
-  // How many credits a row stands for. An id'd row is one; a count-only row is
-  // the whole anonymous inventory, so it is worth whatever count it arrived
-  // with - the new report's if the provider just sent it, the old one's if we
-  // are holding it through a desync. Reading the new count off a row we
-  // retained from the old report is what made the total lurch mid-grace.
-  const weightOf = (key: string, credit: PersistedProviderUsageResetCredit): number => {
-    if (credit.id !== null) return 1;
-    return nextByKey.has(key) ? (next?.availableCount ?? 0) : (previous?.availableCount ?? 1);
-  };
-
-  // Summed per surviving row rather than carried as a running maximum. Maxing
-  // across refreshes let the number only ever climb, so a spent reset stayed on
-  // screen and two clients that peaked differently never agreed on it again.
-  let knownAvailableCount = 0;
+  // How many credits a row stands for. An id'd row is one; a count-only row
+  // stands for the whole anonymous inventory, so it is worth the count it
+  // arrived with. Every surviving row comes from the same report now, so that
+  // count is unambiguous: the provider's when it answered, the one we are
+  // holding when it did not.
+  const bulkWeight = nextIsEmpty ? (previous?.availableCount ?? 1) : (next?.availableCount ?? 0);
+  let retainedTotal = 0;
+  let dismissedTotal = 0;
   for (const [key, credit] of creditsByKey) {
+    const weight = credit.id === null ? bulkWeight : 1;
     // Once the user acts on a row, an incomplete refresh must not recreate it.
-    if (dismissedKeys.has(key)) continue;
-    knownAvailableCount += weightOf(key, credit);
+    if (dismissedKeys.has(key)) dismissedTotal += weight;
+    else retainedTotal += weight;
   }
-  const availableCount = Math.max(credits.length, knownAvailableCount);
+  // The provider's own total when it gave one, minus anything already acted on;
+  // otherwise the total we are holding through the desync. Never a running
+  // maximum - maxing across refreshes let the number only ever climb, so a
+  // spent reset stayed on screen and two clients that peaked differently never
+  // agreed on it again.
+  const reportedTotal = nextIsEmpty ? retainedTotal : (next?.availableCount ?? 0) - dismissedTotal;
+  const availableCount = Math.max(credits.length, reportedTotal);
   return availableCount > 0 && credits.length > 0 ? { availableCount, credits } : null;
 }
 
