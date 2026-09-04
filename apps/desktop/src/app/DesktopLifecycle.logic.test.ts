@@ -14,7 +14,7 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "win32",
         quitAllowed: false,
         quitAlreadyRequested: false,
-        windowEverRevealed: true,
+        windowIsAuxiliary: false,
       }),
     ).toBe(true);
   });
@@ -25,7 +25,7 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "darwin",
         quitAllowed: false,
         quitAlreadyRequested: false,
-        windowEverRevealed: true,
+        windowIsAuxiliary: false,
       }),
     ).toBe(false);
     expect(
@@ -33,21 +33,22 @@ describe("shouldInterceptWindowCloseForQuit", () => {
         platform: "linux",
         quitAllowed: true,
         quitAlreadyRequested: true,
-        windowEverRevealed: true,
+        windowIsAuxiliary: false,
       }),
     ).toBe(false);
   });
 
-  it("does not quit for a window the user was never shown", () => {
-    // The display is off: Chromium cannot find a primary display, the GPU
-    // process dies, and the window closes before it is ever revealed. Quitting
-    // there takes down a backend that a phone is talking to over the network.
+  it("does not quit when an auxiliary window is dismissed", () => {
+    // The "Connecting to WSL" splash is taken down with an ordinary close() the
+    // moment the real main window reveals. Reading that as the user closing the
+    // app quit a Windows box about 140ms after its backend started answering -
+    // a backend a phone talks to over the network.
     expect(
       shouldInterceptWindowCloseForQuit({
         platform: "win32",
         quitAllowed: false,
         quitAlreadyRequested: false,
-        windowEverRevealed: false,
+        windowIsAuxiliary: true,
       }),
     ).toBe(false);
   });

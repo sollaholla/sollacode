@@ -92,6 +92,13 @@ export class ElectronWindow extends Context.Service<
      * appearance sync would paint its transparent background opaque.
      */
     readonly markAuxiliary: (window: Electron.BrowserWindow) => Effect.Effect<void>;
+    /**
+     * Whether a window id was tagged auxiliary. Plain function rather than an
+     * Effect because the one caller that needs it is Electron's `close`
+     * listener, which has to decide before `preventDefault` and so cannot wait
+     * on a fiber.
+     */
+    readonly isAuxiliaryWindowId: (windowId: number) => boolean;
     readonly setMain: (window: Electron.BrowserWindow) => Effect.Effect<void>;
     readonly clearMain: (window: Option.Option<Electron.BrowserWindow>) => Effect.Effect<void>;
     readonly reveal: (window: Electron.BrowserWindow) => Effect.Effect<void>;
@@ -221,6 +228,7 @@ export const make = Effect.gen(function* () {
       Effect.sync(() => {
         auxiliaryWindowIds.add(window.id);
       }),
+    isAuxiliaryWindowId: (windowId) => auxiliaryWindowIds.has(windowId),
     clearMain: (window) =>
       Ref.update(mainWindowRef, (current) => {
         if (Option.isNone(current)) {
