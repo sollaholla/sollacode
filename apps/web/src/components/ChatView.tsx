@@ -247,6 +247,13 @@ import {
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
+import {
+  getSpeechRecognitionConstructor,
+  shouldPreferNativeSpeechDictation,
+  startNativeSpeechDictation,
+  type NativeSpeechDictationSession,
+} from "~/speechDictation";
+
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { prependWaitingOnYouReply } from "@t3tools/shared/agentAttentionFollowUp";
@@ -8003,6 +8010,8 @@ function ChatViewContent(props: ChatViewProps) {
     let disposed = false;
     let recorder: MediaRecorder | null = null;
     let stream: MediaStream | null = null;
+    /** Set instead of `recorder` when the browser transcribes for us. */
+    let nativeDictation: NativeSpeechDictationSession | null = null;
     let chunks: Blob[] = [];
     let recordingTimeout: number | null = null;
     let focusRestoreFrame: number | null = null;
@@ -8045,6 +8054,162 @@ function ChatViewContent(props: ChatViewProps) {
         .catch(() => undefined);
     };
 
+    /**
+     * Put a finished transcript where the user is looking.
+     *
+     * Shared by both dictation backends: recorded audio that came back from
+     * the transcriber, and the browser's own recogniser on a phone. Neither
+     * one types into the editor - the text goes through the composer's draft,
+     * which is what keeps it clear of the input-method edits that were losing
+     * words.
+     */
+    const deliverVoiceTranscript = (transcript: string) => {
+      const terminalTarget = pushToTalkTerminalTargetRef.current;
+      pushToTalkTerminalTargetRef.current = null;
+      if (!transcript) {
+        reportError(
+          "No speech detected",
+          "Hold the shortcut while speaking, then release it to send.",
+        );
+        return;
+      }
+      if (terminalTarget !== null) {
+        void writePushToTalkTranscriptRef.current(terminalTarget, transcript);
+        return;
+      }
+      const appliedInput = !disposed ? composerRef.current?.applyVoiceTranscript(transcript) : null;
+      let nextPrompt = appliedInput?.prompt ?? null;
+      if (nextPrompt === null) {
+        const draftStore = useComposerDraftStore.getState();
+        const persistedPrompt =
+          draftStore.getComposerDraft(composerDraftTarget)?.prompt ?? promptRef.current;
+        nextPrompt = mergeVoiceTranscriptPrompt(persistedPrompt, transcript);
+        draftStore.setPrompt(composerDraftTarget, nextPrompt);
+        if (!disposed) {
+          promptRef.current = nextPrompt;
+          composerRef.current?.resetCursorState({
+            cursor: nextPrompt.length,
+            prompt: nextPrompt,
+          });
+        }
+      }
+      if (settings.autoSendVoiceTranscription && !disposed) {
+        const submitTranscription = () => {
+          if (!disposed) void onSendRef.current(undefined, "transcription");
+        };
+        if (appliedInput?.target.kind === "pending-user-input") {
+          // The pending-answer state lives above the composer. Give
+          // React one commit before advancing/submitting the answer.
+          window.requestAnimationFrame(submitTranscription);
+        } else {
+          submitTranscription();
+        }
+      }
+      if (!settings.autoSendVoiceTranscription && !disposed) {
+        // Let the active input render reach the editor before
+        // focusing it. Focusing the old value synchronously can emit
+        // a stale empty change and erase the transcript.
+        window.requestAnimationFrame(() => {
+          if (disposed) return;
+          let promptForFocus = composerRef.current?.readSnapshot().value ?? nextPrompt;
+          if (appliedInput?.target.kind !== "pending-user-input") {
+            const persistedPrompt =
+              useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
+            promptForFocus = persistedPrompt;
+            if (persistedPrompt !== nextPrompt && persistedPrompt.length === 0) {
+              promptRef.current = nextPrompt;
+              setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+              promptForFocus = nextPrompt;
+            }
+          }
+          composerRef.current?.resetCursorState({
+            cursor: promptForFocus.length,
+            prompt: promptForFocus,
+          });
+          composerRef.current?.focusAtEnd();
+        });
+      } else if (disposed) {
+        const preview = previewVoiceTranscript(transcript);
+        // `timeout: 0` means this toast never expires on its own, so
+        // nothing dismissed it after Send: the card stayed up with a
+        // live button and the same transcript could be sent again on
+        // every tap. Close it as part of the action.
+        let transcriptToastId: ReturnType<typeof toastManager.add> | null = null;
+        // The thread that owned this recording. Captured here rather
+        // than read at click time, because by now the user is
+        // somewhere else entirely.
+        const owningThreadKey = activeThreadKey ?? "";
+        transcriptToastId = toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Transcription ready",
+            description: preview,
+            timeout: 0,
+            actionProps: {
+              children: "Send",
+              onClick: () => {
+                if (!sendAwayVoiceTranscriptRef.current(transcript, composerDraftTarget)) {
+                  // Nothing left for the thread. Keep the card up so
+                  // the transcript is still recoverable, and say why
+                  // rather than swallowing the tap.
+                  reportError(
+                    "Could not send transcription",
+                    "Open the conversation this recording belongs to, then send it from there.",
+                  );
+                  return;
+                }
+                forgetPendingTranscriptionToast(owningThreadKey);
+                if (transcriptToastId !== null) toastManager.close(transcriptToastId);
+              },
+            },
+            data: {
+              expandableContent:
+                preview === transcript.trim().replace(/\s+/g, " ") ? undefined : (
+                  <p className="whitespace-pre-wrap text-xs text-foreground">{transcript}</p>
+                ),
+              expandableDescriptionTrigger: preview !== transcript.trim().replace(/\s+/g, " "),
+              expandableLabels: { expand: "Show full transcript", collapse: "Show less" },
+              hideCopyButton: true,
+            },
+          }),
+        );
+        registerPendingTranscriptionToast(owningThreadKey, transcriptToastId);
+      }
+    };
+
+    /**
+     * Dictate through the browser's own recogniser instead of recording audio.
+     *
+     * Only reached on a touch client with no desktop bridge, where the
+     * microphone was previously hidden altogether - so this adds a path rather
+     * than replacing one. The transcript arrives as a string and goes through
+     * the same delivery as recorded audio.
+     */
+    const startNativeDictation = (): boolean => {
+      const create = getSpeechRecognitionConstructor();
+      if (
+        create === undefined ||
+        !shouldPreferNativeSpeechDictation({
+          hasDesktopBridge: window.desktopBridge !== undefined,
+          hasCoarsePointer: window.matchMedia?.("(pointer: coarse)").matches === true,
+          hasRecognizer: true,
+        })
+      ) {
+        return false;
+      }
+      try {
+        nativeDictation = startNativeSpeechDictation({
+          create: () => new create(),
+          lang: navigator.language?.trim() || "en-US",
+        });
+      } catch {
+        nativeDictation = null;
+        return false;
+      }
+      if (!disposed) setPushToTalkStatus("recording");
+      return true;
+    };
+
     const startRecording = async () => {
       if (
         !pushToTalkEnabledRef.current ||
@@ -8065,6 +8230,8 @@ function ChatViewContent(props: ChatViewProps) {
         }
         return;
       }
+
+      if (startNativeDictation()) return;
 
       try {
         const nextStream = await navigator.mediaDevices.getUserMedia({
@@ -8148,127 +8315,7 @@ function ChatViewContent(props: ChatViewProps) {
                   },
                 });
               })
-              .then((transcript) => {
-                const terminalTarget = pushToTalkTerminalTargetRef.current;
-                pushToTalkTerminalTargetRef.current = null;
-                if (!transcript) {
-                  reportError(
-                    "No speech detected",
-                    "Hold the shortcut while speaking, then release it to send.",
-                  );
-                  return;
-                }
-                if (terminalTarget !== null) {
-                  void writePushToTalkTranscriptRef.current(terminalTarget, transcript);
-                  return;
-                }
-                const appliedInput = !disposed
-                  ? composerRef.current?.applyVoiceTranscript(transcript)
-                  : null;
-                let nextPrompt = appliedInput?.prompt ?? null;
-                if (nextPrompt === null) {
-                  const draftStore = useComposerDraftStore.getState();
-                  const persistedPrompt =
-                    draftStore.getComposerDraft(composerDraftTarget)?.prompt ?? promptRef.current;
-                  nextPrompt = mergeVoiceTranscriptPrompt(persistedPrompt, transcript);
-                  draftStore.setPrompt(composerDraftTarget, nextPrompt);
-                  if (!disposed) {
-                    promptRef.current = nextPrompt;
-                    composerRef.current?.resetCursorState({
-                      cursor: nextPrompt.length,
-                      prompt: nextPrompt,
-                    });
-                  }
-                }
-                if (settings.autoSendVoiceTranscription && !disposed) {
-                  const submitTranscription = () => {
-                    if (!disposed) void onSendRef.current(undefined, "transcription");
-                  };
-                  if (appliedInput?.target.kind === "pending-user-input") {
-                    // The pending-answer state lives above the composer. Give
-                    // React one commit before advancing/submitting the answer.
-                    window.requestAnimationFrame(submitTranscription);
-                  } else {
-                    submitTranscription();
-                  }
-                }
-                if (!settings.autoSendVoiceTranscription && !disposed) {
-                  // Let the active input render reach the editor before
-                  // focusing it. Focusing the old value synchronously can emit
-                  // a stale empty change and erase the transcript.
-                  window.requestAnimationFrame(() => {
-                    if (disposed) return;
-                    let promptForFocus = composerRef.current?.readSnapshot().value ?? nextPrompt;
-                    if (appliedInput?.target.kind !== "pending-user-input") {
-                      const persistedPrompt =
-                        useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
-                          ?.prompt ?? "";
-                      promptForFocus = persistedPrompt;
-                      if (persistedPrompt !== nextPrompt && persistedPrompt.length === 0) {
-                        promptRef.current = nextPrompt;
-                        setComposerDraftPrompt(composerDraftTarget, nextPrompt);
-                        promptForFocus = nextPrompt;
-                      }
-                    }
-                    composerRef.current?.resetCursorState({
-                      cursor: promptForFocus.length,
-                      prompt: promptForFocus,
-                    });
-                    composerRef.current?.focusAtEnd();
-                  });
-                } else if (disposed) {
-                  const preview = previewVoiceTranscript(transcript);
-                  // `timeout: 0` means this toast never expires on its own, so
-                  // nothing dismissed it after Send: the card stayed up with a
-                  // live button and the same transcript could be sent again on
-                  // every tap. Close it as part of the action.
-                  let transcriptToastId: ReturnType<typeof toastManager.add> | null = null;
-                  // The thread that owned this recording. Captured here rather
-                  // than read at click time, because by now the user is
-                  // somewhere else entirely.
-                  const owningThreadKey = activeThreadKey ?? "";
-                  transcriptToastId = toastManager.add(
-                    stackedThreadToast({
-                      type: "success",
-                      title: "Transcription ready",
-                      description: preview,
-                      timeout: 0,
-                      actionProps: {
-                        children: "Send",
-                        onClick: () => {
-                          if (
-                            !sendAwayVoiceTranscriptRef.current(transcript, composerDraftTarget)
-                          ) {
-                            // Nothing left for the thread. Keep the card up so
-                            // the transcript is still recoverable, and say why
-                            // rather than swallowing the tap.
-                            reportError(
-                              "Could not send transcription",
-                              "Open the conversation this recording belongs to, then send it from there.",
-                            );
-                            return;
-                          }
-                          forgetPendingTranscriptionToast(owningThreadKey);
-                          if (transcriptToastId !== null) toastManager.close(transcriptToastId);
-                        },
-                      },
-                      data: {
-                        expandableContent:
-                          preview === transcript.trim().replace(/\s+/g, " ") ? undefined : (
-                            <p className="whitespace-pre-wrap text-xs text-foreground">
-                              {transcript}
-                            </p>
-                          ),
-                        expandableDescriptionTrigger:
-                          preview !== transcript.trim().replace(/\s+/g, " "),
-                        expandableLabels: { expand: "Show full transcript", collapse: "Show less" },
-                        hideCopyButton: true,
-                      },
-                    }),
-                  );
-                  registerPendingTranscriptionToast(owningThreadKey, transcriptToastId);
-                }
-              })
+              .then(deliverVoiceTranscript)
               .catch((cause) => {
                 if (isTranscriptionCancellationError(cause)) return;
                 reportError(
@@ -8351,6 +8398,29 @@ function ChatViewContent(props: ChatViewProps) {
       restoreSystemAudio();
       if (pushToTalkStatusRef.current === "recording" && !disposed) {
         setPushToTalkStatus(null);
+      }
+      const dictation = nativeDictation;
+      if (dictation !== null) {
+        nativeDictation = null;
+        void dictation
+          .stop()
+          .then((transcript) => {
+            if (transcript.trim().length === 0) {
+              reportError(
+                "No speech detected",
+                "Hold the microphone while speaking, then release it to send.",
+              );
+              return;
+            }
+            deliverVoiceTranscript(transcript);
+          })
+          .catch((cause: unknown) => {
+            reportError(
+              "Dictation failed",
+              cause instanceof Error ? cause.message : "The browser could not transcribe speech.",
+            );
+          });
+        return;
       }
       if (recorder?.state === "recording") recorder.stop();
     };

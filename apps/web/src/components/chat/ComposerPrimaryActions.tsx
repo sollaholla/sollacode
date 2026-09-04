@@ -10,6 +10,7 @@ import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { isElectron } from "../../env";
+import { getSpeechRecognitionConstructor } from "~/speechDictation";
 import { shouldOfferAppVoiceCapture } from "./appVoiceCaptureAvailability";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
@@ -169,6 +170,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const showAppMicrophone = shouldOfferAppVoiceCapture({
     isDesktopElectron: isElectron,
     hasCoarsePointer,
+    // Safari's own recogniser makes the microphone worth showing on a phone,
+    // where it used to be hidden because the only fallback was a downloaded
+    // model.
+    hasNativeSpeechDictation: getSpeechRecognitionConstructor() !== undefined,
   });
   const isSendDisabled = sendDisabledReason !== null;
   const pushToTalkActive = pushToTalkStatus === "recording";
