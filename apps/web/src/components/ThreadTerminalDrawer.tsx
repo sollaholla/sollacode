@@ -94,6 +94,7 @@ import {
   type TerminalDictationState,
 } from "./terminal/dictationInput";
 import { TerminalMobileKeyBar } from "./terminal/TerminalMobileKeyBar";
+import { resolveTerminalKeyboardInset } from "./terminal/terminalKeyboardInset";
 import { TerminalLaunchPad, type TerminalLaunchProvider } from "./terminal/TerminalLaunchPad";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { terminalCommandProviderDriver } from "@t3tools/shared/terminalProvider";
@@ -965,6 +966,51 @@ export function TerminalViewport({
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
+  /**
+   * How much of the pane the phone keyboard is sitting on top of.
+   *
+   * The prompt, the line being typed and the mobile key bar all live at the
+   * bottom of this pane, which is exactly what the keyboard covers - so
+   * without this the only part of the terminal you are using is the part you
+   * cannot see.
+   */
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const isTouch = window.matchMedia("(pointer: coarse)").matches;
+    const sync = () => {
+      const pane = paneRef.current;
+      const textarea = terminalRef.current?.textarea ?? null;
+      if (!pane) return;
+      const rect = pane.getBoundingClientRect();
+      setKeyboardInset(
+        resolveTerminalKeyboardInset({
+          paneBottom: rect.bottom,
+          visualViewportHeight: viewport.height,
+          visualViewportOffsetTop: viewport.offsetTop,
+          terminalFocused: textarea !== null && document.activeElement === textarea,
+          isPortrait: window.matchMedia("(orientation: portrait)").matches,
+          isTouch,
+        }),
+      );
+    };
+    sync();
+    viewport.addEventListener("resize", sync);
+    viewport.addEventListener("scroll", sync);
+    // Focus moves without the viewport changing size (tapping between the
+    // terminal and the composer while the keyboard is already up), and the
+    // inset belongs to whichever of them currently owns it.
+    document.addEventListener("focusin", sync);
+    document.addEventListener("focusout", sync);
+    return () => {
+      viewport.removeEventListener("resize", sync);
+      viewport.removeEventListener("scroll", sync);
+      document.removeEventListener("focusin", sync);
+      document.removeEventListener("focusout", sync);
+    };
+  }, []);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const scheduleTerminalLayoutRef = useRef<(() => void) | null>(null);
   const nudgeTerminalLayoutRef = useRef<((options?: { force?: boolean }) => void) | null>(null);
@@ -2161,7 +2207,13 @@ export function TerminalViewport({
 
   return (
     <div
+      ref={paneRef}
       className="relative flex h-full w-full flex-col overflow-hidden rounded-[4px] bg-background"
+      // Padding rather than a transform: the xterm container is `flex-1`, so
+      // this shrinks the terminal itself and the fit addon reflows to the
+      // smaller box. Moving the pane instead would leave rows rendered under
+      // the keyboard and simply hide them.
+      style={keyboardInset > 0 ? { paddingBottom: keyboardInset } : undefined}
       onDragEnter={handleFileDragOver}
       onDragOver={handleFileDragOver}
       onDragLeave={handleFileDragLeave}

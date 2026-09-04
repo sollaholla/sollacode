@@ -1280,6 +1280,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const isMobileViewport = useMediaQuery("max-sm");
   const isPortraitMobileViewport = useMediaQuery("(max-width: 639px) and (orientation: portrait)");
+  // Set by the swipe-down gesture, cleared the moment the composer is opened
+  // again. Held here rather than derived, because "put away" is a thing the
+  // reader did, not a thing the current focus state can be read back from.
+  const [swipeDismissedMobileComposer, setSwipeDismissedMobileComposer] = useState(false);
   const isComposerCollapsedMobile = shouldCollapseMobileComposer({
     isMobileViewport,
     isPortraitViewport: isPortraitMobileViewport,
@@ -1287,6 +1291,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     forceExpandedOnMobile,
     isComposerFocused,
     voiceStatus: pushToTalkStatus,
+    swipeDismissed: swipeDismissedMobileComposer,
   });
 
   // ------------------------------------------------------------------
@@ -2297,7 +2302,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // recorder controls, which is the one thing the collapse rules already go
     // out of their way to avoid.
     if (pushToTalkStatus !== null) return;
-    if (!isComposerFocused) return;
+    // Deliberately not gated on focus. Swiping a composer that is merely open
+    // - keyboard already down - still has to put it away, or the gesture only
+    // works in half the states it is offered in.
+    setSwipeDismissedMobileComposer(true);
     blurFocusedComposerElement();
   };
 
@@ -2323,6 +2331,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       window.cancelAnimationFrame(mobileComposerExpandReleaseFrameRef.current);
     }
     mobileComposerExpandInFlightRef.current = true;
+    setSwipeDismissedMobileComposer(false);
     setIsComposerFocused(true);
     mobileComposerExpandFrameRef.current = window.requestAnimationFrame(() => {
       mobileComposerExpandFrameRef.current = null;
@@ -3333,6 +3342,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               window.cancelAnimationFrame(composerBlurFrameRef.current);
               composerBlurFrameRef.current = null;
             }
+            setSwipeDismissedMobileComposer(false);
             setIsComposerFocused(true);
           }}
           onBlurCapture={() => {
